@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "coolify-manager": {
+      "source": "ajmcclary/coolify-manager",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "a7a5c88bebd3184073b24ed1adeab23e74e501aef5417a58fc817b0162f87205"
+    }
+  }
+}

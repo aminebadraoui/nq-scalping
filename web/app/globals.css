@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+@theme {
+  --color-long: #34d399;
+  --color-short: #f87171;
+  --color-warn: #fbbf24;
+  --color-info: #38bdf8;
+  --color-panel: #101013;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+body {
+  background: #09090b;
+  color: #e4e4e7;
+}
+
+::selection {
+  background: rgba(52, 211, 153, 0.25);
+}
