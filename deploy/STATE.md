@@ -40,6 +40,21 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
   "http://31.97.138.30:8000/api/v1/deploy?uuid=vwtqdqezxw3lpmpzq76drgb1&force=true"
 ```
 
+## Live verification — Sunday 2026-09-27 18:00 ET open
+
+- Ticks flow: session `OVERNIGHT` / `2026-09-28`, real prints with `l_sz`
+  sizes and string `side` fields; snapshot delta via `derived_values.delta`.
+- **Seamless blend confirmed in production**: chart `1380 collected + live
+  bars · 18:00 → 19:21 New York`, ladder's last bar is the live minute,
+  checklist "as of 19:21 New York · live bars", zero console errors.
+- **Cognito lockout incident**: the VPS container retried auth every 5s with a
+  mangled password → GoCharting account locked ("Password attempts exceeded").
+  Fixes: env re-set with correct plain values, **exponential reconnect backoff**
+  (10s → 120s, auth failures 60s → 300s) in `lib/live.ts`, and `verify_ticks.py`
+  now loads `gcdata/.env` (launchd runs with a minimal environment).
+- **`l_sz` is the print-size field** — added to `lib/live.ts` (before the fix
+  every live tick was sized 1 contract, corrupting live volume/delta).
+
 ## Deploy lessons (2026-09-27)
 
 1. **"shown once" env vars** — PATCHing `DATABASE_URL` as `is_shown_once` again
