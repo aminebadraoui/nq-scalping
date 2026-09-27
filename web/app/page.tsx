@@ -224,9 +224,11 @@ export default function DashboardPage() {
     };
   }, [today, viewSession, viewStart, viewEnd]);
 
-  // alert polling
+  // alert polling — only after the dataset bootstrap resolves, otherwise the
+  // first tick fires against "today" (e.g. a Sunday with no data) and 404s
   const pollDate = dataDate || today;
   useEffect(() => {
+    if (!dataDate) return; // bootstrap not resolved yet
     const tick = () => {
       fetch(`/api/gc?action=analysis&date=${pollDate}&session=RTH&start=&end=&row=4`)
         .then((r) => r.json())

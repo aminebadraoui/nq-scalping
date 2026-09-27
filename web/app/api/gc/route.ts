@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
         }
         return Response.json({
           ok: true,
-          buildId: "readthrough-v1",
+          buildId: "readthrough-v2",
           sessions: sessionsInfo,
           hasDbUrl: !!process.env.DATABASE_URL,
           dbUrlHost: process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : null,
