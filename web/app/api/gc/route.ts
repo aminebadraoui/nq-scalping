@@ -21,6 +21,17 @@ export async function GET(req: NextRequest) {
 
   try {
     switch (action) {
+      case "health": {
+        // deployment diagnostic: what THIS container sees
+        return Response.json({
+          ok: true,
+          buildId: "readthrough-v1",
+          hasDbUrl: !!process.env.DATABASE_URL,
+          dbUrlHost: process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : null,
+          dataDir: process.env.GC_DATA_DIR ?? null,
+          now: new Date().toISOString(),
+        });
+      }
       case "datasets": {
         return Response.json({ datasets: await listDatasets() });
       }
