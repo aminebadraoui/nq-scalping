@@ -18,6 +18,20 @@ import urllib.request
 import websocket
 
 CAPTURE_MINUTES = 5
+
+
+def load_env():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        for line in open(env_path):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+load_env()
 EMAIL = os.environ["GOCHARTING_EMAIL"]
 PASSWORD = os.environ["GOCHARTING_PASSWORD"]
 CLIENT = os.environ.get("GOCHARTING_COGNITO_CLIENT", "3fqhvm22ea8pjsr2spbnv484pr")

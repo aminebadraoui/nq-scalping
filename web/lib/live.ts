@@ -98,6 +98,7 @@ class LiveFeed {
   private listeners = new Set<(s: LiveState) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastLtp = 0;
+  private retryMs = 10_000;
 
   state: LiveState = {
     connected: false,
@@ -255,7 +256,10 @@ class LiveFeed {
       this.ws.onclose = () => {
         this.state.connected = false;
         this.emit();
-        setTimeout(() => this.connect(), 5000);
+        // exponential backoff: a tight reconnect loop is what got the account
+        // temporarily locked by Cognito ("Password attempts exceeded")
+        this.retryMs = Math.min(120_000, Math.max(10_000, (this.retryMs ?? 10_000) * 2));
+        setTimeout(() => this.connect(), this.retryMs);
       };
       this.ws.onerror = () => {
         try {
@@ -265,7 +269,9 @@ class LiveFeed {
         }
       };
     } catch (e) {
-      setTimeout(() => this.connect(), 10000);
+      // 4xx (e.g. lockout) must not be retried fast — back off hard
+      this.retryMs = Math.min(300_000, Math.max(60_000, (this.retryMs ?? 60_000) * 2));
+      setTimeout(() => this.connect(), this.retryMs);
     }
   }
 
