@@ -251,11 +251,10 @@ export default function FlowChart({
   colorBy = "move",
   height = 420,
   autoHeight = false,
-  viewBars = 10_000, // the whole collected day, by default
 }: {
   minutes: LiveMinute[];
   levels: LevelSet[];
-  markers?: { t: string; bias: "bull" | "bear" | null; kind?: string }[];
+  markers?: { t: string; d?: string; bias: "bull" | "bear" | null; kind?: string }[];
   dataDate?: string;
   vwap?: number;
   vwapSeries?: { t: string; d?: string; value: number }[];
@@ -266,8 +265,6 @@ export default function FlowChart({
   height?: number;
   /** measure the wrapper div and resize the chart to fill it (for big flexible layouts) */
   autoHeight?: boolean;
-  /** how many minutes to load — defaults to the whole collected day */
-  viewBars?: number;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -277,14 +274,33 @@ export default function FlowChart({
   const [ohlcCount, setOhlcCount] = useState(0);
   const barsRef = useRef<{ low: number; high: number; close: number }[]>([]);
   const visRef = useRef({ from: 0, to: 0 });
-  const viewBarsRef = useRef(0);
+
   const rangeInitRef = useRef<WeakSet<object>>(new WeakSet());
 
   const date = dataDate || new Date().toISOString().slice(0, 10);
   const sig = `${minutes.length}|${minutes[minutes.length - 1]?.t}|${minutes[minutes.length - 1]?.c ?? minutes[minutes.length - 1]?.h}|${minutes[minutes.length - 1]?.vol}`;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const data = useMemo(() => minutes.slice(-viewBars), [sig, viewBars]);
+  /**
+   * Zoom policy (TradingView-like):
+   *   · open on the most recent DEFAULT_WINDOW bars — readable candles, not a
+   *     hairline full day and not three giant live bars
+   *   · scrolling back towards the left edge LOADS more of the day in
+   *     progressively larger chunks, so the whole session stays reachable
+   *   · double-click the time axis → back to the default window
+   *   · double-click the price axis → reset the price scale to auto-fit
+   */
+  const DEFAULT_WINDOW = 240;
+  const [windowBars, setWindowBars] = useState(DEFAULT_WINDOW);
+  const prevLenRef = useRef(0);
+  const prevFromRef = useRef(0);
+  /** paging is only allowed after the user has actually touched the chart —
+   *  the library emits range events of its own (fit, resize) that must not be
+   *  mistaken for a scroll to the left edge */
+  const userTouchedRef = useRef(false);
+  /** true while a pagination step (not incoming data) changed the loaded span */
+  const pagingRef = useRef(false);
+  const data = useMemo(() => minutes.slice(-windowBars), [sig, windowBars, minutes]);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -378,8 +394,12 @@ export default function FlowChart({
       /* ignore */
     }
 
+    requestAnimationFrame(measureAxes);
     const ro = new ResizeObserver(() =>
-      chart.applyOptions({ width: el.clientWidth, ...(autoHeight ? { height: Math.max(220, el.clientHeight) } : {}) }),
+      {
+        chart.applyOptions({ width: el.clientWidth, ...(autoHeight ? { height: Math.max(220, el.clientHeight) } : {}) });
+        measureAxes();
+      },
     );
     ro.observe(el);
 
@@ -393,6 +413,78 @@ export default function FlowChart({
     };
   }, [height, autoHeight]);
 
+  // ── TradingView-style axis gestures ───────────────────────────────────────
+  // Double-click the price axis → reset the price scale to auto-fit.
+  // Double-click the time axis → back to the default zoom window.
+  // Detected by hit-testing the container so axis DRAGGING still works.
+  const [axis, setAxis] = useState({ priceW: 68, timeH: 26 });
+  const measureAxes = () => {
+    const c = chartRef.current;
+    if (!c) return;
+    try {
+      setAxis({ priceW: c.priceScale("right").width(), timeH: c.timeScale().height() });
+    } catch {
+      /* ignore */
+    }
+  };
+  const resetPriceScale = () => {
+    try {
+      candleRef.current?.priceScale().applyOptions({ autoScale: true });
+    } catch {
+      /* ignore */
+    }
+  };
+  const resetZoom = () => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    pagingRef.current = false;
+    userTouchedRef.current = false; // resume auto-fitting
+    prevFromRef.current = 0; // the upcoming fit is not a leftward scroll
+    prevLenRef.current = 0; // force the data effect to re-fit
+    setWindowBars(DEFAULT_WINDOW);
+    try {
+      chart.timeScale().fitContent();
+    } catch {
+      /* ignore */
+    }
+  };
+  const onChartDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    if (x >= rect.width - axis.priceW) resetPriceScale();
+    else if (y >= rect.height - axis.timeH) resetZoom();
+  };
+
+  // Load more of the day when the user scrolls back towards the left edge
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const onRange = (r: { from: number; to: number } | null) => {
+      if (!r) return;
+      const movedLeft = r.from < prevFromRef.current - 1;
+      prevFromRef.current = r.from;
+      // page in older bars only when the user has genuinely scrolled to the
+      // left edge of the loaded span (not on the initial fit or a resize)
+      if (userTouchedRef.current && movedLeft && r.from <= 12 && windowBars < minutes.length) {
+        pagingRef.current = true;
+        setWindowBars((v) => Math.min(minutes.length, Math.max(v * 2, DEFAULT_WINDOW)));
+      }
+    };
+    try {
+      chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
+    } catch {
+      /* ignore */
+    }
+    return () => {
+      try {
+        chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange);
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [minutes.length, windowBars]);
+
   // developing VWAP curve — sliced to the loaded window, otherwise the line
   // drags the price scale back to the session open and squashes the candles
   useEffect(() => {
@@ -400,11 +492,11 @@ export default function FlowChart({
     if (!s) return;
     s.setData(
       vwapSeries
-        .slice(-viewBars)
+        .slice(-windowBars)
         .map((v) => ({ time: toTime(v.t, date, false, v.d), value: v.value }))
         .filter((v) => Number.isFinite(v.time)),
     );
-  }, [vwapSeries, date, viewBars]);
+  }, [vwapSeries, date, windowBars]);
 
   // bars + markers
   const lastSigRef = useRef("");
@@ -453,33 +545,54 @@ export default function FlowChart({
     // dataset and wastes most of the pane height)
     // show exactly what is loaded: the price scale then fits those bars, which
     // is what makes the candles fill the pane instead of floating in it
-    if (bars.length && (viewBarsRef.current !== viewBars || !rangeInitRef.current.has(chart))) {
-      viewBarsRef.current = viewBars;
-      rangeInitRef.current.add(chart);
-      // fitContent() is the canonical "show all loaded bars" call: it also
-      // makes the price scale re-fit, which is what fills the pane with candles
-      const apply = () => {
+    // ── window management ────────────────────────────────────────────────
+    // Default: after every data change, fit the loaded span (the loaded span IS
+    // the default 240-bar window, so the candles are readable and the price
+    // scale fits exactly what is shown). Once the user zooms/pans, their view is
+    // respected — except after a reset or a pagination step, which shifts the
+    // visible range so the bars they were looking at stay put.
+    const len = goodBars.length;
+    const prevLen = prevLenRef.current;
+    prevLenRef.current = len;
+    if (!len) {
+      /* nothing to show */
+    } else if (pagingRef.current && len > prevLen) {
+      pagingRef.current = false;
+      const shift = len - prevLen;
+      const r = chart.timeScale().getVisibleLogicalRange();
+      if (r) {
+        try {
+          chart.timeScale().setVisibleLogicalRange({ from: r.from + shift, to: r.to + shift });
+        } catch {
+          /* ignore */
+        }
+      }
+    } else if (!userTouchedRef.current) {
+      const fit = () => {
         try {
           chart.timeScale().fitContent();
         } catch {
           /* ignore */
         }
       };
-      apply();
+      fit();
       requestAnimationFrame(() => {
-        apply();
-        requestAnimationFrame(apply);
+        fit();
+        requestAnimationFrame(fit);
       });
     }
     try {
       const mp = createSeriesMarkers(series, []);
+      const firstTime = goodBars[0]?.time ?? 0;
       mp.setMarkers(
-        markers.map((mk) => ({
-          time: toTime(mk.t, date, false),
-          position: "aboveBar" as const,
-          color: mk.bias === "bull" ? "#34d399" : mk.bias === "bear" ? "#f87171" : "#fbbf24",
-          shape: mk.bias === "bull" ? ("arrowUp" as const) : mk.bias === "bear" ? ("arrowDown" as const) : ("circle" as const),
-        })),
+        markers
+          .map((mk) => ({
+            time: toTime(mk.t, date, false, mk.d),
+            position: "aboveBar" as const,
+            color: mk.bias === "bull" ? "#34d399" : mk.bias === "bear" ? "#f87171" : "#fbbf24",
+            shape: mk.bias === "bull" ? ("arrowUp" as const) : mk.bias === "bear" ? ("arrowDown" as const) : ("circle" as const),
+          }))
+          .filter((mk) => mk.time >= firstTime),
       );
     } catch {
       /* markers unsupported */
@@ -500,7 +613,17 @@ export default function FlowChart({
 
   return (
     <div className="flex h-full w-full flex-col">
-      <div ref={wrapRef} className="min-h-0 w-full flex-1" />
+      <div
+        ref={wrapRef}
+        className="min-h-0 w-full flex-1"
+        onDoubleClick={onChartDoubleClick}
+        onWheel={() => {
+          userTouchedRef.current = true;
+        }}
+        onPointerDown={() => {
+          userTouchedRef.current = true;
+        }}
+      />
       <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[10px] text-zinc-500">
         <span>
           1-minute candles · <span className="text-zinc-300">{data.length} bars</span> ·{" "}
@@ -521,7 +644,7 @@ export default function FlowChart({
         </span>
         <span>
           {vwap && vwap > 0 ? <span>VWAP <span className="text-zinc-200">{fmt(vwap)}</span> · </span> : null}
-          scroll = zoom · drag = pan · POC = solid thick · VAH/VAL = dashed · LVN = solid edges (near zones lead, far ones fade; off-screen zones are counted at the chart edges)
+          double-click the price axis = reset the scale · double-click the time axis = reset the zoom · scroll = zoom · drag = pan · POC = solid thick · VAH/VAL = dashed · LVN = solid edges (near zones lead, far ones fade; off-screen zones are counted at the chart edges)
         </span>
       </div>
     </div>
