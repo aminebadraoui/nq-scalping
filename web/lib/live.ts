@@ -99,6 +99,14 @@ class LiveFeed {
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastLtp = 0;
   private retryMs = 10_000;
+  /** staleness detection: the trade channel can go quiet while snapshots keep
+   *  flowing (seen ~1h after connect — the 1-hour IdToken lifetime). If the
+   *  market is demonstrably trading but no print arrives, force a reconnect
+   *  with a fresh token + subscriptions. */
+  private lastTradeMs = 0;
+  private lastVol = -1;
+  private lastVolChangeMs = 0;
+  private lastForcedReconnectMs = 0;
 
   state: LiveState = {
     connected: false,
@@ -198,6 +206,12 @@ class LiveFeed {
           s_type: p.s_type,
           delta: p.derived_values?.delta ?? 0,
         };
+        // a moving day volume proves the market is trading (used to distinguish
+        // a dropped subscription from a closed market)
+        if (p.volume !== this.lastVol) {
+          this.lastVol = p.volume;
+          this.lastVolChangeMs = Date.now();
+        }
         // keep the current minute's last price honest even without ticks
         if (!this.state.cur) {
           this.state.cur = { t: "now", o: p.ltp, h: p.high, l: p.low, c: p.ltp, vol: 0, buy: 0, sell: 0, live: true };
@@ -205,6 +219,7 @@ class LiveFeed {
         this.emit();
       }
     } else if (j.channel === "trade" && j.payload) {
+      this.lastTradeMs = Date.now();
       const p = Object.values(j.payload)[0] as any;
       const items = Array.isArray(p) ? p : p?.items ?? p?.data ?? [];
       for (const d of items) {
@@ -296,9 +311,20 @@ class LiveFeed {
         // re-assert the subscriptions once a minute: cheap, and it recovers a
         // silently dropped trade channel without waiting for a reconnect
         if (ticks % 12 === 0) this.subscribeChannels();
-        // watchdog: no message at all for 5 minutes while "connected" means the
-        // socket is dead but silent — force a reconnect
-        if (this.state.lastMessage && Date.now() - this.state.lastMessage > 300_000) {
+        // watchdog 1: no message at all for 5 minutes while "connected" means
+        // the socket is dead but silent — force a reconnect
+        const now = Date.now();
+        const dead = this.state.lastMessage && now - this.state.lastMessage > 300_000;
+        // watchdog 2: volume is moving (market open) but no print for 3 minutes
+        // → the trade subscription has gone quiet; reconnect for a fresh token
+        const tradesStale =
+          this.lastVolChangeMs > 0 &&
+          now - this.lastVolChangeMs < 120_000 &&
+          this.lastTradeMs > 0 &&
+          now - this.lastTradeMs > 180_000 &&
+          now - this.lastForcedReconnectMs > 180_000;
+        if (dead || tradesStale) {
+          this.lastForcedReconnectMs = now;
           try {
             this.ws?.close();
           } catch {
