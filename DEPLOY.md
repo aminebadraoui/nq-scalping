@@ -82,6 +82,19 @@ curl -X POST -H "Authorization: Bearer $CF_TOKEN" "$CF/api/v1/deploy?uuid=<app_u
   - Persistent storage (optional): mount a host dir with `gcdata/data` at
     `/app/data` so the historical views work on the server too.
 
+## Credentials policy (do not regress this)
+
+- **Nothing secret is ever committed.** The repo keeps only placeholders:
+  `docs/launchd/com.scalping.ingest.plist` has `__DATABASE_URL__`,
+  `gcdata/.env.example` has example values. `.gitignore` covers `gcdata/.env`,
+  `web/.env*`, collected data and caches.
+- Secrets live in: **Coolify app env vars** (DATABASE_URL, GoCharting feed
+  credentials — set with "shown once"), **GitHub Actions secrets**
+  (`COOLIFY_BASE_URL`, `COOLIFY_TOKEN`), and local-only files
+  (`web/.env.local`, the Mac's installed launchd plist, `gcdata/.env`).
+- If anything secret ever lands in git again: rotate the credential AND rewrite
+  the history (a force-push alone is not enough — GitHub keeps dangling objects).
+
 ## Next step: read-through
 
 Once Neon holds the store, the dashboard's `/api/gc` can read from it when
