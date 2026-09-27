@@ -251,7 +251,7 @@ export default function FlowChart({
   colorBy = "move",
   height = 420,
   autoHeight = false,
-  viewBars = 120,
+  viewBars = 10_000, // the whole collected day, by default
 }: {
   minutes: LiveMinute[];
   levels: LevelSet[];
@@ -266,8 +266,7 @@ export default function FlowChart({
   height?: number;
   /** measure the wrapper div and resize the chart to fill it (for big flexible layouts) */
   autoHeight?: boolean;
-  /** how many minutes to load — the library autoscales over loaded data, so
-   *  this is what actually controls how much of the pane the candles fill */
+  /** how many minutes to load — defaults to the whole collected day */
   viewBars?: number;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);

@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import FlowChart, { fmt, type LevelSet } from "@/components/FlowChart";
-import { toFeedClock, type FPMinute, type Marker, type Absorb } from "@/lib/footprint";
+import { blendLiveMinutes, type FPMinute, type Marker, type Absorb } from "@/lib/footprint";
 import MinuteNavigator from "@/components/MinuteNavigator";
 import MechanismPanel from "@/components/MechanismPanel";
 import StoryPanel from "@/components/StoryPanel";
 import { readMechanism } from "@/lib/mechanism";
 import type { ImbalanceRollup } from "@/lib/gcdata";
 import { useLive, type LiveMinute } from "@/lib/useLive";
-import { cdtToET, utcToET, utcToFeed } from "@/lib/times";
+import { cdtToET } from "@/lib/times";
 import { imbalanceFor, summarizeImb } from "@/lib/imbalance";
 
 type FootMinute = { t: string; d?: string; o?: number; c?: number; vwap?: number; high: number; low: number; buy: number; sell: number; delta: number };
@@ -81,21 +81,7 @@ export default function DashboardPage() {
   const [vwap, setVwap] = useState(0);
   const [reclaims, setReclaims] = useState<{ t: string; price: number; dir: "low" | "high" }[]>([]);
   const [imb, setImb] = useState<ImbalanceRollup | null>(null);
-  const [colorBy, setColorBy] = useState<"move" | "delta">("move");
-  const [ladderLive, setLadderLive] = useState(false);
   const [chartMax, setChartMax] = useState(false);
-  const [viewBars, setViewBars] = useState(120);
-  /**
-   * Session window. GoCharting's NQ chart runs to 16:59 New York because CME
-   * equity-index futures keep trading until 17:00; our "RTH" block is the cash
-   * session 09:30–15:59 only. The extra hour lives in the ETH dataset, so the
-   * window is a request parameter, not missing data.
-   */
-  const [sessionView, setSessionView] = useState<"rth" | "rth_post" | "full">("rth");
-  const viewSession = sessionView === "rth" ? "RTH" : "ETH";
-  const viewStart = sessionView === "rth_post" ? "08:30" : ""; // feed clock: 09:30 NY
-  const viewEnd = sessionView === "rth_post" ? "15:59" : ""; // feed clock: 16:59 NY
-  const ladderAutoRef = useRef(false);
   const [tgPush, setTgPush] = useState(true);
   /** alerts already pushed to Telegram — survives re-renders, and is SEEDED with
    *  everything present at load so a browser reload cannot re-notify history */
@@ -169,7 +155,7 @@ export default function DashboardPage() {
         })
         .catch(() => {});
 
-      fetch(`/api/gc?action=footprint&date=${d}&session=${viewSession}&start=${viewStart}&end=${viewEnd}`)
+      fetch(`/api/gc?action=footprint&date=${d}&session=ETH&start=&end=`)
         .then((r) => r.json())
         .then((j) => {
           if (!j.minutes) return;
@@ -191,7 +177,7 @@ export default function DashboardPage() {
         })
         .catch(() => {});
 
-      fetch(`/api/gc?action=analysis&date=${d}&session=${viewSession}&start=${viewStart}&end=${viewEnd}&row=2`)
+      fetch(`/api/gc?action=analysis&date=${d}&session=ETH&start=&end=&row=2`)
         .then((r) => r.json())
         .then((j) => {
           if (j.rows) {
@@ -222,7 +208,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [today, viewSession, viewStart, viewEnd]);
+  }, [today]);
 
   // alert polling — only after the dataset bootstrap resolves, otherwise the
   // first tick fires against "today" (e.g. a Sunday with no data) and 404s
@@ -230,7 +216,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!dataDate) return; // bootstrap not resolved yet
     const tick = () => {
-      fetch(`/api/gc?action=analysis&date=${pollDate}&session=RTH&start=&end=&row=4`)
+      fetch(`/api/gc?action=analysis&date=${pollDate}&session=ETH&start=&end=&row=4`)
         .then((r) => r.json())
         .then((j) => {
           if (!j.alerts) return;
@@ -249,9 +235,53 @@ export default function DashboardPage() {
     tick();
     const iv = setInterval(tick, 60000);
     return () => clearInterval(iv);
-  }, [pollDate, pushAlert, viewSession, viewStart, viewEnd]);
+  }, [pollDate, pushAlert]);
 
-  // Developing session VWAP curve.
+  // ---- seamless live blend: the collected full day, continued by live ticks ----
+  const blended = useMemo<LiveMinute[]>(() => {
+    const liveMins = live ? (live.cur ? [...live.minutes, live.cur] : live.minutes) : [];
+    return blendLiveMinutes(hist, liveMins as LiveMinute[]);
+  }, [hist, live]);
+  const liveTail = blended.slice(hist.length);
+
+  // the appended live minutes as footprint rows (tick clusters + imbalance engine)
+  const liveFpTail = useMemo<FPMinute[]>(
+    () =>
+      liveTail
+        .filter((m) => m.levels && Object.keys(m.levels).length > 0)
+        .map((m) => {
+          const levels = imbalanceFor(
+            Object.entries(m.levels!)
+              .map(([p, v]) => ({ price: Number(p), buy: (v as [number, number])[0], sell: (v as [number, number])[1], bTrades: 0, sTrades: 0 }))
+              .sort((a, b) => b.price - a.price),
+          );
+          let num = 0;
+          let den = 0;
+          for (const l of levels) {
+            const v = l.buy + l.sell;
+            num += l.price * v;
+            den += v;
+          }
+          return {
+            t: m.t,
+            o: m.o,
+            c: m.c,
+            vwap: den > 0 ? num / den : (m.h + m.l) / 2,
+            high: m.h,
+            low: m.l,
+            buy: m.buy,
+            sell: m.sell,
+            delta: m.buy - m.sell,
+            levels,
+            imb: summarizeImb(levels),
+          };
+        }),
+    [liveTail],
+  );
+  const ladderMinutes: FPMinute[] = fp ? [...fp.minutes, ...liveFpTail] : liveFpTail;
+  const ladderDate = dataDate || today;
+
+// Developing session VWAP curve.
   // Must use the SAME definition as the session VWAP number shown in the chart
   // footer (typical price (h+l+c)/3 when the bar has real OHLC, else the mid) —
   // a mid-only curve sat ~0.2 pt away from the number it represents.
@@ -269,23 +299,18 @@ export default function DashboardPage() {
       out.push({ t, value: num / den });
     };
     for (const m of hist) push(m.t, m.h, m.l, m.c, m.buy + m.sell);
-    if (live?.minutes?.length) {
-      const lastHist = hist.length ? hist[hist.length - 1].t : "";
-      for (const m of [...live.minutes, ...(live.cur ? [live.cur] : [])]) {
-        const t = utcToFeed(m.t); // live minutes are UTC-keyed
-        if (lastHist && t <= lastHist) continue; // already covered by the snapshot
-        push(t, m.h, m.l, m.c, m.buy + m.sell);
-      }
+    // continue the curve through the appended live minutes (already feed-keyed)
+    for (const m of blended.slice(hist.length)) {
+      push(m.t, m.h, m.l, m.c, m.buy + m.sell);
     }
     return out;
-  }, [hist, live]);
+  }, [hist, live, blended]);
 
   const chg = snap ? snap.ltp - snap.prev_close : 0;
-  const chartMinutes = live && live.minutes.length > 0 ? [...live.minutes, ...(live.cur ? [live.cur] : [])] : hist;
-  // Live minutes are UTC-keyed; every event from the analysis API (absorption,
-  // divergence, reclaim) is feed-keyed. Matching them requires the conversion,
-  // otherwise the checklist silently loses those ingredients while live.
-  const matchMinutes = useMemo(() => toFeedClock(chartMinutes), [chartMinutes]);
+  // one blended series: the collected full day continued by live ticks, all
+  // keyed in the feed clock so events and the chart share one time base
+  const chartMinutes: LiveMinute[] = blended;
+  const matchMinutes = chartMinutes;
 
   // ---- reversal conditions ----
   const lastMin = chartMinutes[chartMinutes.length - 1];
@@ -318,60 +343,15 @@ export default function DashboardPage() {
   const etMin = etNow.getHours() * 60 + etNow.getMinutes();
   const newsWin = [510, 600, 840].some((r) => Math.abs(etMin - r) <= 5);
 
-  // ---- live footprint minutes (tick clusters + client-side imbalance engine) ----
-  const liveFP = useMemo<FPMinute[]>(() => {
-    if (!live) return [];
-    const all = live.cur ? [...live.minutes, live.cur] : live.minutes;
-    return all
-      .filter((m) => m.levels && Object.keys(m.levels).length > 0)
-      .map((m) => {
-        const levels = imbalanceFor(
-          Object.entries(m.levels!)
-            .map(([p, v]) => ({ price: Number(p), buy: (v as [number, number])[0], sell: (v as [number, number])[1], bTrades: 0, sTrades: 0 }))
-            .sort((a, b) => b.price - a.price),
-        );
-        let num = 0;
-        let den = 0;
-        for (const l of levels) {
-          const v = l.buy + l.sell;
-          num += l.price * v;
-          den += v;
-        }
-        return {
-          t: m.t,
-          o: m.o,
-          c: m.c,
-          vwap: den > 0 ? num / den : (m.h + m.l) / 2,
-          high: m.h,
-          low: m.l,
-          buy: m.buy,
-          sell: m.sell,
-          delta: m.buy - m.sell,
-          levels,
-          imb: summarizeImb(levels),
-        };
-      });
-  }, [live]);
-  const ladderHasLive = liveFP.length > 0;
-  // auto-flip to live ladder the first time live clusters appear
-  useEffect(() => {
-    if (ladderHasLive && !ladderAutoRef.current) {
-      ladderAutoRef.current = true;
-      setLadderLive(true);
-    }
-  }, [ladderHasLive]);
-  const ladderMinutes = ladderLive && ladderHasLive ? liveFP : fp?.minutes ?? [];
-  const ladderDate = ladderLive && ladderHasLive ? (snap?.date ?? (dataDate || today)) : dataDate || today;
-  const ladderTimeMode = ladderLive && ladderHasLive ? "utc" : "cdt";
-
+  
   // ---- reversal mechanism read (sequence: location -> mechanism -> fuel -> trigger) ----
-  const lastLiveImb = liveFP[liveFP.length - 1]?.imb ?? null;
+  const lastLiveImb = liveFpTail[liveFpTail.length - 1]?.imb ?? null;
   const mech = useMemo(() => {
     // prefer the LIVE footprint stack over the collected-session rollup when ticks flow
     const rollup: ImbalanceRollup | null = imb
       ? {
           ...imb,
-          lastStack: lastLiveImb?.stacked ? { t: liveFP[liveFP.length - 1].t, ...lastLiveImb.stacked } : imb.lastStack,
+          lastStack: lastLiveImb?.stacked ? { t: liveFpTail[liveFpTail.length - 1].t, ...lastLiveImb.stacked } : imb.lastStack,
           lastMinute: lastLiveImb ?? imb.lastMinute,
         }
       : lastLiveImb
@@ -381,8 +361,8 @@ export default function DashboardPage() {
             dBuyRows: lastLiveImb.dBuy,
             dSellRows: lastLiveImb.dSell,
             stackedMinutes: lastLiveImb.stacked ? 1 : 0,
-            stacks: lastLiveImb.stacked ? [{ t: liveFP[liveFP.length - 1].t, ...lastLiveImb.stacked }] : [],
-            lastStack: lastLiveImb.stacked ? { t: liveFP[liveFP.length - 1].t, ...lastLiveImb.stacked } : null,
+            stacks: lastLiveImb.stacked ? [{ t: liveFpTail[liveFpTail.length - 1].t, ...lastLiveImb.stacked }] : [],
+            lastStack: lastLiveImb.stacked ? { t: liveFpTail[liveFpTail.length - 1].t, ...lastLiveImb.stacked } : null,
             lastMinute: lastLiveImb,
           }
         : null;
@@ -405,13 +385,9 @@ export default function DashboardPage() {
       sessionLow: snap?.low ?? Math.min(...chartMinutes.map((m) => m.l).concat([Infinity])),
       newsWin,
     });
-  }, [matchMinutes, lastPrice, vwap, absorption, alerts, reclaims, imb, lastLiveImb, liveFP, lvnEdges, nearestPoc, snap?.high, snap?.low, newsWin]);
+  }, [matchMinutes, lastPrice, vwap, absorption, alerts, reclaims, imb, lastLiveImb, liveFpTail, lvnEdges, nearestPoc, snap?.high, snap?.low, newsWin]);
   const mechLive = !!(live && live.minutes.length > 0 && live.connected);
-  const mechAsOf = chartMinutes.length
-    ? chartMinutes[chartMinutes.length - 1].live
-      ? utcToET(chartMinutes[chartMinutes.length - 1].t)
-      : cdtToET(chartMinutes[chartMinutes.length - 1].t)
-    : "—";
+  const mechAsOf = chartMinutes.length ? cdtToET(chartMinutes[chartMinutes.length - 1].t) : "—";
   const mechStale = !mechLive;
 
   const alertCounts = useMemo(() => {
@@ -517,50 +493,6 @@ export default function DashboardPage() {
                 >
                   POC (target)
                 </button>
-                <span
-                  className="flex overflow-hidden rounded border border-zinc-700 font-mono text-[10px]"
-                  title="session window: RTH = the 09:30–16:00 cash session (390 min) · +post = through 17:00 New York, matching the GoCharting chart (450 min) · full = the whole 18:00 → 17:00 Globex day (1380 min). Profiles and levels stay RTH-defined."
-                >
-                  {[
-                    { k: "rth" as const, l: "RTH 9:30–16:00" },
-                    { k: "rth_post" as const, l: "+post →17:00" },
-                    { k: "full" as const, l: "full day" },
-                  ].map((o) => (
-                    <button
-                      key={o.k}
-                      onClick={() => setSessionView(o.k)}
-                      className={`px-1.5 py-0.5 ${sessionView === o.k ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-                    >
-                      {o.l}
-                    </button>
-                  ))}
-                </span>
-                <span
-                  className="flex overflow-hidden rounded border border-zinc-700 font-mono text-[10px]"
-                  title="how much chart to load: the price axis fits exactly these bars, so fewer bars = taller candles. start with 2h."
-                >
-                  {[
-                    { n: 60, l: "1h" },
-                    { n: 120, l: "2h" },
-                    { n: 240, l: "4h" },
-                    { n: 999, l: "day" },
-                  ].map((o) => (
-                    <button
-                      key={o.n}
-                      onClick={() => setViewBars(o.n)}
-                      className={`px-1.5 py-0.5 ${viewBars === o.n ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-                    >
-                      {o.l}
-                    </button>
-                  ))}
-                </span>
-                <button
-                  onClick={() => setColorBy((v) => (v === "move" ? "delta" : "move"))}
-                  title="normal candles = green/red by open vs close · delta tint = green/red by who was aggressive"
-                  className={`rounded border px-2 py-0.5 font-mono text-[10px] ${colorBy === "delta" ? "border-zinc-500 bg-zinc-800 text-zinc-100" : "border-zinc-800 bg-panel text-zinc-500"}`}
-                >
-                  candles: {colorBy === "move" ? "normal ↑↓" : "delta ◂▸"}
-                </button>
                 <button
                   onClick={() => setShowVa((v) => !v)}
                   title="VAH/VAL = value-area edges: acceptance vs rejection reference (not entry zones)"
@@ -589,8 +521,6 @@ export default function DashboardPage() {
                   vwapSeries={vwapSeries}
                   showPoc={showPoc}
                   showVa={showVa}
-                  colorBy={colorBy}
-                  viewBars={viewBars}
                   height={520}
                   autoHeight
                 />
@@ -601,7 +531,7 @@ export default function DashboardPage() {
           </section>
 
           <StoryPanel
-            minutes={ladderTimeMode === "utc" ? ladderMinutes.map((m) => ({ ...m, t: utcToFeed(m.t) })) : ladderMinutes}
+            minutes={ladderMinutes}
             absorption={absorption}
             timeMode="cdt"
             date={ladderDate}
@@ -611,30 +541,14 @@ export default function DashboardPage() {
             <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-bold text-zinc-50">Footprint — minute ladder</h2>
-                <span className="flex overflow-hidden rounded border border-zinc-700 font-mono text-[10px]">
-                  <button
-                    onClick={() => setLadderLive(false)}
-                    className={`px-1.5 py-0.5 ${!ladderLive || !ladderHasLive ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-                    title="the full collected session (last snapshot) — bid x ask per tick for every minute"
-                  >
-                    collected
-                  </button>
-                  <button
-                    onClick={() => ladderHasLive && setLadderLive(true)}
-                    disabled={!ladderHasLive}
-                    className={`px-1.5 py-0.5 ${ladderLive && ladderHasLive ? "bg-info/30 text-info" : "text-zinc-500 hover:text-zinc-300"} disabled:cursor-not-allowed disabled:opacity-40`}
-                    title="live: clusters built from real-time ticks — only fills once the market is open and ticks flow"
-                  >
-                    live{!ladderHasLive ? " (no ticks)" : ` ${liveFP.length}m`}
-                  </button>
-                </span>
+                <span className="font-mono text-[10px] text-zinc-600">full day 18:00 → 16:59 New York · live minutes continue seamlessly</span>
               </div>
               <p className="font-mono text-[10px] text-zinc-500">
                 bid×ask per tick · ▲▼ = imbalance (≥3:1, ≥10 ct) · ◆ = diagonal vs adjacent tick · □ = unfinished auction · stacked = 3+ imbalanced rows in a row
               </p>
             </div>
             {ladderMinutes.length > 0 ? (
-              <MinuteNavigator minutes={ladderMinutes} date={ladderDate} absorption={absorption} timeMode={ladderTimeMode as "cdt" | "utc"} />
+              <MinuteNavigator minutes={ladderMinutes} date={ladderDate} absorption={absorption} timeMode="cdt" />
             ) : (
               <p className="p-8 font-mono text-sm text-zinc-600">no footprint data — collect with gcdata</p>
             )}

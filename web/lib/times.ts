@@ -119,10 +119,34 @@ export function feedToEpoch(hhmm: string, dateISO: string): number {
   return wallToEpoch(hhmm, dateISO, "America/Chicago");
 }
 
-/** UTC wall clock on a calendar day → epoch seconds. */
-export function utcToEpoch(hhmm: string, dateISO: string): number {
+/** UTC wall-clock "HH:mm" → the feed's own wall clock, WITH its calendar day.
+ *  Used to re-key live tick minutes so they continue a collected session
+ *  seamlessly (the collected bars are stamped in US Central). */
+export function utcToFeedStamp(hhmm: string, utcDate?: string): { day: string; hhmm: string } {
   const [h, m] = hhmm.split(":").map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return { day: "", hhmm: "" };
+  const day = utcDate ?? new Date().toISOString().slice(0, 10);
+  const iso = `${day}T${String(h).padStart(2, "0")}:${String(m ?? 0).padStart(2, "0")}:00Z`;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return { day: "", hhmm: "" };
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(new Date(ms));
+  const g = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+  return { day: `${g.year}-${g.month}-${g.day}`, hhmm: `${g.hour}:${g.minute}` };
+}
+
+/** UTC wall clock on a calendar day → epoch seconds. */
+export function utcToEpoch(hhmm: string, dateISO?: string): number {
+  const [h, m] = hhmm.split(":").map(Number);
+  const day = dateISO ?? new Date().toISOString().slice(0, 10);
   return Math.floor(
-    Date.parse(`${dateISO}T${String(h).padStart(2, "0")}:${String(m ?? 0).padStart(2, "0")}:00Z`) / 1000,
+    Date.parse(`${day}T${String(h).padStart(2, "0")}:${String(m ?? 0).padStart(2, "0")}:00Z`) / 1000,
   );
 }
