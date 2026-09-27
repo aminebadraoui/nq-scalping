@@ -40,6 +40,18 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
   "http://31.97.138.30:8000/api/v1/deploy?uuid=vwtqdqezxw3lpmpzq76drgb1&force=true"
 ```
 
+## Deploy lessons (2026-09-27)
+
+1. **"shown once" env vars** — PATCHing `DATABASE_URL` as `is_shown_once` again
+   left the container without the variable after redeploys. Fix: store it as a
+   PLAIN env var (`is_shown_once: false`) — the value is visible in the Coolify
+   env list but injection works.
+2. **`/api/gc?action=health`** reports what the running container sees
+   (`buildId`, `hasDbUrl`, `sessions` row count) — always check it first.
+3. **`listDatasets` needed the DB branch** too — the initial read-through patch
+   missed it and the deployed app fell back to an empty file dir (0 datasets →
+   the dashboard requested today's date → 404s + an empty-chart crash).
+
 ## Next steps
 
 1. **Dashboard read-through from Neon**: when `DATABASE_URL` is set, serve `/api/gc`
