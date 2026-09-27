@@ -23,9 +23,22 @@ export async function GET(req: NextRequest) {
     switch (action) {
       case "health": {
         // deployment diagnostic: what THIS container sees
+        let sessionsInfo: unknown = null;
+        try {
+          const { getDb, dbEnabled } = await import("@/lib/gcdb");
+          if (dbEnabled()) {
+            const rows = await getDb().unsafe("select date, session, candles from sessions order by date, session");
+            sessionsInfo = { count: (rows as unknown[]).length, first: (rows as unknown[])[0] ?? null };
+          } else {
+            sessionsInfo = "no DATABASE_URL";
+          }
+        } catch (e) {
+          sessionsInfo = { error: String(e) };
+        }
         return Response.json({
           ok: true,
           buildId: "readthrough-v1",
+          sessions: sessionsInfo,
           hasDbUrl: !!process.env.DATABASE_URL,
           dbUrlHost: process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : null,
           dataDir: process.env.GC_DATA_DIR ?? null,
