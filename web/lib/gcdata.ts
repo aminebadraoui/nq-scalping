@@ -70,7 +70,9 @@ export async function loadOhlc(date: string): Promise<Map<string, OHLCBar>> {
 
 export async function listDatasets(): Promise<
   { date: string; sessions: Session[]; candles: Record<Session, number> }[]
-> {  let files: string[] = [];
+> {
+  if (dbEnabled()) return dbListDatasets();
+  let files: string[] = [];
   try {
     files = await fs.readdir(DATA_DIR);
   } catch {
