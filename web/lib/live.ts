@@ -197,7 +197,10 @@ class LiveFeed {
       for (const d of items) {
         const ltp = Number(d.ltp ?? d.price ?? d.last_price ?? d.last);
         if (!Number.isFinite(ltp) || ltp <= 0) continue;
-        const size = Number(d.quantity ?? d.qty ?? d.size ?? d.volume ?? d.last_qty ?? d.vol ?? 1);
+        // the trade channel carries the print size as `l_sz` (confirmed from the
+        // 2026-09-28 session capture) — sizing every tick as 1 contract by
+        // default would silently corrupt live volume and delta
+        const size = Number(d.l_sz ?? d.quantity ?? d.qty ?? d.size ?? d.volume ?? d.last_qty ?? d.vol ?? 1);
         let side: 1 | -1;
         if (typeof d.side === "number") side = d.side >= 0 ? 1 : -1;
         else if (typeof d.side === "string") side = d.side.toLowerCase().startsWith("b") ? 1 : -1;
