@@ -124,6 +124,19 @@ class LiveFeed {
     for (const fn of this.listeners) fn(s);
   }
 
+  /** (re)assert the channel subscriptions — the server can silently drop a
+   *  subscription while the socket stays up (observed: snapshots kept flowing
+   *  but the trade channel went quiet, so live bars froze). */
+  private subscribeChannels() {
+    try {
+      const sym = `${this.env.GOCHARTING_EXCHANGE || "CME"}:${this.env.GOCHARTING_SEGMENT || "FUTURE"}:${this.env.GOCHARTING_SYMBOL || "NQZ26"}`;
+      this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "trade", payload: [sym] }));
+      this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "watchlist", payload: [sym] }));
+    } catch {
+      /* ignore */
+    }
+  }
+
   private minuteKey(ms: number) {
     const d = new Date(ms);
     return `${String(d.getUTCFullYear()).padStart(4, "0")}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
@@ -231,13 +244,7 @@ class LiveFeed {
       this.ws.onopen = () => {
         this.state.connected = true;
         this.emit();
-        try {
-          const sym = `${this.env.GOCHARTING_EXCHANGE || "CME"}:${this.env.GOCHARTING_SEGMENT || "FUTURE"}:${this.env.GOCHARTING_SYMBOL || "NQZ26"}`;
-          this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "trade", payload: [sym] }));
-          this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "watchlist", payload: [sym] }));
-        } catch {
-          /* ignore */
-        }
+        this.subscribeChannels();
       };
       this.ws.onmessage = (ev) => {
         if (typeof ev.data === "string") this.handleText(ev.data);
@@ -281,8 +288,24 @@ class LiveFeed {
   start() {
     if (this.timer) return;
     this.connect();
+    let ticks = 0;
     this.timer = setInterval(() => {
-      if (this.state.connected) this.ws?.send(JSON.stringify({ command: "PING", payload: {} }));
+      if (this.state.connected) {
+        this.ws?.send(JSON.stringify({ command: "PING", payload: {} }));
+        ticks++;
+        // re-assert the subscriptions once a minute: cheap, and it recovers a
+        // silently dropped trade channel without waiting for a reconnect
+        if (ticks % 12 === 0) this.subscribeChannels();
+        // watchdog: no message at all for 5 minutes while "connected" means the
+        // socket is dead but silent — force a reconnect
+        if (this.state.lastMessage && Date.now() - this.state.lastMessage > 300_000) {
+          try {
+            this.ws?.close();
+          } catch {
+            /* ignore */
+          }
+        }
+      }
       this.emit();
     }, 5000);
   }

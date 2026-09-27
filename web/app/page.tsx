@@ -86,6 +86,8 @@ export default function DashboardPage() {
   /** alerts already pushed to Telegram — survives re-renders, and is SEEDED with
    *  everything present at load so a browser reload cannot re-notify history */
   const pushedRef = useRef<Set<string>>(new Set());
+  /** set once the bootstrap analysis has seeded pushedRef */
+  const bootstrappedRef = useRef(false);
   const [tgStatus, setTgStatus] = useState("");
   const [showInit, setShowInit] = useState(true);
   const [showPoc, setShowPoc] = useState(true);
@@ -207,6 +209,7 @@ export default function DashboardPage() {
             setAlerts(j.alerts ?? []);
             // seed the push-dedupe set: these already existed when the page loaded
             (j.alerts ?? []).forEach((a: Alert) => pushedRef.current.add(`${a.t}|${a.kind}|${a.price}`));
+            bootstrappedRef.current = true;
           }
         })
         .catch(() => {});
@@ -220,7 +223,7 @@ export default function DashboardPage() {
   // first tick fires against "today" (e.g. a Sunday with no data) and 404s
   const pollDate = dataDate || today;
   useEffect(() => {
-    if (!dataDate) return; // bootstrap not resolved yet
+    if (!dataDate || !bootstrappedRef.current) return; // bootstrap not resolved yet
     const tick = () => {
       fetch(`/api/gc?action=analysis&date=${pollDate}&session=ETH&start=&end=&row=4`)
         .then((r) => r.json())
