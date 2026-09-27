@@ -92,6 +92,10 @@ export default function DashboardPage() {
   const [showVa, setShowVa] = useState(false);
 
   const snap = live?.snapshot ?? null;
+  const prevDay = (d: string) => {
+    const t = Date.parse(d + "T00:00:00Z") - 86400000;
+    return new Date(t).toISOString().slice(0, 10);
+  };
   const today = snap?.date ?? new Date().toISOString().slice(0, 10);
 
   const pushAlert = useCallback(
@@ -194,6 +198,8 @@ export default function DashboardPage() {
                 .filter((x: any) => x.kind !== "INITIATIVE")
                 .map((x: any) => ({
                   t: x.t,
+                  // overnight events (>= 17:00 feed) belong to the previous day
+                  d: x.t >= "17:00" ? prevDay(d) : d,
                   kind: x.kind,
                   bias: x.bias ?? (x.kind === "DIVERGENCE_D2" ? "bull" : x.kind === "DIVERGENCE_D4" ? "bear" : null),
                 })),
@@ -290,19 +296,19 @@ export default function DashboardPage() {
   const vwapSeries = useMemo(() => {
     let num = 0;
     let den = 0;
-    const out: { t: string; value: number }[] = [];
-    const push = (t: string, h: number, l: number, c: number, v: number) => {
+    const out: { t: string; d?: string; value: number }[] = [];
+    const push = (t: string, d: string, h: number, l: number, c: number, v: number) => {
       if (v <= 0) return;
       const px = c > 0 ? (h + l + c) / 3 : (h + l) / 2;
       num += px * v;
       den += v;
-      out.push({ t, value: num / den });
+      out.push({ t, d, value: num / den });
     };
-    for (const m of hist) push(m.t, m.h, m.l, m.c, m.buy + m.sell);
-    // continue the curve through the appended live minutes (already feed-keyed)
-    for (const m of blended.slice(hist.length)) {
-      push(m.t, m.h, m.l, m.c, m.buy + m.sell);
-    }
+    // each point carries its OWN calendar day: the overnight session spans two
+    // dates, and mapping everything onto the dataset date would break the
+    // ascending-time invariant the chart asserts on
+    for (const m of hist) push(m.t, m.d ?? today, m.h, m.l, m.c, m.buy + m.sell);
+    for (const m of blended.slice(hist.length)) push(m.t, m.d ?? today, m.h, m.l, m.c, m.buy + m.sell);
     return out;
   }, [hist, live, blended]);
 

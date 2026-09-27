@@ -258,7 +258,7 @@ export default function FlowChart({
   markers?: { t: string; bias: "bull" | "bear" | null; kind?: string }[];
   dataDate?: string;
   vwap?: number;
-  vwapSeries?: { t: string; value: number }[];
+  vwapSeries?: { t: string; d?: string; value: number }[];
   showPoc?: boolean;
   showVa?: boolean;
   /** "move" = classic up/down candles · "delta" = tint by buy/sell dominance */
@@ -401,7 +401,7 @@ export default function FlowChart({
     s.setData(
       vwapSeries
         .slice(-viewBars)
-        .map((v) => ({ time: toTime(v.t, date, false), value: v.value }))
+        .map((v) => ({ time: toTime(v.t, date, false, v.d), value: v.value }))
         .filter((v) => Number.isFinite(v.time)),
     );
   }, [vwapSeries, date, viewBars]);
