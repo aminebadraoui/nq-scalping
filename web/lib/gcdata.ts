@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { imbalanceFor, summarizeImb, type FPLevel, type ImbSummary } from "./imbalance";
+import { dbEnabled, dbListDatasets, dbLoadDay, dbLoadOhlc, dbLoadSheet } from "./gcdb";
 
 export type { ImbSide, ImbStack, ImbSummary } from "./imbalance";
 
@@ -30,6 +31,7 @@ export type Session = "RTH" | "ETH";
 const SAFE = /^(\d{4}-\d{2}-\d{2})_(RTH|ETH)\.json$/;
 
 async function loadDay(date: string, session: Session): Promise<Candle[] | null> {
+  if (dbEnabled()) return dbLoadDay(date, session);
   const file = `${date}_${session}.json`;
   if (!SAFE.test(file)) return null;
   try {
@@ -51,6 +53,7 @@ export type OHLCBar = { o: number; h: number; l: number; c: number; v: number };
 const SAFE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function loadOhlc(date: string): Promise<Map<string, OHLCBar>> {
+  if (dbEnabled()) return dbLoadOhlc(date);
   const out = new Map<string, OHLCBar>();
   if (!SAFE_DATE.test(date)) return out;
   try {
@@ -192,6 +195,11 @@ export type LevelSheet = {
 };
 
 export async function computeSheet(date: string, compositeDays = 5): Promise<LevelSheet> {
+  if (dbEnabled()) {
+    const stored = await dbLoadSheet(date);
+    // only trust the store when every profile the UI needs is present
+    if (stored && Object.values(stored.profiles).filter(Boolean).length >= 6) return stored;
+  }
   const rth = (d: string) => loadDay(d, "RTH");
   const eth = (d: string) => loadDay(d, "ETH");
 

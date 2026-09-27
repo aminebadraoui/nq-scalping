@@ -38,6 +38,7 @@ create index if not exists candles_ts_idx on candles_1m (ts);
 -- ---------- per-tick footprint clusters -----------------------------------
 create table if not exists footprint_ticks (
   ts          timestamptz not null,
+  date        date        not null,
   session     text        not null,
   price_cents int         not null,       -- price x 100 (tick = 25 cents)
   buy         bigint      not null default 0,
@@ -47,6 +48,7 @@ create table if not exists footprint_ticks (
   primary key (ts, session, price_cents)
 );
 create index if not exists footprint_ticks_ts_idx on footprint_ticks (ts);
+create index if not exists footprint_ticks_date_idx on footprint_ticks (date, session);
 create index if not exists footprint_price_idx on footprint_ticks (price_cents, ts);
 
 -- ---------- daily profile level sheets (P0–P5) ------------------------------

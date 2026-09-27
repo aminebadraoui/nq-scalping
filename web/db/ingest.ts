@@ -178,6 +178,7 @@ async function main() {
       const ticks = candles.flatMap((c) =>
         Object.entries(c.levels).map(([p, lv]) => ({
           ts: toTs(c.t),
+          date,
           session,
           price_cents: Number(p),
           buy: lv[1],
@@ -189,10 +190,10 @@ async function main() {
       await insertChunked(
         sql,
         ticks,
-        ["ts", "session", "price_cents", "buy", "sell", "buy_trades", "sell_trades"],
+        ["ts", "date", "session", "price_cents", "buy", "sell", "buy_trades", "sell_trades"],
         "footprint_ticks",
         "(ts, session, price_cents)",
-        "buy = excluded.buy, sell = excluded.sell, buy_trades = excluded.buy_trades, sell_trades = excluded.sell_trades",
+        "date = excluded.date, buy = excluded.buy, sell = excluded.sell, buy_trades = excluded.buy_trades, sell_trades = excluded.sell_trades",
       );
 
       await sql`

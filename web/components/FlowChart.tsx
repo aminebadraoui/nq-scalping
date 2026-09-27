@@ -399,7 +399,12 @@ export default function FlowChart({
   useEffect(() => {
     const s = vwapSeriesRef.current;
     if (!s) return;
-    s.setData(vwapSeries.slice(-viewBars).map((v) => ({ time: toTime(v.t, date, false), value: v.value })));
+    s.setData(
+      vwapSeries
+        .slice(-viewBars)
+        .map((v) => ({ time: toTime(v.t, date, false), value: v.value }))
+        .filter((v) => Number.isFinite(v.time)),
+    );
   }, [vwapSeries, date, viewBars]);
 
   // bars + markers
@@ -436,10 +441,13 @@ export default function FlowChart({
     setOhlcCount(real);
     const last = bars[bars.length - 1];
     const cur = `${bars.length}:${last?.time}:${last?.close}:${last?.open}:${colorBy}:${mSig}`;
-    barsRef.current = bars.map((b) => ({ low: b.low, high: b.high, close: b.close }));
+    // lightweight-charts throws ("time must be of type BusinessDay") on NaN
+    // epochs; a defensive filter keeps the chart alive even with bad input
+    const goodBars = bars.filter((b) => Number.isFinite(b.time));
+    barsRef.current = goodBars.map((b) => ({ low: b.low, high: b.high, close: b.close }));
     if (cur !== lastSigRef.current) {
       lastSigRef.current = cur;
-      series.setData(bars);
+      series.setData(goodBars);
     }
     // initial window: the most recent ~90 minutes (the visible-range ref must
     // be populated BEFORE the provider runs, or "fit" falls back to the whole
