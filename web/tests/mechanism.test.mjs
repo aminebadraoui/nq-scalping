@@ -80,10 +80,10 @@ test("absorption aging: fresh = yes, stale = partial, old = no", () => {
   assert.equal(ing(make(35), "mechanism").state, "no");
 });
 
-test("no absorption always explains the missing invalidation level", () => {
+test("no side means no invalidation level", () => {
   const r = readMechanism(base());
   assert.equal(ing(r, "mechanism").state, "no");
-  assert.match(r.invalidation, /no absorption price to lean on/);
+  assert.match(r.invalidation, /no side established/);
 });
 
 test("empty or NaN minutes never leak Infinity/NaN", () => {

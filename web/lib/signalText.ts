@@ -86,6 +86,9 @@ export function formatSignalHtml(
   L.push("");
   L.push("<b>TARGET</b>");
   L.push(escHtml(read.target));
+  L.push("");
+  L.push("<b>SIZE</b>");
+  L.push(escHtml(`contracts = risk ÷ (${fmt(Math.abs(read.stopPx - read.entryPx))} pts × $20)`));
 
   // ---- reasoning: the full checklist ----
   L.push("");

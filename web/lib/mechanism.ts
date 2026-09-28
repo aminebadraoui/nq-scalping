@@ -82,11 +82,16 @@ export type MechanismRead = {
   entryPx: number;
   stopPx: number;
   targetPx: number;
+  /** delta of the last bar — the entry-bar confirmation (positive = aggressive buying) */
+  lastDelta: number;
 };
 
 const NEAR_EDGE = 2.5; // pts — inside this distance you are "at" the LVN edge
 const WALL_NEAR = 20; // pts — a QQQ strike is ~40 NQ points wide, so a wall is a coarse zone
 const AGE = { mechanism: 15, fuel: 30, trigger: 10, evidence: 6 }; // bars
+/** scalp stop distance in points — the backtest showed the absorption price is
+ *  ~78 pts away (untradeable); a tight 5–7 pt stop is where the edge lives */
+const SCALP_STOP_PTS = 7;
 
 function fmtN(n: number, dp = 2) {
   return n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -351,13 +356,12 @@ export function readMechanism(inp: MechanismInput, indexOf?: Map<string, number>
     : !lastRec || !recOk
     ? `${leanLong ? "long" : "short"} trigger not there yet: wait for price to ${leanLong ? "break below" : "break above"} ${fmtN(leanPrice)} and trade back inside within 2 bars (a reclaim) — that failed break is the entry event`
     : `reclaim already printed at ${fmtN(lastRec.price)}${recAge !== null ? ` (${recAge} bars ago)` : ""}: the confirmation is holding on the retest, i.e. ${leanLong ? "no 1-minute close back below" : "no 1-minute close back above"} ${fmtN(lastRec.price)}`;
-  const invalidation = !lastAbs
-    ? "no absorption price to lean on — no invalidation level, no trade"
-    : side === "long"
-      ? `a 1-minute close below the absorption price ${fmtN(lastAbs.price)} invalidates the read`
+  const invalidation =
+    side === "long"
+      ? `a 1-minute close below ${fmtN(price - SCALP_STOP_PTS)} (${SCALP_STOP_PTS}-pt scalp stop) invalidates`
       : side === "short"
-        ? `a 1-minute close above the absorption price ${fmtN(lastAbs.price)} invalidates the read`
-        : `absorption printed at ${fmtN(lastAbs.price)}, but no side is established — no invalidation level yet`;
+        ? `a 1-minute close above ${fmtN(price + SCALP_STOP_PTS)} (${SCALP_STOP_PTS}-pt scalp stop) invalidates`
+        : "no side established — no invalidation level, no trade";
   const target = inp.poc
     ? `${inp.poc.label} ${fmtN(inp.poc.p)} · ${fmtN(Math.abs(inp.poc.p - price))} pts away${side ? ` (${dirWord}-target)` : ""}`
     : "no POC loaded";
@@ -379,7 +383,8 @@ export function readMechanism(inp: MechanismInput, indexOf?: Map<string, number>
     asOf: minutes[n - 1]?.t ?? "—",
     live: false,
     entryPx: price,
-    stopPx: lastAbs ? lastAbs.price : NaN,
+    stopPx: side === "long" ? price - SCALP_STOP_PTS : side === "short" ? price + SCALP_STOP_PTS : NaN,
     targetPx: inp.poc ? inp.poc.p : NaN,
+    lastDelta: minutes[n - 1]?.delta ?? 0,
   };
 }

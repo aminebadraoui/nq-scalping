@@ -137,6 +137,14 @@ class SignalFeed {
     const aligned = snap.signal.tone === "long" || snap.signal.tone === "short";
     if (!aligned || snap.mech.present < 4) return;
 
+    // Footprint signature filters (see FOOTPRINT_REVERSAL_RESEARCH.md):
+    // 1) a footprint stack forming AGAINST the trade is near-breakeven — skip it.
+    // 2) the entry bar's delta must print in the trade direction.
+    const lastStack = snap.analysis?.imbalance?.lastStack;
+    if (lastStack && lastStack.side !== (snap.mech.side === "long" ? "buy" : "sell")) return;
+    const lastDelta = snap.mech.lastDelta;
+    if ((snap.mech.side === "long" && lastDelta <= 0) || (snap.mech.side === "short" && lastDelta >= 0)) return;
+
     const kind = "REVERSAL" as const;
     const read = snap.mech;
     const sig = this.signature(snap, kind);
