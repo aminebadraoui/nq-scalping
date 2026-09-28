@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { decodeFootprintForDateResponse, splitFrame, type BootCandle } from "./footprintProto";
+import { persistLiveMinute } from "./liveStore";
 
 /* ------------------------------------------------------------------ */
 /* Live GoCharting feed (server-side singleton)                        */
@@ -349,7 +350,12 @@ class LiveFeed {
     const hhmm = key.slice(11, 16);
     let cur = this.state.cur;
     if (!cur || cur.t !== hhmm) {
-      if (cur) this.state.minutes.push(cur);
+      if (cur) {
+        this.state.minutes.push(cur);
+        // the minute just closed — persist it to Neon so live data survives a
+        // restart instead of living only in this RAM buffer (best-effort)
+        if (/^\d{2}:\d{2}$/.test(cur.t)) void persistLiveMinute(cur).catch(() => {});
+      }
       if (this.state.minutes.length > MAX_MINUTES) this.state.minutes = this.state.minutes.slice(-MAX_MINUTES);
       // levels are only meaningful for the recent window — drop the rest
       for (let i = 0; i < this.state.minutes.length - 30; i++) delete this.state.minutes[i].levels;
