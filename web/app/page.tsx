@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import FlowChart, { fmt, type LevelSet } from "@/components/FlowChart";
 import { blendLiveMinutes, type FPMinute, type Marker, type Absorb } from "@/lib/footprint";
 import MinuteNavigator from "@/components/MinuteNavigator";
@@ -91,12 +91,6 @@ export default function DashboardPage() {
   const [gamma, setGamma] = useState<GammaRead | null>(null);
   const [optMeta, setOptMeta] = useState<OptionsRefreshMeta | null>(null);
   const [chartMax, setChartMax] = useState(false);
-  const [tgPush, setTgPush] = useState(true);
-  /** alerts already pushed to Telegram — survives re-renders, and is SEEDED with
-   *  everything present at load so a browser reload cannot re-notify history */
-  const pushedRef = useRef<Set<string>>(new Set());
-  /** set once the bootstrap analysis has seeded pushedRef */
-  const bootstrappedRef = useRef(false);
   const [tgStatus, setTgStatus] = useState("");
   const [showInit, setShowInit] = useState(true);
   const [showPoc, setShowPoc] = useState(true);
@@ -108,21 +102,6 @@ export default function DashboardPage() {
     return new Date(t).toISOString().slice(0, 10);
   };
   const today = snap?.date ?? new Date().toISOString().slice(0, 10);
-
-  const pushAlert = useCallback(
-    async (a: Alert) => {
-      if (!tgPush) return;
-      const text = `GC ${a.t} ${a.kind.replace("DIVERGENCE_", "D")} @ ${fmt(a.price)} ${a.vwapSide} vwap · ${a.message}`;
-      try {
-        const r = await fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
-        const j = await r.json();
-        if (!j.sent && j.reason && !j.reason.startsWith("Telegram not")) setTgStatus(j.reason);
-      } catch {
-        /* ignore */
-      }
-    },
-    [tgPush],
-  );
 
   // bootstrap: use the LATEST COLLECTED date (snapshot date only as fallback)
   const [dataDate, setDataDate] = useState("");
@@ -216,9 +195,6 @@ export default function DashboardPage() {
                 })),
             );
             setAlerts(j.alerts ?? []);
-            // seed the push-dedupe set: these already existed when the page loaded
-            (j.alerts ?? []).forEach((a: Alert) => pushedRef.current.add(`${a.t}|${a.kind}|${a.price}`));
-            bootstrappedRef.current = true;
           }
         })
         .catch(() => {});
@@ -236,32 +212,12 @@ export default function DashboardPage() {
     };
   }, [today]);
 
-  // alert polling — only after the dataset bootstrap resolves, otherwise the
-  // first tick fires against "today" (e.g. a Sunday with no data) and 404s
-  const pollDate = dataDate || today;
-  useEffect(() => {
-    if (!dataDate || !bootstrappedRef.current) return; // bootstrap not resolved yet
-    const tick = () => {
-      fetch(`/api/gc?action=analysis&date=${pollDate}&session=ETH&start=&end=&row=4`)
-        .then((r) => r.json())
-        .then((j) => {
-          if (!j.alerts) return;
-          const key = (a: Alert) => `${a.t}|${a.kind}|${a.price}`;
-          const unseen = (j.alerts as Alert[]).filter((a) => !pushedRef.current.has(key(a)));
-          unseen.forEach((a) => pushedRef.current.add(key(a)));
-          unseen.slice(-5).forEach((a) => pushAlert(a));
-          setAlerts((prev) => {
-            const seen = new Set(prev.map(key));
-            const fresh = (j.alerts as Alert[]).filter((a) => !seen.has(key(a)));
-            return [...fresh, ...prev].slice(0, 60);
-          });
-        })
-        .catch(() => {});
-    };
-    tick();
-    const iv = setInterval(tick, 60000);
-    return () => clearInterval(iv);
-  }, [pollDate, pushAlert]);
+  // The collected-data alert list is STATIC between nightly ingests (it is
+  // derived from the completed session, which does not change intraday), so it
+  // is fetched once at bootstrap and never polled again. Live signals are
+  // pushed by the always-on server-side signal feed (lib/signalFeed.ts) and
+  // surfaced through /api/signal — polling /api/gc?action=analysis every 60s
+  // only re-read the whole footprint table for data that never changed.
 
   // options/gamma polling — the server refreshes CBOE every OPTIONS_REFRESH_SECONDS;
   // we re-read the cached snapshot every minute so 0DTE walls stay current intraday.
@@ -675,12 +631,6 @@ export default function DashboardPage() {
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Alerts</h2>
               <div className="flex items-center gap-2 font-mono text-[10px]">
-                <button
-                  onClick={() => setTgPush((v) => !v)}
-                  className={`rounded border px-1.5 py-0.5 ${tgPush ? "border-info/50 bg-info/10 text-info" : "border-zinc-700 text-zinc-500"}`}
-                >
-                  TG {tgPush ? "on" : "off"}
-                </button>
                 <button
                   onClick={async () => {
                     const r = await fetch("/api/notify?test=1", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });

@@ -372,15 +372,19 @@ export async function extractFootprint(
   session: Session,
   start?: string,
   end?: string,
+  /** preloaded candles/ohlc — `analyze()` passes these so one request does not
+   *  read the whole session twice (the double read was a big egress cost). */
+  candles?: Candle[] | null,
+  ohlc?: Map<string, OHLCBar> | null,
 ): Promise<{ minutes: FootprintMinute[]; minPrice: number; maxPrice: number; ohlcBars: number } | null> {
-  const candles = (await loadDay(date, session)) ?? [];
-  const sel = candles.filter((c) => inWindow(c, start, end));
+  const all = candles ?? (await loadDay(date, session)) ?? [];
+  const sel = all.filter((c) => inWindow(c, start, end));
   if (sel.length === 0) return null;
-  const ohlc = await loadOhlc(date);
+  const ohlcMap = ohlc ?? (await loadOhlc(date));
   let ohlcBars = 0;
   const minutes: FootprintMinute[] = sel.map((c) => {
     const key = c.t.slice(11, 16);
-    const bar = ohlc.get(key);
+    const bar = ohlcMap.get(key);
     if (bar) ohlcBars++;
     const levels = imbalanceFor(
       Object.entries(c.levels)
@@ -727,14 +731,14 @@ export async function analyze(
   const all = (await loadDay(date, session)) ?? [];
   const sel = all.filter((c) => inWindow(c, start, end));
   if (sel.length === 0) return null;
-  const fp = await extractFootprint(date, session, start, end);
+  const ohlcMap = await loadOhlc(date);
+  const fp = await extractFootprint(date, session, start, end, all, ohlcMap);
   if (!fp) return null;
   const minutes = fp.minutes;
 
   const rows = aggregate(sel, rowTicks);
   const s = stats(rows);
   if (!s) return null;
-  const ohlcMap = await loadOhlc(date);
   // whole-session VWAP by default; a windowed request gets the VWAP OF THAT
   // WINDOW, otherwise every alert's vwapSide is judged against a reference the
   // caller never asked for

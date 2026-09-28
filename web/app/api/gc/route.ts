@@ -12,6 +12,38 @@ import { getOptionsFeed } from "@/lib/optionsFeed";
 
 const SESSIONS: Session[] = ["RTH", "ETH"];
 
+/* ------------------------------------------------------------------ *
+ * In-process response cache. The collected data behind `analysis`,
+ * `footprint` and `sheet` only changes when the nightly ingester runs,
+ * yet the dashboard polls `analysis` every 60s and each call re-reads
+ * the whole footprint table (~53k rows). Serving a 60s-fresh copy from
+ * memory instead turns those polls into free cache hits — the single
+ * biggest cut to Neon's network-transfer (egress) bill.
+ * ------------------------------------------------------------------ */
+const cache = new Map<string, { at: number; value: unknown }>();
+const inflight = new Map<string, Promise<unknown>>();
+const TTL_MS = 60_000;
+
+function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < TTL_MS) return Promise.resolve(hit.value as T);
+  const pending = inflight.get(key);
+  if (pending) return pending as Promise<T>;
+  const p = fn().then(
+    (value) => {
+      cache.set(key, { at: Date.now(), value });
+      inflight.delete(key);
+      return value;
+    },
+    (err) => {
+      inflight.delete(key);
+      throw err;
+    },
+  );
+  inflight.set(key, p);
+  return p;
+}
+
 export async function GET(req: NextRequest) {
   const url = req.nextUrl;
   const action = url.searchParams.get("action") ?? "datasets";
@@ -52,26 +84,32 @@ export async function GET(req: NextRequest) {
       }
       case "sheet": {
         if (!date) return Response.json({ error: "missing date" }, { status: 400 });
-        return Response.json({ sheet: await computeSheet(date) });
+        return Response.json({ sheet: await cached(`sheet:${date}`, () => computeSheet(date)) });
       }
       case "profile": {
         if (!date || !session || !SESSIONS.includes(session))
           return Response.json({ error: "missing date/session" }, { status: 400 });
-        const p = await computeProfile(date, session, start, end, row);
+        const p = await cached(`profile:${date}:${session}:${start ?? ""}:${end ?? ""}:${row}`, () =>
+          computeProfile(date, session, start, end, row),
+        );
         if (!p) return Response.json({ error: "no data" }, { status: 404 });
         return Response.json(p);
       }
       case "footprint": {
         if (!date || !session || !SESSIONS.includes(session))
           return Response.json({ error: "missing date/session" }, { status: 400 });
-        const f = await extractFootprint(date, session, start, end);
+        const f = await cached(`footprint:${date}:${session}:${start ?? ""}:${end ?? ""}`, () =>
+          extractFootprint(date, session, start, end),
+        );
         if (!f) return Response.json({ error: "no data" }, { status: 404 });
         return Response.json(f);
       }
       case "analysis": {
         if (!date || !session || !SESSIONS.includes(session))
           return Response.json({ error: "missing date/session" }, { status: 400 });
-        const a = await analyze(date, session, start, end, row);
+        const a = await cached(`analysis:${date}:${session}:${start ?? ""}:${end ?? ""}:${row}`, () =>
+          analyze(date, session, start, end, row),
+        );
         if (!a) return Response.json({ error: "no data" }, { status: 404 });
         return Response.json(a);
       }
