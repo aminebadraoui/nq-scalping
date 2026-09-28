@@ -21,7 +21,7 @@
  * RANKING across configs is what this harness is for.
  * ------------------------------------------------------------------ */
 
-import { aggregate, stats, listDatasets, extractFootprint, analyze, type FootprintMinute, type AbsorbEvent, type AlertEvent, type Reclaim, type ImbalanceRollup } from "./gcdata";
+import { aggregate, stats, listDatasets, extractFootprint, analyze, computeSheet, type FootprintMinute, type AbsorbEvent, type AlertEvent, type Reclaim, type ImbalanceRollup, type LevelSheet, type Candle } from "./gcdata";
 import { readMechanism } from "./mechanism";
 import { readPriceAction } from "./priceaction";
 import { cdtToET } from "./times";
@@ -180,10 +180,11 @@ export type SessionData = {
   minutes: FootprintMinute[];
   mapped: { t: string; high: number; low: number; delta: number }[];
   mIndex: Map<string, number>;
-  pivLows: { t: string; price: number; idx: number }[];
-  pivHighs: { t: string; price: number; idx: number }[];
+  /** aggregate-format candles (cents) — reused for the rolling developing profile */
+  candles: Candle[];
+  /** STATIC location from the PRIOR day's level sheet (no lookahead) */
   lvnEdges: { label: string; p: number; zone: string }[];
-  pocPx: number;
+  pocCands: { label: string; p: number }[];
   prefixHigh: number[];
   prefixLow: number[];
   prefixVwap: number[];
@@ -192,15 +193,46 @@ export type SessionData = {
   imbalance: ImbalanceRollup | null;
 };
 
-export async function loadSession(date: string, session: "RTH" | "ETH"): Promise<SessionData | null> {
+/** extract LVN edges + POCs from a level sheet (cents strings → points) */
+function sheetLevels(sheet: LevelSheet): { lvnEdges: { label: string; p: number; zone: string }[]; pocCands: { label: string; p: number }[] } {
+  const lvnEdges: { label: string; p: number; zone: string }[] = [];
+  const pocCands: { label: string; p: number }[] = [];
+  for (const [key, v] of Object.entries(sheet.profiles)) {
+    if (!v) continue;
+    for (const z of v.LVNs ?? []) {
+      const [a, b] = z.split("–").map((s) => parseFloat(s.replace(/,/g, "")));
+      if (!Number.isFinite(a)) continue;
+      lvnEdges.push({ label: key, p: a, zone: z });
+      if (Number.isFinite(b)) lvnEdges.push({ label: key, p: b, zone: z });
+    }
+    const poc = parseFloat(v.POC.replace(/,/g, ""));
+    if (Number.isFinite(poc)) pocCands.push({ label: `${key} POC`, p: poc });
+  }
+  return { lvnEdges, pocCands };
+}
+
+export async function loadSession(date: string, session: "RTH" | "ETH", priorDate: string | null): Promise<SessionData | null> {
   const fp = await extractFootprint(date, session);
   const an = await analyze(date, session);
   if (!fp || !an || fp.minutes.length < 5) return null;
   const minutes = fp.minutes;
   const n = minutes.length;
 
-  // session's own profile → location candidates (P0 Live)
-  const candles = minutes.map((m) => ({
+  // STATIC location: the PRIOR day's level sheet (what production's `ctx.levels`
+  // holds) — no lookahead into the session being backtested.
+  let lvnEdges: { label: string; p: number; zone: string }[] = [];
+  let pocCands: { label: string; p: number }[] = [];
+  if (priorDate) {
+    try {
+      const sheet = await computeSheet(priorDate);
+      ({ lvnEdges, pocCands } = sheetLevels(sheet));
+    } catch {
+      /* no prior sheet — location degrades to the rolling profile only */
+    }
+  }
+
+  // aggregate-format candles (cents) for the rolling developing profile
+  const candles: Candle[] = minutes.map((m) => ({
     t: `${m.d}T${m.t}:00-05:00`,
     high: Math.round(m.high * 100),
     low: Math.round(m.low * 100),
@@ -209,18 +241,6 @@ export async function loadSession(date: string, session: "RTH" | "ETH"): Promise
     sell: m.sell,
     levels: Object.fromEntries(m.levels.map((l) => [String(Math.round(l.price * 100)), [l.buy + l.sell, l.buy, l.sell, l.bTrades, l.sTrades] as [number, number, number, number, number]])),
   }));
-  const rows = aggregate(candles, 4);
-  const s = stats(rows);
-  const lvnEdges: { label: string; p: number; zone: string }[] = [];
-  if (s) {
-    for (const [a, b] of s.lvns) {
-      const pa = a / 100;
-      const pb = b / 100;
-      lvnEdges.push({ label: "P0 Live", p: pa, zone: `${pa}–${pb}` });
-      lvnEdges.push({ label: "P0 Live", p: pb, zone: `${pa}–${pb}` });
-    }
-  }
-  const pocPx = s && s.poc > 0 ? s.poc / 100 : NaN;
 
   // prefix session high/low + VWAP (no lookahead)
   const prefixHigh: number[] = new Array(n);
@@ -240,25 +260,45 @@ export async function loadSession(date: string, session: "RTH" | "ETH"): Promise
 
   const mapped = minutes.map((m) => ({ t: m.t, high: m.high, low: m.low, delta: m.buy - m.sell }));
   const mIndex = new Map(mapped.map((m, i) => [m.t, i] as const));
-  const pivLows: { t: string; price: number; idx: number }[] = [];
-  const pivHighs: { t: string; price: number; idx: number }[] = [];
-  for (let i = 2; i < n - 2; i++) {
-    if (mapped[i].low < Math.min(mapped[i - 1].low, mapped[i - 2].low, mapped[i + 1].low, mapped[i + 2].low)) pivLows.push({ t: mapped[i].t, price: mapped[i].low, idx: i });
-    if (mapped[i].high > Math.max(mapped[i - 1].high, mapped[i - 2].high, mapped[i + 1].high, mapped[i + 2].high)) pivHighs.push({ t: mapped[i].t, price: mapped[i].high, idx: i });
-  }
-  return { date, minutes, mapped, mIndex, pivLows, pivHighs, lvnEdges, pocPx, prefixHigh, prefixLow, prefixVwap, alerts: an.alerts, reclaims: an.reclaims, imbalance: an.imbalance };
+  return { date, minutes, mapped, mIndex, candles, lvnEdges, pocCands, prefixHigh, prefixLow, prefixVwap, alerts: an.alerts, reclaims: an.reclaims, imbalance: an.imbalance };
 }
 
 /** replay one session under one config (cheap; reuses SessionData). */
 export function replay(sd: SessionData, cfg: TuningConfig): SessionResult {
-  const { minutes, mapped, mIndex, prefixHigh, prefixLow, prefixVwap, lvnEdges, pocPx, alerts, reclaims, imbalance } = sd;
+  const { minutes, mapped, mIndex, candles, prefixHigh, prefixLow, prefixVwap, lvnEdges, pocCands, alerts, reclaims, imbalance } = sd;
   const n = minutes.length;
   const absorption = detectAbsorption(minutes, cfg);
   const fires: Fire[] = [];
 
+  // incremental developing profile: running 1-pt bucket map (cents) so each
+  // bar's P0/LVN read only sees bars seen SO FAR — no lookahead
+  const runningRows = new Map<number, { buy: number; sell: number }>();
+
   for (let i = 5; i < n; i++) {
     const lastPrice = minutes[i].c > 0 ? minutes[i].c : minutes[i].high;
     const window = mapped.slice(0, i + 1);
+
+    for (const [lvl, [, bv, sv]] of Object.entries(candles[i].levels)) {
+      const bucket = Math.round(Number(lvl) / 100) * 100;
+      const r = runningRows.get(bucket) ?? { buy: 0, sell: 0 };
+      r.buy += bv;
+      r.sell += sv;
+      runningRows.set(bucket, r);
+    }
+    const liveStats = stats(runningRows);
+    const allEdges = [...lvnEdges];
+    const allPocs = [...pocCands];
+    if (liveStats) {
+      for (const [a, b] of liveStats.lvns) {
+        allEdges.push({ label: "P0 Live", p: a / 100, zone: `${a / 100}–${b / 100}` });
+        allEdges.push({ label: "P0 Live", p: b / 100, zone: `${a / 100}–${b / 100}` });
+      }
+      if (liveStats.poc > 0) allPocs.unshift({ label: "P0 Live POC", p: liveStats.poc / 100 });
+    }
+    const nearestPoc = allPocs.length
+      ? [...allPocs].sort((a, b) => Math.abs(a.p - lastPrice) - Math.abs(b.p - lastPrice))[0]
+      : null;
+
     const mech = readMechanism({
       minutes: window,
       lastPrice,
@@ -267,8 +307,8 @@ export function replay(sd: SessionData, cfg: TuningConfig): SessionResult {
       alerts,
       reclaims,
       imbalance,
-      lvnEdges,
-      poc: Number.isFinite(pocPx) ? { label: "P0 Live POC", p: pocPx } : null,
+      lvnEdges: allEdges,
+      poc: nearestPoc,
       sessionHigh: prefixHigh[i],
       sessionLow: prefixLow[i],
       newsWin: false,
@@ -343,6 +383,12 @@ export async function runSweep(
   const use = opts?.maxSessions ? dates.slice(0, opts.maxSessions) : dates;
   const splitDate = opts?.splitDate ?? "2026-01-01";
 
+  // date → prior trading day, so each session's location uses the PRIOR day's
+  // level sheet (no lookahead into the session itself)
+  const sorted = [...dates].sort();
+  const priorMap = new Map<string, string>();
+  for (let i = 1; i < sorted.length; i++) priorMap.set(sorted[i], sorted[i - 1]);
+
   const agg = configs.map((config) => ({
     config,
     sessions: 0,
@@ -356,7 +402,7 @@ export async function runSweep(
   }));
 
   for (const date of use) {
-    const sd = await loadSession(date, opts?.session ?? "RTH");
+    const sd = await loadSession(date, opts?.session ?? "RTH", priorMap.get(date) ?? null);
     if (!sd) continue;
     const isTrain = date < splitDate;
     const year = date.slice(0, 4);
