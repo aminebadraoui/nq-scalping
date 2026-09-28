@@ -188,7 +188,7 @@ function Row({ r, best, expanded, onToggle }: { r: ConfigResult; best: boolean; 
           <td colSpan={11} className="px-3 py-2">
             <div className="flex flex-wrap gap-3 text-[11px] text-zinc-400">
               <span className="text-zinc-500">per-year net pts:</span>
-              {r.byYear.map((y) => (
+              {(r.byYear ?? []).map((y) => (
                 <span key={y.year} className={y.stats.netPts >= 0 ? "text-zinc-300" : "text-red-400"}>
                   <b>{y.year}</b>: {fmt(y.stats.netPts)} ({y.stats.trades}t, {Math.round(y.stats.winRate * 100)}%)
                 </span>
