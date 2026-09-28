@@ -56,6 +56,11 @@ export function blendLiveMinutes<T extends { t: string; d?: string; live?: boole
   const out = [...hist];
   for (const m of live) {
     if (!/^\d{2}:\d{2}$/.test(m.t)) continue; // the snapshot's "now" placeholder
+    // a seeded bar with no price range (0 high/low) drags the chart autoscale
+    // to 0 and blanks every real candle — drop it
+    const h = (m as { h?: number }).h;
+    const l = (m as { l?: number }).l;
+    if (h !== undefined && l !== undefined && (h <= 0 || l <= 0)) continue;
     // the bar's OWN utc date when it has one — after UTC midnight "today" is
     // already tomorrow and every live bar would land 24h in the future
     const day = (m as { du?: string }).du ?? utcDate;

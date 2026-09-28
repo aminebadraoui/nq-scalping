@@ -289,6 +289,10 @@ class LiveFeed {
       const key = `${du}|${hhmm}`;
       if (key >= nowKey) continue; // developing minute — live ticks own it
       if (have.has(key)) continue;
+      // footprint candles with no price range (high/low = 0) carry no bar —
+      // seeding them drags the chart's autoscale to 0 and blanks every real
+      // candle, so drop them instead
+      if (!(c.high > 0) || !(c.low > 0)) continue;
       have.add(key);
       this.state.minutes.push({
         t: hhmm,
