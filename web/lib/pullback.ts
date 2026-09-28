@@ -43,6 +43,10 @@ export type PullbackRead = {
   target: string;
   asOf: string;
   live: boolean;
+  /** numeric trade levels for backtesting / tooling (NaN when not established) */
+  entryPx: number;
+  stopPx: number;
+  targetPx: number;
 };
 
 export type PullbackInput = {
@@ -66,7 +70,13 @@ function fmt(n: number, dp = 2): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
 }
 
-export function readPullback(inp: PullbackInput): PullbackRead {
+export type PullbackPre = {
+  indexOf?: Map<string, number>;
+  pivLows?: { t: string; price: number; idx: number }[];
+  pivHighs?: { t: string; price: number; idx: number }[];
+};
+
+export function readPullback(inp: PullbackInput, pbNear: number = PB_NEAR, pre?: PullbackPre): PullbackRead {
   const { minutes, lastPrice, vwap, poc, sessionHigh, sessionLow, imbalance, newsWin } = inp;
   const n = minutes.length;
   const price = lastPrice > 0 ? lastPrice : minutes[n - 1]?.high ?? 0;
@@ -85,22 +95,37 @@ export function readPullback(inp: PullbackInput): PullbackRead {
     target: poc ? `${poc.label} ${fmt(poc.p)} · ${fmt(Math.abs(poc.p - price))} pts away` : "no POC loaded",
     asOf: minutes[n - 1]?.t ?? "—",
     live: false,
+    entryPx: price,
+    stopPx: NaN,
+    targetPx: poc ? poc.p : NaN,
   };
   if (n < 5 || price <= 0) return base;
 
+  const idx = pre?.indexOf ?? new Map(minutes.map((m, i) => [m.t, i] as const));
   const ageOf = (t: string) => {
-    const i = minutes.findIndex((m) => m.t === t);
-    return i === -1 ? null : n - 1 - i;
+    const i = idx.get(t);
+    // i > n - 1 = an event AFTER this window (only possible with a precomputed
+    // full-session index, e.g. the backtest) — treat as not present
+    return i === undefined || i > n - 1 ? null : n - 1 - i;
   };
 
   /* ---------- pivot swings (±2 bars) ---------- */
-  const lows = minutes.map((m) => m.low);
-  const highs = minutes.map((m) => m.high);
-  const pivLows: { t: string; price: number }[] = [];
-  const pivHighs: { t: string; price: number }[] = [];
-  for (let i = 2; i < n - 2; i++) {
-    if (lows[i] < Math.min(lows[i - 1], lows[i - 2], lows[i + 1], lows[i + 2])) pivLows.push({ t: minutes[i].t, price: lows[i] });
-    if (highs[i] > Math.max(highs[i - 1], highs[i - 2], highs[i + 1], highs[i + 2])) pivHighs.push({ t: minutes[i].t, price: highs[i] });
+  let pivLows: { t: string; price: number }[];
+  let pivHighs: { t: string; price: number }[];
+  if (pre?.pivLows && pre.pivHighs) {
+    // precomputed over the full session — keep only those that are a valid
+    // pivot inside this prefix (need two bars after them)
+    pivLows = pre.pivLows.filter((p) => p.idx <= n - 3).map((p) => ({ t: p.t, price: p.price }));
+    pivHighs = pre.pivHighs.filter((p) => p.idx <= n - 3).map((p) => ({ t: p.t, price: p.price }));
+  } else {
+    const lows = minutes.map((m) => m.low);
+    const highs = minutes.map((m) => m.high);
+    pivLows = [];
+    pivHighs = [];
+    for (let i = 2; i < n - 2; i++) {
+      if (lows[i] < Math.min(lows[i - 1], lows[i - 2], lows[i + 1], lows[i + 2])) pivLows.push({ t: minutes[i].t, price: lows[i] });
+      if (highs[i] > Math.max(highs[i - 1], highs[i - 2], highs[i + 1], highs[i + 2])) pivHighs.push({ t: minutes[i].t, price: highs[i] });
+    }
   }
   const recentPivLow = [...pivLows].reverse().find((p) => (ageOf(p.t) ?? 999) <= PIVOT_LOOKBACK) ?? null;
   const recentPivHigh = [...pivHighs].reverse().find((p) => (ageOf(p.t) ?? 999) <= PIVOT_LOOKBACK) ?? null;
@@ -115,8 +140,8 @@ export function readPullback(inp: PullbackInput): PullbackRead {
   const nearest = (xs: number[]) => (xs.length ? xs.reduce((a, b) => (Math.abs(b - price) < Math.abs(a - price) ? b : a)) : NaN);
   const nearestSupport = nearest(supports);
   const nearestResistance = nearest(resistances);
-  const retestLong = Number.isFinite(nearestSupport) && Math.abs(price - nearestSupport) <= PB_NEAR;
-  const retestShort = Number.isFinite(nearestResistance) && Math.abs(price - nearestResistance) <= PB_NEAR;
+  const retestLong = Number.isFinite(nearestSupport) && Math.abs(price - nearestSupport) <= pbNear;
+  const retestShort = Number.isFinite(nearestResistance) && Math.abs(price - nearestResistance) <= pbNear;
 
   /* ---------- trigger: fresh footprint stack of the matching side ---------- */
   const lastStack = imbalance?.lastStack ?? null;
@@ -156,8 +181,8 @@ export function readPullback(inp: PullbackInput): PullbackRead {
         : `support ${fmt(nearestSupport)} · resistance ${fmt(nearestResistance)}`,
     value:
       retestLong || retestShort
-        ? `price has pulled back to within ${PB_NEAR} pts of ${retestLong ? `support ${fmt(nearestSupport)}` : `resistance ${fmt(nearestResistance)}`} (recent pivot / VWAP / POC)`
-        : `nearest support ${fmt(nearestSupport)} and resistance ${fmt(nearestResistance)} are farther than ${PB_NEAR} pts — no retest yet`,
+        ? `price has pulled back to within ${pbNear} pts of ${retestLong ? `support ${fmt(nearestSupport)}` : `resistance ${fmt(nearestResistance)}`} (recent pivot / VWAP / POC)`
+        : `nearest support ${fmt(nearestSupport)} and resistance ${fmt(nearestResistance)} are farther than ${pbNear} pts — no retest yet`,
     why: "the entry is a pullback to a level the trend has already respected — a recent swing, the session average, or the value area POC.",
   };
 
@@ -236,5 +261,8 @@ export function readPullback(inp: PullbackInput): PullbackRead {
     target: base.target,
     asOf: minutes[n - 1]?.t ?? "—",
     live: false,
+    entryPx: price,
+    stopPx: side === "long" ? nearestSupport : side === "short" ? nearestResistance : NaN,
+    targetPx: poc ? poc.p : NaN,
   };
 }

@@ -78,6 +78,10 @@ export type MechanismRead = {
   target: string;
   asOf: string;
   live: boolean;
+  /** numeric trade levels for backtesting / tooling (NaN when not established) */
+  entryPx: number;
+  stopPx: number;
+  targetPx: number;
 };
 
 const NEAR_EDGE = 2.5; // pts — inside this distance you are "at" the LVN edge
@@ -88,28 +92,31 @@ function fmtN(n: number, dp = 2) {
   return n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
 }
 
-export function readMechanism(inp: MechanismInput): MechanismRead {
+export function readMechanism(inp: MechanismInput, indexOf?: Map<string, number>): MechanismRead {
   const { minutes, lastPrice } = inp;
   const n = minutes.length;
   const price = lastPrice > 0 ? lastPrice : minutes[n - 1]?.high ?? 0;
-  const ageOf = (t: string, list: { t: string }[]) => {
-    const i = list.findIndex((x) => x.t === t);
-    return i === -1 ? null : n - 1 - i;
+  const idx = indexOf ?? new Map(minutes.map((m, i) => [m.t, i] as const));
+  const ageOf = (t: string) => {
+    const i = idx.get(t);
+    // i > n - 1 = an event AFTER this window (only possible when a precomputed
+    // full-session index is passed, e.g. the backtest) — treat as not present
+    return i === undefined || i > n - 1 ? null : n - 1 - i;
   };
 
   /* ---------- side selection: which reversal has evidence ---------- */
-  const lastAbs = [...inp.absorption].reverse().find((a) => (ageOf(a.t, minutes) ?? 999) <= AGE.mechanism * 2) ?? null;
+  const lastAbs = [...inp.absorption].reverse().find((a) => (ageOf(a.t) ?? 999) <= AGE.mechanism * 2) ?? null;
   const divs = inp.alerts.filter((a) => a.kind === "DIVERGENCE_D2" || a.kind === "DIVERGENCE_D4");
   // look back further than AGE.fuel so the "partial" (stale) state is reachable
-  const lastDiv = [...divs].reverse().find((a) => (ageOf(a.t, minutes) ?? 999) <= AGE.fuel * 2) ?? null;
-  const lastRec = [...inp.reclaims].reverse().find((a) => (ageOf(a.t, minutes) ?? 999) <= AGE.trigger * 2) ?? null;
+  const lastDiv = [...divs].reverse().find((a) => (ageOf(a.t) ?? 999) <= AGE.fuel * 2) ?? null;
+  const lastRec = [...inp.reclaims].reverse().find((a) => (ageOf(a.t) ?? 999) <= AGE.trigger * 2) ?? null;
   const lastStack = inp.imbalance?.lastStack ?? null;
-  const stackAge = lastStack ? ageOf(lastStack.t, minutes) : null;
+  const stackAge = lastStack ? ageOf(lastStack.t) : null;
   const stackFresh = stackAge !== null && stackAge <= AGE.evidence;
 
   // a recent stack counts fully for its side; an older (partial) one counts
   // half — otherwise a 20-bar-old stack reports "nothing is opposing price"
-  const stackSideAge = lastStack ? ageOf(lastStack.t, minutes) : null;
+  const stackSideAge = lastStack ? ageOf(lastStack.t) : null;
   const stackPartial = lastStack && stackSideAge !== null && stackSideAge <= AGE.evidence * 4;
   const bull =
     [lastAbs?.bias === "bull", lastDiv?.kind === "DIVERGENCE_D2", lastRec?.dir === "low"].filter(Boolean).length +
@@ -186,7 +193,7 @@ export function readMechanism(inp: MechanismInput): MechanismRead {
   };
 
   /* ---------- 2 · MECHANISM (absorption) ---------- */
-  const absAge = lastAbs ? ageOf(lastAbs.t, minutes) : null;
+  const absAge = lastAbs ? ageOf(lastAbs.t) : null;
   const mechState: IngredientState = lastAbs && absAge !== null && absAge <= AGE.mechanism ? "yes" : lastAbs && absAge !== null && absAge <= AGE.mechanism * 2 ? "partial" : "no";
   const mechSideOk = lastAbs ? (want === "bull" ? lastAbs.bias === "bull" : lastAbs.bias === "bear") : false;
   const mechanism: Ingredient = {
@@ -205,7 +212,7 @@ export function readMechanism(inp: MechanismInput): MechanismRead {
   };
 
   /* ---------- 3 · FUEL (divergence) ---------- */
-  const divAge = lastDiv ? ageOf(lastDiv.t, minutes) : null;
+  const divAge = lastDiv ? ageOf(lastDiv.t) : null;
   const divOk = lastDiv ? (want === "bull" ? lastDiv.kind === "DIVERGENCE_D2" : lastDiv.kind === "DIVERGENCE_D4") : false;
   const fuelState: IngredientState = lastDiv && divAge !== null && divAge <= AGE.fuel && divOk ? "yes" : lastDiv && divOk ? "partial" : "no";
   const fuel: Ingredient = {
@@ -228,7 +235,7 @@ export function readMechanism(inp: MechanismInput): MechanismRead {
   };
 
   /* ---------- 4 · TRIGGER (reclaim) ---------- */
-  const recAge = lastRec ? ageOf(lastRec.t, minutes) : null;
+  const recAge = lastRec ? ageOf(lastRec.t) : null;
   const recOk = lastRec ? (want === "bull" ? lastRec.dir === "low" : lastRec.dir === "high") : false;
   const triggerState: IngredientState = lastRec && recAge !== null && recAge <= AGE.trigger && recOk ? "yes" : lastRec && recOk ? "partial" : "no";
   const trigger: Ingredient = {
@@ -369,5 +376,8 @@ export function readMechanism(inp: MechanismInput): MechanismRead {
     target,
     asOf: minutes[n - 1]?.t ?? "—",
     live: false,
+    entryPx: price,
+    stopPx: lastAbs ? lastAbs.price : NaN,
+    targetPx: inp.poc ? inp.poc.p : NaN,
   };
 }
