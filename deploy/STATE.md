@@ -10,13 +10,14 @@
 | Coolify deploy key | `ncuaupdairh9oiahtidl89h0` (private key for GitHub nq-scalping, read-only deploy key id 164629302) |
 | GitHub repo | `git@github.com:aminebadraoui/nq-scalping.git` (private) |
 | Neon org | `nq-scalping` → `org-falling-cell-25919411` (free) |
-| Neon project | `nq-store` → `weathered-breeze-08237037`, region aws-us-east-1, pg 18 |
-| Neon database | `neondb` (branch `br-delicate-fire-b8n3d6q4`, endpoint `ep-floral-snow-b8etj0yj`) |
+| Neon project | `nq-store` → `summer-poetry-26619129`, region aws-us-east-1, pg 18 (recreated 2026-09-28 to reset the 5 GB/mo transfer quota) |
+| Neon database | `neondb` (branch `br-calm-wind-b7cplw0q`, endpoint `ep-floral-voice-b8wq234q`) |
 | DATABASE_URL | **secret** — `web/.env.local` (gitignored), Coolify app env, Mac launchd plist; the repo copy of the plist keeps a `__DATABASE_URL__` placeholder |
 
-## Data in Neon (verified 2026-09-27)
+## Data in Neon (verified 2026-09-28)
 
-8,850 candles_1m · 355,699 footprint_ticks · 2,892 events · 29 profile_sheets · 10/10 sessions ✓
+23,010 candles_1m · 895,288 footprint_ticks · 9,098 events · 77 profile_sheets · 26/26 sessions ✓
+(Recent-only window: Neon Free caps storage at 512 MB, so the 2.5-year history stays in `gcdata/data` JSON for the lab/study. Nightly ingest is `--since <rolling 21 days>`.)
 
 ## Auto-deploy
 

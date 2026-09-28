@@ -65,7 +65,13 @@ if [ -z "${DATABASE_URL:-}" ]; then
 fi
 
 log "--- ingest into Neon ---"
-/opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events 2>&1
+# Neon Free caps storage at 512 MB; the 2.5-year history stays in
+# gcdata/data JSON (the lab/study read those files directly). Ingest a rolling
+# ~3-week window so the dashboard's 5-day profile composite stays intact
+# without hitting the storage cap.
+SINCE=$(date -v-21d '+%Y-%m-%d')
+log "ingest window: $SINCE .. $TO"
+/opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./db/ingest.ts --since "$SINCE" --profiles --events 2>&1
 INGEST_RC=$?
 log "ingest exit=$INGEST_RC"
 
