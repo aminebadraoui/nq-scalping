@@ -17,6 +17,8 @@ export type Snapshot = {
 
 export type LiveMinute = {
   t: string;
+  /** UTC calendar date of the bar (live ticks only) */
+  du?: string;
   /** calendar date of the bar (feed clock) — only set for collected bars, so
    *  an overnight session that crosses midnight maps to the right instants */
   d?: string;

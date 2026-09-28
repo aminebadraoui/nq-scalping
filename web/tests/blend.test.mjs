@@ -44,6 +44,17 @@ test("blend crosses midnight correctly (winter: UTC → feed is -6h)", () => {
   assert.equal(out[6].d, "2026-12-15");
 });
 
+test("UTC-midnight rollover: each live bar uses its OWN date, not 'today'", () => {
+  // 23:50Z on the 27th = 19:50 New York (EDT, -4) = 18:50 feed, still the 27th
+  const before = blendLiveMinutes(hist, [{ ...liveMinute("23:50"), du: "2026-09-27" }], "2026-09-28");
+  assert.equal(before[6].t, "18:50");
+  assert.equal(before[6].d, "2026-09-27", "the bar belongs to the 27th, not to 'today' (the 28th)");
+  // 00:10Z on the 28th = 20:10 New York on the 27th = 19:10 feed on the 27th
+  const after = blendLiveMinutes(hist, [{ ...liveMinute("00:10"), du: "2026-09-28" }], "2026-09-28");
+  assert.equal(after[6].t, "19:10");
+  assert.equal(after[6].d, "2026-09-27", "00:10Z on the 28th is still the 27th in Chicago");
+});
+
 test("the collected minutes pass through untouched", () => {
   const out = blendLiveMinutes(hist, [], "2026-09-25");
   assert.deepEqual(out, hist);

@@ -56,9 +56,12 @@ export function blendLiveMinutes<T extends { t: string; d?: string; live?: boole
   const out = [...hist];
   for (const m of live) {
     if (!/^\d{2}:\d{2}$/.test(m.t)) continue; // the snapshot's "now" placeholder
-    const ts = utcToEpoch(m.t, utcDate);
+    // the bar's OWN utc date when it has one — after UTC midnight "today" is
+    // already tomorrow and every live bar would land 24h in the future
+    const day = (m as { du?: string }).du ?? utcDate;
+    const ts = utcToEpoch(m.t, day);
     if (!Number.isFinite(ts) || ts <= lastTs) continue; // overlap or stale
-    const stamp = utcToFeedStamp(m.t, utcDate);
+    const stamp = utcToFeedStamp(m.t, day);
     if (!stamp.hhmm) continue;
     out.push({ ...m, t: stamp.hhmm, d: stamp.day, live: false } as T);
   }

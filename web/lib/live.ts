@@ -29,6 +29,9 @@ export type Tick = {
 
 export type LiveMinute = {
   t: string; // "HH:mm" UTC (ticks are keyed by UTC minute)
+  /** UTC calendar date of this bar. Without it, reconstructing the instant
+   *  after UTC midnight shifts every live bar a day forward. */
+  du?: string;
   o: number;
   h: number;
   l: number;
@@ -159,7 +162,7 @@ class LiveFeed {
       if (this.state.minutes.length > 480) this.state.minutes = this.state.minutes.slice(-480);
       // levels are only meaningful for the recent window — drop the rest
       for (let i = 0; i < this.state.minutes.length - 30; i++) delete this.state.minutes[i].levels;
-      cur = { t: hhmm, o: t.ltp, h: t.ltp, l: t.ltp, c: t.ltp, vol: 0, buy: 0, sell: 0, live: true };
+      cur = { t: hhmm, du: key.slice(0, 10), o: t.ltp, h: t.ltp, l: t.ltp, c: t.ltp, vol: 0, buy: 0, sell: 0, live: true };
       this.state.cur = cur;
     }
     cur.h = Math.max(cur.h, t.ltp);
