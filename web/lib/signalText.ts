@@ -15,7 +15,7 @@
  * ------------------------------------------------------------------ */
 
 import type { Signal } from "./signals";
-import type { MechanismRead, Ingredient } from "./mechanism";
+import { sizeLine, type MechanismRead, type Ingredient } from "./mechanism";
 import type { PullbackRead } from "./pullback";
 import type { PriceActionRead } from "./priceaction";
 import type { OptionsRead } from "./options";
@@ -88,7 +88,7 @@ export function formatSignalHtml(
   L.push(escHtml(read.target));
   L.push("");
   L.push("<b>SIZE</b>");
-  L.push(escHtml(`contracts = risk ÷ (${fmt(Math.abs(read.stopPx - read.entryPx))} pts × $20)`));
+  L.push(escHtml(sizeLine(read)));
 
   // ---- reasoning: the full checklist ----
   L.push("");

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   createChart,
   ColorType,
@@ -13,6 +13,7 @@ import {
   type ISeriesPrimitiveBase,
   type SeriesAttachedParameter,
   type IPrimitivePaneView,
+  type AutoscaleInfo,
 } from "lightweight-charts";
 import type { LiveMinute } from "@/lib/useLive";
 import { cdtToET, utcToET, fmtETTime, feedToEpoch, utcToEpoch } from "@/lib/times";
@@ -44,20 +45,33 @@ function toTime(t: string, dataDate: string, live: boolean, barDate?: string): U
 }
 
 /* ------------------------------------------------------------------ */
-/* Level overlay primitive: POC / VAH / VAL lines + LVN zone edge       */
-/* lines with labels. Drawn inside a series primitive so it NEVER       */
-/* affects the price autoscale (price lines were squashing the bars).   */
+/* Level overlay primitive: POC / VAH / VAL lines + LVN zone BANDS.     */
+/* Drawn inside a series primitive so it NEVER affects the price        */
+/* autoscale (price lines were squashing the bars).                     */
+/*                                                                      */
+/* Progressive disclosure:                                              */
+/*   · profile gating — at a wide price zoom only the most recent       */
+/*     profile(s) are drawn; older profiles (P1→P5) appear as you zoom  */
+/*     the price axis in. Zones in view but gated are counted in a      */
+/*     "hidden" chip instead of being dropped silently.                 */
+/*   · zone bands — a zone whose pixel height is big enough is drawn as */
+/*     a filled band with ONE label centred in the middle (not two bare */
+/*     edges with text). Thin-on-screen zones stay as edge lines.       */
+/*   · emphasis — alpha ramps down with distance from the last price;   */
+/*     the label budget caps on-screen labels so the chart never turns  */
+/*     into a wall of text.                                             */
 /* ------------------------------------------------------------------ */
 
 type OverlayLine = { price: number; color: string; dashed: boolean; width: number; label: string; isPoc: boolean };
 
-/* Progressive-disclosure thresholds, in POINTS of distance from price.
- * Near zones lead (full alpha, fill, label); far zones stay drawn but
- * recede, and anything outside the view becomes an edge chip instead of
- * silently disappearing. */
-const NEAR_LABEL = 30; // LVN labels only within this distance
-const NEAR_FILL = 18; // zone fills only this close
-const FAR_LEVEL = 90; // distance at which a level line hits minimum alpha
+const NEAR_LABEL = 30; // pts — POC labels emphasized within this distance
+const NEAR_FILL = 18; // pts — bands within this of price get a fill
+const FAR_LEVEL = 90; // pts — distance at which a level fades to min alpha
+const MIN_ALPHA = 0.16; // floor alpha for far levels
+const MIN_BAND_PX = 9; // bitmap px — min band height for a fill
+const BIG_BAND_PX = 26; // bitmap px — bands this tall get a fill even when far
+const LABEL_MIN_PX = 12; // bitmap px — min band height for a zone label
+const LABEL_STEP = 36; // media px — one label per this much pane height
 
 class LevelOverlayPrimitive implements ISeriesPrimitiveBase<SeriesAttachedParameter> {
   private param: SeriesAttachedParameter | null = null;
@@ -74,6 +88,9 @@ class LevelOverlayPrimitive implements ISeriesPrimitiveBase<SeriesAttachedParame
   }
   /** last traded price — drives the distance-based emphasis ramp */
   lastPrice = 0;
+  /** visible bar count — set by the component's range subscription; used for
+   *  the time-zoom disclosure gate ("wide candle spacing reveals everything") */
+  visBars = 0;
 
   update(sets: LevelSet[], vwap?: number, showPoc = true, showVa = true, lastPrice = 0) {
     this.sets = sets;
@@ -88,13 +105,10 @@ class LevelOverlayPrimitive implements ISeriesPrimitiveBase<SeriesAttachedParame
     }
   }
 
-  private lines(): OverlayLine[] {
+  /** POC / VAH / VAL / VWAP lines for the gated (revealed) profiles. */
+  private lines(sets: LevelSet[]): OverlayLine[] {
     const out: OverlayLine[] = [];
-    for (const s of [...this.sets].sort((a, b) => b.recency - a.recency)) {
-      for (const [a, b] of s.lvns) {
-        out.push({ price: a, color: s.color, dashed: false, width: 1, label: `${s.label} LVN ${fmt(a)}–${fmt(b)}`, isPoc: false });
-        out.push({ price: b, color: s.color, dashed: false, width: 1, label: "", isPoc: false });
-      }
+    for (const s of [...sets].sort((a, b) => b.recency - a.recency)) {
       if (this.showPoc) {
         out.push({ price: s.poc, color: s.color, dashed: false, width: 2, label: `${s.label} POC ${fmt(s.poc)}`, isPoc: true });
       }
@@ -122,59 +136,112 @@ class LevelOverlayPrimitive implements ISeriesPrimitiveBase<SeriesAttachedParame
               const vr = scope.verticalPixelRatio as number;
               const hr = scope.horizontalPixelRatio as number;
               const W = (scope.mediaSize.width as number) * hr;
+              const H = (scope.mediaSize.height as number) * vr;
               const yOf = (price: number): number | null => {
                 const y = p.series.priceToCoordinate(price);
                 return y === null ? null : (y as number) * vr;
               };
 
-              const H = (scope.mediaSize.height as number) * vr;
-              const band = (a: number, b: number): string | null => {
-                const y1 = yOf(a);
-                const y2 = yOf(b);
-                if (y1 === null || y2 === null) return null;
-                const top = Math.min(y1, y2);
-                const bot = Math.max(y1, y2);
-                if (bot < -2 || top > H + 2) return null; // fully out of view
-                return `${top}|${bot}`;
-              };
+              // 0 · visible price span → progressive profile gating. The
+              //     series' own coordinate mapping gives the price at the top
+              //     and bottom of the pane; the span decides how much of the
+              //     P0→P5 stack is revealed. A deep TIME zoom (wide candle
+              //     spacing) reveals the full stack too — "zoom in" works on
+              //     either axis.
+              let span = 0;
+              try {
+                const top = p.series.coordinateToPrice(0);
+                const bot = p.series.coordinateToPrice(scope.mediaSize.height as number);
+                if (top !== null && bot !== null) span = Math.abs((top as number) - (bot as number));
+              } catch {
+                span = 0;
+              }
+              let maxRec = span > 220 ? 0 : span > 110 ? 1 : span > 55 ? 2 : span > 28 ? 3 : 99;
+              if (this.visBars > 0 && W / this.visBars >= 16) maxRec = 99;
+              const sets = span > 0 ? this.sets.filter((s) => s.recency <= maxRec) : this.sets;
 
-              // 1 · zone fills — only near price, so the middle of the chart
-              //     stays clean and far zones are indicated by their edges
+              // 1 · zone geometry + census (all sets: off-screen → chips,
+              //     in-view but gated → "hidden" chip until the user zooms in)
+              type Zone = { s: LevelSet; a: number; b: number; y1: number; y2: number; px: number; cy: number; dist: number };
+              const zones: Zone[] = [];
+              const off = { above: 0, below: 0, nearestAbove: 0, nearestBelow: 0, hidden: 0 };
               for (const s of this.sets) {
+                const shown = span <= 0 || s.recency <= maxRec;
                 for (const [a, b] of s.lvns) {
-                  const near = this.lastPrice > 0 ? Math.abs((a + b) / 2 - this.lastPrice) <= NEAR_FILL : true;
-                  if (!near) continue;
                   const y1 = yOf(a);
                   const y2 = yOf(b);
                   if (y1 === null || y2 === null) continue;
                   const top = Math.min(y1, y2);
-                  ctx.fillStyle = s.color + "18";
-                  ctx.fillRect(0, top, W, Math.max(1, Math.abs(y2 - y1)));
-                }
-              }
-
-              // 2 · every level line is still drawn when it is on screen; the
-              //     alpha ramps with distance from price (progressive emphasis)
-              const lines = this.lines();
-              const offscreen = { above: 0, below: 0, nearestAbove: 0, nearestBelow: 0 };
-              for (const s of this.sets) {
-                for (const [a, b] of s.lvns) {
-                  const y1 = yOf(a);
-                  const y2 = yOf(b);
-                  if (y1 !== null && y2 !== null && Math.min(y1, y2) > -2 && Math.max(y1, y2) < H + 2) continue;
-                  if (y1 === null || y1 < 0) {
-                    offscreen.above++;
-                    offscreen.nearestAbove = Math.max(offscreen.nearestAbove, b);
-                  } else {
-                    offscreen.below++;
-                    offscreen.nearestBelow = Math.min(offscreen.nearestBelow || Infinity, a);
+                  const bot = Math.max(y1, y2);
+                  if (bot < -2) {
+                    off.above++;
+                    off.nearestAbove = Math.max(off.nearestAbove, b);
+                    continue;
                   }
+                  if (top > H + 2) {
+                    off.below++;
+                    off.nearestBelow = Math.min(off.nearestBelow || Infinity, a);
+                    continue;
+                  }
+                  if (!shown) {
+                    off.hidden++;
+                    continue;
+                  }
+                  const cy = (top + bot) / 2;
+                  zones.push({
+                    s,
+                    a,
+                    b,
+                    y1: top,
+                    y2: bot,
+                    px: bot - top,
+                    cy,
+                    dist: this.lastPrice > 0 ? Math.abs((a + b) / 2 - this.lastPrice) : 0,
+                  });
                 }
               }
+              const fillable = (z: Zone) => z.px >= MIN_BAND_PX && (z.dist <= NEAR_FILL || z.px >= BIG_BAND_PX);
+
+              // 2 · zone bands — the fill is what makes a zone read as a
+              //     ZONE; the edge lines only delineate it. Near zones lead.
+              //     Clamped to the pane so a straddling band never paints
+              //     over the time axis.
+              for (const z of zones) {
+                if (!fillable(z)) continue;
+                const top = Math.max(z.y1, 0);
+                const bot = Math.min(z.y2, H);
+                if (bot - top < 1) continue;
+                ctx.globalAlpha = z.dist <= NEAR_FILL ? 0.15 : 0.09;
+                ctx.fillStyle = z.s.color;
+                ctx.fillRect(0, top, W, bot - top);
+              }
+              ctx.globalAlpha = 1;
+
+              // 3 · zone edges — always drawn while on screen; alpha ramps
+              //     with distance from price, filled bands stay stronger
+              for (const z of zones) {
+                const ramp = this.lastPrice > 0 ? Math.max(0, 1 - z.dist / FAR_LEVEL) : 0.5;
+                let alpha = MIN_ALPHA + (0.85 - MIN_ALPHA) * ramp;
+                if (fillable(z)) alpha = Math.min(1, alpha + 0.15);
+                ctx.globalAlpha = alpha;
+                ctx.strokeStyle = z.s.color;
+                ctx.lineWidth = 1 * vr;
+                ctx.setLineDash([]);
+                for (const y of [z.y1, z.y2]) {
+                  if (y < -1 || y > H + 1) continue;
+                  ctx.beginPath();
+                  ctx.moveTo(0, y);
+                  ctx.lineTo(W, y);
+                  ctx.stroke();
+                }
+              }
+              ctx.globalAlpha = 1;
+
+              // 4 · POC / VAH / VAL / VWAP lines
+              const lines = this.lines(sets);
               for (const l of lines) {
                 const y = yOf(l.price);
-                if (y === null) continue;
-                if (y < -2 || y > H + 2) continue; // off-screen: counted below
+                if (y === null || y < -2 || y > H + 2) continue;
                 const d = this.lastPrice > 0 ? Math.abs(l.price - this.lastPrice) : 0;
                 const alpha = l.isPoc ? (d <= NEAR_LABEL ? 0.95 : 0.55) : 0.3 + 0.7 * Math.max(0, 1 - d / FAR_LEVEL);
                 ctx.globalAlpha = Math.min(1, alpha);
@@ -189,34 +256,45 @@ class LevelOverlayPrimitive implements ISeriesPrimitiveBase<SeriesAttachedParame
               }
               ctx.globalAlpha = 1;
 
-              // 3 · labels: always for POC/VA near price, LVN labels only when
-              //     the zone is genuinely close (progressive disclosure)
-              ctx.font = `${8.5 * vr}px ui-monospace, monospace`;
-              ctx.textBaseline = "middle";
+              // 5 · labels — ONE per zone, centred in the band. Near zones
+              //     win the budget; collisions are skipped, never overlapped.
               const placed: number[] = [];
-              const ordered = lines.filter((l) => l.label).sort((a, b) => (yOf(b.price) ?? 0) - (yOf(a.price) ?? 0));
-              for (const l of ordered) {
+              const budget = Math.max(4, Math.floor((scope.mediaSize.height as number) / LABEL_STEP));
+              type Cand = { text: string; y: number; color: string; dist: number; px: number };
+              const cands: Cand[] = [];
+              const seen = new Set<string>();
+              for (const z of zones) {
+                if (z.px < LABEL_MIN_PX || z.dist > FAR_LEVEL) continue;
+                const text = `${z.s.label} LVN ${fmt(z.a)}–${fmt(z.b)}`;
+                if (seen.has(text)) continue;
+                seen.add(text);
+                cands.push({ text, y: z.cy, color: z.s.color, dist: z.dist, px: z.px });
+              }
+              for (const l of lines) {
+                if (!l.label) continue;
                 const y = yOf(l.price);
                 if (y === null || y < 0 || y > H) continue;
                 const d = this.lastPrice > 0 ? Math.abs(l.price - this.lastPrice) : 0;
-                const isLvn = l.label.includes("LVN");
-                if (isLvn && d > NEAR_LABEL) continue;
-                if (!isLvn && !l.isPoc && d > NEAR_LABEL * 2) continue;
-                if (placed.some((q) => Math.abs(q - y) < 11 * vr)) continue;
+                if (!l.isPoc && d > NEAR_LABEL * 2) continue;
+                cands.push({ text: l.label, y, color: l.color, dist: d, px: 0 });
+              }
+              cands.sort((a, b) => a.dist - b.dist || b.px - a.px);
+              ctx.font = `${9 * vr}px ui-monospace, monospace`;
+              ctx.textBaseline = "middle";
+              for (const c of cands) {
+                if (placed.length >= budget) break;
+                const y = Math.max(7 * vr, Math.min(H - 7 * vr, c.y));
+                if (placed.some((q) => Math.abs(q - y) < 13 * vr)) continue;
                 placed.push(y);
-                if (band(l.price, l.price)) {
-                  const w = ctx.measureText(l.label).width;
-                  ctx.fillStyle = "rgba(12,12,15,0.8)";
-                  ctx.fillRect(4 * hr, y - 6 * vr, w + 6 * hr, 12 * vr);
-                  ctx.fillStyle = l.color;
-                  ctx.globalAlpha = 0.9;
-                  ctx.fillText(l.label, 7 * hr, y);
-                  ctx.globalAlpha = 1;
-                }
+                const w = ctx.measureText(c.text).width;
+                ctx.fillStyle = "rgba(12,12,15,0.82)";
+                ctx.fillRect(4 * hr, y - 6.5 * vr, w + 6 * hr, 13 * vr);
+                ctx.fillStyle = c.color;
+                ctx.fillText(c.text, 7 * hr, y);
               }
 
-              // 4 · edge chips: zones that exist but sit outside the view, so
-              //     nothing is silently lost when the scale is tight
+              // 6 · edge chips: zones outside the view + profiles gated by
+              //     the current zoom level (nothing is silently lost)
               const chip = (text: string, y: number, col: string) => {
                 ctx.font = `${8.5 * vr}px ui-monospace, monospace`;
                 const w = ctx.measureText(text).width;
@@ -225,11 +303,14 @@ class LevelOverlayPrimitive implements ISeriesPrimitiveBase<SeriesAttachedParame
                 ctx.fillStyle = col;
                 ctx.fillText(text, 7 * hr, y);
               };
-              if (offscreen.above > 0 && this.lastPrice > 0) {
-                chip(`▲ ${offscreen.above} LVN zone${offscreen.above > 1 ? "s" : ""} above · nearest ${fmt(offscreen.nearestAbove)}`, 10 * vr, "#71717a");
+              if (off.above > 0 && this.lastPrice > 0) {
+                chip(`▲ ${off.above} LVN zone${off.above > 1 ? "s" : ""} above · nearest ${fmt(off.nearestAbove)}`, 10 * vr, "#71717a");
               }
-              if (offscreen.below > 0 && this.lastPrice > 0) {
-                chip(`▼ ${offscreen.below} LVN zone${offscreen.below > 1 ? "s" : ""} below · nearest ${fmt(offscreen.nearestBelow)}`, H - 10 * vr, "#71717a");
+              if (off.below > 0 && this.lastPrice > 0) {
+                chip(`▼ ${off.below} LVN zone${off.below > 1 ? "s" : ""} below · nearest ${fmt(off.nearestBelow)}`, H - 10 * vr, "#71717a");
+              }
+              if (off.hidden > 0) {
+                chip(`⊘ ${off.hidden} LVN zone${off.hidden > 1 ? "s" : ""} hidden · zoom in to reveal`, (off.above > 0 ? 24 : 10) * vr, "#52525b");
               }
             });
           },
@@ -275,6 +356,18 @@ export default function FlowChart({
   const barsRef = useRef<{ low: number; high: number; close: number }[]>([]);
   const visRef = useRef({ from: 0, to: 0 });
 
+  // axis measurements (declared before the chart effect — its rAF uses it)
+  const [axis, setAxis] = useState({ priceW: 68, timeH: 26 });
+  const measureAxes = () => {
+    const c = chartRef.current;
+    if (!c) return;
+    try {
+      setAxis({ priceW: c.priceScale("right").width(), timeH: c.timeScale().height() });
+    } catch {
+      /* ignore */
+    }
+  };
+
   const rangeInitRef = useRef<WeakSet<object>>(new WeakSet());
 
   const date = dataDate || new Date().toISOString().slice(0, 10);
@@ -285,13 +378,37 @@ export default function FlowChart({
    * Zoom policy (TradingView-like):
    *   · open on the most recent DEFAULT_WINDOW bars — readable candles, not a
    *     hairline full day and not three giant live bars
+   *   · the 1h / 2h / 4h / day selector refits to that span
    *   · scrolling back towards the left edge LOADS more of the day in
    *     progressively larger chunks, so the whole session stays reachable
    *   · double-click the time axis → back to the default window
    *   · double-click the price axis → reset the price scale to auto-fit
    */
-  const DEFAULT_WINDOW = 240;
-  const [windowBars, setWindowBars] = useState(DEFAULT_WINDOW);
+  const DEFAULT_WINDOW = 120;
+  const WINDOWS: { bars: number; label: string }[] = [
+    { bars: 60, label: "1h" },
+    { bars: 120, label: "2h" },
+    { bars: 240, label: "4h" },
+    { bars: Infinity, label: "day" },
+  ];
+  const [windowBars, setWindowBars] = useState<number>(DEFAULT_WINDOW);
+
+  /* ── "center" mode (TradingView "fixed range", scalping flavour) ─────────
+   * Keeps a minimum band of FOCUS_PTS points around the LAST price whenever
+   * the live edge is on screen. Effect: constant pixel size per point — the
+   * candles never jump or squash from bar to bar, and price stays near the
+   * pane centre. It only ever EXPANDS the visible range, so a big candle
+   * still fits; when the user scrolls back into history the scale fits the
+   * visible bars instead. Implemented with autoscaleInfoProvider (the
+   * documented way to adjust the autoscale computation). */
+  const FOCUS_PTS = 50;
+  const [center, setCenter] = useState(true);
+  const centerRef = useRef(true);
+  // keep the provider (created once, at chart setup) in sync with the state
+  useLayoutEffect(() => {
+    centerRef.current = center;
+  }, [center]);
+
   const prevLenRef = useRef(0);
   const prevFromRef = useRef(0);
   /** paging is only allowed after the user has actually touched the chart —
@@ -301,6 +418,22 @@ export default function FlowChart({
   /** true while a pagination step (not incoming data) changed the loaded span */
   const pagingRef = useRef(false);
   const data = useMemo(() => minutes.slice(-windowBars), [sig, windowBars, minutes]);
+
+  /** Set the loaded span to a chosen window and re-fit the view to it. */
+  const applyWindow = (bars: number) => {
+    pagingRef.current = false;
+    userTouchedRef.current = false; // resume auto-fitting
+    prevFromRef.current = 0; // the upcoming fit is not a leftward scroll
+    prevLenRef.current = 0; // force the data effect to re-fit
+    setWindowBars(bars);
+    const chart = chartRef.current;
+    if (!chart) return;
+    try {
+      chart.timeScale().fitContent();
+    } catch {
+      /* ignore */
+    }
+  };
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -329,6 +462,13 @@ export default function FlowChart({
         timeVisible: true,
         secondsVisible: false,
         tickMarkFormatter: (time: number) => fmtETTime(time),
+        // readability: the live candle never hugs the axis, bars keep a
+        // sane minimum spacing at wide windows, and a resize doesn't change
+        // what is on screen
+        rightOffset: 6,
+        barSpacing: 8,
+        minBarSpacing: 3,
+        lockVisibleTimeRangeOnResize: true,
       },
       localization: {
         locale: "en-US",
@@ -357,6 +497,22 @@ export default function FlowChart({
       priceLineVisible: false,
       lastValueVisible: true,
       priceFormat: { type: "price", precision: 2, minMove: 0.25 },
+      // center mode: hold a FOCUS_PTS band around the last close while the
+      // live edge is visible, so candle size stays constant and price sits
+      // near the middle of the pane. Purely additive — a wide candle still
+      // stretches the scale, and history browsing is untouched.
+      autoscaleInfoProvider: (original: () => AutoscaleInfo | null) => {
+        const res = original();
+        if (!res || !res.priceRange) return res;
+        const bars = barsRef.current;
+        const last = bars[bars.length - 1];
+        const vis = visRef.current;
+        if (!centerRef.current || !last || vis.to < bars.length - 8) return res;
+        const half = FOCUS_PTS / 2;
+        res.priceRange.minValue = Math.min(res.priceRange.minValue, last.close - half);
+        res.priceRange.maxValue = Math.max(res.priceRange.maxValue, last.close + half);
+        return res;
+      },
     }) as ISeriesApi<"Candlestick">;
     vwapSeriesRef.current = chart.addSeries(LineSeries, {
       color: "#e4e4e7",
@@ -389,6 +545,7 @@ export default function FlowChart({
       chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
         if (!r) return;
         visRef.current = { from: r.from, to: r.to };
+        if (overlayRef.current) overlayRef.current.visBars = r.to - r.from;
       });
     } catch {
       /* ignore */
@@ -417,36 +574,34 @@ export default function FlowChart({
   // Double-click the price axis → reset the price scale to auto-fit.
   // Double-click the time axis → back to the default zoom window.
   // Detected by hit-testing the container so axis DRAGGING still works.
-  const [axis, setAxis] = useState({ priceW: 68, timeH: 26 });
-  const measureAxes = () => {
-    const c = chartRef.current;
-    if (!c) return;
-    try {
-      setAxis({ priceW: c.priceScale("right").width(), timeH: c.timeScale().height() });
-    } catch {
-      /* ignore */
-    }
-  };
   const resetPriceScale = () => {
     try {
-      candleRef.current?.priceScale().applyOptions({ autoScale: true });
+      const ps = candleRef.current?.priceScale();
+      if (!ps) return;
+      // toggling forces the library to recompute the fit to the visible bars
+      ps.applyOptions({ autoScale: false });
+      ps.applyOptions({ autoScale: true });
     } catch {
       /* ignore */
     }
   };
   const resetZoom = () => {
-    const chart = chartRef.current;
-    if (!chart) return;
-    pagingRef.current = false;
-    userTouchedRef.current = false; // resume auto-fitting
-    prevFromRef.current = 0; // the upcoming fit is not a leftward scroll
-    prevLenRef.current = 0; // force the data effect to re-fit
-    setWindowBars(DEFAULT_WINDOW);
-    try {
-      chart.timeScale().fitContent();
-    } catch {
-      /* ignore */
-    }
+    applyWindow(DEFAULT_WINDOW);
+  };
+  const toggleCenter = () => {
+    setCenter((v) => !v);
+    // the provider reads centerRef (synced by the layout effect before paint);
+    // re-run the autoscale so the new mode takes effect immediately
+    requestAnimationFrame(() => {
+      try {
+        const ps = candleRef.current?.priceScale();
+        if (!ps) return;
+        ps.applyOptions({ autoScale: false });
+        ps.applyOptions({ autoScale: true });
+      } catch {
+        /* ignore */
+      }
+    });
   };
   const onChartDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -625,6 +780,35 @@ export default function FlowChart({
         }}
       />
       <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[10px] text-zinc-500">
+        <span className="flex items-center gap-1">
+          <span className="mr-1 text-zinc-600">window</span>
+          {WINDOWS.map((w) => {
+            const isDay = w.bars === Infinity;
+            const active = isDay ? windowBars >= minutes.length && minutes.length > 240 : windowBars === w.bars;
+            return (
+              <button
+                key={w.label}
+                onClick={() => applyWindow(w.bars)}
+                title={isDay ? "the whole collected session (scroll left to page back from any smaller window)" : `show the most recent ${w.label}`}
+                className={`rounded border px-1.5 py-0.5 transition-colors ${
+                  active ? "border-zinc-500 bg-zinc-800 text-zinc-100" : "border-zinc-800 bg-panel text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {w.label}
+              </button>
+            );
+          })}
+          <span className="mx-1 h-3 w-px bg-zinc-700" />
+          <button
+            onClick={toggleCenter}
+            title="center = pin a 50-pt band around the last price while the live edge is visible, so candle size stays constant and price sits mid-pane (off = fit the visible bars exactly)"
+            className={`rounded border px-1.5 py-0.5 transition-colors ${
+              center ? "border-zinc-500 bg-zinc-800 text-zinc-100" : "border-zinc-800 bg-panel text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            center
+          </button>
+        </span>
         <span>
           1-minute candles · <span className="text-zinc-300">{data.length} bars</span> ·{" "}
           {data[0] ? (data[0].live ? utcToET(data[0].t) : cdtToET(data[0].t)) : "—"} →{" "}
@@ -644,7 +828,7 @@ export default function FlowChart({
         </span>
         <span>
           {vwap && vwap > 0 ? <span>VWAP <span className="text-zinc-200">{fmt(vwap)}</span> · </span> : null}
-          double-click the price axis = reset the scale · double-click the time axis = reset the zoom · scroll = zoom · drag = pan · POC = solid thick · VAH/VAL = dashed · LVN = solid edges (near zones lead, far ones fade; off-screen zones are counted at the chart edges)
+          LVN = colored bands, one label per zone · zoom the price axis in to reveal older profiles (P1→P5) progressively · center = constant candle size around the live price (off = fit visible bars) · double-click the price axis = refit & re-center · double-click the time axis = reset the zoom · scroll = zoom · drag = pan · POC = solid thick · VAH/VAL = dashed
         </span>
       </div>
     </div>

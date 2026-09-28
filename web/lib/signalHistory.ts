@@ -37,6 +37,8 @@ export type SignalHistoryEntry = {
   stop: string;
   /** the target line */
   target: string;
+  /** the sizing line (contracts = risk ÷ (pts × $20)) */
+  size: string;
   verdict: string;
   headline: string;
   source: string;
@@ -74,6 +76,7 @@ create table if not exists signals (
   entry   text not null default '',
   stop    text not null default '',
   target  text not null default '',
+  size    text not null default '',
   verdict text not null default '',
   headline text not null default '',
   source  text not null default 'live',
@@ -81,6 +84,7 @@ create table if not exists signals (
   sent    boolean not null default false,
   reason  text not null default ''
 );
+alter table signals add column if not exists size text not null default '';
 create index if not exists signals_ts_idx on signals (ts desc);
 `;
 
@@ -106,16 +110,16 @@ async function persist(e: SignalHistoryEntry): Promise<void> {
   try {
     await getDb()`
       insert into signals
-        (key, ts, day, time_et, symbol, side, price, entry, stop, target, verdict, headline, source, test, sent, reason)
+        (key, ts, day, time_et, symbol, side, price, entry, stop, target, size, verdict, headline, source, test, sent, reason)
       values
-        (${e.id}, ${e.ts}, ${e.day}, ${e.timeET}, ${e.symbol}, ${e.side}, ${e.price}, ${e.entry}, ${e.stop}, ${e.target}, ${e.verdict}, ${e.headline}, ${e.source}, ${e.test}, ${e.sent}, ${e.reason})
+        (${e.id}, ${e.ts}, ${e.day}, ${e.timeET}, ${e.symbol}, ${e.side}, ${e.price}, ${e.entry}, ${e.stop}, ${e.target}, ${e.size}, ${e.verdict}, ${e.headline}, ${e.source}, ${e.test}, ${e.sent}, ${e.reason})
       on conflict (key) do nothing`;
   } catch {
     /* best-effort — the in-memory buffer still holds the entry */
   }
 }
 
-export type SignalHistoryInput = Omit<SignalHistoryEntry, "id" | "ts"> & { ts?: number };
+export type SignalHistoryInput = Omit<SignalHistoryEntry, "id" | "ts" | "size"> & { ts?: number; size?: string };
 
 /** Record a push. Adds to the in-memory buffer first (so it is visible even
  *  if the DB is down), then persists best-effort. Never throws. */
@@ -131,6 +135,7 @@ export async function recordSignal(input: SignalHistoryInput): Promise<SignalHis
     entry: input.entry,
     stop: input.stop,
     target: input.target,
+    size: input.size ?? "—",
     verdict: input.verdict,
     headline: input.headline,
     source: input.source,
@@ -162,6 +167,7 @@ type DbRow = {
   entry: string;
   stop: string;
   target: string;
+  size: string;
   verdict: string;
   headline: string;
   source: string;
@@ -183,6 +189,7 @@ function mapDbRow(r: DbRow): SignalHistoryEntry {
     entry: r.entry,
     stop: r.stop,
     target: r.target,
+    size: r.size ?? "—",
     verdict: r.verdict,
     headline: r.headline,
     source: r.source,
@@ -203,7 +210,7 @@ export async function getSignalHistory(limit = 100): Promise<SignalHistoryEntry[
   if (await ensureTable()) {
     try {
       const rows = (await getDb()`
-        select key, ts, day, time_et, symbol, side, price, entry, stop, target, verdict, headline, source, test, sent, reason
+        select key, ts, day, time_et, symbol, side, price, entry, stop, target, size, verdict, headline, source, test, sent, reason
         from signals order by ts desc limit ${limit}`) as unknown as DbRow[];
       const seen = new Set(mem.map((m) => m.id));
       for (const r of rows) {

@@ -50,3 +50,11 @@ test("side and price round-trip through the buffer", async () => {
   assert.equal(e.sent, false);
   assert.match(e.reason, /chat not found/);
 });
+
+test("the size line round-trips and defaults to — when absent", async () => {
+  await recordSignal({ ...base, size: "contracts = risk ÷ (7.00 pts × $20)", ts: 2 });
+  const e = getMemoryHistory(1)[0];
+  assert.match(e.size, /7\.00 pts × \$20/);
+  const plain = await recordSignal({ ...base, ts: 3 });
+  assert.equal(plain.size, "—");
+});

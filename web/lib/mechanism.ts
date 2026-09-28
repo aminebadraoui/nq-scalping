@@ -97,6 +97,17 @@ function fmtN(n: number, dp = 2) {
   return n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
 }
 
+/** The printed sizing line (STRATEGY.md "The trade, in four lines"):
+ *  contracts = risk ÷ (stop distance in pts × $20) — $20 = NQ point value.
+ *  Single source of truth: the Telegram card, the checklist panel and the
+ *  signal history all render this exact line. */
+export function sizeLine(read: { stopPx: number; entryPx: number }): string {
+  const pts = Math.abs(read.stopPx - read.entryPx);
+  return Number.isFinite(pts) && pts > 0
+    ? `contracts = risk ÷ (${pts.toFixed(2)} pts × $20)`
+    : `contracts = risk ÷ (${SCALP_STOP_PTS.toFixed(2)} pts × $20)`;
+}
+
 export function readMechanism(inp: MechanismInput, indexOf?: Map<string, number>): MechanismRead {
   const { minutes, lastPrice } = inp;
   const n = minutes.length;

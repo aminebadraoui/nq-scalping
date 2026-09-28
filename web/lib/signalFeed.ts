@@ -26,6 +26,8 @@ import {
   type CollectedContext,
   type SignalSnapshot,
 } from "./signalEngine";
+import { cardGateOpen } from "./signals";
+import { sizeLine } from "./mechanism";
 import { sendTelegram } from "./notify";
 import { formatSignalHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
@@ -129,13 +131,14 @@ class SignalFeed {
   }
 
   private async maybeSend(snap: SignalSnapshot): Promise<void> {
-    // Only auto-notify on a reversal with at least one support ingredient
-    // (present >= 4 of 6) AND every directional box aligned (order flow +
-    // price action). Pullbacks are deliberately not notified.
-    // Backtest optimum: 4/6 hits ~PF 2.0 out-of-sample (6/6 never fires,
-    // 5/6 leaves PF ~1.7).
-    const aligned = snap.signal.tone === "long" || snap.signal.tone === "short";
-    if (!aligned || snap.mech.present < 4) return;
+    // The card gate (STRATEGY.md "When a signal exists"): every directional
+    // box aligned AND all three required ingredients present — location
+    // "yes" = at/inside an LVN, and "no reclaim, no trade" — AND at least
+    // one confirmation (present >= 4 of 6). Backtest optimum: 4/6 hits
+    // ~PF 2.0 out-of-sample (6/6 never fires, 5/6 leaves PF ~1.7).
+    // Pullbacks are deliberately not notified.
+    const gate = cardGateOpen(snap.signal, snap.mech);
+    if (!gate.ok) return;
 
     // Footprint signature filters (see FOOTPRINT_REVERSAL_RESEARCH.md):
     // 1) a footprint stack forming AGAINST the trade is near-breakeven — skip it.
@@ -174,6 +177,7 @@ class SignalFeed {
       entry: read.trigger,
       stop: read.invalidation,
       target: read.target,
+      size: sizeLine(read),
       verdict: read.verdict,
       headline: read.headline,
       source: snap.source,
@@ -222,6 +226,7 @@ class SignalFeed {
       entry: snap.mech.trigger,
       stop: snap.mech.invalidation,
       target: snap.mech.target,
+      size: sizeLine(snap.mech),
       verdict: snap.signal.verdict,
       headline: snap.signal.headline,
       source: snap.source,

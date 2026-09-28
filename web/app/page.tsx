@@ -8,7 +8,7 @@ import MechanismPanel from "@/components/MechanismPanel";
 import StoryPanel from "@/components/StoryPanel";
 import { readMechanism } from "@/lib/mechanism";
 import { readPriceAction } from "@/lib/priceaction";
-import { composeSignals, boxFromMechanism, boxFromPriceAction, boxFromOptions } from "@/lib/signals";
+import { composeSignals, boxFromMechanism, boxFromPriceAction, boxFromOptions, cardGateOpen } from "@/lib/signals";
 import { readOptionsFromSnapshot, wallsFromRead, type GammaRead, type OptionsRefreshMeta } from "@/lib/options";
 import PriceActionPanel from "@/components/PriceActionPanel";
 import OptionsPanel from "@/components/OptionsPanel";
@@ -427,6 +427,11 @@ export default function DashboardPage() {
     [mech, pa, optRead],
   );
 
+  // the same card gate the live feed applies (STRATEGY.md "When a signal
+  // exists"): boxes aligned + all 3 required + ≥4/6 — shown on the card so
+  // the dashboard never claims a signal the feed would not push
+  const cardGate = useMemo(() => cardGateOpen(finalSignal, mech), [finalSignal, mech]);
+
   const alertCounts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const a of alerts) c[a.kind] = (c[a.kind] ?? 0) + 1;
@@ -594,7 +599,7 @@ export default function DashboardPage() {
 
         {/* right column */}
         <aside className="space-y-4">
-          <SignalSummary signal={finalSignal} />
+          <SignalSummary signal={finalSignal} gate={cardGate} stale={mechStale} source={mechLive ? "live" : "collected"} />
           <SignalHistory />
           <MechanismPanel read={mech} asOfET={mechAsOf} stale={mechStale} source={mechLive ? "live" : "collected"} />
           <PriceActionPanel read={pa} asOfET={mechAsOf} stale={mechStale} source={mechLive ? "live" : "collected"} />
@@ -622,6 +627,16 @@ export default function DashboardPage() {
                     <span className="text-info">H {fmt(l.vah)}</span>
                     <span className="text-info">L {fmt(l.val)}</span>
                   </div>
+                  {l.lvns.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1 font-mono text-[9px] text-zinc-500">
+                      {l.lvns.slice(0, 6).map(([a, b], i) => (
+                        <span key={i} className="rounded border px-1 py-px" style={{ borderColor: l.color + "44", color: l.color }}>
+                          {fmt(a)}–{fmt(b)}
+                        </span>
+                      ))}
+                      {l.lvns.length > 6 && <span className="text-zinc-600">+{l.lvns.length - 6} more</span>}
+                    </div>
+                  )}
                 </div>
               ))}
               {levels.length === 0 && <p className="font-mono text-xs text-zinc-600">no sheet data</p>}

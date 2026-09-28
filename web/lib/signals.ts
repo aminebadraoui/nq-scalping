@@ -141,3 +141,34 @@ export function composeSignals(boxes: BoxVerdict[]): Signal {
 
   return { side, tone, verdict, headline, agree, boxes, contexts, contextNotes };
 }
+
+/* ------------------------------------------------------------------ *
+ * The card gate — STRATEGY.md "When a signal exists", gates 1–3.
+ *
+ * A trade card exists only when, at the same minute:
+ *   · every directional box agrees (ALIGNED LONG / SHORT)   — gate 2
+ *   · all three required ingredients are present: location, mechanism,
+ *     trigger — location "yes" means at/inside an LVN (gamma walls and
+ *     session extremes only ever score PARTIAL)              — gates 1+3,
+ *     and "no reclaim, no trade"
+ *   · at least one confirmation ingredient is present, i.e. present ≥ 4/6
+ *                                                            — gate 1
+ *
+ * The two footprint filters (stack side, entry-bar delta) are applied by
+ * the caller (lib/signalFeed.ts) and are deliberately NOT part of this
+ * function, so the dashboard and the feed share the same three gates.
+ * ------------------------------------------------------------------ */
+export function cardGateOpen(signal: Signal, mech: MechanismRead): { ok: boolean; reason: string } {
+  const aligned = signal.tone === "long" || signal.tone === "short";
+  if (!aligned) return { ok: false, reason: "boxes not aligned — no directional agreement" };
+  const required = mech.ingredients.filter((i) => i.role === "required");
+  const missing = required.filter((i) => i.state !== "yes").map((i) => i.name);
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason: `missing required ${missing.length > 1 ? "pieces" : "piece"}: ${missing.join(", ").toLowerCase()}`,
+    };
+  }
+  if (mech.present < 4) return { ok: false, reason: `${mech.present}/6 present — below the 4/6 card gate` };
+  return { ok: true, reason: "sequence complete — all 3 required + ≥1 confirmation" };
+}

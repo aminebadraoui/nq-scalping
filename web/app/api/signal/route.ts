@@ -26,6 +26,7 @@ export async function GET() {
       entry: h.entry,
       stop: h.stop,
       target: h.target,
+      size: h.size,
       verdict: h.verdict,
       headline: h.headline,
       source: h.source,

@@ -24,8 +24,10 @@ The server-side feed (`web/lib/signalFeed.ts`) pushes a trade card only when
 **all six** of these hold at the same minute:
 
 1. **The reversal sequence is complete** — `present ≥ 4` of the 6 checklist
-   ingredients (the three required: location, mechanism, trigger, plus at least
-   one confirmation).
+   ingredients, with **all three required pieces present** (location,
+   mechanism, trigger) plus at least one confirmation. No reclaim, no trade.
+   (Enforced in `cardGateOpen` in `web/lib/signals.ts` — the same function the
+   live feed and the dashboard's Final signal panel both call.)
 2. **Every directional box agrees** — order flow + price action are aligned
    (`ALIGNED LONG` / `ALIGNED SHORT` in the composer; `web/lib/signals.ts`).
 3. **Location is an LVN** — price is *at or inside* an LVN zone (see checklist
@@ -62,7 +64,7 @@ divergence is the *symptom* (the move has no fuel left), the reclaim is the
 | **Trigger** | No reclaim, no trade. The checklist prints the exact price to watch. |
 | **Invalidation** | A 1-minute close beyond a **7-pt scalp stop** (`SCALP_STOP_PTS` in `web/lib/mechanism.ts`). The old absorption-price stop sat ~78 pts away and was untradeable at sensible risk. |
 | **Target** | The **nearest POC** — take profit there. (Trailing 1× ATR is the tested runner alternative if you prefer to ride winners.) |
-| **Size** | `contracts = risk ÷ (7 pts × $20)` — the card prints this line. Fixed dollar risk per trade (0.25–0.5% of the account while unvalidated). |
+| **Size** | `contracts = risk ÷ (7 pts × $20)` — the card prints this line, and so do the checklist panel and the signal history (single source: `sizeLine` in `web/lib/mechanism.ts`). Fixed dollar risk per trade (0.25–0.5% of the account while unvalidated). |
 
 ## What the backtest measured (683 sessions, lookahead-free)
 
@@ -109,13 +111,15 @@ the absolute P&L as optimistic until live journalling confirms it.
 
 | Panel | The one question it answers |
 |---|---|
+| Final signal | Do the boxes agree on a direction, and is the card gate open (all 3 required + 4/6 + every box aligned)? Shown with the same gate the live feed applies. |
 | Flow & levels | Where is price relative to every level that matters? |
 | Footprint story | What is the tape *developing* (bar states, POC migration, Δ-flips, effort vs result, climax→retest)? |
 | Minute ladder | Who is being filled at each tick right now (bid × ask, imbalances, unfinished auctions)? |
-| Reversal checklist | Which of the six conditions exist, which is missing, and what would trigger / invalidate / target? |
+| Reversal checklist | Which of the six conditions exist, which is missing, and what would trigger / invalidate / target / size? |
 | Alerts | What fired, grouped by kind (initiative dimmed as context)? |
 | Price action | Discount or premium across 1m…1d — the location filter that must agree. |
 | Options / gamma | Chop vs trend regime from dealer positioning — context, never a vote. |
+| Signal history | Every card the feed pushed (ENTRY / STOP / TARGET / SIZE) — the journal. |
 
 ## Price-action location — discount / premium (second signal box)
 

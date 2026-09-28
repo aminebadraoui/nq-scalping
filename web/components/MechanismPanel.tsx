@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { MechanismRead } from "@/lib/mechanism";
+import { sizeLine, type MechanismRead } from "@/lib/mechanism";
 
 const TONE: Record<MechanismRead["tone"], { border: string; text: string; bg: string; label: string }> = {
   long: { border: "border-long/50", text: "text-long", bg: "bg-long/10", label: "LONG" },
@@ -67,6 +67,9 @@ export default function MechanismPanel({
             <span className="text-warn">{criticalMissing}</span>
           </p>
         )}
+        <p className="mt-1 font-mono text-[10px] leading-snug text-zinc-500">
+          card gate: all 3 required pieces + 4/6 total + every box aligned — below that, no card is pushed
+        </p>
       </div>
 
       {/* the six conditions — one line each; why/what inside <details> */}
@@ -123,6 +126,10 @@ export default function MechanismPanel({
         <div>
           <span className="text-zinc-500">target → </span>
           <span className="text-zinc-200">{read.target}</span>
+        </div>
+        <div>
+          <span className="text-zinc-500">size → </span>
+          <span className="text-zinc-200">{sizeLine(read)}</span>
         </div>
       </div>
 

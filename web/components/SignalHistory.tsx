@@ -12,6 +12,7 @@ type HistoryEntry = {
   entry: string;
   stop: string;
   target: string;
+  size?: string;
   verdict: string;
   headline: string;
   source: string;
@@ -125,6 +126,7 @@ export default function SignalHistory() {
               <span><span className="text-zinc-600">ENTRY</span> {e.entry || "—"}</span>
               <span><span className="text-zinc-600">STOP</span> {e.stop || "—"}</span>
               <span><span className="text-zinc-600">TARGET</span> {e.target || "—"}</span>
+              <span><span className="text-zinc-600">SIZE</span> {e.size || "—"}</span>
             </div>
           </div>
         ))}

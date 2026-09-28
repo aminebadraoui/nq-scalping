@@ -30,7 +30,18 @@ function BoxChip({ box }: { box: BoxVerdict }) {
   );
 }
 
-export default function SignalSummary({ signal }: { signal: Signal }) {
+export default function SignalSummary({
+  signal,
+  gate,
+  stale = false,
+  source,
+}: {
+  signal: Signal;
+  /** cardGateOpen(signal, mech) — the same gate the live feed uses */
+  gate?: { ok: boolean; reason: string } | null;
+  stale?: boolean;
+  source?: "live" | "collected";
+}) {
   const tone = TONE[signal.tone];
   return (
     <section className={`rounded-md border ${tone.border} bg-panel p-3`}>
@@ -49,8 +60,22 @@ export default function SignalSummary({ signal }: { signal: Signal }) {
           <BoxChip key={b.id} box={b} />
         ))}
       </div>
+      {gate && (
+        <p className={`mt-2 font-mono text-[10px] leading-snug ${gate.ok ? "text-long" : "text-zinc-500"}`}>
+          push gate →{" "}
+          {gate.ok
+            ? source === "live"
+              ? "open — the live feed would push a card"
+              : "open on this data — the feed only pushes while live ticks print"
+            : `closed: ${gate.reason}`}
+        </p>
+      )}
       <p className="mt-2 font-mono text-[10px] leading-snug text-zinc-500">
-        every box is independent — add or remove one in <span className="text-zinc-400">lib/signals.ts</span> without touching the others
+        <span className={source === "live" ? "text-long" : "text-warn"}>
+          {source === "live" ? "live" : "collected — study the last session, not a call"}
+        </span>
+        {stale && <span className="text-warn"> · not live</span>}
+        {" · "}every box is independent — add or remove one in <span className="text-zinc-400">lib/signals.ts</span> without touching the others
       </p>
     </section>
   );
