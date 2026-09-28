@@ -49,6 +49,7 @@ export async function GET() {
           symbol: s.symbol,
           vwap: s.vwap,
           orderflow: { tone: s.mech.tone, verdict: s.mech.verdict, trigger: s.mech.trigger, invalidation: s.mech.invalidation, target: s.mech.target },
+          pullback: { side: s.pb.side, tone: s.pb.tone, verdict: s.pb.verdict, trigger: s.pb.trigger, invalidation: s.pb.invalidation, target: s.pb.target },
           priceaction: s.pa.verdict,
           options: s.opt ? s.opt.note : null,
         }

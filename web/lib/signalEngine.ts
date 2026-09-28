@@ -30,6 +30,7 @@ import {
 } from "./gcdata";
 import { imbalanceFor, summarizeImb } from "./imbalance";
 import { readMechanism, type MechanismRead } from "./mechanism";
+import { readPullback, type PullbackRead } from "./pullback";
 import { readPriceAction, type PriceActionRead } from "./priceaction";
 import {
   composeSignals,
@@ -64,6 +65,7 @@ export type CollectedContext = {
 export type SignalSnapshot = {
   signal: Signal;
   mech: MechanismRead;
+  pb: PullbackRead;
   pa: PriceActionRead;
   opt: OptionsRead | null;
   analysis: Analysis | null;
@@ -205,15 +207,7 @@ export function computeSignal(
   const { lastPrice, vwap, sessionHigh, sessionLow, gamma, symbol, source } = opts;
   const levels = ctx?.levels ?? [];
 
-  const lvnEdges = levels.flatMap((l) =>
-    l.lvns.flatMap(([a, b]) => [
-      { label: l.label, p: a, zone: `${fmt(a)}–${fmt(b)}` },
-      { label: l.label, p: b, zone: `${fmt(a)}–${fmt(b)}` },
-    ]),
-  );
   const byDist = (a: { p: number }, b: { p: number }) => Math.abs(a.p - lastPrice) - Math.abs(b.p - lastPrice);
-  const pocCands = levels.filter((l) => Number.isFinite(l.poc)).map((l) => ({ label: `${l.label} POC`, p: l.poc }));
-  const nearestPoc = pocCands.length ? [...pocCands].sort(byDist)[0] : null;
 
   const minPrice = minutes.length ? Math.min(...minutes.map((m) => m.low)) : 0;
   const maxPrice = minutes.length ? Math.max(...minutes.map((m) => m.high)) : 0;
@@ -232,6 +226,28 @@ export function computeSignal(
   }));
   const rows = aggregate(candles, 4);
   const s = stats(rows) ?? EMPTY_STATS;
+
+  // Location candidates: the prior-day level stack PLUS a live-developing P0
+  // profile. The aggregate `s` (in cents) IS today's developing footprint
+  // profile, so merge its LVN edges + POC — otherwise a gapping/trending day
+  // trades outside the prior sheet and "location" can never be "yes" at
+  // today's actual turning points.
+  const lvnEdges = levels.flatMap((l) =>
+    l.lvns.flatMap(([a, b]) => [
+      { label: l.label, p: a, zone: `${fmt(a)}–${fmt(b)}` },
+      { label: l.label, p: b, zone: `${fmt(a)}–${fmt(b)}` },
+    ]),
+  );
+  for (const [a, b] of s.lvns) {
+    const pa = a / 100;
+    const pb = b / 100;
+    lvnEdges.push({ label: "P0 Live", p: pa, zone: `${fmt(pa)}–${fmt(pb)}` });
+    lvnEdges.push({ label: "P0 Live", p: pb, zone: `${fmt(pa)}–${fmt(pb)}` });
+  }
+  const pocCands = levels.filter((l) => Number.isFinite(l.poc)).map((l) => ({ label: `${l.label} POC`, p: l.poc }));
+  if (s.poc > 0) pocCands.unshift({ label: "P0 Live POC", p: s.poc / 100 });
+  const nearestPoc = pocCands.length ? [...pocCands].sort(byDist)[0] : null;
+
   const analysis: Analysis | null = minutes.length
     ? analyzeMinutes(minutes, minPrice, maxPrice, rows, s, vwap, 4, 0)
     : null;
@@ -261,6 +277,17 @@ export function computeSignal(
     sessionLow,
   });
 
+  const pb = readPullback({
+    minutes: minutes.map((m) => ({ t: m.t, high: m.high, low: m.low, delta: m.buy - m.sell })),
+    lastPrice,
+    vwap,
+    poc: nearestPoc,
+    sessionHigh,
+    sessionLow,
+    imbalance: analysis?.imbalance ?? null,
+    newsWin: newsWindow(),
+  });
+
   const signal = composeSignals([
     boxFromMechanism(mech),
     boxFromPriceAction(pa),
@@ -274,6 +301,7 @@ export function computeSignal(
   return {
     signal,
     mech,
+    pb,
     pa,
     opt,
     analysis,

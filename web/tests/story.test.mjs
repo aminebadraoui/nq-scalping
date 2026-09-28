@@ -97,13 +97,13 @@ test("real session: states, relationships and totals are pinned", async () => {
 
   const hist = {};
   for (const b of st.bars) hist[b.state] = (hist[b.state] ?? 0) + 1;
-  assert.deepEqual(hist, { ROTATION: 322, INITIATIVE_UP: 22, INITIATIVE_DN: 14, CLIMAX_DN: 12, CLIMAX_UP: 8, TEST: 9, ABSORPTION: 3 });
+  assert.deepEqual(hist, { CLIMAX_DN: 9, ROTATION: 306, ABSORPTION: 24, CLIMAX_UP: 7, INITIATIVE_UP: 21, INITIATIVE_DN: 14, TEST: 9 });
 
   // transitions == consecutive state changes
   const want = [];
   for (let i = 1; i < st.bars.length; i++) if (st.bars[i].state !== st.bars[i - 1].state) want.push(st.bars[i].t);
   assert.deepEqual(st.transitions.map((x) => x.t), want);
-  assert.equal(st.transitions.length, 122);
+  assert.equal(st.transitions.length, 149);
 
   assert.equal(st.pocTrail, "flat");
   assert.deepEqual(st.deltaFlip, { t: "14:03", dir: "up" });

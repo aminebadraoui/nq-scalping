@@ -76,25 +76,34 @@ test("initiative bars: aggression + a strict new extreme vs the previous bar", (
 
 test("absorption matches the documented rule, independently recomputed", () => {
   const rows = candles;
-  const pricesLo = Math.min(...rows.map((c) => c.low / 100));
-  const pricesHi = Math.max(...rows.map((c) => c.high / 100));
-  const range = pricesHi - pricesLo;
   const levelVols = [];
-  for (const c of rows) for (const v of Object.values(c.levels)) levelVols.push(v[0] + v[1]);
+  for (const c of rows) for (const v of Object.values(c.levels)) levelVols.push(v[1] + v[2]);
   const med = median(levelVols);
-  const floor = Math.max(50, med * 1.5);
-  assert.equal(floor, 50, "the median term is inert on this session (documents the assumption)");
+  const floor = Math.max(20, med * 1.5);
+  assert.equal(floor, 20, "the median term now sets the floor (the old hard 50 sat ~4× above the median)");
   const want = [];
   const seen = new Set();
   rows.forEach((c, i) => {
-    const lv = Object.entries(c.levels).map(([p, v]) => ({ price: Number(p) / 100, buy: v[1], sell: v[2] }));
+    // the "near extreme" test uses a trailing LOCAL window (last ~hour), not
+    // the full-session range — a mid-session swing is still near ITS extreme
+    let localLow = Infinity;
+    let localHigh = -Infinity;
+    const from = Math.max(0, i - 60);
+    for (let k = from; k <= i; k++) {
+      if (rows[k].low / 100 < localLow) localLow = rows[k].low / 100;
+      if (rows[k].high / 100 > localHigh) localHigh = rows[k].high / 100;
+    }
+    const localRange = localHigh - localLow;
+    const lv = Object.entries(c.levels)
+      .map(([p, v]) => ({ price: Number(p) / 100, buy: v[1], sell: v[2] }))
+      .sort((a, b) => b.price - a.price);
     for (const l of lv) {
       const total = l.buy + l.sell;
       if (total < floor) continue;
       const dom = Math.abs(l.buy - l.sell) / total;
       if (dom < 0.6) continue;
       const ask = l.buy > l.sell;
-      const pos = (l.price - pricesLo) / Math.max(range, 0.25);
+      const pos = localRange > 0.25 ? (l.price - localLow) / localRange : 0.5;
       if (ask && pos < 0.7) continue;
       if (!ask && pos > 0.3) continue;
       let broke = false;
@@ -111,11 +120,9 @@ test("absorption matches the documented rule, independently recomputed", () => {
   });
   const got = A.absorption.map((a) => `${a.t}|${a.price}|${a.side}|${a.volume}|${a.imbalance.toFixed(4)}`);
   assert.deepEqual(got, want);
-  assert.deepEqual(got, [
-    "09:22|30726.25|bid|70|0.7429",
-    "11:34|30917.25|ask|86|0.8837",
-    "11:48|30892.5|ask|64|0.7500",
-  ], "golden absorption events");
+  assert.equal(got.length, 37, "golden absorption event count (recalibrated floor + local window)");
+  assert.equal(got[0], "08:32|30779.5|bid|46|0.6957", "first golden event");
+  assert.equal(got[got.length - 1], "14:55|30913|ask|20|0.6000", "last golden event");
 });
 
 test("LVN_ENTER / LVN_EXIT fire exactly on zone crossings", () => {
@@ -147,7 +154,7 @@ test("alert counts are pinned (regression guard)", () => {
   for (const a of A.alerts) counts[a.kind] = (counts[a.kind] ?? 0) + 1;
   assert.deepEqual(counts, {
     DIVERGENCE_D2: 9, DIVERGENCE_D4: 5, INITIATIVE: 44,
-    LVN_ENTER: 3, LVN_EXIT: 3, ABSORPTION: 3,
+    LVN_ENTER: 3, LVN_EXIT: 3, ABSORPTION: 10,
   });
 });
 

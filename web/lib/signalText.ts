@@ -16,6 +16,7 @@
 
 import type { Signal } from "./signals";
 import type { MechanismRead, Ingredient } from "./mechanism";
+import type { PullbackRead } from "./pullback";
 import type { PriceActionRead } from "./priceaction";
 import type { OptionsRead } from "./options";
 import { escHtml } from "./notify";
@@ -45,14 +46,15 @@ function sideHead(side: Signal["side"]): string {
 
 export function formatSignalHtml(
   signal: Signal,
-  mech: MechanismRead,
+  read: MechanismRead | PullbackRead,
   pa: PriceActionRead,
   opt: OptionsRead | null,
   ctx: SignalContext,
+  setup: string = "REVERSAL",
 ): string {
   const L: string[] = [];
 
-  L.push(`🔔 <b>NQ SCALP SIGNAL — ${sideHead(signal.side)}</b>`);
+  L.push(`🔔 <b>NQ SCALP SIGNAL · ${escHtml(setup)} — ${sideHead(signal.side)}</b>`);
   L.push(`<code>${escHtml(ctx.symbol)}  ${fmt(ctx.price)}  ${escHtml(ctx.timeET)} NY</code>`);
 
   // ---- verdict + box votes ----
@@ -77,25 +79,25 @@ export function formatSignalHtml(
   // ---- the trade ticket ----
   L.push("");
   L.push("<b>ENTRY / TRIGGER</b>");
-  L.push(escHtml(mech.trigger));
+  L.push(escHtml(read.trigger));
   L.push("");
   L.push("<b>STOP (invalidation)</b>");
-  L.push(escHtml(mech.invalidation));
+  L.push(escHtml(read.invalidation));
   L.push("");
   L.push("<b>TARGET</b>");
-  L.push(escHtml(mech.target));
+  L.push(escHtml(read.target));
 
   // ---- reasoning: the full checklist ----
   L.push("");
   L.push("<b>REASONING</b>");
-  for (const ing of mech.ingredients) {
+  for (const ing of read.ingredients) {
     L.push(`${icon(ing.state)} <code>${escHtml(ing.n)} ${escHtml(ing.name).padEnd(11, " ")}</code>${escHtml(ing.short)}`);
   }
 
   // ---- narrative in words ----
-  if (mech.narrative) {
+  if (read.narrative) {
     L.push("");
-    L.push(`<i>${escHtml(mech.narrative)}</i>`);
+    L.push(`<i>${escHtml(read.narrative)}</i>`);
   }
 
   // ---- price action box ----

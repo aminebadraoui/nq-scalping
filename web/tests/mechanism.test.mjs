@@ -144,7 +144,7 @@ test("real session golden read", async () => {
   assert.equal(r.present, 3);
   assert.equal(r.side, "long");
   assert.match(r.verdict, /LONG INTEREST/);
-  assert.equal(r.ingredients.map((i) => i.state[0]).join(""), "nnynyy");
+  assert.equal(r.ingredients.map((i) => i.state[0]).join(""), "npynyy");
 });
 
 test("live bars are rewritable into the feed clock (the live-checklist regression)", async () => {

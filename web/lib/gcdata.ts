@@ -516,12 +516,28 @@ export function analyzeMinutes(
   for (const m of minutes) for (const l of m.levels) levelVols.push(l.buy + l.sell);
   levelVols.sort((a, b) => a - b);
   const med = levelVols[levelVols.length >> 1] ?? 0;
-  const volFloor = Math.max(50, med * 1.5);
-  const range = maxPrice - minPrice;
+  // The hard 50-contract floor sat ~4× above the real per-level median (~12),
+  // so absorption almost never fired on live data (0 events across a whole
+  // session). The median term alone is the right scale for a single 0.25-tick
+  // level; keep a small absolute floor to stay out of dead-tape noise.
+  const volFloor = Math.max(20, med * 1.5);
   const absorption: AbsorbEvent[] = [];
   const seen = new Set<string>();
 
+  // The "near extreme" test now uses a trailing LOCAL window (the last ~hour)
+  // instead of the full-session range: a reversal at a mid-session swing is
+  // still near ITS extreme even when the overnight low / RTH high are far away.
+  const LOCAL_BARS = 60;
+
   minutes.forEach((m, mi) => {
+    let localLow = Infinity;
+    let localHigh = -Infinity;
+    const from = Math.max(0, mi - LOCAL_BARS);
+    for (let k = from; k <= mi; k++) {
+      if (minutes[k].low < localLow) localLow = minutes[k].low;
+      if (minutes[k].high > localHigh) localHigh = minutes[k].high;
+    }
+    const localRange = localHigh - localLow;
     for (const l of m.levels) {
       const total = l.buy + l.sell;
       if (total < volFloor) continue;
@@ -529,7 +545,7 @@ export function analyzeMinutes(
       if (dom < 0.6) continue;
       const askSide = l.buy > l.sell;
       // only near extremes: ask-dominant near top, bid-dominant near bottom
-      const pos = (l.price - minPrice) / Math.max(range, 0.25);
+      const pos = localRange > 0.25 ? (l.price - localLow) / localRange : 0.5;
       if (askSide && pos < 0.7) continue;
       if (!askSide && pos > 0.3) continue;
       // progress check over next 3 minutes

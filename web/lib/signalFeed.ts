@@ -113,11 +113,12 @@ class SignalFeed {
     });
   }
 
-  private signature(snap: SignalSnapshot): string {
+  private signature(snap: SignalSnapshot, setup: "REVERSAL" | "PULLBACK"): string {
     const a = snap.analysis;
     const lastRec = a?.reclaims[a.reclaims.length - 1];
     const lastAbs = a?.absorption[a.absorption.length - 1];
     return [
+      setup,
       snap.day,
       snap.signal.side ?? "none",
       "rec",
@@ -128,45 +129,50 @@ class SignalFeed {
   }
 
   private async maybeSend(snap: SignalSnapshot): Promise<void> {
-    // Only auto-notify on a COMPLETED order-flow sequence: the three required
-    // conditions (location + mechanism + trigger) all present — that is the
-    // moment the playbook says "tradeable", and the reclaim is the last piece.
-    if (snap.mech.tone !== "long" && snap.mech.tone !== "short") return;
+    // Auto-notify on EITHER completed setup: the reversal sequence (location +
+    // mechanism + trigger) OR the trend-continuation pullback (trend + retest +
+    // footprint). Each fires once per distinct setup; the two are independent.
+    const setups: { kind: "REVERSAL" | "PULLBACK"; read: SignalSnapshot["mech"] | SignalSnapshot["pb"] }[] = [];
+    if (snap.mech.tone === "long" || snap.mech.tone === "short") setups.push({ kind: "REVERSAL", read: snap.mech });
+    if (snap.pb.tone === "long" || snap.pb.tone === "short") setups.push({ kind: "PULLBACK", read: snap.pb });
+    if (!setups.length) return;
 
-    const sig = this.signature(snap);
-    if (this.sent.has(sig)) return;
-    this.sent.add(sig);
-    if (this.sent.size > 500) {
-      const keep = [...this.sent].slice(-250);
-      this.sent = new Set(keep);
+    for (const { kind, read } of setups) {
+      const sig = this.signature(snap, kind);
+      if (this.sent.has(sig)) continue;
+      this.sent.add(sig);
+      if (this.sent.size > 500) {
+        const keep = [...this.sent].slice(-250);
+        this.sent = new Set(keep);
+      }
+
+      const text = formatSignalHtml(snap.signal, read, snap.pa, snap.opt, {
+        symbol: snap.symbol,
+        price: snap.lastPrice,
+        timeET: snap.timeET,
+        source: snap.source,
+      }, kind);
+      const res = await sendTelegram(text, { parseMode: "HTML" });
+      if (!res.sent) this.lastError = res.reason;
+      // record the push so the dashboard has a history to consult (best-effort —
+      // a persistence failure must never block the Telegram loop)
+      await recordSignal({
+        timeET: snap.timeET,
+        day: snap.day,
+        symbol: snap.symbol,
+        side: read.side ?? "none",
+        price: snap.lastPrice,
+        entry: read.trigger,
+        stop: read.invalidation,
+        target: read.target,
+        verdict: read.verdict,
+        headline: read.headline,
+        source: snap.source,
+        test: false,
+        sent: res.sent,
+        reason: res.reason,
+      });
     }
-
-    const text = formatSignalHtml(snap.signal, snap.mech, snap.pa, snap.opt, {
-      symbol: snap.symbol,
-      price: snap.lastPrice,
-      timeET: snap.timeET,
-      source: snap.source,
-    });
-    const res = await sendTelegram(text, { parseMode: "HTML" });
-    if (!res.sent) this.lastError = res.reason;
-    // record the push so the dashboard has a history to consult (best-effort —
-    // a persistence failure must never block the Telegram loop)
-    await recordSignal({
-      timeET: snap.timeET,
-      day: snap.day,
-      symbol: snap.symbol,
-      side: snap.signal.side ?? "none",
-      price: snap.lastPrice,
-      entry: snap.mech.trigger,
-      stop: snap.mech.invalidation,
-      target: snap.mech.target,
-      verdict: snap.signal.verdict,
-      headline: snap.signal.headline,
-      source: snap.source,
-      test: false,
-      sent: res.sent,
-      reason: res.reason,
-    });
   }
 
   async tick(): Promise<void> {
