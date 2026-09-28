@@ -164,7 +164,9 @@ export function readMechanism(inp: MechanismInput, indexOf?: Map<string, number>
           : null;
 
   const atEdge = !!edge && edge.d <= NEAR_EDGE;
-  const locState: IngredientState = atEdge ? "yes" : atWall ? "partial" : inZone ? "partial" : atExtreme ? "partial" : "no";
+  // location "yes" = at OR inside an LVN (the low-volume node). Being in the
+  // zone counts fully — the reversal trades the LVN back toward the target.
+  const locState: IngredientState = atEdge || inZone ? "yes" : atWall ? "partial" : atExtreme ? "partial" : "no";
   const location: Ingredient = {
     key: "location",
     n: "1",
@@ -173,19 +175,19 @@ export function readMechanism(inp: MechanismInput, indexOf?: Map<string, number>
     state: locState,
     short: atEdge
       ? `at ${edge!.label} LVN edge ${fmtN(edge!.p)}`
-      : atWall
-        ? `near ${wallWord} ${fmtN(nearestWall!.p)}`
-        : inZone
-          ? `inside ${inZone.label} LVN ${inZone.zone} — far edge next`
+      : inZone
+        ? `inside ${inZone.label} LVN ${inZone.zone}`
+        : atWall
+          ? `near ${wallWord} ${fmtN(nearestWall!.p)}`
           : edge
             ? `${fmtN(edge.d)} pts from ${edge.label} LVN edge ${fmtN(edge.p)}`
             : "no LVN levels loaded",
     value: atEdge
       ? `at ${edge!.label} LVN edge ${fmtN(edge!.p)} (zone ${edge!.zone})`
-      : atWall
-        ? `within ${WALL_NEAR} pts of the ${wallWord} at ${fmtN(nearestWall!.p)} — a coarse dealer-hedging magnet (zone), not a tick edge`
-        : inZone
-          ? `inside ${inZone.label} LVN zone ${inZone.zone} — wait for the far edge (nearest edge ${fmtN(edge?.d ?? 0)} pts)`
+      : inZone
+        ? `inside ${inZone.label} LVN zone ${inZone.zone} — reversal targets ${inp.poc ? `${inp.poc.label} ${fmtN(inp.poc.p)}` : "the POC"}`
+        : atWall
+          ? `within ${WALL_NEAR} pts of the ${wallWord} at ${fmtN(nearestWall!.p)} — a coarse dealer-hedging magnet (zone), not a tick edge`
           : edge
             ? `nearest LVN edge ${fmtN(edge.p)} (${edge.label}) is ${fmtN(edge.d)} pts away`
             : "no LVN levels loaded",

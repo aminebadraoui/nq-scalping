@@ -205,3 +205,19 @@ test("an LVN edge beats a wall for the tick-precise location", () => {
   assert.equal(ing(r, "location").state, "yes");
   assert.match(ing(r, "location").short, /LVN edge/);
 });
+
+test("inside an LVN zone (not just at the edge) is also location yes", () => {
+  const m = mins(40);
+  const r = readMechanism(base({
+    minutes: m,
+    lastPrice: 100,
+    sessionHigh: 101,
+    sessionLow: 99,
+    lvnEdges: [
+      { label: "P0", p: 97, zone: "97.00–103.00" },
+      { label: "P0", p: 103, zone: "97.00–103.00" },
+    ],
+  }));
+  assert.equal(ing(r, "location").state, "yes");
+  assert.match(ing(r, "location").short, /inside P0 LVN/);
+});
