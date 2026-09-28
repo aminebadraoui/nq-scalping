@@ -17,9 +17,52 @@
  * fees/slippage, overlapping trades, and only the sessions we have collected.
  * ------------------------------------------------------------------------- */
 import { analyze, extractFootprint, computeSheet, type AlertEvent, type AbsorbEvent } from "../lib/gcdata.ts";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 
-const DATES = ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25"];
 const SESSION = "ETH" as const;
+const EXPECTED_ETH_MINUTES = 1380; // 18:00 -> 16:59 New York
+
+/**
+ * Discover analysable sessions instead of hardcoding a handful of dates.
+ *
+ * The vendor retains the most recent ~10 sessions in full but older dates come
+ * back SPARSE — the session still spans the full clock while minutes are
+ * missing from the middle. A gap fabricates "no break in N bars" and truncates
+ * forward walks, so a partial day is not a smaller sample, it is a wrong one.
+ * Only sessions holding every expected minute are used.
+ */
+function discoverDates() {
+  const root = path.resolve(import.meta.dirname, "..", "..");
+  const dir = process.env.GC_DATA_DIR || path.join(root, "gcdata", "data");
+  const dates: string[] = [];
+  const skipped: string[] = [];
+  for (const f of readdirSync(dir)) {
+    const m = /^(\d{4}-\d{2}-\d{2})_ETH\.json$/.exec(f);
+    if (!m) continue;
+    let candles: { t: string }[] = [];
+    try {
+      candles = JSON.parse(readFileSync(path.join(dir, f), "utf8")).candles ?? [];
+    } catch {
+      continue;
+    }
+    const ts = candles.map((c) => c.t).sort();
+    let usable = candles.length >= 1360;
+    if (usable) {
+      const base = Number(ts[0].slice(8, 10));
+      const mins = ts.map((t) => Number(t.slice(11, 13)) * 60 + Number(t.slice(14, 16)) + (Number(t.slice(8, 10)) - base) * 1440);
+      let maxgap = 0;
+      for (let i = 1; i < mins.length; i++) maxgap = Math.max(maxgap, mins[i] - mins[i - 1]);
+      usable = mins[0] % 1440 >= 1020 && mins[0] % 1440 <= 1035 && mins[mins.length - 1] % 1440 === 959 && maxgap <= 5;
+    }
+    if (usable) dates.push(m[1]);
+    else skipped.push(`${m[1]} (${candles.length}/${EXPECTED_ETH_MINUTES} minutes)`);
+  }
+  return { dates: dates.sort(), skipped: skipped.sort() };
+}
+
+const DISCOVERED = discoverDates();
+const DATES = DISCOVERED.dates;
 const LOOKAHEAD = 60; // bars to walk forward
 const TICK = 0.25;
 const EDGE_TOL = 2.5; // pts — "at" an LVN edge
@@ -72,6 +115,13 @@ const sheetCache = new Map<string, Sheet>();
 async function main() {
   const trades: Trade[] = [];
   let minutesTotal = 0;
+
+  console.log(
+    `Analysable sessions: ${DATES.length} complete ETH days (${DATES[0]} .. ${DATES[DATES.length - 1]})` +
+      (DISCOVERED.skipped.length
+        ? `\nExcluded as partially retained (a gap would fabricate structure): ${DISCOVERED.skipped.length} days — ${DISCOVERED.skipped.slice(0, 8).join(", ")}${DISCOVERED.skipped.length > 8 ? " ..." : ""}`
+        : ""),
+  );
 
   for (const date of DATES) {
     const fp = await extractFootprint(date, SESSION);
