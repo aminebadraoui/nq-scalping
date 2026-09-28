@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { formatSignalHtml } from "../lib/signalText.ts";
 
 const mech = {
+  side: "long",
+  verdict: "ALIGNED LONG — every box agrees",
   trigger: "wait for price to break below 100.00 and trade back inside within 2 bars",
   invalidation: "a 1-minute close below 99.75 invalidates the read",
   target: "P0 POC 101.00 · 1.0 pts away",
@@ -84,7 +86,7 @@ test("escapes HTML in dynamic values", () => {
 });
 
 test("no-trade card announces NO TRADE", () => {
-  const html = formatSignalHtml(mkSignal(null), mech, pa, opt, {
+  const html = formatSignalHtml(mkSignal(null), { ...mech, side: null, verdict: "NO SIGNAL — no box has a directional read yet" }, pa, opt, {
     symbol: "NQZ26",
     price: 100.25,
     timeET: "10:30",

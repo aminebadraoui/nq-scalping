@@ -129,12 +129,19 @@ class SignalFeed {
   }
 
   private async maybeSend(snap: SignalSnapshot): Promise<void> {
-    // Auto-notify on EITHER completed setup: the reversal sequence (location +
-    // mechanism + trigger) OR the trend-continuation pullback (trend + retest +
-    // footprint). Each fires once per distinct setup; the two are independent.
+    // Only auto-notify on a CONFIRMED, high-probability setup — every
+    // directional box must agree on the side:
+    //   · REVERSAL  = order flow + price action aligned AND a full (non-"thin")
+    //                 sequence (present >= 5 of the 6 checklist ingredients).
+    //   · PULLBACK  = trend + retest + footprint complete AND price action on
+    //                 the same side.
+    // Each fires once per distinct setup; the two are independent.
     const setups: { kind: "REVERSAL" | "PULLBACK"; read: SignalSnapshot["mech"] | SignalSnapshot["pb"] }[] = [];
-    if (snap.mech.tone === "long" || snap.mech.tone === "short") setups.push({ kind: "REVERSAL", read: snap.mech });
-    if (snap.pb.tone === "long" || snap.pb.tone === "short") setups.push({ kind: "PULLBACK", read: snap.pb });
+    const aligned = snap.signal.tone === "long" || snap.signal.tone === "short";
+    if (aligned && snap.mech.present >= 5) setups.push({ kind: "REVERSAL", read: snap.mech });
+    if ((snap.pb.tone === "long" || snap.pb.tone === "short") && snap.pa.side === snap.pb.side) {
+      setups.push({ kind: "PULLBACK", read: snap.pb });
+    }
     if (!setups.length) return;
 
     for (const { kind, read } of setups) {

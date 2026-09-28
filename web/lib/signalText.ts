@@ -54,12 +54,12 @@ export function formatSignalHtml(
 ): string {
   const L: string[] = [];
 
-  L.push(`🔔 <b>NQ SCALP SIGNAL · ${escHtml(setup)} — ${sideHead(signal.side)}</b>`);
+  L.push(`🔔 <b>NQ SCALP SIGNAL · ${escHtml(setup)} — ${sideHead(read.side)}</b>`);
   L.push(`<code>${escHtml(ctx.symbol)}  ${fmt(ctx.price)}  ${escHtml(ctx.timeET)} NY</code>`);
 
   // ---- verdict + box votes ----
   L.push("");
-  L.push(`<b>${escHtml(signal.verdict)}</b>`);
+  L.push(`<b>${escHtml(read.verdict)}</b>`);
   const boxLines = signal.boxes.map((b) => {
     const vote =
       b.kind === "context"
