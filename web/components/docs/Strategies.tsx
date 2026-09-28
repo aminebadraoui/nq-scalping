@@ -4,9 +4,18 @@ import { redFlags, strategy1Steps, strategy2, strategy3 } from "@/lib/data";
 export function StrategiesSection() {
   return (
     <>
+      <Callout tone="info" title="THESE ARE THE RESEARCH PLAYS, NOT OUR PLAYBOOK">
+        The three plays below are the generic strategies the deep-dive surveyed — sweep-and-reclaim, absorption fade,
+        VWAP/POC reversion. What we actually trade is the six-condition sequence in{" "}
+        <a href="#playbook" className="text-long hover:underline">
+          Our playbook
+        </a>
+        , which keeps three ideas from here (location first, the reclaim close as the trigger, absorption as the
+        mechanism) and drops the indicator-based regime filters.
+      </Callout>
       <Section
-        kicker="03 · Strategies"
-        title="The plays that survive contact with data"
+        kicker="04 · Strategies studied"
+        title="The generic plays we studied"
         lede="All of these are the same underlying edge, renamed over decades: Turtle Soup (Raschke), Trader Vic's 2B (Sperandeo), Wyckoff spring/upthrust, ICT liquidity sweep. Stops cluster beyond obvious levels; a push past them triggers the stops and provides the liquidity for the opposite position. The rules below are what separate the traders who harvest that edge from the ones who get farmed by it."
       />
 

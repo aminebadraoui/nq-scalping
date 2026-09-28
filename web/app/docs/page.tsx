@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { OverviewSection } from "@/components/docs/Overview";
+import { PlaybookSection } from "@/components/docs/Playbook";
 import { EvidenceSection } from "@/components/docs/Evidence";
 import { ToolsSection } from "@/components/docs/Tools";
 import { StrategiesSection } from "@/components/docs/Strategies";
@@ -14,12 +15,13 @@ export const metadata: Metadata = {
 };
 
 const TOC = [
-  { id: "overview", n: "00", label: "Overview", note: "the model, in one screen" },
-  { id: "evidence", n: "01", label: "Evidence", note: "what the data actually says" },
-  { id: "tools", n: "02", label: "Tool stack", note: "ranked, with each tool's tell" },
-  { id: "strategies", n: "03", label: "Strategies", note: "rules, stops, red flags" },
-  { id: "checklist", n: "04", label: "Checklist & math", note: "desk tools + expectancy" },
-  { id: "sources", n: "05", label: "Sources", note: "everything cited" },
+  { id: "playbook", n: "00", label: "Our playbook", note: "how we trade it — the implemented strategy" },
+  { id: "overview", n: "01", label: "Overview", note: "the model, in one screen" },
+  { id: "evidence", n: "02", label: "Evidence", note: "what the data actually says" },
+  { id: "tools", n: "03", label: "Tool stack", note: "ranked, with each tool's tell" },
+  { id: "strategies", n: "04", label: "Strategies studied", note: "the generic research plays" },
+  { id: "checklist", n: "05", label: "Checklist & math", note: "desk tools + expectancy" },
+  { id: "sources", n: "06", label: "Sources", note: "everything cited" },
 ];
 
 export default function DocsPage() {
@@ -31,9 +33,10 @@ export default function DocsPage() {
           Reversal vs fakeout — the whole research
         </h1>
         <p className="mt-3 max-w-3xl text-base leading-relaxed text-zinc-400">
-          Everything that is not the live dashboard lives here: the evidence, the tool stack, the play
-          rules, the pre-trade checklist with its math, and the sources. The dashboard is the working
-          surface; this page is the reference behind it.
+          Start with <strong className="text-zinc-200">Our playbook</strong> — the strategy the dashboard actually
+          implements, condition by condition, with the panel that shows each one. The rest is the reference behind it:
+          the evidence, the tool stack, the generic strategies we studied (including what we dropped), the pre-trade
+          checklist with its math, and every source.
         </p>
         <p className="mt-3 font-mono text-[11px] text-zinc-500">
           working surface →{" "}
@@ -65,6 +68,9 @@ export default function DocsPage() {
       </nav>
 
       <div className="space-y-16">
+        <section id="playbook" className="scroll-mt-20">
+          <PlaybookSection />
+        </section>
         <section id="overview" className="scroll-mt-20">
           <OverviewSection />
         </section>

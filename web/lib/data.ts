@@ -288,17 +288,18 @@ export const strategy3 = {
     "Confirmation: rejection candle (pin bar / engulfing + volume spike) AND delta divergence at the band. If CVD confirms the extension, stand down — it's a trend.",
     "A fast approach through an LVN into the HVN is a sweep signature, not value migration.",
     "Entry on the next bar open after the trigger closes; stop 1×ATR beyond the extreme or beyond the LVN; target VWAP/POC (partial), opposite band / VAH-VAL (runner).",
-    "Stat anchor: ~55–65% win rate with the filters, ≈45% without (vendor estimate) — the filters ARE the strategy.",
+    "Stat anchor: ~55–65% win rate with the filters, ≈45% without (vendor estimate) — the filters ARE the strategy. Our own 5-session replay could not reproduce the POC-target half of this play: the nearest POC sat a median 8.9R away, so treat the POC as a destination, not a scalp exit.",
   ],
 };
 
 export const redFlags = [
-  "Wick through a level without a reclaim close.",
-  "Reversal against strong higher-timeframe momentum (trending day).",
-  "Level with no real volume/stops behind it (thin liquidity).",
-  "Break on high trend-side volume (real breakout), rejection on low volume (no conviction).",
-  "News / high-impact events — traps become real moves.",
-  "3rd–4th test of the same level (higher break probability than 1st–2nd).",
+  "Price is mid-range with no LVN edge — there is no location, so there is no trade.",
+  "A wick through the edge with no reclaim close: that is a breakout, not a sweep.",
+  "Initiative tape (|Δ| ≥ 20% with a new extreme) — aggression is still making progress; never fade it.",
+  "No absorption at the price: nothing to lean on, no invalidation level, no trade.",
+  "Divergence on its own, with no mechanism and no trigger — the symptom can persist for hours.",
+  "Inside a ±5 minute window of a scheduled release — traps become real moves.",
+  "Third or fourth test of the same edge (break probability rises with each test).",
 ];
 
 /* ------------------------------------------------------------------ */
@@ -308,62 +309,112 @@ export const redFlags = [
 export const checklistItems = [
   {
     id: "location",
-    label: "Location",
+    label: "1 · Location (required)",
     detail:
-      "Obvious liquidity level (tested 2–3×, HTF swing, VWAP/POC/PDH-PDL/round number) with real volume behind it.",
+      "At an LVN edge of the profile stack (P0 today → P5 5-day) or a session extreme. Inside a thin zone is a pass-through, not a location.",
+  },
+  {
+    id: "mechanism",
+    label: "2 · Mechanism — absorption (required)",
+    detail:
+      "One-sided aggression (≥60% of the row) on size (≥ max(50 ct, 1.5× median row)) at a window extreme, and price does NOT break that price for 3 bars. Someone with size is standing there.",
+  },
+  {
+    id: "fuel",
+    label: "3 · Fuel — CVD divergence",
+    detail:
+      "Price lower low with CVD higher low (D2) or price higher high with CVD lower high (D4) at confirmed pivots. Symptom, not trigger: it can persist in a trend.",
+  },
+  {
+    id: "trigger",
+    label: "4 · Trigger — reclaim (required)",
+    detail:
+      "A break of ≥1 tick beyond the running extreme, then price trades back inside within 2 bars. No reclaim = breakout, stay out.",
+  },
+  {
+    id: "evidence",
+    label: "5 · Evidence — stacked imbalance",
+    detail:
+      "3+ consecutive ticks imbalanced the same way (≥3:1 against the adjacent tick, ≥10 ct) on the reversal side, ideally at the absorption price.",
   },
   {
     id: "context",
-    label: "Context",
+    label: "6 · Context — VWAP side + news guard",
     detail:
-      "HTF trend/ranged structure agrees with the reversal direction — no fading strong daily momentum.",
+      "Which side of session VWAP the auction is on, and no scheduled release within ±5 minutes. Filter only, never a reason to enter.",
   },
   {
-    id: "event",
-    label: "Event",
+    id: "target",
+    label: "Target — measured risk multiples, not the POC",
     detail:
-      "Sweep of the level OR absorption at the level (DOM refill, CVD diverging vs price).",
+      "Exit on risk: partial at 1R, runner to 2–3R or the next LVN edge. The nearest POC sits a median 8.9R away in the measured sample, so it is a destination and a context marker — never a scalp objective.",
   },
   {
-    id: "confirmation",
-    label: "Confirmation",
+    id: "invalidation",
+    label: "Invalidation — close beyond the absorption price",
     detail:
-      "Reclaim close back inside the range (same/next candle) — never enter on the wick alone.",
-  },
-  {
-    id: "pace",
-    label: "Pace",
-    detail:
-      "Follow-through velocity in the new direction (real displacement); a reversal that stalls is suspect.",
-  },
-  {
-    id: "structure",
-    label: "Structure",
-    detail:
-      "Optional but strong: CHoCH/BOS in the new direction after the reclaim — first CHoCH holds only 40–50%, so it's a filter, not proof.",
-  },
-  {
-    id: "risk",
-    label: "Risk",
-    detail:
-      "Stop beyond the sweep extreme + ATR buffer; risk ≤ 0.5–1% per scalp; size from the stop.",
-  },
-  {
-    id: "management",
-    label: "Management",
-    detail:
-      "+1R partial (median MFE ≈ 1R), trail the runner, time stop if no follow-through. No averaging down.",
+      "A 1-minute close beyond the absorbed price kills the read. No absorption price means no invalidation level — and therefore no trade.",
   },
   {
     id: "skip",
     label: "Skip conditions",
     detail:
-      "News, sub-15m random wicks, 3rd+ test of a level, counter-HTF-trend sweeps — all automatic skips.",
+      "Mid-range with no level · initiative (|Δ| ≥ 20% with a new extreme — continuation, not reversal) · no reclaim · inside a release window · 3rd+ test of the same edge.",
   },
 ];
 
 export const benchmarkNote =
   "Expected honest stats to benchmark against: win rate 45–65% (not 80%+), expectancy +0.2R to +0.9R after fees on the best confluences, with ~30% of valid setups chopping sideways. If your live numbers beat that sustainably over 100+ trades with the same mechanical rules, you have a real edge.";
+
+export type Measured = {
+  claim: string;
+  measured: string;
+  verdict: "holds" | "weak" | "fails" | "untested";
+};
+
+/**
+ * What a 5-session replay of the playbook actually produced (2026-09-21…25,
+ * 6,900 ETH minutes, 268 reclaims, entry at the confirmation close, pessimistic
+ * same-bar ordering, perfect fills, no fees). This is the honest scorecard the
+ * playbook is judged against — it corrects two claims the docs used to make.
+ */
+export const measuredEvidence: Measured[] = [
+  {
+    claim: "Reclaim trigger beats a random entry",
+    measured: "41.0% win vs 30.0% baseline (every 30th bar, same stop) · +0.22R",
+    verdict: "holds",
+  },
+  {
+    claim: "Evening hours (18:00–21:00 NY) are the cleanest window",
+    measured: "beat the rest of the session in 5/5 sessions (47/57/58/56/71% vs 30/26/30/46/58%)",
+    verdict: "holds",
+  },
+  {
+    claim: "CVD divergence adds fuel",
+    measured: "46.6% (n=73) vs 39.0% (n=195) · better in 4/5 sessions · +0.15R",
+    verdict: "weak",
+  },
+  {
+    claim: "The LVN edge is the location edge",
+    measured: "43.8% (n=112) vs 39.1% (n=156) · only 3/5 sessions · the aggregate rides on one day",
+    verdict: "weak",
+  },
+  {
+    claim: "Absorption is required",
+    measured: "only 2 reclaims coincided with absorption — not testable at this sample size",
+    verdict: "untested",
+  },
+  {
+    claim: "Nearest POC is the target",
+    measured: "POC sits a median 36.6 pt away against a 4.1 pt median risk (8.9R); 7.8% of reclaims reach it before the stop",
+    verdict: "fails",
+  },
+  {
+    claim: "A 1:1 risk-reward exit",
+    measured: "negative expectancy at every stop tested (−0.66R to −0.35R); only a 2 pt stop with a 3R runner reaches +0.09R before fees",
+    verdict: "fails",
+  },
+];
 
 export const riskRules = [
   {
@@ -459,4 +510,142 @@ export const sourceGroups = [
       { label: "TradesViz — Time Stop", href: "https://www.tradesviz.com/glossary/time-stop/" },
     ],
   },
+];
+
+/* ------------------------------------------------------------------ */
+/* OUR playbook — the strategy as implemented in the dashboard         */
+/* ------------------------------------------------------------------ */
+
+/** The sequence, in causal order. `required` pieces must all be present. */
+export const playbookSequence = [
+  {
+    n: "1",
+    name: "Location",
+    required: true,
+    question: "Is price somewhere a reversal can happen at all?",
+    rule:
+      "An LVN EDGE from the profile stack (P0 today → P5 5-day), or a session extreme. The edge is the entry geometry: a thin zone is where price travels fast and where stops sit.",
+    dashboard: "Chart: LVN edge lines + '▲/▼ n LVN zones above/below' chips · Levels panel · P0–P5 chips",
+    notThis: "Mid-range. Being INSIDE an LVN zone is a pass-through, not a location — the trade is at its far edge.",
+  },
+  {
+    n: "2",
+    name: "Mechanism",
+    required: true,
+    question: "Is someone with size actually standing there?",
+    rule:
+      "Absorption: one-sided aggression (≥60% of the row's volume on one side) on size (≥ max(50 ct, 1.5× the median row)) at a window extreme, with price NOT breaking that price for the next 3 bars.",
+    dashboard: "Ladder: ▲▼ imbalance glyphs, stacked runs · Story panel: '◆ absorption' · Alerts: ABSORPTION",
+    notThis: "A big candle is not absorption. Absorption is aggression that FAILED to move price — the cause.",
+  },
+  {
+    n: "3",
+    name: "Fuel",
+    required: false,
+    question: "Is the move running out of aggressive flow?",
+    rule:
+      "CVD divergence at price pivots: price lower low with CVD higher low (D2, bullish) or price higher high with CVD lower high (D4, bearish). Every qualifying pivot pair is reported.",
+    dashboard: "Reversal checklist row 3 · Alerts DIVERGENCE_D2 / DIVERGENCE_D4 · Story panel Δ-flip",
+    notThis: "Divergence is the symptom, not the trigger — it can persist for hours in a trend. Never trade it alone.",
+  },
+  {
+    n: "4",
+    name: "Trigger",
+    required: true,
+    question: "Has the failed break been reclaimed?",
+    rule:
+      "A break of at least one tick beyond the running extreme, then the mid trades back inside within the next 2 bars. That reclaim is the entry event.",
+    dashboard: "Reversal checklist row 4 (with the trigger line) · Alerts · Story panel 'failed low/high reclaimed'",
+    notThis: "A wick through a level is not a sweep. No reclaim = a breakout — stay out.",
+  },
+  {
+    n: "5",
+    name: "Evidence",
+    required: false,
+    question: "Does the raw tape agree?",
+    rule:
+      "Footprint imbalance stacked over 3+ consecutive ticks on the reversal side (≥3:1 against the adjacent tick, ≥10 ct), ideally at the same price as the absorption.",
+    dashboard: "Ladder imb column (▲◆ 6.8×, □ unfinished auction) · Story panel N-bar state strip",
+    notThis: "One imbalanced tick is noise. Three stacked ticks is one side being filled systematically.",
+  },
+  {
+    n: "6",
+    name: "Context",
+    required: false,
+    question: "What side of value are we on, and is a release due?",
+    rule:
+      "Session VWAP side for the auction's lean, and a veto inside ±5 minutes of a scheduled release.",
+    dashboard: "Reversal checklist row 6 · chart VWAP line · live strip",
+    notThis: "Context is a filter, never a reason to enter.",
+  },
+];
+
+/** The four lines the checklist always shows — the trade in one glance. */
+export const playbookExecution = [
+  {
+    label: "Trigger",
+    rule:
+      "No reclaim, no trade. Wait for price to break an extreme and trade back inside within 2 bars — the checklist prints the exact price to watch.",
+  },
+  {
+    label: "Invalidation",
+    rule:
+      "A 1-minute close beyond the absorption price kills the read. If there is no absorption there is no invalidation level — and therefore no trade.",
+  },
+  {
+    label: "Target",
+    rule:
+      "Risk multiples: take a partial at 1R and let a runner go to 2–3R or the next LVN edge. The nearest POC averages ~8.9R away, so treat it as the destination the auction is heading for — never as the scalp objective.",
+  },
+  {
+    label: "Reference",
+    rule:
+      "Value-area edges (VAH/VAL) mark inside/outside value — acceptance vs rejection context, optional, off by default.",
+  },
+];
+
+/** How to read each surface of the dashboard. */
+export const dashboardReads = [
+  {
+    panel: "Flow & levels",
+    read:
+      "Full Globex day 18:00 → 16:59 New York, 1-minute candles with real OHLC where the feed provides it. Opens on the last 4 hours; scroll left to load more of the day. Double-click the price axis to reset the scale, the time axis to reset the zoom.",
+  },
+  {
+    panel: "Level stack (P0–P5)",
+    read:
+      "Numbering is recency: P0 today's developing RTH → P5 the 5-day composite. Levels are RTH-defined and stay valid all session; the chart draws their POC, VAH/VAL and LVN edges.",
+  },
+  {
+    panel: "Footprint story",
+    read:
+      "The relationship between bars, not a single candle: bar states (initiative · climax · quiet retest · vacuum · absorption · rotation), POC migration trail, auction Δ-flips, 3-bar effort vs result, climax→retest sequences.",
+  },
+  {
+    panel: "Minute ladder",
+    read:
+      "bid×ask per tick of the selected minute: ▲▼ imbalance (≥3:1, ≥10 ct), ◆ diagonal vs the adjacent tick, □ zero-side tick (unfinished auction), stacked runs boxed.",
+  },
+  {
+    panel: "Reversal checklist",
+    read:
+      "The six conditions with a state each (✓ / ◐ / ✗), the missing piece named, and trigger / invalidation / target. It reports what exists — it never tells you to trade.",
+  },
+  {
+    panel: "Alerts",
+    read:
+      "Grouped by kind with counts; the feed is one click away. Initiative bars (aggression WITH progress) are continuation context, dimmed by default.",
+  },
+];
+
+/** What we kept from the research and what we dropped, and why. */
+export const keptVsDropped = [
+  { kept: "Location first, always", why: "Evidence and practice agree: no level, no edge. Ours are LVN edges from the profile stack rather than round numbers." },
+  { kept: "The reclaim close as the trigger", why: "It is the only piece that is mechanically definable in our data — a break then a return inside within 2 bars." },
+  { kept: "Absorption as the mechanism", why: "It is a place, a size and a time: the most causally direct thing in the tape." },
+  { kept: "Journalling 100+ samples before trusting thresholds", why: "Every threshold in this system is still a hypothesis." },
+  { dropped: "ADX / indicator regime filters", why: "We read regime from the tape itself: POC migration, initiative vs absorption, value acceptance." },
+  { dropped: "Trading the wick", why: "The base rate flips against it without a reclaim — it is the single most expensive habit in the research." },
+  { dropped: "Divergence as an entry", why: "It is the symptom; it persists in trends and needs the mechanism plus the trigger to mean anything." },
+  { dropped: "Multi-day swing framing", why: "This is a scalping surface: POC-to-POC, LVN-edge to LVN-edge, minutes not days." },
 ];
