@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-/* Two surfaces only: the working dashboard and the documentation behind it. */
+/* Three surfaces: the working dashboard, the theory lab, and the research. */
 const links = [
   { href: "/", label: "Dashboard", note: "live working surface" },
+  { href: "/lab", label: "Lab", note: "test entry theories against the collected sessions" },
   { href: "/docs", label: "Docs", note: "the research" },
 ];
 
