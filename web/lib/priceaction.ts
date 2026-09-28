@@ -11,11 +11,15 @@
  *               (61.8–78.6% retracement, i.e. 21.4–38.2% from the low
  *               for longs, 61.8–78.6% for shorts) — the sweet spot.
  *
- * The dealing range is the high/low of a trailing window of 1-minute
- * bars whose length matches the timeframe (5m → last 5 bars, 1h → last
- * 60, …). The Daily range is the trading session high/low (RTH-defined,
- * consistent with the profile stack) rather than a trailing window, so
- * it is the actual "daily candle" for an intraday scalp.
+ * Each timeframe's dealing range is the high/low of its CURRENT calendar
+ * candle (still forming), bucketed on the feed's own US-Central wall clock:
+ * 4h → the 4-hour block, 1h → the clock hour, 15m/5m/1m → the quarter/
+ * five-minute/minute bar. Bucketing by calendar candle — rather than a
+ * trailing window of bars — both makes each gauge reflect a real candle and
+ * clips it to the current session, so a short live session never reaches
+ * back into a previous trading day. The Daily range is the trading session
+ * high/low (RTH-defined, consistent with the profile stack) rather than a
+ * calendar candle, so it is the actual "daily candle" for an intraday scalp.
  *
  * This is a LOCATION filter, not a trigger: it tells you whether you
  * would be buying cheap or chasing. It composes with the order-flow
@@ -34,19 +38,21 @@ export type TF = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 export type TFConfig = {
   tf: TF;
   label: string;
-  /** trailing 1-minute bars in the dealing-range window; 0 = session range */
+  /** fallback trailing 1-minute bars when a bar carries no clock time; 0 = session range */
   window: number;
+  /** calendar candle size in seconds (0 = session range, used for the daily) */
+  bucket: number;
   /** alignment weight — higher timeframes are the context, so they weigh more */
   weight: number;
 };
 
 export const TIMEFRAMES: TFConfig[] = [
-  { tf: "1d", label: "Daily", window: 0, weight: 3 },
-  { tf: "4h", label: "4H", window: 240, weight: 3 },
-  { tf: "1h", label: "1H", window: 60, weight: 2 },
-  { tf: "15m", label: "15m", window: 15, weight: 2 },
-  { tf: "5m", label: "5m", window: 5, weight: 1 },
-  { tf: "1m", label: "1m", window: 1, weight: 1 },
+  { tf: "1d", label: "Daily", window: 0, bucket: 0, weight: 3 },
+  { tf: "4h", label: "4H", window: 240, bucket: 14400, weight: 3 },
+  { tf: "1h", label: "1H", window: 60, bucket: 3600, weight: 2 },
+  { tf: "15m", label: "15m", window: 15, bucket: 900, weight: 2 },
+  { tf: "5m", label: "5m", window: 5, bucket: 300, weight: 1 },
+  { tf: "1m", label: "1m", window: 1, bucket: 60, weight: 1 },
 ];
 
 export const MAX_SCORE = TIMEFRAMES.reduce((s, t) => s + t.weight, 0); // 12
@@ -62,7 +68,14 @@ export const OPP_FLOOR = 2;
 
 export type Zone = "discount" | "equilibrium" | "premium";
 
-export type Minute = { high: number; low: number };
+export type Minute = {
+  high: number;
+  low: number;
+  /** feed-clock "HH:mm" (optional); when present, calendar-candle bucketing is used */
+  t?: string;
+  /** feed-clock calendar date (optional) — keeps buckets from crossing trading days */
+  d?: string;
+};
 
 export type TFRead = {
   tf: TF;
@@ -111,6 +124,15 @@ export function oteOf(pct: number): "long" | "short" | null {
   return null;
 }
 
+/** feed wall-clock "HH:mm" + calendar date → a calendar-candle key.
+ *  e.g. 4h → "…T04:00" blocks, 1h → "…T04:00", 15m → "…T04:30", 5m → "…T04:40", 1m → "…T04:42". */
+function candleKey(t: string, d: string | undefined, bucketSec: number): string {
+  const [h, m] = t.split(":").map(Number);
+  const stepMin = Math.max(1, Math.round(bucketSec / 60));
+  const bucketMin = Math.floor((h * 60 + m) / stepMin) * stepMin;
+  return `${d ?? "?"}T${String(Math.floor(bucketMin / 60)).padStart(2, "0")}:${String(bucketMin % 60).padStart(2, "0")}`;
+}
+
 export function dealingRange(
   minutes: Minute[],
   tf: TF,
@@ -134,6 +156,25 @@ export function dealingRange(
   }
 
   const cfg = TIMEFRAMES.find((t) => t.tf === tf)!;
+  const last = minutes[n - 1];
+
+  // Calendar-aligned path: the current (still-forming) candle of this
+  // timeframe. Keying on date + wall-clock block both maps each gauge to a
+  // real candle and stops a short live session from reaching into a prior
+  // trading day (which had a different calendar date).
+  if (cfg.bucket > 0 && last.t && /^\d{2}:\d{2}$/.test(last.t)) {
+    const key = candleKey(last.t, last.d, cfg.bucket);
+    const inCandle = minutes.filter(
+      (m) => m.t && /^\d{2}:\d{2}$/.test(m.t) && candleKey(m.t, m.d, cfg.bucket) === key,
+    );
+    if (inCandle.length) {
+      const lo = Math.min(...inCandle.map((m) => m.low));
+      const hi = Math.max(...inCandle.map((m) => m.high));
+      return { low: lo, high: hi, enough: Number.isFinite(lo) && Number.isFinite(hi) && hi > lo };
+    }
+  }
+
+  // Fallback (bars without clock time): a trailing window of `window` bars.
   const w = Math.min(cfg.window, n);
   const slice = minutes.slice(n - w);
   const lo = Math.min(...slice.map((m) => m.low));

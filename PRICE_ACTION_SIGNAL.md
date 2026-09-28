@@ -71,11 +71,18 @@ For each timeframe, the **dealing range** is:
 | TF | Range |
 |---|---|
 | **1d** | the trading session high/low (RTH-defined, same convention as the P0–P5 profile stack) |
-| **4h** | high/low of the last 240 one-minute bars |
-| **1h** | last 60 bars |
-| **15m** | last 15 bars |
-| **5m** | last 5 bars |
-| **1m** | last 1 bar |
+| **4h** | high/low of the current 4-hour calendar candle (still forming) |
+| **1h** | current 1-hour calendar candle |
+| **15m** | current 15-minute calendar candle |
+| **5m** | current 5-minute calendar candle |
+| **1m** | current 1-minute candle |
+
+Each lower timeframe's candle is bucketed on the feed's own US-Central wall
+clock (so 4h → 00/04/08/12/16/20 blocks, 1h → the clock hour, 15m → :00/:15/:30/:45,
+5m → :00/:05/…, 1m → the minute). Bucketing by calendar candle — rather than a
+trailing window of bars — both maps each gauge to a real candle and clips it to
+the current session, so a short live session never reaches back into a previous
+trading day.
 
 Then:
 
@@ -138,9 +145,10 @@ wait.
    them, then let the 100-trade journal falsify them.
 2. "Daily" = RTH session high/low, not a 24-hour day. If Globex extremes matter
    more for NQ, swap the daily range source (one line in `dealingRange`).
-3. Trailing windows (not calendar-aligned 4h/1h bars) are used for the lower
-   timeframes. This is a deliberate simplification that stays live-correct; if
-   calendar buckets matter, the aggregation is the place to change it.
+3. Calendar candles (clock-aligned in the feed's US-Central wall clock), not
+   trailing windows, define the lower timeframes. Each gauge reads the
+   still-forming candle of that timeframe, so the 4h/1h/15m/5m/1m gauges map to
+   real candles and never span a previous trading day.
 4. This box is a **location filter**, not a signal. Its only job is to keep the
    order-flow trigger from firing when price is already extended — the same job
    the "location" ingredient does at a single timeframe, now checked across six.

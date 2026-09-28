@@ -400,14 +400,15 @@ export default function DashboardPage() {
 
   // ---- price-action box: discount/premium alignment across 1m…1d ----
   // The daily dealing range is the trading session high/low (RTH-defined,
-  // matching the profile stack); the lower timeframes are trailing windows
-  // over the blended (collected + live) minutes.
+  // matching the profile stack); the lower timeframes are the current calendar
+  // candle of each timeframe (feed-clock bucketed), so a short live session
+  // never reaches back into a previous trading day.
   const paSessionHigh = snap?.high ?? Math.max(0, ...chartMinutes.map((m) => m.h));
   const paSessionLow = snap?.low ?? (chartMinutes.length ? Math.min(...chartMinutes.map((m) => m.l)) : 0);
   const pa = useMemo(
     () =>
       readPriceAction({
-        minutes: chartMinutes.map((m) => ({ high: m.h, low: m.l })),
+        minutes: chartMinutes.map((m) => ({ high: m.h, low: m.l, t: m.t, d: m.d })),
         lastPrice,
         sessionHigh: paSessionHigh,
         sessionLow: paSessionLow,

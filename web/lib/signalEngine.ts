@@ -255,7 +255,7 @@ export function computeSignal(
   });
 
   const pa = readPriceAction({
-    minutes: minutes.map((m) => ({ high: m.high, low: m.low })),
+    minutes: minutes.map((m) => ({ high: m.high, low: m.low, t: m.t, d: m.d })),
     lastPrice,
     sessionHigh,
     sessionLow,

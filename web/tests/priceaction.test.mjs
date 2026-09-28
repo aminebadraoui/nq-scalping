@@ -68,7 +68,7 @@ test("a single dissenting timeframe removes strict alignment but keeps the weigh
   assert.equal(r.aligned, null, "but the location is not strictly aligned");
 });
 
-test("dealing range uses the session high/low for daily and trailing bars below it", () => {
+test("dealing range uses the session high/low for daily and falls back to a trailing window without clock time", () => {
   const mins = bars(100, 100, 200);
   const d = dealingRange(mins, "1d", 210, 90);
   assert.deepEqual({ low: d.low, high: d.high }, { low: 90, high: 210 });
@@ -76,6 +76,48 @@ test("dealing range uses the session high/low for daily and trailing bars below 
   const h = dealingRange(mins, "1h");
   assert.equal(h.low, 100);
   assert.equal(h.high, 200);
+});
+
+/* feed-clock minutes: consecutive bars stamped "HH:mm" on one calendar day */
+const clocked = (n, lo, hi, day = "2026-09-28", startMin = 0) =>
+  Array.from({ length: n }, (_, i) => {
+    const total = startMin + i;
+    return {
+      high: hi,
+      low: lo,
+      t: `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`,
+      d: day,
+    };
+  });
+
+test("calendar bucketing measures the current candle, not a rolling window", () => {
+  const mins = [];
+  mins.push({ t: "09:44", d: "2026-09-28", high: 150, low: 50 }); // previous 15m candle
+  for (let m = 45; m <= 52; m++) mins.push({ t: `09:${m}`, d: "2026-09-28", high: 200, low: 100 });
+  // last bar 09:52 → current 15m candle is 09:45–09:59; the 09:44 bar is excluded
+  const r = dealingRange(mins, "15m");
+  assert.equal(r.low, 100, "the prior candle's low must not leak in");
+  assert.equal(r.high, 200);
+});
+
+test("calendar bucketing never reaches back into a prior trading day", () => {
+  const mins = [
+    { t: "16:59", d: "2026-09-25", high: 30922.25, low: 30918 }, // stale collected day
+    { t: "22:00", d: "2026-09-27", high: 30810, low: 30700 }, // live session
+    { t: "22:01", d: "2026-09-27", high: 30805, low: 30710 },
+  ];
+  // last bar 22:01 → current 1h candle = 22:00–22:59 on 09-27, excludes 09-25
+  const r = dealingRange(mins, "1h");
+  assert.equal(r.low, 30700);
+  assert.equal(r.high, 30810, "the previous trading day's high must not leak in");
+});
+
+test("4h range clips to the current session even with fewer than 240 live bars", () => {
+  const mins = clocked(235, 30638, 30920, "2026-09-28", 0); // 235 live bars (03:55…)
+  mins.unshift({ t: "16:59", d: "2026-09-25", high: 30922.25, low: 30918 }); // stale day
+  const r = dealingRange(mins, "4h");
+  assert.equal(r.high, 30920, "the stale 2026-09-25 high must be excluded from the 4h candle");
+  assert.equal(r.low, 30638);
 });
 
 test("empty / flat / NaN input never leaks NaN or Infinity", () => {
