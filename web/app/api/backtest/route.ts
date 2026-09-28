@@ -12,7 +12,8 @@ export async function GET(req: NextRequest) {
   const file = path.join(dir, `results_${session}.json`);
   const legacy = path.join(dir, "results.json");
 
-  const pick = existsSync(file) ? file : existsSync(legacy) ? legacy : null;
+  // the legacy file was RTH-only; only fall back to it for the rth query
+  const pick = existsSync(file) ? file : session === "rth" && existsSync(legacy) ? legacy : null;
   if (!pick) {
     return Response.json({ ok: false, status: "pending", session, message: "backtest sweep has not been run yet" });
   }
