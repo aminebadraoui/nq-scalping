@@ -410,8 +410,18 @@ export const measuredEvidence: Measured[] = [
     verdict: "fails",
   },
   {
+    claim: "Swap the POC for whichever of POC / VWAP is nearer",
+    measured: "session VWAP is the farther magnet (median 110.7 pt = 24.3R vs the POC's 48.9 pt) and wins the nearer contest in only 27% of trades — pooled expectancy is unchanged at +0.03R, i.e. breakeven before fees",
+    verdict: "fails",
+  },
+  {
     claim: "A 1:1 risk-reward exit",
     measured: "negative expectancy at every stop tested (−0.66R to −0.35R); only a 2 pt stop with a 3R runner reaches +0.09R before fees",
+    verdict: "fails",
+  },
+  {
+    claim: "Winners run far enough to pay for a wider target",
+    measured: "with the structural stop the median favourable excursion while the trade is still alive is 0.32R — target selection is not the bottleneck, follow-through is",
     verdict: "fails",
   },
 ];

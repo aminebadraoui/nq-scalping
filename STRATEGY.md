@@ -71,14 +71,26 @@ close, pessimistic same-bar ordering, perfect fills, no fees.
 | LVN edge is the location edge | 43.8 % (n=112) vs 39.1 % (n=156), 3/5 sessions, rides on one day | weak |
 | Absorption is required | n=2 coincident — not testable | **untested** |
 | Nearest POC as target | median 36.6 pt away vs 4.1 pt risk = **8.9R**; reached before the stop in 7.8 % | **withdrawn** |
+| Whichever of POC / VWAP is nearer, as target | VWAP is the *farther* magnet (median 110.7 pt = 24.3R vs the POC's 48.9 pt) and wins the nearer contest in only 27 % of trades; pooled expectancy +0.03R either way | **withdrawn** |
 | 1:1 risk-reward exit | −0.66R to −0.35R at every stop; best case (2 pt stop, 3R runner) +0.09R pre-fees | **withdrawn** |
 
 **Two consequences.** The POC is context and destination, never the scalp
-objective — an 8.9R objective is not a scalp. And absorption, the ingredient the
-playbook marks *required*, is the one thing this sample cannot test: the reclaim
-alone carried all 268 trades. Until absorption has its own sample, the honest
-description of the edge is "reclaim after a level rejection, best in the evening",
-not "absorption plus reclaim".
+objective — an 8.9R objective is not a scalp, and swapping it for the session
+VWAP does not help because the VWAP is usually *further* away: these reclaims fire
+at counter-trend extremes, so the auction sits a median 110 pt from a cumulative
+24-hour VWAP. And absorption, the ingredient the playbook marks *required*, is the
+one thing this sample cannot test: the reclaim alone carried all 268 trades. Until
+absorption has its own sample, the honest description of the edge is "reclaim
+after a level rejection, best in the evening", not "absorption plus reclaim".
+
+**The bottleneck is not the target, it is the follow-through.** With the
+structural stop (2 ticks beyond the failed extreme, median 4.1 pt) the median
+favourable excursion while a trade is still alive is **0.32R** — most reclaims
+barely move in favour before they are stopped. Every fixed target from 1R to 10R
+prices out negative (−0.16R to −0.25R), the magnets land at breakeven (+0.03R)
+purely on rare large winners, and the only configuration that reached positive
+territory was widening the stop to 2 pt with a 3R runner (+0.09R). So the open
+question is stop placement and entry quality, not which magnet to aim at.
 
 The weekday win rate rose monotonically across the sample (33 → 35 → 38 → 49 →
 61 %), which is a warning rather than a finding: one trending week flatters any

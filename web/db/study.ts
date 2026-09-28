@@ -364,6 +364,215 @@ async function main() {
     console.log(`  ${date}   evening ${rate(eve).padEnd(12)}  rest of session ${rate(rest)}`);
   }
 
+  // ── which target is actually reachable: POC, session VWAP, or the nearer? ──
+  // The POC turned out to be ~9R away. VWAP is the other magnet the research
+  // names, and it is usually much closer. Only targets in the trade's own
+  // direction count: for a long, a level above the entry.
+  type Cand = { name: string; price: number };
+  const rows: { name: string; dist: number[]; rr: number[]; hits: number; n: number; validSkip: number }[] = [
+    { name: "nearest POC (in direction)", dist: [], rr: [], hits: 0, n: 0, validSkip: 0 },
+    { name: "session VWAP (in direction)", dist: [], rr: [], hits: 0, n: 0, validSkip: 0 },
+    { name: "nearer of POC / VWAP", dist: [], rr: [], hits: 0, n: 0, validSkip: 0 },
+  ];
+  const rowOf = (name: string) => rows.find((r) => r.name === name)!;
+  let vwapWrongSide = 0;
+  let vwapAtEntry = 0;
+  let vwapWon = 0;
+  let bothPresent = 0;
+  let onlyVwap = 0;
+
+  for (const t of trades) {
+    const fp = fpCache.get(t.date);
+    const sheet = sheetCache.get(t.date);
+    if (!fp || !sheet) continue;
+    const idx = fp.findIndex((x) => x.t === t.t);
+    if (idx < 0) continue;
+
+    // cumulative session VWAP the trader can actually see at this bar (HLC3)
+    let num = 0;
+    let den = 0;
+    for (let k = 0; k <= idx; k++) {
+      const b = fp[k];
+      const v = (b.buy ?? 0) + (b.sell ?? 0);
+      num += ((b.high + b.low + (b.c > 0 ? b.c : (b.high + b.low) / 2)) / 3) * v;
+      den += v;
+    }
+    const vwap = den > 0 ? num / den : 0;
+    const long = t.dir === "long";
+    const ahead = (px: number) => (long ? px > t.entry : px < t.entry);
+
+    const pocs: number[] = [];
+    for (const pr of Object.values(sheet.profiles)) if (pr?.POC) pocs.push(parseFloat(String(pr.POC).replace(/,/g, "")));
+    const pocAhead = pocs.filter(ahead).sort((a, b) => Math.abs(a - t.entry) - Math.abs(b - t.entry))[0];
+
+    const vwapAhead = vwap > 0 && ahead(vwap) ? vwap : null;
+    if (vwap > 0 && !ahead(vwap)) vwapWrongSide++;
+    if (vwap > 0 && Math.abs(vwap - t.entry) <= 0.5) vwapAtEntry++;
+
+    const cands: Cand[] = [];
+    if (pocAhead !== undefined) cands.push({ name: "nearest POC (in direction)", price: pocAhead });
+    if (vwapAhead !== null) cands.push({ name: "session VWAP (in direction)", price: vwapAhead });
+    if (cands.length === 2) {
+      const near = Math.abs(cands[0].price - t.entry) <= Math.abs(cands[1].price - t.entry) ? cands[0] : cands[1];
+      cands.push({ name: "nearer of POC / VWAP", price: near.price });
+      bothPresent++;
+      if (near.name.startsWith("session VWAP")) vwapWon++;
+    } else if (vwapAhead !== null) onlyVwap++;
+
+    for (const c of cands) {
+      const row = rowOf(c.name);
+      const dist = Math.abs(c.price - t.entry);
+      const rr = dist / Math.max(0.01, t.r);
+      let hit = false;
+      for (let k = idx + 1; k < Math.min(fp.length, idx + 1 + LOOKAHEAD); k++) {
+        const b = fp[k];
+        const hitStop = long ? b.low <= t.stop : b.high >= t.stop;
+        const hitTgt = long ? b.high >= c.price : b.low <= c.price;
+        if (hitStop) break;
+        if (hitTgt) {
+          hit = true;
+          break;
+        }
+      }
+      row.dist.push(dist);
+      row.rr.push(rr);
+      row.n++;
+      if (hit) row.hits++;
+    }
+  }
+
+  // ── true (untruncated) excursion: break ONLY on the stop ───────────────
+  // The headline medMFE above is capped by the 1R target break, so it cannot
+  // say how far winners run. This walks the full window stopping only at the
+  // stop, which is the honest basis for choosing a target multiple.
+  const trueMfe: number[] = [];
+  const trueMae: number[] = [];
+  for (const t of trades) {
+    const fp = fpCache.get(t.date);
+    if (!fp) continue;
+    const idx = fp.findIndex((x) => x.t === t.t);
+    if (idx < 0) continue;
+    const long = t.dir === "long";
+    let mfe = 0;
+    let mae = 0;
+    for (let k = idx + 1; k < Math.min(fp.length, idx + 1 + LOOKAHEAD); k++) {
+      const b = fp[k];
+      // pessimistic ordering, identical to every other test here: the stop is
+      // resolved BEFORE the bar's favourable excursion is credited
+      if (long ? b.low <= t.stop : b.high >= t.stop) break;
+      mfe = Math.max(mfe, (long ? b.high - t.entry : t.entry - b.low) / t.r);
+      mae = Math.max(mae, (long ? t.entry - b.low : b.high - t.entry) / t.r);
+    }
+    trueMfe.push(mfe);
+    trueMae.push(mae);
+  }
+  // ── index integrity: does findIndex(t) land on the trade's own bar? ────
+  let mismatch = 0;
+  let dupT = 0;
+  let oneRTargetFirst = 0;
+  let checked = 0;
+  for (const t of trades) {
+    const fp = fpCache.get(t.date);
+    if (!fp) continue;
+    const idx = fp.findIndex((x) => x.t === t.t);
+    if (idx < 0) continue;
+    const b = fp[idx];
+    if (Math.abs((b.c > 0 ? b.c : (b.high + b.low) / 2) - t.entry) > 0.01) mismatch++;
+    if (fp.filter((x) => x.t === t.t).length > 1) dupT++;
+    checked++;
+    // 1R-first using THIS index, same ordering as the reach test
+    const long = t.dir === "long";
+    for (let k = idx + 1; k < Math.min(fp.length, idx + 1 + LOOKAHEAD); k++) {
+      const x = fp[k];
+      if (long ? x.low <= t.stop : x.high >= t.stop) break;
+      if (long ? x.high >= t.entry + t.r : x.low <= t.entry - t.r) { oneRTargetFirst++; break; }
+    }
+  }
+  console.log(
+    `\nIndex integrity: ${checked} trades resolved, ${mismatch} entry mismatches, ${dupT} duplicate timestamps` +
+      `\n  1R-target-first recomputed from findIndex(t): ${((oneRTargetFirst / Math.max(1, checked)) * 100).toFixed(1)}%  (headline says 41.0%)`,
+  );
+
+  const pct = (a: number[], f: number) => q(a, f).toFixed(2);
+  console.log(
+    `\nTrue excursion in R, untruncated (break only on the stop) — how far price really travels\n` +
+      `  MFE   p25 ${pct(trueMfe, 0.25)}   med ${pct(trueMfe, 0.5)}   p75 ${pct(trueMfe, 0.75)}   p90 ${pct(trueMfe, 0.9)}\n` +
+      `  share reaching 1R ${((trueMfe.filter((x) => x >= 1).length / trueMfe.length) * 100).toFixed(0)}%` +
+      `  2R ${((trueMfe.filter((x) => x >= 2).length / trueMfe.length) * 100).toFixed(0)}%` +
+      `  3R ${((trueMfe.filter((x) => x >= 3).length / trueMfe.length) * 100).toFixed(0)}%` +
+      `  5R ${((trueMfe.filter((x) => x >= 5).length / trueMfe.length) * 100).toFixed(0)}%` +
+      `  10R ${((trueMfe.filter((x) => x >= 10).length / trueMfe.length) * 100).toFixed(0)}%`,
+  );
+
+  // ── per-trade expectancy for each candidate target (no median shortcut) ──
+  console.log("\nExpectancy per trade for each target rule (stop = technical invalidation)");
+  const pooled: { name: string; exp: number; n: number; wr: number }[] = [];
+  for (const r of rows) {
+    let sum = 0;
+    let n = 0;
+    let hits = 0;
+    for (const t of trades) {
+      const fp = fpCache.get(t.date);
+      const sheet = sheetCache.get(t.date);
+      if (!fp || !sheet) continue;
+      const idx = fp.findIndex((x) => x.t === t.t);
+      if (idx < 0) continue;
+      const long = t.dir === "long";
+      let num = 0;
+      let den = 0;
+      for (let k = 0; k <= idx; k++) {
+        const b = fp[k];
+        const v = (b.buy ?? 0) + (b.sell ?? 0);
+        num += ((b.high + b.low + (b.c > 0 ? b.c : (b.high + b.low) / 2)) / 3) * v;
+        den += v;
+      }
+      const vwap = den > 0 ? num / den : 0;
+      const ahead = (px: number) => (long ? px > t.entry : px < t.entry);
+      const pocs: number[] = [];
+      for (const pr of Object.values(sheet.profiles)) if (pr?.POC) pocs.push(parseFloat(String(pr.POC).replace(/,/g, "")));
+      const pocAhead = pocs.filter(ahead).sort((a, b) => Math.abs(a - t.entry) - Math.abs(b - t.entry))[0];
+      const vwapAhead = vwap > 0 && ahead(vwap) ? vwap : null;
+      let target: number | null = null;
+      if (r.name === "nearest POC (in direction)") target = pocAhead ?? null;
+      else if (r.name === "session VWAP (in direction)") target = vwapAhead;
+      else if (pocAhead !== undefined && vwapAhead !== null)
+        target = Math.abs(pocAhead - t.entry) <= Math.abs(vwapAhead - t.entry) ? pocAhead : vwapAhead;
+      else target = pocAhead ?? vwapAhead ?? null;
+      if (target === null) continue;
+      const rr = Math.abs(target - t.entry) / Math.max(0.01, t.r);
+      let hit = false;
+      for (let k = idx + 1; k < Math.min(fp.length, idx + 1 + LOOKAHEAD); k++) {
+        const b = fp[k];
+        if (long ? b.low <= t.stop : b.high >= t.stop) break;
+        if (long ? b.high >= target : b.low <= target) { hit = true; break; }
+      }
+      n++;
+      if (hit) hits++;
+      sum += hit ? rr : -1;
+    }
+    if (n) pooled.push({ name: r.name, exp: sum / n, n, wr: (hits / n) * 100 });
+  }
+  for (const p2 of pooled) console.log(`  ${p2.name.padEnd(30)} ${p2.exp >= 0 ? "+" : ""}${p2.exp.toFixed(2)}R   hit ${p2.wr.toFixed(1)}%   n=${p2.n}`);
+
+  console.log("\nTarget reachability — target touched before the stop, and what it is worth");
+  console.log("  target                          n    medDist  medR:R   reached   expectancy if taken");
+  for (const r of rows) {
+    const reach = r.n ? (r.hits / r.n) * 100 : 0;
+    const med = q(r.rr, 0.5);
+    const exp = (reach / 100) * med - (1 - reach / 100);
+    const med2 = r.dist.length ? q(r.dist, 0.5).toFixed(2) : "—";
+    console.log(
+      `  ${r.name.padEnd(30)} ${String(r.n).padStart(3)}   ${String(med2).padStart(6)}   ${med.toFixed(2).padStart(5)}   ` +
+        `${reach.toFixed(1).padStart(5)}%   ${exp >= 0 ? "+" : ""}${exp.toFixed(2)}R`,
+    );
+  }
+  console.log(
+    `\n  VWAP wins the "nearer" contest in ${vwapWon}/${bothPresent} trades where both levels exist (${((vwapWon / Math.max(1, bothPresent)) * 100).toFixed(0)}%)` +
+      `\n  trades with no in-direction POC where VWAP is the only candidate: ${onlyVwap}` +
+      `\n  VWAP behind the entry (not a target in the trade's direction): ${vwapWrongSide}/${trades.length} trades` +
+      `\n  entry within 0.5 pt of VWAP (target already achieved): ${vwapAtEntry}/${trades.length}`,
+  );
+
   console.log(
     `\nCaveats: perfect fills at bar close, no fees/slippage, overlapping trades, ${DATES.length} sessions only.` +
       `\nEvery threshold in the system is still a hypothesis until the journal has 100+ tagged samples.`,
