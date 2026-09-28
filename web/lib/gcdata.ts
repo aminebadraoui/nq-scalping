@@ -479,29 +479,24 @@ function sessionVwap(candles: Candle[], ohlc?: Map<string, OHLCBar>): number {
   return den > 0 ? num / den : 0;
 }
 
-export async function analyze(
-  date: string,
-  session: Session,
-  start?: string,
-  end?: string,
-  rowTicks = 4,
-): Promise<Analysis | null> {
-  const all = (await loadDay(date, session)) ?? [];
-  const sel = all.filter((c) => inWindow(c, start, end));
-  if (sel.length === 0) return null;
-  const fp = await extractFootprint(date, session, start, end);
-  if (!fp) return null;
-  const minutes = fp.minutes;
-
-  const rows = aggregate(sel, rowTicks);
-  const s = stats(rows);
-  if (!s) return null;
-  const ohlcMap = await loadOhlc(date);
-  // whole-session VWAP by default; a windowed request gets the VWAP OF THAT
-  // WINDOW, otherwise every alert's vwapSide is judged against a reference the
-  // caller never asked for
-  const vwap = start || end ? sessionVwap(sel, ohlcMap) : sessionVwap(all, ohlcMap);
-
+/**
+ * The analysis core, factored out of `analyze()` so it can run against LIVE
+ * minutes (built from the GoCharting tick feed) as well as collected files.
+ * `minutes` are footprint-shaped rows (feed-clock keys); `minPrice`/`maxPrice`
+ * bound the window the absorption "near extreme" check runs against; `rows`
+ * and `s` are the aggregate profile (cents) used to tag alerts; `vwap` is the
+ * session reference already resolved by the caller.
+ */
+export function analyzeMinutes(
+  minutes: FootprintMinute[],
+  minPrice: number,
+  maxPrice: number,
+  rows: Map<number, { buy: number; sell: number }>,
+  s: ProfileStats,
+  vwap: number,
+  rowTicks: number,
+  ohlcBars: number,
+): Analysis {
   // HVN = top-volume rows (contiguous groups)
   const sorted = [...rows.entries()].sort((a, b) => b[1].buy + b[1].sell - (a[1].buy + a[1].sell));
   const hvnLevels = sorted.slice(0, 12).map(([p]) => p).sort((a, b) => a - b);
@@ -518,7 +513,7 @@ export async function analyze(
   levelVols.sort((a, b) => a - b);
   const med = levelVols[levelVols.length >> 1] ?? 0;
   const volFloor = Math.max(50, med * 1.5);
-  const range = fp.maxPrice - fp.minPrice;
+  const range = maxPrice - minPrice;
   const absorption: AbsorbEvent[] = [];
   const seen = new Set<string>();
 
@@ -530,7 +525,7 @@ export async function analyze(
       if (dom < 0.6) continue;
       const askSide = l.buy > l.sell;
       // only near extremes: ask-dominant near top, bid-dominant near bottom
-      const pos = (l.price - fp.minPrice) / Math.max(range, 0.25);
+      const pos = (l.price - minPrice) / Math.max(range, 0.25);
       if (askSide && pos < 0.7) continue;
       if (!askSide && pos > 0.3) continue;
       // progress check over next 3 minutes
@@ -595,10 +590,6 @@ export async function analyze(
   });
 
   // Divergence D2 / D4 across EVERY consecutive pivot pair.
-  // (Testing only the last two pivots silently dropped 8 of 9 qualifying
-  // bullish pairs and all 5 bearish ones in the 2026-09-25 RTH session: if the
-  // newest pair happened not to diverge, older qualifying divergences were
-  // never reported at all.)
   for (let k = 1; k < pLows.length; k++) {
     const i1 = pLows[k - 1];
     const i2 = pLows[k];
@@ -721,7 +712,33 @@ export async function analyze(
     alerts,
     reclaims,
     imbalance,
-    ohlc: { bars: fp.ohlcBars, minutes: minutes.length },
+    ohlc: { bars: ohlcBars, minutes: minutes.length },
     window: { minutes: n },
   };
+}
+
+export async function analyze(
+  date: string,
+  session: Session,
+  start?: string,
+  end?: string,
+  rowTicks = 4,
+): Promise<Analysis | null> {
+  const all = (await loadDay(date, session)) ?? [];
+  const sel = all.filter((c) => inWindow(c, start, end));
+  if (sel.length === 0) return null;
+  const fp = await extractFootprint(date, session, start, end);
+  if (!fp) return null;
+  const minutes = fp.minutes;
+
+  const rows = aggregate(sel, rowTicks);
+  const s = stats(rows);
+  if (!s) return null;
+  const ohlcMap = await loadOhlc(date);
+  // whole-session VWAP by default; a windowed request gets the VWAP OF THAT
+  // WINDOW, otherwise every alert's vwapSide is judged against a reference the
+  // caller never asked for
+  const vwap = start || end ? sessionVwap(sel, ohlcMap) : sessionVwap(all, ohlcMap);
+
+  return analyzeMinutes(minutes, fp.minPrice, fp.maxPrice, rows, s, vwap, rowTicks, fp.ohlcBars);
 }

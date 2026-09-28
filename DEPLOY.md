@@ -77,7 +77,12 @@ curl -X POST -H "Authorization: Bearer $CF_TOKEN" "$CF/api/v1/deploy?uuid=<app_u
     - `GOCHARTING_EMAIL`, `GOCHARTING_PASSWORD`, `GOCHARTING_COGNITO_CLIENT`,
       `GOCHARTING_DC`, `GOCHARTING_SYMBOL`, `GOCHARTING_EXCHANGE`, `GOCHARTING_SEGMENT`
     - `DATABASE_URL` (unpooled Neon URL)
-    - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (optional, alerts)
+    - `TELEGRAM_BOT_TOKEN` (signals) — required to push. `TELEGRAM_CHAT_ID` is
+      optional: for a personal bot, message it once and it auto-discovers your
+      chat via `getUpdates`; set `TELEGRAM_CHAT_ID` to pin it.
+    - `SIGNAL_REFRESH_SECONDS` (optional, default 30) — how often the server
+      recomputes the live signal and pushes a card when the reversal sequence
+      completes.
     - `GC_DATA_DIR=/app/data` if you mount historical data
   - Persistent storage (optional): mount a host dir with `gcdata/data` at
     `/app/data` so the historical views work on the server too.

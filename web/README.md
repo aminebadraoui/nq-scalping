@@ -44,6 +44,19 @@ npm run build && npm start
 
 See `tests/README.md` for what the suite covers and how to add a test.
 
+## Telegram signals
+
+A server-side signal feed (`lib/signalFeed.ts`, started by `instrumentation.ts`)
+recomputes the dashboard's final signal every 30 s from the live GoCharting
+feed + collected levels and pushes a mobile-friendly trade card to Telegram the
+moment the reversal sequence completes (location + mechanism + trigger — the
+reclaim is the last piece). Configure `TELEGRAM_BOT_TOKEN` (and optionally
+`TELEGRAM_CHAT_ID`) in `gcdata/.env` or as env vars; `SIGNAL_REFRESH_SECONDS`
+overrides the interval. `GET /api/signal` shows the current server-side signal,
+`POST /api/signal?push=1` forces a test push. The card is a trade ticket:
+direction, ENTRY / STOP / TARGET, then the full 6-point reasoning plus the
+price-action and gamma context — readable in a couple of seconds on a phone.
+
 ## Stack
 
 Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS v4 ·
