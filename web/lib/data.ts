@@ -646,6 +646,16 @@ export const dashboardReads = [
     read:
       "Grouped by kind with counts; the feed is one click away. Initiative bars (aggression WITH progress) are continuation context, dimmed by default.",
   },
+  {
+    panel: "Price action (discount / premium)",
+    read:
+      "Six gauges — daily, 4h, 1h, 15m, 5m, 1m. Each shows where price sits in its dealing range: green (discount, buy) on the left, red (premium, sell) on the right, a centre equilibrium tick and the OTE bands shaded. When every dot is on the same side the location is aligned; scattered dots = mixed, wait. It is a location filter, not a trigger — it composes with the order-flow read into the final signal.",
+  },
+  {
+    panel: "Options / gamma",
+    read:
+      "Dealer positioning from the free CBOE QQQ chain, mapped to NQ points: a regime (CHOP when dealers are net long gamma and dampen moves, TREND when net short gamma and amplify), plus the gamma flip, call wall and put wall. It is a context box — it gates fade vs follow-through and supplies magnet levels, but never votes a direction.",
+  },
 ];
 
 /** What we kept from the research and what we dropped, and why. */

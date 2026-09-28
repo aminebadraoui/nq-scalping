@@ -5,8 +5,10 @@ import {
   computeProfile,
   extractFootprint,
   analyze,
+  optionsSnapshot,
   type Session,
 } from "@/lib/gcdata";
+import { getOptionsFeed } from "@/lib/optionsFeed";
 
 const SESSIONS: Session[] = ["RTH", "ETH"];
 
@@ -72,6 +74,14 @@ export async function GET(req: NextRequest) {
         const a = await analyze(date, session, start, end, row);
         if (!a) return Response.json({ error: "no data" }, { status: 404 });
         return Response.json(a);
+      }
+      case "options": {
+        const symbol = url.searchParams.get("symbol") ?? "QQQ";
+        const feed = getOptionsFeed();
+        const fresh = feed.snapshot();
+        const g = fresh ?? (await optionsSnapshot(symbol));
+        if (!g) return Response.json({ error: "no options data" }, { status: 404 });
+        return Response.json({ ...g, refresh: feed.info() });
       }
       default:
         return Response.json({ error: "unknown action" }, { status: 400 });

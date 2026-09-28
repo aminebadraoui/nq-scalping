@@ -58,6 +58,10 @@ export type MechanismInput = {
   sessionHigh: number;
   sessionLow: number;
   newsWin: boolean;
+  /** dealer gamma walls in NQ points: call = resistance, put = support,
+   *  flip = regime boundary. Optional — location degrades gracefully when
+   *  absent (the boxes stay independent). */
+  walls?: { kind: "call" | "put" | "flip"; p: number }[];
 };
 
 export type MechanismRead = {
@@ -77,6 +81,7 @@ export type MechanismRead = {
 };
 
 const NEAR_EDGE = 2.5; // pts — inside this distance you are "at" the LVN edge
+const WALL_NEAR = 20; // pts — a QQQ strike is ~40 NQ points wide, so a wall is a coarse zone
 const AGE = { mechanism: 15, fuel: 30, trigger: 10, evidence: 6 }; // bars
 
 function fmtN(n: number, dp = 2) {
@@ -133,30 +138,51 @@ export function readMechanism(inp: MechanismInput): MechanismRead {
     return price >= Math.min(a, b) && price <= Math.max(a, b);
   });
   const atExtreme = inp.sessionHigh > 0 && (price <= inp.sessionLow + 2.5 || price >= inp.sessionHigh - 2.5);
-  const locState: IngredientState = edge && edge.d <= NEAR_EDGE ? "yes" : inZone ? "partial" : atExtreme ? "partial" : "no";
+
+  // dealer gamma walls: coarse magnet ZONES (a QQQ strike ≈ 40 NQ points),
+  // so they count as PARTIAL location, never the tick-precise "yes" an LVN
+  // edge earns. They carry a direction: call wall = resistance, put = support.
+  const walls = inp.walls ?? [];
+  const nearestWall = walls
+    .map((w) => ({ ...w, d: Math.abs(w.p - price) }))
+    .sort((a, b) => a.d - b.d)[0];
+  const atWall = nearestWall !== undefined && nearestWall.d <= WALL_NEAR;
+  const wallWord =
+    nearestWall?.kind === "call"
+      ? "call wall (dealer resistance)"
+      : nearestWall?.kind === "put"
+        ? "put wall (dealer support)"
+        : nearestWall?.kind === "flip"
+          ? "gamma flip"
+          : null;
+
+  const atEdge = !!edge && edge.d <= NEAR_EDGE;
+  const locState: IngredientState = atEdge ? "yes" : atWall ? "partial" : inZone ? "partial" : atExtreme ? "partial" : "no";
   const location: Ingredient = {
     key: "location",
     n: "1",
     name: "Location",
     role: "required",
     state: locState,
-    short:
-      edge && edge.d <= NEAR_EDGE
-        ? `at ${edge.label} LVN edge ${fmtN(edge.p)}`
+    short: atEdge
+      ? `at ${edge!.label} LVN edge ${fmtN(edge!.p)}`
+      : atWall
+        ? `near ${wallWord} ${fmtN(nearestWall!.p)}`
         : inZone
           ? `inside ${inZone.label} LVN ${inZone.zone} — far edge next`
           : edge
             ? `${fmtN(edge.d)} pts from ${edge.label} LVN edge ${fmtN(edge.p)}`
             : "no LVN levels loaded",
-    value:
-      edge && edge.d <= NEAR_EDGE
-        ? `at ${edge.label} LVN edge ${fmtN(edge.p)} (zone ${edge.zone})`
+    value: atEdge
+      ? `at ${edge!.label} LVN edge ${fmtN(edge!.p)} (zone ${edge!.zone})`
+      : atWall
+        ? `within ${WALL_NEAR} pts of the ${wallWord} at ${fmtN(nearestWall!.p)} — a coarse dealer-hedging magnet (zone), not a tick edge`
         : inZone
           ? `inside ${inZone.label} LVN zone ${inZone.zone} — wait for the far edge (nearest edge ${fmtN(edge?.d ?? 0)} pts)`
           : edge
             ? `nearest LVN edge ${fmtN(edge.p)} (${edge.label}) is ${fmtN(edge.d)} pts away`
             : "no LVN levels loaded",
-    why: "reversals are made at levels that already rejected price (LVN edges, session extremes). Mid-range absorption is just chop.",
+    why: "reversals are made at levels that already rejected price — LVN edges and session extremes from the tape, plus dealer gamma walls (call = resistance, put = support) from the options book. Mid-range absorption is just chop.",
   };
 
   /* ---------- 2 · MECHANISM (absorption) ---------- */

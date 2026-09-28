@@ -2,6 +2,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { imbalanceFor, summarizeImb, type FPLevel, type ImbSummary } from "./imbalance";
 import { dbEnabled, dbListDatasets, dbLoadDay, dbLoadOhlc, dbLoadSheet } from "./gcdb";
+import { parseChain, inferSpot, computeGamma, computeGammaByExpiry, type GammaRead, type OptionRow } from "./options";
 
 export type { ImbSide, ImbStack, ImbSummary } from "./imbalance";
 
@@ -13,6 +14,8 @@ const DATA_DIR =
   process.env.GC_DATA_DIR || path.join(process.cwd(), "..", "gcdata", "data");
 
 const OHLC_DIR = path.join(DATA_DIR, "ohlc");
+
+const OPTIONS_DIR = path.join(DATA_DIR, "options");
 
 const TICK = 25; // cents per tick (0.25 pt)
 
@@ -66,6 +69,36 @@ export async function loadOhlc(date: string): Promise<Map<string, OHLCBar>> {
     /* no OHLC file for this date — callers fall back to mid-price bars */
   }
   return out;
+}
+
+/* ---------------- free CBOE option chain (gamma box) ---------------- */
+/* Collected by gcdata/collect_options.py → data/options/<SYMBOL>_<date>.json.
+ * QQQ is the liquid, free proxy for NQ (NDX/SPX return 403 from CBOE). */
+
+export async function loadOptionsChain(symbol = "QQQ"): Promise<{ options: OptionRow[]; asOf: string } | null> {
+  try {
+    const files = await fs.readdir(OPTIONS_DIR);
+    const matches = files
+      .filter((f) => f.startsWith(`${symbol}_`) && f.endsWith(".json"))
+      .sort()
+      .reverse();
+    if (matches.length === 0) return null;
+    const j = JSON.parse(await fs.readFile(path.join(OPTIONS_DIR, matches[0]), "utf8"));
+    const asOf = (matches[0].match(/\d{4}-\d{2}-\d{2}/) ?? [])[0] ?? (j.timestamp ?? "").slice(0, 10);
+    return { options: j.options ?? [], asOf };
+  } catch {
+    return null;
+  }
+}
+
+export async function optionsSnapshot(symbol = "QQQ"): Promise<GammaRead | null> {
+  const file = await loadOptionsChain(symbol);
+  if (!file || file.options.length === 0) return null;
+  const rows = parseChain(file.options);
+  const spot = inferSpot(rows);
+  const g = computeGamma(rows, spot);
+  g.buckets = computeGammaByExpiry(rows, spot, file.asOf);
+  return g;
 }
 
 export async function listDatasets(): Promise<

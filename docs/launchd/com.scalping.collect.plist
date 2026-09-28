@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Nightly NQ collection + Neon ingestion.
+
+  Runs Monday-Friday at 14:15 Pacific, which is 17:15 New York all year round
+  (Pacific is always exactly 3 hours behind Eastern), i.e. ~15 minutes after the
+  16:59 NY session close — so the session that just finished is the one that
+  gets collected. The script itself re-checks the clock and exits harmlessly if
+  it is ever invoked while the session is still open.
+
+  DATABASE_URL is deliberately NOT set here: scripts/nightly.sh falls back to
+  web/.env.local, which keeps the Neon credential in exactly one local file
+  instead of a second copy inside a plist. To override, add an
+  EnvironmentVariables dict with DATABASE_URL.
+
+  Install:
+    cp docs/launchd/com.scalping.collect.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.scalping.ingest.plist 2>/dev/null
+    launchctl load ~/Library/LaunchAgents/com.scalping.collect.plist
+    launchctl list | grep scalping
+
+  Run once by hand:
+    launchctl start com.scalping.collect
+  Log: gcdata/data/nightly_log.txt
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.scalping.collect</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/amean/PROJECTS/DEV/Scalping/scripts/nightly.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/amean/PROJECTS/DEV/Scalping</string>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>15</integer></dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/amean/PROJECTS/DEV/Scalping/gcdata/data/nightly_log.txt</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/amean/PROJECTS/DEV/Scalping/gcdata/data/nightly_log.txt</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

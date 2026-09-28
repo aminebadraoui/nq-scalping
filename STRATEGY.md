@@ -121,3 +121,32 @@ LVN-edge to LVN-edge, minutes).
 The checklist **reports**; it never tells you to trade. That distinction is the
 whole design: a sequence reader for a market that is already moving can be
 journalled and falsified, a forecast cannot.
+
+## Price-action location — discount / premium (second signal box)
+
+Alongside the order-flow read, a second **signal box** answers one question: *is
+price in the discount (cheap) or the premium (expensive) half of the daily,
+4-hour, 1-hour, 15-minute, 5-minute and 1-minute ranges — and are they aligned?*
+Longs want discount on every timeframe, shorts want premium. It is a **location
+filter, not a trigger**: it composes with the order-flow sequence into one final
+signal (the composer requires every box to agree, otherwise it is a conflict and
+there is no trade). Definitions, thresholds and the honest research behind it:
+`PRICE_ACTION_SIGNAL.md`. Every threshold lives in `web/lib/priceaction.ts` and
+is covered by `web/tests/priceaction.test.mjs`.
+
+## Options / gamma — dealer positioning (third, context box)
+
+A third **signal box** — the first *context* box: it does not vote long or short.
+From the free CBOE QQQ option chain (mapped to NQ points) it reports **regime** —
+dealers net **long gamma** → they dampen moves → *chop, the fade playbook is in
+regime*; net **short gamma** → they amplify → *trend, do not fade* — plus the
+**gamma flip**, **call wall** and **put wall** as magnet levels. It gates
+fade-vs-follow-through and supplies location, never a trigger. What is free and
+reliable (and what is not), the definitions and the caveats: `OPTIONS_SIGNAL.md`.
+Collector `gcdata/collect_options.py` · engine `web/lib/options.ts` · tests
+`web/tests/options.test.mjs`. Its call/put walls also feed the checklist's
+**location** ingredient as coarse dealer-hedging zones (call = resistance, put =
+support) — one QQQ strike ≈ 40 NQ points, so they are *partial* location, never
+the tick-precise "yes" an LVN edge earns (`OPTIONS_SIGNAL.md` §7). Refreshed
+intraday by `web/lib/optionsFeed.ts` (default every 5 min, `OPTIONS_REFRESH_SECONDS`
+to override) so 0DTE open interest builds into the walls through the day.

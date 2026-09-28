@@ -180,3 +180,28 @@ test("live bars are rewritable into the feed clock (the live-checklist regressio
   assert.equal(toFeedClock([{ t: "13:30", live: true }])[0].t, utcToFeed("13:30"));
   assert.equal(toFeedClock([{ t: "08:30", live: false }])[0].t, "08:30", "collected bars are untouched");
 });
+
+test("a nearby gamma wall counts as partial location (coarse dealer zone)", () => {
+  const m = mins(40);
+  const r = readMechanism(base({
+    minutes: m,
+    lastPrice: 100,
+    sessionHigh: 150,
+    sessionLow: 50,
+    walls: [{ kind: "call", p: 105 }],
+  }));
+  assert.equal(ing(r, "location").state, "partial");
+  assert.match(ing(r, "location").short, /call wall/);
+});
+
+test("an LVN edge beats a wall for the tick-precise location", () => {
+  const m = mins(40);
+  const r = readMechanism(base({
+    minutes: m,
+    lastPrice: 100,
+    walls: [{ kind: "put", p: 110 }],
+    lvnEdges: [{ label: "P0", p: 100, zone: "99.50–100.50" }],
+  }));
+  assert.equal(ing(r, "location").state, "yes");
+  assert.match(ing(r, "location").short, /LVN edge/);
+});

@@ -7,6 +7,12 @@ import MinuteNavigator from "@/components/MinuteNavigator";
 import MechanismPanel from "@/components/MechanismPanel";
 import StoryPanel from "@/components/StoryPanel";
 import { readMechanism } from "@/lib/mechanism";
+import { readPriceAction } from "@/lib/priceaction";
+import { composeSignals, boxFromMechanism, boxFromPriceAction, boxFromOptions } from "@/lib/signals";
+import { readOptionsFromSnapshot, wallsFromRead, type GammaRead, type OptionsRefreshMeta } from "@/lib/options";
+import PriceActionPanel from "@/components/PriceActionPanel";
+import OptionsPanel from "@/components/OptionsPanel";
+import SignalSummary from "@/components/SignalSummary";
 import type { ImbalanceRollup } from "@/lib/gcdata";
 import { useLive, type LiveMinute } from "@/lib/useLive";
 import { cdtToET } from "@/lib/times";
@@ -81,6 +87,8 @@ export default function DashboardPage() {
   const [vwap, setVwap] = useState(0);
   const [reclaims, setReclaims] = useState<{ t: string; price: number; dir: "low" | "high" }[]>([]);
   const [imb, setImb] = useState<ImbalanceRollup | null>(null);
+  const [gamma, setGamma] = useState<GammaRead | null>(null);
+  const [optMeta, setOptMeta] = useState<OptionsRefreshMeta | null>(null);
   const [chartMax, setChartMax] = useState(false);
   const [tgPush, setTgPush] = useState(true);
   /** alerts already pushed to Telegram — survives re-renders, and is SEEDED with
@@ -213,6 +221,14 @@ export default function DashboardPage() {
           }
         })
         .catch(() => {});
+
+      fetch(`/api/gc?action=options`)
+        .then((r) => r.json())
+        .then((j) => {
+          setGamma(j as GammaRead);
+          setOptMeta(j.refresh ?? null);
+        })
+        .catch(() => {});
     })();
     return () => {
       cancelled = true;
@@ -245,6 +261,24 @@ export default function DashboardPage() {
     const iv = setInterval(tick, 60000);
     return () => clearInterval(iv);
   }, [pollDate, pushAlert]);
+
+  // options/gamma polling — the server refreshes CBOE every OPTIONS_REFRESH_SECONDS;
+  // we re-read the cached snapshot every minute so 0DTE walls stay current intraday.
+  useEffect(() => {
+    const tick = () => {
+      fetch(`/api/gc?action=options`)
+        .then((r) => r.json())
+        .then((j) => {
+          if (j.spot) {
+            setGamma(j as GammaRead);
+            setOptMeta(j.refresh ?? null);
+          }
+        })
+        .catch(() => {});
+    };
+    const iv = setInterval(tick, 60000);
+    return () => clearInterval(iv);
+  }, []);
 
   // ---- seamless live blend: the collected full day, continued by live ticks ----
   const blended = useMemo<LiveMinute[]>(() => {
@@ -353,6 +387,13 @@ export default function DashboardPage() {
   const newsWin = [510, 600, 840].some((r) => Math.abs(etMin - r) <= 5);
 
   
+  // ---- options/gamma box: a CONTEXT box (regime + walls), never a direction ----
+  // computed before the mechanism so its walls can feed the location ingredient
+  const optRead = useMemo(
+    () => (gamma && lastPrice > 0 ? readOptionsFromSnapshot(gamma, lastPrice) : null),
+    [gamma, lastPrice],
+  );
+
   // ---- reversal mechanism read (sequence: location -> mechanism -> fuel -> trigger) ----
   const lastLiveImb = liveFpTail[liveFpTail.length - 1]?.imb ?? null;
   const mech = useMemo(() => {
@@ -392,12 +433,41 @@ export default function DashboardPage() {
       poc: nearestPoc ? { label: nearestPoc.label, p: nearestPoc.p } : null,
       sessionHigh: snap?.high ?? Math.max(0, ...chartMinutes.map((m) => m.h)),
       sessionLow: snap?.low ?? Math.min(...chartMinutes.map((m) => m.l).concat([Infinity])),
+      walls: optRead ? wallsFromRead(optRead) : undefined,
       newsWin,
     });
-  }, [matchMinutes, lastPrice, vwap, absorption, alerts, reclaims, imb, lastLiveImb, liveFpTail, lvnEdges, nearestPoc, snap?.high, snap?.low, newsWin]);
+  }, [matchMinutes, lastPrice, vwap, absorption, alerts, reclaims, imb, lastLiveImb, liveFpTail, lvnEdges, nearestPoc, snap?.high, snap?.low, newsWin, optRead]);
   const mechLive = !!(live && live.minutes.length > 0 && live.connected);
   const mechAsOf = chartMinutes.length ? cdtToET(chartMinutes[chartMinutes.length - 1].t) : "—";
   const mechStale = !mechLive;
+
+  // ---- price-action box: discount/premium alignment across 1m…1d ----
+  // The daily dealing range is the trading session high/low (RTH-defined,
+  // matching the profile stack); the lower timeframes are trailing windows
+  // over the blended (collected + live) minutes.
+  const paSessionHigh = snap?.high ?? Math.max(0, ...chartMinutes.map((m) => m.h));
+  const paSessionLow = snap?.low ?? (chartMinutes.length ? Math.min(...chartMinutes.map((m) => m.l)) : 0);
+  const pa = useMemo(
+    () =>
+      readPriceAction({
+        minutes: chartMinutes.map((m) => ({ high: m.h, low: m.l })),
+        lastPrice,
+        sessionHigh: paSessionHigh,
+        sessionLow: paSessionLow,
+      }),
+    [chartMinutes, lastPrice, paSessionHigh, paSessionLow],
+  );
+
+  // ---- final signal: directional boxes must agree; context boxes gate ----
+  const finalSignal = useMemo(
+    () =>
+      composeSignals([
+        boxFromMechanism(mech),
+        boxFromPriceAction(pa),
+        ...(optRead ? [boxFromOptions(optRead)] : []),
+      ]),
+    [mech, pa, optRead],
+  );
 
   const alertCounts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -566,7 +636,10 @@ export default function DashboardPage() {
 
         {/* right column */}
         <aside className="space-y-4">
+          <SignalSummary signal={finalSignal} />
           <MechanismPanel read={mech} asOfET={mechAsOf} stale={mechStale} source={mechLive ? "live" : "collected"} />
+          <PriceActionPanel read={pa} asOfET={mechAsOf} stale={mechStale} source={mechLive ? "live" : "collected"} />
+          <OptionsPanel read={optRead} meta={optMeta} asOfET={mechAsOf} stale={mechStale} source={mechLive ? "live" : "collected"} />
 
           <details className="rounded-md border border-zinc-800 bg-panel p-3">
             <summary className="flex cursor-pointer list-none items-center justify-between font-mono text-sm font-bold uppercase tracking-wider text-zinc-400 [&::-webkit-details-marker]:hidden">
