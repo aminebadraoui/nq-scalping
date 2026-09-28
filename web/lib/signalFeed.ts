@@ -28,6 +28,7 @@ import {
 } from "./signalEngine";
 import { sendTelegram } from "./notify";
 import { formatSignalHtml } from "./signalText";
+import { recordSignal } from "./signalHistory";
 
 function refreshSeconds(): number {
   const n = Number(process.env.SIGNAL_REFRESH_SECONDS);
@@ -148,6 +149,24 @@ class SignalFeed {
     });
     const res = await sendTelegram(text, { parseMode: "HTML" });
     if (!res.sent) this.lastError = res.reason;
+    // record the push so the dashboard has a history to consult (best-effort —
+    // a persistence failure must never block the Telegram loop)
+    await recordSignal({
+      timeET: snap.timeET,
+      day: snap.day,
+      symbol: snap.symbol,
+      side: snap.signal.side ?? "none",
+      price: snap.lastPrice,
+      entry: snap.mech.trigger,
+      stop: snap.mech.invalidation,
+      target: snap.mech.target,
+      verdict: snap.signal.verdict,
+      headline: snap.signal.headline,
+      source: snap.source,
+      test: false,
+      sent: res.sent,
+      reason: res.reason,
+    });
   }
 
   async tick(): Promise<void> {
@@ -179,7 +198,24 @@ class SignalFeed {
       timeET: snap.timeET,
       source: snap.source,
     });
-    return sendTelegram(text, { parseMode: "HTML" });
+    const res = await sendTelegram(text, { parseMode: "HTML" });
+    await recordSignal({
+      timeET: snap.timeET,
+      day: snap.day,
+      symbol: snap.symbol,
+      side: snap.signal.side ?? "none",
+      price: snap.lastPrice,
+      entry: snap.mech.trigger,
+      stop: snap.mech.invalidation,
+      target: snap.mech.target,
+      verdict: snap.signal.verdict,
+      headline: snap.signal.headline,
+      source: snap.source,
+      test: true,
+      sent: res.sent,
+      reason: res.reason,
+    });
+    return res;
   }
 
   start(): void {

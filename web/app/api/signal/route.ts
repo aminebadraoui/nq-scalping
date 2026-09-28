@@ -1,19 +1,38 @@
 import type { NextRequest } from "next/server";
 import { getSignalFeed } from "@/lib/signalFeed";
+import { getSignalHistory } from "@/lib/signalHistory";
 
 export const dynamic = "force-dynamic";
 
-/** Live signal + feed status — the server-side mirror of the dashboard's
- *  "final signal" panel, useful for confirming the Telegram loop is warm. */
+/** Live signal + feed status + the history of every Telegram push — the
+ *  dashboard's "signal history" panel reads this. */
 export async function GET() {
   const feed = getSignalFeed();
   const s = feed.lastSnapshot;
+  const history = await getSignalHistory(100);
   return Response.json({
     ok: true,
     lastRun: feed.lastRun,
     lastError: feed.lastError,
     live: feed.liveOk,
     note: feed.lastNote,
+    history: history.map((h) => ({
+      ts: h.ts,
+      timeET: h.timeET,
+      day: h.day,
+      symbol: h.symbol,
+      side: h.side,
+      price: h.price,
+      entry: h.entry,
+      stop: h.stop,
+      target: h.target,
+      verdict: h.verdict,
+      headline: h.headline,
+      source: h.source,
+      test: h.test,
+      sent: h.sent,
+      reason: h.reason,
+    })),
     signal: s
       ? {
           side: s.signal.side,

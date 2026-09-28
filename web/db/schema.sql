@@ -87,3 +87,29 @@ create table if not exists sessions (
   ingested_at timestamptz not null default now(),
   primary key (date, session)
 );
+
+-- ---------- signal push history (Telegram trade cards) ------------------------
+-- One row per push emitted by the always-on signal feed (lib/signalFeed.ts),
+-- so the dashboard has a durable history of every alert sent to Telegram.
+-- Written at runtime (lib/signalHistory.ts, best-effort); mirrored here so a
+-- fresh Neon project is complete after the standard ingest bootstrap.
+create table if not exists signals (
+  id       bigint generated always as identity primary key,
+  key      text unique not null,
+  ts       bigint not null,
+  day      text not null,
+  time_et  text not null default '',
+  symbol   text not null,
+  side     text not null,
+  price    numeric(10,2) not null default 0,
+  entry    text not null default '',
+  stop     text not null default '',
+  target   text not null default '',
+  verdict  text not null default '',
+  headline text not null default '',
+  source   text not null default 'live',
+  test     boolean not null default false,
+  sent     boolean not null default false,
+  reason   text not null default ''
+);
+create index if not exists signals_ts_idx on signals (ts desc);

@@ -57,6 +57,11 @@ overrides the interval. `GET /api/signal` shows the current server-side signal,
 direction, ENTRY / STOP / TARGET, then the full 6-point reasoning plus the
 price-action and gamma context — readable in a couple of seconds on a phone.
 
+Every push is also recorded (in-memory, and to the `signals` table in Neon when
+`DATABASE_URL` is set) so the dashboard's **Signal history** panel shows a
+consultable list of every alert that went out — the gap that previously meant a
+Telegram alert left no trace on the dashboard.
+
 ## Stack
 
 Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS v4 ·
