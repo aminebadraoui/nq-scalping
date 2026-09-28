@@ -33,7 +33,7 @@ export type TuningConfig = {
   posHi: number;
   posLo: number;
   localBars: number;
-  pbNear: number;
+  presentMin: number;
 };
 
 export const BASELINE: TuningConfig = {
@@ -43,7 +43,7 @@ export const BASELINE: TuningConfig = {
   posHi: 0.7,
   posLo: 0.3,
   localBars: 60,
-  pbNear: 3,
+  presentMin: 5,
 };
 
 /** round-trip cost in NQ points: ~0.25 pt slippage + ~0.25 pt commission */
@@ -320,9 +320,9 @@ export function replay(sd: SessionData, cfg: TuningConfig): SessionResult {
       sessionLow: prefixLow[i],
     });
 
-    // production fire rule: reversal only, full sequence (present >= 5) AND
-    // price action aligned on the same side
-    if ((mech.tone === "long" || mech.tone === "short") && mech.present >= 5 && pa.side === mech.side) {
+    // production fire rule: reversal only, full sequence (present >= presentMin)
+    // AND price action aligned on the same side
+    if ((mech.tone === "long" || mech.tone === "short") && mech.present >= cfg.presentMin && pa.side === mech.side) {
       fires.push({ bar: i, t: cdtToET(minutes[i].t), setup: "reversal", side: mech.side!, entry: mech.entryPx, stop: mech.stopPx, target: mech.targetPx });
     }
   }
@@ -445,19 +445,16 @@ export function sweepConfigs(): TuningConfig[] {
   const base = { ...BASELINE };
   return [
     base,
-    { ...base, name: "floor=0", floor: 0 },
+    { ...base, name: "presentMin=3", presentMin: 3 },
+    { ...base, name: "presentMin=4", presentMin: 4 },
+    { ...base, name: "presentMin=6", presentMin: 6 },
     { ...base, name: "floor=10", floor: 10 },
     { ...base, name: "floor=30", floor: 30 },
-    { ...base, name: "floor=40", floor: 40 },
-    { ...base, name: "dom=0.5", dom: 0.5 },
     { ...base, name: "dom=0.55", dom: 0.55 },
     { ...base, name: "pos=relaxed", posHi: 0.85, posLo: 0.15 },
-    { ...base, name: "pos=off", posHi: 1.0, posLo: 0.0 },
-    { ...base, name: "pbNear=6", pbNear: 6 },
-    { ...base, name: "pbNear=10", pbNear: 10 },
-    { ...base, name: "floor=10+dom=0.55", floor: 10, dom: 0.55 },
-    { ...base, name: "floor=10+pbNear=6", floor: 10, pbNear: 6 },
-    { ...base, name: "dom=0.55+pbNear=10", dom: 0.55, pbNear: 10 },
-    { ...base, name: "floor=10+dom=0.55+pbNear=6", floor: 10, dom: 0.55, pbNear: 6 },
+    { ...base, name: "presentMin=4+dom=0.55", presentMin: 4, dom: 0.55 },
+    { ...base, name: "presentMin=6+floor=30", presentMin: 6, floor: 30 },
+    { ...base, name: "presentMin=4+floor=10", presentMin: 4, floor: 10 },
+    { ...base, name: "presentMin=5+dom=0.55+floor=10", presentMin: 5, dom: 0.55, floor: 10 },
   ];
 }
