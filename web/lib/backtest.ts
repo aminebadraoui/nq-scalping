@@ -23,7 +23,7 @@
 
 import { aggregate, stats, listDatasets, extractFootprint, analyze, type FootprintMinute, type AbsorbEvent, type AlertEvent, type Reclaim, type ImbalanceRollup } from "./gcdata";
 import { readMechanism } from "./mechanism";
-import { readPullback } from "./pullback";
+import { readPriceAction } from "./priceaction";
 import { cdtToET } from "./times";
 
 export type TuningConfig = {
@@ -251,7 +251,7 @@ export async function loadSession(date: string, session: "RTH" | "ETH"): Promise
 
 /** replay one session under one config (cheap; reuses SessionData). */
 export function replay(sd: SessionData, cfg: TuningConfig): SessionResult {
-  const { minutes, mapped, mIndex, pivLows, pivHighs, prefixHigh, prefixLow, prefixVwap, lvnEdges, pocPx, alerts, reclaims, imbalance } = sd;
+  const { minutes, mapped, mIndex, prefixHigh, prefixLow, prefixVwap, lvnEdges, pocPx, alerts, reclaims, imbalance } = sd;
   const n = minutes.length;
   const absorption = detectAbsorption(minutes, cfg);
   const fires: Fire[] = [];
@@ -273,22 +273,17 @@ export function replay(sd: SessionData, cfg: TuningConfig): SessionResult {
       sessionLow: prefixLow[i],
       newsWin: false,
     }, mIndex);
-    const pb = readPullback({
-      minutes: window,
+    const pa = readPriceAction({
+      minutes: window.map((m) => ({ high: m.high, low: m.low, t: m.t })),
       lastPrice,
-      vwap: prefixVwap[i],
-      poc: Number.isFinite(pocPx) ? { label: "P0 Live POC", p: pocPx } : null,
       sessionHigh: prefixHigh[i],
       sessionLow: prefixLow[i],
-      imbalance,
-      newsWin: false,
-    }, cfg.pbNear, { indexOf: mIndex, pivLows, pivHighs });
+    });
 
-    if (mech.tone === "long" || mech.tone === "short") {
+    // production fire rule: reversal only, full sequence (present >= 5) AND
+    // price action aligned on the same side
+    if ((mech.tone === "long" || mech.tone === "short") && mech.present >= 5 && pa.side === mech.side) {
       fires.push({ bar: i, t: cdtToET(minutes[i].t), setup: "reversal", side: mech.side!, entry: mech.entryPx, stop: mech.stopPx, target: mech.targetPx });
-    }
-    if (pb.tone === "long" || pb.tone === "short") {
-      fires.push({ bar: i, t: cdtToET(minutes[i].t), setup: "pullback", side: pb.side!, entry: pb.entryPx, stop: pb.stopPx, target: pb.targetPx });
     }
   }
 
