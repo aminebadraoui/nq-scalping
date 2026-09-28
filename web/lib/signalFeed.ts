@@ -129,57 +129,48 @@ class SignalFeed {
   }
 
   private async maybeSend(snap: SignalSnapshot): Promise<void> {
-    // Only auto-notify on a CONFIRMED, high-probability setup — every
-    // directional box must agree on the side:
-    //   · REVERSAL  = order flow + price action aligned AND a full (non-"thin")
-    //                 sequence (present >= 5 of the 6 checklist ingredients).
-    //   · PULLBACK  = trend + retest + footprint complete AND price action on
-    //                 the same side.
-    // Each fires once per distinct setup; the two are independent.
-    const setups: { kind: "REVERSAL" | "PULLBACK"; read: SignalSnapshot["mech"] | SignalSnapshot["pb"] }[] = [];
+    // Only auto-notify on the HIGHEST-probability reversal: the full sequence
+    // (all six checklist ingredients "yes") AND every directional box aligned
+    // (order flow + price action). Pullbacks are deliberately not notified.
     const aligned = snap.signal.tone === "long" || snap.signal.tone === "short";
-    if (aligned && snap.mech.present >= 5) setups.push({ kind: "REVERSAL", read: snap.mech });
-    if ((snap.pb.tone === "long" || snap.pb.tone === "short") && snap.pa.side === snap.pb.side) {
-      setups.push({ kind: "PULLBACK", read: snap.pb });
-    }
-    if (!setups.length) return;
+    if (!aligned || snap.mech.present < 6) return;
 
-    for (const { kind, read } of setups) {
-      const sig = this.signature(snap, kind);
-      if (this.sent.has(sig)) continue;
-      this.sent.add(sig);
-      if (this.sent.size > 500) {
-        const keep = [...this.sent].slice(-250);
-        this.sent = new Set(keep);
-      }
-
-      const text = formatSignalHtml(snap.signal, read, snap.pa, snap.opt, {
-        symbol: snap.symbol,
-        price: snap.lastPrice,
-        timeET: snap.timeET,
-        source: snap.source,
-      }, kind);
-      const res = await sendTelegram(text, { parseMode: "HTML" });
-      if (!res.sent) this.lastError = res.reason;
-      // record the push so the dashboard has a history to consult (best-effort —
-      // a persistence failure must never block the Telegram loop)
-      await recordSignal({
-        timeET: snap.timeET,
-        day: snap.day,
-        symbol: snap.symbol,
-        side: read.side ?? "none",
-        price: snap.lastPrice,
-        entry: read.trigger,
-        stop: read.invalidation,
-        target: read.target,
-        verdict: read.verdict,
-        headline: read.headline,
-        source: snap.source,
-        test: false,
-        sent: res.sent,
-        reason: res.reason,
-      });
+    const kind = "REVERSAL" as const;
+    const read = snap.mech;
+    const sig = this.signature(snap, kind);
+    if (this.sent.has(sig)) return;
+    this.sent.add(sig);
+    if (this.sent.size > 500) {
+      const keep = [...this.sent].slice(-250);
+      this.sent = new Set(keep);
     }
+
+    const text = formatSignalHtml(snap.signal, read, snap.pa, snap.opt, {
+      symbol: snap.symbol,
+      price: snap.lastPrice,
+      timeET: snap.timeET,
+      source: snap.source,
+    }, kind);
+    const res = await sendTelegram(text, { parseMode: "HTML" });
+    if (!res.sent) this.lastError = res.reason;
+    // record the push so the dashboard has a history to consult (best-effort —
+    // a persistence failure must never block the Telegram loop)
+    await recordSignal({
+      timeET: snap.timeET,
+      day: snap.day,
+      symbol: snap.symbol,
+      side: read.side ?? "none",
+      price: snap.lastPrice,
+      entry: read.trigger,
+      stop: read.invalidation,
+      target: read.target,
+      verdict: read.verdict,
+      headline: read.headline,
+      source: snap.source,
+      test: false,
+      sent: res.sent,
+      reason: res.reason,
+    });
   }
 
   async tick(): Promise<void> {
