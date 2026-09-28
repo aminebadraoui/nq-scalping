@@ -79,8 +79,8 @@ export function PlaybookSection() {
 
       <Section
         kicker="Evidence"
-        title="What the replay measured — including what failed"
-        lede="Each claim above was replayed over 5 sessions (2026-09-21…25, 6,900 minutes, 268 reclaims) entering at the confirmation close with pessimistic same-bar ordering. Two claims did not survive, and one could not be tested at all."
+        title="What the backtest measured — including what failed"
+        lede="The full signal was backtested over 683 RTH sessions (Dec 2023 → Sep 2026) with lookahead-free location (prior-day level sheets + a rolling developing profile), 0.5 pt round-trip cost and pessimistic same-bar ordering. Two candidate filters did not survive."
       >
         <div className="space-y-2">
           {measuredEvidence.map((m) => (
@@ -104,9 +104,10 @@ export function PlaybookSection() {
           ))}
         </div>
         <Callout tone="warn" title="READ THE FAILURES BEFORE THE RULES">
-          The POC-target and 1:1-exit rules are now withdrawn. The reclaim trigger and the evening window are the two
-          findings that held up across every session — everything else is still a hypothesis with single-digit sample
-          sizes.
+          Two things failed at full scale and are NOT filters: requiring all 6/6 checklist ingredients (it never fires)
+          and absorption one-sidedness ≥ 0.85 (a 30-session fluke). The aligned stack, the entry-bar delta, the tight
+          7-pt stop and the POC target are the findings that survived 683 sessions — and they are wired into the live
+          signal.
         </Callout>
       </Section>
 

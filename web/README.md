@@ -47,15 +47,19 @@ See `tests/README.md` for what the suite covers and how to add a test.
 ## Telegram signals
 
 A server-side signal feed (`lib/signalFeed.ts`, started by `instrumentation.ts`)
-recomputes the dashboard's final signal every 30 s from the live GoCharting
-feed + collected levels and pushes a mobile-friendly trade card to Telegram the
-moment the reversal sequence completes (location + mechanism + trigger — the
-reclaim is the last piece). Configure `TELEGRAM_BOT_TOKEN` (and optionally
-`TELEGRAM_CHAT_ID`) in `gcdata/.env` or as env vars; `SIGNAL_REFRESH_SECONDS`
-overrides the interval. `GET /api/signal` shows the current server-side signal,
-`POST /api/signal?push=1` forces a test push. The card is a trade ticket:
-direction, ENTRY / STOP / TARGET, then the full 6-point reasoning plus the
-price-action and gamma context — readable in a couple of seconds on a phone.
+recomputes the signal every 30 s from the live GoCharting feed + collected
+levels and pushes a trade card to Telegram only when the full reversal holds:
+price at/inside an LVN, `present ≥ 4` of the 6 checklist ingredients, every
+directional box aligned, the last footprint stack on the trade's side, and the
+entry bar's delta confirming the direction. The card is a complete trade
+ticket: direction, ENTRY / STOP (7-pt scalp stop) / TARGET (nearest POC) /
+SIZE (`risk ÷ (7 × $20)`), then the full 6-point reasoning plus the price-action
+and gamma context. Backtested lookahead-free over 683 sessions: ~7.5
+signals/day, 37% win, PF 2.16 (`FOOTPRINT_REVERSAL_RESEARCH.md`). Configure
+`TELEGRAM_BOT_TOKEN` (and optionally `TELEGRAM_CHAT_ID`) in `gcdata/.env` or as
+env vars; `SIGNAL_REFRESH_SECONDS` overrides the interval. `GET /api/signal`
+shows the current server-side signal, `POST /api/signal?push=1` forces a test
+push.
 
 Every push is also recorded (in-memory, and to the `signals` table in Neon when
 `DATABASE_URL` is set) so the dashboard's **Signal history** panel shows a

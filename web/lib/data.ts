@@ -288,7 +288,7 @@ export const strategy3 = {
     "Confirmation: rejection candle (pin bar / engulfing + volume spike) AND delta divergence at the band. If CVD confirms the extension, stand down — it's a trend.",
     "A fast approach through an LVN into the HVN is a sweep signature, not value migration.",
     "Entry on the next bar open after the trigger closes; stop 1×ATR beyond the extreme or beyond the LVN; target VWAP/POC (partial), opposite band / VAH-VAL (runner).",
-    "Stat anchor: ~55–65% win rate with the filters, ≈45% without (vendor estimate) — the filters ARE the strategy. Our own 5-session replay could not reproduce the POC-target half of this play: the nearest POC sat a median 8.9R away, so treat the POC as a destination, not a scalp exit.",
+    "Stat anchor: ~55–65% win rate with the filters, ≈45% without (vendor estimate) — the filters ARE the strategy. Our own 683-session lookahead-free backtest re-validated the POC target once the stop became a tight 7 pt (PF 2.16) — the earlier 5-session replay's 'POC is 8.9R away' conclusion was a stop-placement artifact.",
   ],
 };
 
@@ -296,7 +296,7 @@ export const redFlags = [
   "Price is mid-range with no LVN edge — there is no location, so there is no trade.",
   "A wick through the edge with no reclaim close: that is a breakout, not a sweep.",
   "Initiative tape (|Δ| ≥ 20% with a new extreme) — aggression is still making progress; never fade it.",
-  "No absorption at the price: nothing to lean on, no invalidation level, no trade.",
+  "No reclaim after the failed break: the trigger is the entry event — without it there is no trade.",
   "Divergence on its own, with no mechanism and no trigger — the symptom can persist for hours.",
   "Inside a ±5 minute window of a scheduled release — traps become real moves.",
   "Third or fourth test of the same edge (break probability rises with each test).",
@@ -311,13 +311,13 @@ export const checklistItems = [
     id: "location",
     label: "1 · Location (required)",
     detail:
-      "At an LVN edge of the profile stack (P0 today → P5 5-day) or a session extreme. Inside a thin zone is a pass-through, not a location.",
+      "Price AT OR INSIDE an LVN zone of the profile stack (P0 today → P5 5-day, plus the live developing P0) or a session extreme. The zone counts fully — the reversal trades the LVN back toward the POC.",
   },
   {
     id: "mechanism",
     label: "2 · Mechanism — absorption (required)",
     detail:
-      "One-sided aggression (≥60% of the row) on size (≥ max(50 ct, 1.5× median row)) at a window extreme, and price does NOT break that price for 3 bars. Someone with size is standing there.",
+      "One-sided aggression (≥60% of the row) on size (≥ max(20 ct, 1.5× median row)) near the top/bottom of a trailing ~60-bar window, and price does NOT break that price for 3 bars. Someone with size is standing there.",
   },
   {
     id: "fuel",
@@ -335,7 +335,7 @@ export const checklistItems = [
     id: "evidence",
     label: "5 · Evidence — stacked imbalance",
     detail:
-      "3+ consecutive ticks imbalanced the same way (≥3:1 against the adjacent tick, ≥10 ct) on the reversal side, ideally at the absorption price.",
+      "3+ consecutive ticks imbalanced the same way (≥3:1 against the adjacent tick, ≥10 ct) on the reversal side. An OPPOSITE-side stack is a hard skip — backtest PF 1.09 vs 2.07 aligned.",
   },
   {
     id: "context",
@@ -345,15 +345,15 @@ export const checklistItems = [
   },
   {
     id: "target",
-    label: "Target — measured risk multiples, not the POC",
+    label: "Target — the nearest POC",
     detail:
-      "Exit on risk: partial at 1R, runner to 2–3R or the next LVN edge. The nearest POC sits a median 8.9R away in the measured sample, so it is a destination and a context marker — never a scalp objective.",
+      "Take profit at the nearest POC. The 683-session backtest re-validated the POC as the target once the stop became a tight 7 pt (trailing 1× ATR is the tested runner alternative).",
   },
   {
     id: "invalidation",
-    label: "Invalidation — close beyond the absorption price",
+    label: "Invalidation — the 7-pt scalp stop",
     detail:
-      "A 1-minute close beyond the absorbed price kills the read. No absorption price means no invalidation level — and therefore no trade.",
+      "A 1-minute close beyond the 7-pt scalp stop kills the trade. Size from the stop: contracts = risk ÷ (7 pts × $20). The old absorption-price stop sat ~78 pts away — untradeable.",
   },
   {
     id: "skip",
@@ -364,7 +364,7 @@ export const checklistItems = [
 ];
 
 export const benchmarkNote =
-  "Expected honest stats to benchmark against: win rate 45–65% (not 80%+), expectancy +0.2R to +0.9R after fees on the best confluences, with ~30% of valid setups chopping sideways. If your live numbers beat that sustainably over 100+ trades with the same mechanical rules, you have a real edge.";
+  "The backtested benchmark for the live signal (683 sessions, lookahead-free): ~7.5 signals/day, 37% win rate, PF 2.16, ~5.4 pts/trade net after cost. If your live journalled numbers stay near that over 100+ trades with the same mechanical rules, the edge is real.";
 
 export type Measured = {
   claim: string;
@@ -380,48 +380,38 @@ export type Measured = {
  */
 export const measuredEvidence: Measured[] = [
   {
-    claim: "Reclaim trigger beats a random entry",
-    measured: "41.0% win vs 30.0% baseline (every 30th bar, same stop) · +0.22R",
+    claim: "The full signal, backtested lookahead-free over 683 sessions",
+    measured: "7.5 signals/day · 37% win · PF 2.16 · +27,424 pts net · positive in 2024, 2025 AND out-of-sample 2026 (34–40% win each year)",
     verdict: "holds",
   },
   {
-    claim: "Evening hours (18:00–21:00 NY) are the cleanest window",
-    measured: "beat the rest of the session in 5/5 sessions (47/57/58/56/71% vs 30/26/30/46/58%)",
+    claim: "An aligned footprint stack tells the reversal",
+    measured: "44% win / PF 2.07 with a stack on the trade side vs 33% / PF 1.09 with an opposite stack — now a hard filter on the live signal",
     verdict: "holds",
   },
   {
-    claim: "CVD divergence adds fuel",
-    measured: "46.6% (n=73) vs 39.0% (n=195) · better in 4/5 sessions · +0.15R",
-    verdict: "weak",
+    claim: "The entry bar's delta confirms the reversal",
+    measured: "41% win / PF 2.14 when the entry bar prints delta in the trade direction vs 31% / PF 1.18 against — now a hard filter on the live signal",
+    verdict: "holds",
   },
   {
-    claim: "The LVN edge is the location edge",
-    measured: "43.8% (n=112) vs 39.1% (n=156) · only 3/5 sessions · the aggregate rides on one day",
-    verdict: "weak",
+    claim: "A tight 5–7 pt stop beats the absorption-price stop",
+    measured: "PF 2.15–2.16 at 5–7 pt vs 1.67 at the ~78 pt absorption stop, which is also untradeable at sensible dollar risk",
+    verdict: "holds",
   },
   {
-    claim: "Absorption is required",
-    measured: "only 2 reclaims coincided with absorption — not testable at this sample size",
-    verdict: "untested",
+    claim: "The nearest POC is the target once the stop is tight",
+    measured: "fixed POC target with a 7 pt stop: PF 1.82; footprint exits (counter-stack / delta-flip) only pay with WIDE stops (PF 1.36 → 1.94 on 2×ATR)",
+    verdict: "holds",
   },
   {
-    claim: "Nearest POC is the target",
-    measured: "POC sits a median 36.6 pt away against a 4.1 pt median risk (8.9R); 7.8% of reclaims reach it before the stop",
+    claim: "present = 6/6 is the strongest filter",
+    measured: "it never fires — 0 setups in 12 sessions; 5/6 = PF ~1.7, 4/6 = PF ~2.0+",
     verdict: "fails",
   },
   {
-    claim: "Swap the POC for whichever of POC / VWAP is nearer",
-    measured: "session VWAP is the farther magnet (median 110.7 pt = 24.3R vs the POC's 48.9 pt) and wins the nearer contest in only 27% of trades — pooled expectancy is unchanged at +0.03R, i.e. breakeven before fees",
-    verdict: "fails",
-  },
-  {
-    claim: "A 1:1 risk-reward exit",
-    measured: "negative expectancy at every stop tested (−0.66R to −0.35R); only a 2 pt stop with a 3R runner reaches +0.09R before fees",
-    verdict: "fails",
-  },
-  {
-    claim: "Winners run far enough to pay for a wider target",
-    measured: "with the structural stop the median favourable excursion while the trade is still alive is 0.32R — target selection is not the bottleneck, follow-through is",
+    claim: "Absorption one-sidedness ≥ 0.85 is a filter",
+    measured: "looked strong on a 30-session smoke, noise at full scale (PF 1.68 vs 1.76 mid-range)",
     verdict: "fails",
   },
 ];
@@ -534,9 +524,9 @@ export const playbookSequence = [
     required: true,
     question: "Is price somewhere a reversal can happen at all?",
     rule:
-      "An LVN EDGE from the profile stack (P0 today → P5 5-day), or a session extreme. The edge is the entry geometry: a thin zone is where price travels fast and where stops sit.",
+      "Price AT OR INSIDE an LVN zone from the profile stack (P0 today → P5 5-day, plus the live developing P0), or a session extreme. The zone counts fully — the reversal trades the LVN back toward the POC.",
     dashboard: "Chart: LVN edge lines + '▲/▼ n LVN zones above/below' chips · Levels panel · P0–P5 chips",
-    notThis: "Mid-range. Being INSIDE an LVN zone is a pass-through, not a location — the trade is at its far edge.",
+    notThis: "Mid-range. Away from any LVN (or session extreme) there is no location and no trade.",
   },
   {
     n: "2",
@@ -544,7 +534,7 @@ export const playbookSequence = [
     required: true,
     question: "Is someone with size actually standing there?",
     rule:
-      "Absorption: one-sided aggression (≥60% of the row's volume on one side) on size (≥ max(50 ct, 1.5× the median row)) at a window extreme, with price NOT breaking that price for the next 3 bars.",
+      "Absorption: one-sided aggression (≥60% of the row's volume on one side) on size (≥ max(20 ct, 1.5× the median row)) near the top/bottom of a trailing ~60-bar window, with price NOT breaking that price for the next 3 bars.",
     dashboard: "Ladder: ▲▼ imbalance glyphs, stacked runs · Story panel: '◆ absorption' · Alerts: ABSORPTION",
     notThis: "A big candle is not absorption. Absorption is aggression that FAILED to move price — the cause.",
   },
@@ -600,12 +590,12 @@ export const playbookExecution = [
   {
     label: "Invalidation",
     rule:
-      "A 1-minute close beyond the absorption price kills the read. If there is no absorption there is no invalidation level — and therefore no trade.",
+      "A 1-minute close beyond the 7-pt scalp stop invalidates the trade. Size from this stop: contracts = risk ÷ (7 pts × $20).",
   },
   {
     label: "Target",
     rule:
-      "Risk multiples: take a partial at 1R and let a runner go to 2–3R or the next LVN edge. The nearest POC averages ~8.9R away, so treat it as the destination the auction is heading for — never as the scalp objective.",
+      "Take profit at the nearest POC — the 683-session backtest re-validated it as the target once the stop became a tight 7 pt. (Trailing 1× ATR is the tested runner alternative.)",
   },
   {
     label: "Reference",

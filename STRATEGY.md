@@ -1,112 +1,109 @@
-# Our strategy — the NQ scalping playbook
+# Our strategy — the NQ LVN-reversal scalp
 
-One page, no theory. Everything here is implemented in the dashboard, and every
-threshold is checkable in the code and covered by the test suite.
+One page, the implemented strategy. Every threshold below is checkable in the
+code, covered by tests, and (where it matters) measured by the backtest.
 
 - Live tool: **https://nq-dashboard.31.97.138.30.sslip.io**
 - Long-form version of this page: **`/docs#playbook`**
+- The research behind the numbers: `FOOTPRINT_REVERSAL_RESEARCH.md`
 - How the tool is built / deployed: `web/README.md`, `DEPLOY.md`
 
 ---
 
-## The sequence
+## The strategy in one paragraph
 
-A reversal is not predicted, it is a **sequence**. Three pieces are required; the
-rest is confirmation. If a required piece is missing, there is no trade.
+We fade failed breaks **at (or inside) a low-volume node** and ride the move back
+to the **value-area POC**. A signal exists only when the whole reversal sequence
+has completed *and* every box agrees *and* the raw footprint confirms our side.
+We risk a fixed **7 points**, take profit at the **POC**, and size from the stop.
+That is the entire strategy.
+
+## When a signal exists (the exact gates)
+
+The server-side feed (`web/lib/signalFeed.ts`) pushes a trade card only when
+**all six** of these hold at the same minute:
+
+1. **The reversal sequence is complete** — `present ≥ 4` of the 6 checklist
+   ingredients (the three required: location, mechanism, trigger, plus at least
+   one confirmation).
+2. **Every directional box agrees** — order flow + price action are aligned
+   (`ALIGNED LONG` / `ALIGNED SHORT` in the composer; `web/lib/signals.ts`).
+3. **Location is an LVN** — price is *at or inside* an LVN zone (see checklist
+   item 1).
+4. **The footprint stack is on our side** — if a stacked imbalance exists, it
+   must be in the trade direction (a buy stack for a long). An *opposite* stack
+   kills the trade (backtest: PF 1.09 vs 2.07).
+5. **The entry bar's delta confirms** — the bar that completes the sequence must
+   print delta in our direction (backtest: PF 2.14 vs 1.18).
+6. **Pullbacks are not signalled.** This surface is the reversal only.
+
+## The checklist (what the dashboard reports)
+
+A reversal is not predicted, it is a **sequence**. Three pieces are required;
+the rest is confirmation.
 
 | # | Condition | Required | The rule | Where you read it |
 |---|---|---|---|---|
-| 1 | **Location** | ✅ | At an **LVN edge** from the profile stack (P0 today → P5 5-day) or a session extreme. Inside a thin zone is a pass-through, not a location | chart LVN edge lines + off-screen zone chips · Levels |
-| 2 | **Mechanism** (absorption) | ✅ | One-sided aggression ≥ 60% of the row's volume, on size ≥ max(50 ct, 1.5× the median row), at a window extreme, and price does **not** break that price for 3 bars | ladder ▲▼ glyphs · story panel `◆ absorption` · ABSORPTION alerts |
-| 3 | **Fuel** (CVD divergence) | — | Price lower low with CVD higher low (D2) or price higher high with CVD lower high (D4) at confirmed pivots. Every qualifying pair is reported | checklist row 3 · D2/D4 alerts · story Δ-flip |
-| 4 | **Trigger** (reclaim) | ✅ | A break of ≥ 1 tick beyond the running extreme, then price trades back inside within 2 bars | checklist row 4 + the printed trigger price |
-| 5 | **Evidence** (imbalance stack) | — | 3+ consecutive ticks imbalanced the same way (≥ 3:1 vs the adjacent tick, ≥ 10 ct) on the reversal side | ladder `imb` column (▲◆ 6.8×, □ unfinished auction) |
+| 1 | **Location** | ✅ | Price **at or inside an LVN zone** (P0 today → P5 5-day, plus the live developing P0) or a session extreme | chart LVN edge lines · Levels panel |
+| 2 | **Mechanism** (absorption) | ✅ | One-sided aggression ≥ 60% of a row's volume, on size ≥ max(20 ct, 1.5× the median row), near the top/bottom of a **trailing ~60-bar window**, and price does **not** break that price for 3 bars | ladder ▲▼ glyphs · story `◆ absorption` |
+| 3 | **Fuel** (CVD divergence) | — | Price lower low with CVD higher low (D2) or higher high with CVD lower high (D4) at confirmed pivots | checklist row 3 · D2/D4 alerts |
+| 4 | **Trigger** (reclaim) | ✅ | A break of ≥ 1 tick beyond the running extreme, then price trades back inside within 2 bars — the entry event | checklist row 4 + printed trigger price |
+| 5 | **Evidence** (imbalance stack) | — | 3+ consecutive ticks imbalanced the same way (≥ 3:1 vs the adjacent tick, ≥ 10 ct) on the reversal side | ladder `imb` column |
 | 6 | **Context** | — | Session-VWAP side, and a veto inside ± 5 min of a scheduled release | checklist row 6 · VWAP line |
 
 **Causal order matters:** absorption is the *cause* (who is standing there),
 divergence is the *symptom* (the move has no fuel left), the reclaim is the
-*trigger* (the entry event). Divergence alone is not a signal; it can persist for
-hours inside a trend.
+*trigger* (the entry event).
 
 ## The trade, in four lines
 
 | Line | Rule |
 |---|---|
-| **Trigger** | No reclaim, no trade. The checklist prints the exact price to watch and what "inside" means (2 bars). |
-| **Invalidation** | A 1-minute close beyond the absorption price kills the read. No absorption → no invalidation level → no trade. |
-| **Target** | Risk multiples: partial at 1R, runner to 2–3R or the next LVN edge. The nearest POC is a *destination*, not an exit — it sits a median 8.9R away (see below). |
-| **Reference** | VAH/VAL = inside/outside value (acceptance vs rejection context). Optional, off by default. |
+| **Trigger** | No reclaim, no trade. The checklist prints the exact price to watch. |
+| **Invalidation** | A 1-minute close beyond a **7-pt scalp stop** (`SCALP_STOP_PTS` in `web/lib/mechanism.ts`). The old absorption-price stop sat ~78 pts away and was untradeable at sensible risk. |
+| **Target** | The **nearest POC** — take profit there. (Trailing 1× ATR is the tested runner alternative if you prefer to ride winners.) |
+| **Size** | `contracts = risk ÷ (7 pts × $20)` — the card prints this line. Fixed dollar risk per trade (0.25–0.5% of the account while unvalidated). |
+
+## What the backtest measured (683 sessions, lookahead-free)
+
+Replayed bar-by-bar over Dec 2023 → Sep 2026 (683 RTH sessions), with
+prior-day level sheets + a rolling developing profile (no lookahead), 0.5 pt
+round-trip cost, pessimistic same-bar ordering:
+
+| Metric | Value |
+|---|---|
+| Signals | **5,104 → ~7.5 per day** |
+| Win rate | **37%** |
+| Profit factor | **2.16** |
+| Net | +27,424 pts (~5.4 pts/trade, ~40 pts/day) |
+| Per-year | 2024: 36% win · 2025: 40% win · 2026 (out-of-sample): 34% win — positive every full year |
+
+The four things the backtest changed (each is in `FOOTPRINT_REVERSAL_RESEARCH.md`):
+
+1. **Location = "in an LVN"**, not only "at the edge" — the zone counts fully.
+2. **`present ≥ 4`** is the sweet spot: 6/6 never fires, 5/6 is PF ~1.7, 4/6 is
+   PF ~2.0+ while still requiring the three required pieces.
+3. **The absorption-price stop is wrong for a scalp** — 7 pt is where the edge
+   lives (5 pt is the tighter alternative, PF 2.15 in the same test).
+4. **Two footprint filters** — opposite stack = no trade; entry-bar delta must
+   confirm. These are what moved PF from 1.8 to 2.16.
+
+Caveats, stated plainly: a ~2-bar lookahead remains in the reclaim/divergence
+detection, 1-minute granularity resolves same-bar stop/target conservatively,
+and fills are assumed at bar prices. Treat the *ranking* of choices as solid and
+the absolute P&L as optimistic until live journalling confirms it.
 
 ## Operating rules
 
 1. **Levels are RTH-defined, the chart is the full day.** P0–P5 come from the
    cash session and stay valid all day; the chart shows Globex 18:00 → 16:59 New
-   York (1,380 minutes) with live ticks appended seamlessly.
-2. **P0 is the most recent.** Numbering is recency, not importance: P0 today's
-   developing RTH → P5 the 5-day composite.
+   York with live ticks appended seamlessly.
+2. **P0 is the most recent.** Numbering is recency, not importance.
 3. **Never fade initiative.** `|Δ| ≥ 20%` with a new extreme is aggression *with*
-   progress — continuation context, shown dimmed in the feed.
-4. **One setup, journalled.** Log 100+ instances (entry, reclaim quality,
-   absorption size, context, MFE/MAE, outcome in R, fees) before trusting any
-   threshold here. Every number in this system is still a hypothesis.
-5. **Honest baseline (measured, not assumed):** the replay below produced a 41 %
-   win rate for the reclaim trigger against a 30 % random-entry baseline, with
-   the evening window at 47–71 %. The 45–65 % / +0.2R…+0.9R figures once quoted
-   here were an assumption and the replay did not reach them: 1:1 exits lost at
-   every stop tested. Treat any rule as unproven until it survives 100+ live
-   journalled trades.
-6. **Risk:** 0.25–0.5 % per trade while unvalidated, 0.5–1 % once validated. Size
-   from the stop (technical invalidation first, contracts second).
-
-## What the replay measured (5 sessions, 268 reclaims)
-
-Replayed over 2026-09-21…25 (6,900 ETH minutes), entering at the confirmation
-close, pessimistic same-bar ordering, perfect fills, no fees.
-
-| Claim | Result | Verdict |
-|---|---|---|
-| Reclaim triggers beat random entries | 41.0 % vs 30.0 % baseline (same stop) · +0.22R | **holds** |
-| Evening 18:00–21:00 NY is the clean window | beat the rest of the session in 5/5 sessions | **holds** |
-| Divergence adds fuel | 46.6 % (n=73) vs 39.0 % (n=195), better in 4/5 sessions | weak |
-| LVN edge is the location edge | 43.8 % (n=112) vs 39.1 % (n=156), 3/5 sessions, rides on one day | weak |
-| Absorption is required | n=2 coincident — not testable | **untested** |
-| Nearest POC as target | median 36.6 pt away vs 4.1 pt risk = **8.9R**; reached before the stop in 7.8 % | **withdrawn** |
-| Whichever of POC / VWAP is nearer, as target | VWAP is the *farther* magnet (median 110.7 pt = 24.3R vs the POC's 48.9 pt) and wins the nearer contest in only 27 % of trades; pooled expectancy +0.03R either way | **withdrawn** |
-| 1:1 risk-reward exit | −0.66R to −0.35R at every stop; best case (2 pt stop, 3R runner) +0.09R pre-fees | **withdrawn** |
-
-**Two consequences.** The POC is context and destination, never the scalp
-objective — an 8.9R objective is not a scalp, and swapping it for the session
-VWAP does not help because the VWAP is usually *further* away: these reclaims fire
-at counter-trend extremes, so the auction sits a median 110 pt from a cumulative
-24-hour VWAP. And absorption, the ingredient the playbook marks *required*, is the
-one thing this sample cannot test: the reclaim alone carried all 268 trades. Until
-absorption has its own sample, the honest description of the edge is "reclaim
-after a level rejection, best in the evening", not "absorption plus reclaim".
-
-**The bottleneck is not the target, it is the follow-through.** With the
-structural stop (2 ticks beyond the failed extreme, median 4.1 pt) the median
-favourable excursion while a trade is still alive is **0.32R** — most reclaims
-barely move in favour before they are stopped. Every fixed target from 1R to 10R
-prices out negative (−0.16R to −0.25R), the magnets land at breakeven (+0.03R)
-purely on rare large winners, and the only configuration that reached positive
-territory was widening the stop to 2 pt with a 3R runner (+0.09R). So the open
-question is stop placement and entry quality, not which magnet to aim at.
-
-The weekday win rate rose monotonically across the sample (33 → 35 → 38 → 49 →
-61 %), which is a warning rather than a finding: one trending week flatters any
-reclaim rule. The evening effect is the only result consistent in every session.
-
-
-## What we kept, what we dropped
-
-**Kept:** location first, always · the reclaim close as the trigger (the one
-ingredient with a measured edge) · absorption as the mechanism, still untested ·
-journalling 100+ samples before trusting thresholds.
-
-**Dropped:** ADX/indicator regime filters (we read regime from the tape: POC
-migration, initiative vs absorption, value acceptance) · trading the wick ·
-divergence as an entry · multi-day swing framing (this surface is POC-to-POC,
-LVN-edge to LVN-edge, minutes).
+   progress — continuation context, shown dimmed.
+4. **Journal every signal.** The card is a ticket, not a promise: log entry,
+   outcome in R, MFE/MAE, and compare against the 37% / PF 2.16 baseline.
+   Every threshold is a hypothesis until it survives 100+ live journalled trades.
 
 ## Reading the dashboard
 
@@ -115,38 +112,24 @@ LVN-edge to LVN-edge, minutes).
 | Flow & levels | Where is price relative to every level that matters? |
 | Footprint story | What is the tape *developing* (bar states, POC migration, Δ-flips, effort vs result, climax→retest)? |
 | Minute ladder | Who is being filled at each tick right now (bid × ask, imbalances, unfinished auctions)? |
-| Reversal checklist | Which conditions exist, which is missing, and what would trigger / invalidate / target? |
+| Reversal checklist | Which of the six conditions exist, which is missing, and what would trigger / invalidate / target? |
 | Alerts | What fired, grouped by kind (initiative dimmed as context)? |
-
-The checklist **reports**; it never tells you to trade. That distinction is the
-whole design: a sequence reader for a market that is already moving can be
-journalled and falsified, a forecast cannot.
+| Price action | Discount or premium across 1m…1d — the location filter that must agree. |
+| Options / gamma | Chop vs trend regime from dealer positioning — context, never a vote. |
 
 ## Price-action location — discount / premium (second signal box)
 
-Alongside the order-flow read, a second **signal box** answers one question: *is
-price in the discount (cheap) or the premium (expensive) half of the daily,
-4-hour, 1-hour, 15-minute, 5-minute and 1-minute ranges — and are they aligned?*
-Longs want discount on every timeframe, shorts want premium. It is a **location
-filter, not a trigger**: it composes with the order-flow sequence into one final
-signal (the composer requires every box to agree, otherwise it is a conflict and
-there is no trade). Definitions, thresholds and the honest research behind it:
-`PRICE_ACTION_SIGNAL.md`. Every threshold lives in `web/lib/priceaction.ts` and
-is covered by `web/tests/priceaction.test.mjs`.
+One question: *is price in the discount (cheap) or the premium (expensive) half
+of each timeframe's dealing range — and are they aligned?* Longs want discount
+on every timeframe, shorts want premium. It is a **location filter, not a
+trigger**; the composer requires every box to agree. Definitions and the
+research: `PRICE_ACTION_SIGNAL.md`; code `web/lib/priceaction.ts`.
 
-## Options / gamma — dealer positioning (third, context box)
+## Options / gamma — dealer positioning (context box)
 
-A third **signal box** — the first *context* box: it does not vote long or short.
-From the free CBOE QQQ option chain (mapped to NQ points) it reports **regime** —
-dealers net **long gamma** → they dampen moves → *chop, the fade playbook is in
-regime*; net **short gamma** → they amplify → *trend, do not fade* — plus the
-**gamma flip**, **call wall** and **put wall** as magnet levels. It gates
-fade-vs-follow-through and supplies location, never a trigger. What is free and
-reliable (and what is not), the definitions and the caveats: `OPTIONS_SIGNAL.md`.
-Collector `gcdata/collect_options.py` · engine `web/lib/options.ts` · tests
-`web/tests/options.test.mjs`. Its call/put walls also feed the checklist's
-**location** ingredient as coarse dealer-hedging zones (call = resistance, put =
-support) — one QQQ strike ≈ 40 NQ points, so they are *partial* location, never
-the tick-precise "yes" an LVN edge earns (`OPTIONS_SIGNAL.md` §7). Refreshed
-intraday by `web/lib/optionsFeed.ts` (default every 5 min, `OPTIONS_REFRESH_SECONDS`
-to override) so 0DTE open interest builds into the walls through the day.
+From the free CBOE QQQ chain mapped to NQ points: dealers net **long gamma** →
+*chop* (the fade playbook is in regime); net **short gamma** → *trend* (do not
+fade). Plus the gamma flip, call wall and put wall as magnet levels — *partial*
+location, never a trigger. Details: `OPTIONS_SIGNAL.md`.
+
+*Educational research only — not financial advice.*
