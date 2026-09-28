@@ -129,11 +129,12 @@ class SignalFeed {
   }
 
   private async maybeSend(snap: SignalSnapshot): Promise<void> {
-    // Only auto-notify on the HIGHEST-probability reversal: the full sequence
-    // (all six checklist ingredients "yes") AND every directional box aligned
-    // (order flow + price action). Pullbacks are deliberately not notified.
+    // Only auto-notify on a FULL reversal (present >= 5 of the 6 checklist
+    // ingredients — location + mechanism + trigger plus most support evidence)
+    // AND every directional box aligned (order flow + price action). Pullbacks
+    // are deliberately not notified.
     const aligned = snap.signal.tone === "long" || snap.signal.tone === "short";
-    if (!aligned || snap.mech.present < 6) return;
+    if (!aligned || snap.mech.present < 5) return;
 
     const kind = "REVERSAL" as const;
     const read = snap.mech;
