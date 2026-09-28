@@ -86,16 +86,82 @@ def needs_fetch(date: str, sessions) -> bool:
     return False
 
 
-def fetch(dates, sessions, per_request_timeout=18, attempts=2):
-    """Return {(date, session): dict} for everything the vendor returned."""
+def session_usable(payload: dict, session: str) -> bool:
+    """A session is usable only if it is CONTIGUOUS, not merely long.
+
+    The vendor's history comes in three shapes:
+      * complete      — 17:00 CT -> 15:59 CT, no gaps (1380 min)
+      * almost        — same span with ONE dropped minute (1379), or the first
+                        few minutes missing (1368, one 4-min gap) — still usable
+      * sparse        — minutes missing throughout (e.g. 954/1380), or two days
+                        stitched with a multi-hour hole (2520 = a 301-min gap)
+
+    A missing minute in the middle of a session fabricates structure ("no break
+    in N bars"), but a missing minute at the open does not. So the rule is span
+    + gap-based, not a raw count.
+    """
+    cs = payload.get("candles", [])
+    if not cs:
+        return False
+    ts = sorted(c["t"] for c in cs)
+    if len(ts) < 1360:
+        return False
+    base = int(ts[0][8:10])
+    mins = [int(t[11:13]) * 60 + int(t[14:16]) + (int(t[8:10]) - base) * 1440 for t in ts]
+    first = mins[0] % 1440
+    last = mins[-1] % 1440
+    maxgap = max((mins[i + 1] - mins[i]) for i in range(len(mins) - 1)) if len(mins) > 1 else 0
+    if session == "ETH":
+        return 1020 <= first <= 1035 and last == 959 and maxgap <= 5
+    return first == 510 and last == 959 and maxgap <= 5  # RTH 08:30 -> 15:59
+
+
+def write_dataset(date: str, session: str, payload: dict) -> str:
+    """Persist one dataset, stamping its completeness. Returns the kind."""
+    n = len(payload.get("candles", []))
+    exp = EXPECTED.get(session, 0)
+    if n == 0:
+        kind = "empty"
+    elif session_usable(payload, session):
+        kind = "complete"
+    else:
+        kind = "partial"
+    payload["_meta"] = {
+        "session": session,
+        "candles": n,
+        "expected": exp,
+        "completeness": round(n / exp, 3) if exp else None,
+        "kind": kind,
+        "collected_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "source": "gocharting FOOTPRINT/V2",
+        "symbol": os.environ.get("GOCHARTING_SYMBOL", "?"),
+        "contiguous": session_usable(payload, session),
+    }
+    os.makedirs(DATA, exist_ok=True)
+    path = os.path.join(DATA, f"{date}_{session}.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, path)  # atomic: never leave a half-written dataset behind
+    print(f"  saved {date}_{session}  {n:>4}/{exp}  {kind}", flush=True)
+    return kind
+
+
+def fetch(dates, sessions, per_request_timeout=18, attempts=2, on_result=None, symbol=None):
+    """Walk the dates in small batches, calling on_result(date, session, payload).
+
+    Results are handed to the caller as soon as a batch lands rather than being
+    accumulated for the whole run: a backfill of a hundred-plus sessions takes
+    tens of minutes, and losing all of it to one dropped socket is unacceptable.
+    """
     from client import GChartClient, footprint_pb2, footprint_to_dict
 
-    results = {}
+    seen = set()
     for i in range(0, len(dates), BATCH):
         chunk = dates[i : i + BATCH]
         wanted = [(d, s) for d in chunk for s in sessions]
         for attempt in range(attempts):
-            missing = [k for k in wanted if k not in results]
+            missing = [k for k in wanted if k not in seen]
             if not missing:
                 break
             try:
@@ -105,7 +171,7 @@ def fetch(dates, sessions, per_request_timeout=18, attempts=2):
                 continue
             try:
                 for d, s in missing:
-                    c.request_footprint(d, s)
+                    c.request_footprint(d, s, symbol=symbol)
                 for txt, body in c.iter_frames(len(missing) * per_request_timeout + 20):
                     if body is None:
                         continue
@@ -119,7 +185,11 @@ def fetch(dates, sessions, per_request_timeout=18, attempts=2):
                         continue
                     if r.is_complete and r.request and r.request.date:
                         key = (r.request.date, r.request.session)
-                        results[key] = footprint_to_dict(r)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        if on_result:
+                            on_result(key[0], key[1], footprint_to_dict(r))
             except Exception as e:
                 print(f"    socket dropped mid-batch ({type(e).__name__})", flush=True)
             finally:
@@ -127,8 +197,9 @@ def fetch(dates, sessions, per_request_timeout=18, attempts=2):
                     c.close()
                 except Exception:
                     pass
-        print(f"  batch {chunk[0]}..{chunk[-1]}: {sum(1 for k in results if k[0] in chunk)}/{len(wanted)} returned", flush=True)
-    return results
+        got = sum(1 for k in seen if k[0] in chunk)
+        print(f"  batch {chunk[0]}..{chunk[-1]}: {got}/{len(wanted)} returned", flush=True)
+    return seen
 
 
 def main():
@@ -138,6 +209,7 @@ def main():
     ap.add_argument("--to", dest="end", default=dt.date.today().isoformat())
     ap.add_argument("--sessions", nargs="*", default=["ETH", "RTH"])
     ap.add_argument("--force", action="store_true", help="re-fetch dates already on disk")
+    ap.add_argument("--symbol", default=os.environ.get("GOCHARTING_SYMBOL", "NQZ26"), help="contract symbol, e.g. NQU26")
     ap.add_argument("--plan", action="store_true", help="print the date list and exit")
     args = ap.parse_args()
 
@@ -157,42 +229,24 @@ def main():
         return 0
 
     os.makedirs(DATA, exist_ok=True)
-    results = fetch(todo, args.sessions)
-
     written = {"complete": 0, "partial": 0, "empty": 0}
-    for (date, session), payload in sorted(results.items()):
-        n = len(payload.get("candles", []))
-        exp = EXPECTED.get(session, 0)
-        if n == 0:
-            kind = "empty"
-        elif exp and n >= exp:
-            kind = "complete"
-        else:
-            kind = "partial"
-        written[kind] += 1
-        payload["_meta"] = {
-            "session": session,
-            "candles": n,
-            "expected": exp,
-            "completeness": round(n / exp, 3) if exp else None,
-            "kind": kind,
-            "collected_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "source": "gocharting FOOTPRINT/V2",
-        }
-        path = os.path.join(DATA, f"{date}_{session}.json")
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(payload, f)
-        os.replace(tmp, path)
-        print(f"  saved {date}_{session}  {n:>4}/{exp}  {kind}")
 
-    missing = [f"{d}_{s}" for d in todo for s in args.sessions if (d, s) not in results]
+    def on_result(date, session, payload):
+        written[write_dataset(date, session, payload)] += 1
+
+    os.environ["GOCHARTING_SYMBOL"] = args.symbol
+    seen = fetch(todo, args.sessions, on_result=on_result, symbol=args.symbol)
+
+    missing = [f"{d}_{s}" for d in todo for s in args.sessions if (d, s) not in seen]
     print(
         f"\nwrote {sum(written.values())} datasets — {written['complete']} complete, "
         f"{written['partial']} partial, {written['empty']} empty"
     )
     if missing:
-        print(f"{len(missing)} returned nothing (no data retained that far back): {missing[:6]}{' ...' if len(missing) > 6 else ''}")
+        print(
+            f"{len(missing)} returned nothing (no data retained that far back): "
+            f"{missing[:6]}{' ...' if len(missing) > 6 else ''}"
+        )
     return 0
 
 
