@@ -1,5 +1,6 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { decodeFootprintForDateResponse, splitFrame, type BootCandle } from "./footprintProto";
 
 /* ------------------------------------------------------------------ */
 /* Live GoCharting feed (server-side singleton)                        */
@@ -55,6 +56,133 @@ export type LiveState = {
 
 const TICK = 0.25;
 
+/** Full Globex day is 23 hours (1,380 minutes). The live buffer must hold a
+ *  whole session so the 18:00 ET reopen candle survives until the nightly
+ *  collection picks the session up. */
+const MAX_MINUTES = 1380;
+
+/** Cognito IdTokens live ~1h. Refresh before expiry so a reconnect never
+ *  reuses a dead token (the old code fetched it once and never again). */
+const TOKEN_REFRESH_MS = 50 * 60_000;
+
+/* ------------------------------------------------------------------ *
+ * Wall-clock helpers (America/New_York) for the bootstrap window.
+ * ------------------------------------------------------------------ */
+
+function nyParts(now = new Date()) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "short",
+    })
+      .formatToParts(now)
+      .map((x) => [x.type, x.value]),
+  ) as Record<string, string>;
+  return {
+    year: Number(p.year),
+    month: Number(p.month),
+    day: Number(p.day),
+    hour: Number(p.hour),
+    minute: Number(p.minute),
+    dow: p.weekday,
+  };
+}
+
+/** "YYYY-MM-DD" for the New York calendar day `offsetDays` from today. */
+function nyDate(offsetDays = 0): string {
+  const p = nyParts();
+  return new Date(Date.UTC(p.year, p.month - 1, p.day + offsetDays)).toISOString().slice(0, 10);
+}
+
+/** Globex hours: Sun 18:00 ET → Fri 17:00 ET, minus the daily 17:00–18:00 halt. */
+function globexOpen(now = new Date()): boolean {
+  const p = nyParts(now);
+  const hm = p.hour * 60 + p.minute;
+  if (p.dow === "Sat") return false;
+  if (p.dow === "Sun") return hm >= 18 * 60;
+  if (p.dow === "Fri") return hm < 17 * 60;
+  return hm < 17 * 60 || hm >= 18 * 60; // Mon–Thu
+}
+
+/**
+ * One-shot fetch of the in-progress Globex session from FOOTPRINT/V2, over its
+ * own socket so it can never disturb the live trade channel. Returns the raw
+ * candles (feed-clock ISO timestamps + high/low/buy/sell in cents).
+ */
+function fetchFootprintBars(dates: string[], env: Record<string, string>): Promise<BootCandle[]> {
+  return new Promise((resolve) => {
+    const out: BootCandle[] = [];
+    let ws: WebSocket | null = null;
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      try {
+        ws?.close();
+      } catch {
+        /* ignore */
+      }
+      resolve(out);
+    };
+    setTimeout(finish, 20_000); // no-op if finish already ran (settled guard)
+
+    void (async () => {
+      let token: string;
+      try {
+        token = await cognitoIdToken(env);
+      } catch {
+        return finish();
+      }
+      const dc = env.GOCHARTING_DC || "nyc1";
+      const url = `wss://origin.ws.prodb.${dc}.gocharting.com/${dc}/ws?token=${token}&tag=${Date.now()}`;
+      try {
+        ws = new WebSocket(url);
+        ws.binaryType = "arraybuffer";
+      } catch {
+        return finish();
+      }
+      ws.onopen = () => {
+        let rid = 0;
+        for (const d of dates) {
+          ws!.send(
+            JSON.stringify({
+              request_id: ++rid,
+              command: "FOOTPRINT/V2",
+              payload: {
+                exchange: env.GOCHARTING_EXCHANGE || "CME",
+                segment: env.GOCHARTING_SEGMENT || "FUTURE",
+                symbol: env.GOCHARTING_SYMBOL || "NQZ26",
+                interval: "1m",
+                dates: [d],
+                session: "ETH",
+              },
+            }),
+          );
+        }
+      };
+      ws.onmessage = (ev) => {
+        if (typeof ev.data === "string" || !(ev.data instanceof ArrayBuffer)) return;
+        try {
+          const f = splitFrame(new Uint8Array(ev.data));
+          if (!f || !f.header.startsWith("FOOTPRINT/V2")) return;
+          const r = decodeFootprintForDateResponse(f.body);
+          for (const c of r.candles) out.push(c);
+        } catch {
+          /* malformed frame — ignore */
+        }
+      };
+      ws.onclose = finish;
+      ws.onerror = finish;
+    })();
+  });
+}
+
 function loadEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   const envPath = path.join(process.cwd(), "..", "gcdata", ".env");
@@ -97,11 +225,14 @@ async function cognitoIdToken(env: Record<string, string>): Promise<string> {
 class LiveFeed {
   private ws: WebSocket | null = null;
   private token: string | null = null;
+  private tokenFetchedAt = 0;
   private env: Record<string, string>;
   private listeners = new Set<(s: LiveState) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastLtp = 0;
   private retryMs = 10_000;
+  private bootstrapped = false;
+  private bootstrapAttemptAt = 0;
   /** staleness detection: the trade channel can go quiet while snapshots keep
    *  flowing (seen ~1h after connect — the 1-hour IdToken lifetime). If the
    *  market is demonstrably trading but no print arrives, force a reconnect
@@ -135,6 +266,66 @@ class LiveFeed {
     for (const fn of this.listeners) fn(s);
   }
 
+  /** Seed the in-progress session's history (fetched from FOOTPRINT/V2) so the
+   *  18:00 ET reopen candle survives a restart. Candles arrive in the feed
+   *  clock; they are re-keyed to the UTC wall clock every other live bar uses,
+   *  so the existing blend + chart treat them like ordinary live minutes.
+   *  The still-developing current minute is left to live ticks. */
+  private seedFromFootprint(candles: BootCandle[]) {
+    const nowKey = new Date().toISOString().slice(0, 16); // "YYYY-MM-DDTHH:mm" UTC
+    const have = new Set(this.state.minutes.map((m) => `${m.du ?? ""}|${m.t}`));
+    // the developing minute (still `cur`, not yet in `minutes`) must win over a
+    // seeded candle for the same minute, or it gets duplicated on rollover
+    const cur = this.state.cur;
+    if (cur && /^\d{2}:\d{2}$/.test(cur.t)) have.add(`${cur.du ?? ""}|${cur.t}`);
+    let added = 0;
+    for (const c of candles) {
+      const ms = Date.parse(c.t);
+      if (!Number.isFinite(ms)) continue;
+      const iso = new Date(ms).toISOString();
+      const du = iso.slice(0, 10);
+      const hhmm = iso.slice(11, 16);
+      const key = `${du}|${hhmm}`;
+      if (key >= nowKey) continue; // developing minute — live ticks own it
+      if (have.has(key)) continue;
+      have.add(key);
+      this.state.minutes.push({
+        t: hhmm,
+        du,
+        o: 0, // footprint has no open/close — chart falls back to range bars
+        h: c.high / 100,
+        l: c.low / 100,
+        c: 0,
+        vol: c.buy + c.sell,
+        buy: c.buy,
+        sell: c.sell,
+        live: true,
+      });
+      added++;
+    }
+    if (!added) return;
+    this.state.minutes.sort((a, b) => `${a.du ?? ""}|${a.t}`.localeCompare(`${b.du ?? ""}|${b.t}`));
+    if (this.state.minutes.length > MAX_MINUTES) this.state.minutes = this.state.minutes.slice(-MAX_MINUTES);
+  }
+
+  /** One-time recovery of the current session so far (idempotent, throttled). */
+  private async bootstrap() {
+    if (this.bootstrapped || !globexOpen()) return;
+    const now = Date.now();
+    if (now - this.bootstrapAttemptAt < 30_000) return;
+    this.bootstrapAttemptAt = now;
+    try {
+      const candles = await fetchFootprintBars([nyDate(0), nyDate(1)], this.env);
+      if (candles.length) {
+        this.seedFromFootprint(candles);
+        this.bootstrapped = true;
+        this.emit();
+      }
+    } catch {
+      /* retry on a later tick */
+    }
+  }
+
   /** (re)assert the channel subscriptions — the server can silently drop a
    *  subscription while the socket stays up (observed: snapshots kept flowing
    *  but the trade channel went quiet, so live bars froze). */
@@ -159,7 +350,7 @@ class LiveFeed {
     let cur = this.state.cur;
     if (!cur || cur.t !== hhmm) {
       if (cur) this.state.minutes.push(cur);
-      if (this.state.minutes.length > 480) this.state.minutes = this.state.minutes.slice(-480);
+      if (this.state.minutes.length > MAX_MINUTES) this.state.minutes = this.state.minutes.slice(-MAX_MINUTES);
       // levels are only meaningful for the recent window — drop the rest
       for (let i = 0; i < this.state.minutes.length - 30; i++) delete this.state.minutes[i].levels;
       cur = { t: hhmm, du: key.slice(0, 10), o: t.ltp, h: t.ltp, l: t.ltp, c: t.ltp, vol: 0, buy: 0, sell: 0, live: true };
@@ -255,11 +446,19 @@ class LiveFeed {
 
   async connect() {
     try {
-      if (!this.token) this.token = await cognitoIdToken(this.env);
+      // IdTokens expire after ~1h. Refresh before that so a reconnect never
+      // retries forever with a dead token (the old code fetched once and then
+      // kept reusing the stale token until the process restarted).
+      if (!this.token || Date.now() - this.tokenFetchedAt > TOKEN_REFRESH_MS) {
+        this.token = await cognitoIdToken(this.env);
+        this.tokenFetchedAt = Date.now();
+      }
       const dc = this.env.GOCHARTING_DC || "nyc1";
       const url = `wss://origin.ws.prodb.${dc}.gocharting.com/${dc}/ws?token=${this.token}&tag=${Date.now()}`;
       this.ws = new WebSocket(url);
+      this.ws.binaryType = "arraybuffer";
       this.ws.onopen = () => {
+        this.retryMs = 10_000; // healthy connect — reset the backoff
         this.state.connected = true;
         this.emit();
         this.subscribeChannels();
@@ -335,6 +534,7 @@ class LiveFeed {
           }
         }
       }
+      void this.bootstrap();
       this.emit();
     }, 5000);
   }
