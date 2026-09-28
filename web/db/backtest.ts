@@ -36,8 +36,8 @@ async function main() {
     walkForward: wf ? { trainBest: wf.trainBest.config.name, trainNetPts: wf.trainBest.train.netPts, testNetPts: wf.testOfBest.netPts, testTrades: wf.testOfBest.trades, testWinRate: wf.testOfBest.winRate, testProfitFactor: wf.testOfBest.profitFactor } : null,
     results,
   };
-  const final = path.join(outDir, "results.json");
-  const tmp = path.join(outDir, "results.json.tmp");
+  const final = path.join(outDir, `results_${session.toLowerCase()}.json`);
+  const tmp = path.join(outDir, `results_${session.toLowerCase()}.json.tmp`);
   writeFileSync(tmp, JSON.stringify(payload, null, 2));
   // atomic swap so a concurrent reader never sees a half-written file
   const { renameSync } = await import("node:fs");
@@ -56,6 +56,10 @@ async function main() {
     console.log(
       `\nWALK-FORWARD: best on train = "${wf.trainBest.config.name}" (${wf.trainBest.train.netPts.toFixed(1)} pts) → out-of-sample test = ${wf.testOfBest.netPts.toFixed(1)} pts, ${wf.testOfBest.trades} trades, ${Math.round(wf.testOfBest.winRate * 100)}% win, PF ${pf}`,
     );
+    console.log("winner per-year net pts:");
+    for (const y of wf.trainBest.byYear) {
+      console.log(`  ${y.year}: ${y.stats.netPts.toFixed(1)} pts · ${y.stats.trades} trades · ${Math.round(y.stats.winRate * 100)}% win`);
+    }
   }
 }
 

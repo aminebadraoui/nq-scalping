@@ -318,6 +318,7 @@ export type ConfigResult = {
   train: SetupStats;
   test: SetupStats;
   bySetup: { reversal: SetupStats; pullback: SetupStats };
+  byYear: { year: string; stats: SetupStats }[];
 };
 
 function summarize(trades: TradeResult[]): SetupStats {
@@ -356,12 +357,14 @@ export async function runSweep(
     train: [] as TradeResult[],
     test: [] as TradeResult[],
     perSetup: { reversal: [] as TradeResult[], pullback: [] as TradeResult[] },
+    byYear: {} as Record<string, TradeResult[]>,
   }));
 
   for (const date of use) {
     const sd = await loadSession(date, opts?.session ?? "RTH");
     if (!sd) continue;
     const isTrain = date < splitDate;
+    const year = date.slice(0, 4);
     for (const a of agg) {
       const r = replay(sd, a.config);
       a.sessions++;
@@ -369,6 +372,7 @@ export async function runSweep(
       else a.testSessions++;
       a.all.push(...r.trades);
       (isTrain ? a.train : a.test).push(...r.trades);
+      (a.byYear[year] ??= []).push(...r.trades);
       for (const t of r.trades) a.perSetup[t.setup].push(t);
     }
   }
@@ -382,6 +386,9 @@ export async function runSweep(
     train: summarize(a.train),
     test: summarize(a.test),
     bySetup: { reversal: summarize(a.perSetup.reversal), pullback: summarize(a.perSetup.pullback) },
+    byYear: Object.entries(a.byYear)
+      .sort(([x], [y]) => x.localeCompare(y))
+      .map(([year, trades]) => ({ year, stats: summarize(trades) })),
   }));
 }
 
