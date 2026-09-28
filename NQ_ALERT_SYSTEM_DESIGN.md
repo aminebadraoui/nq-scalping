@@ -1,5 +1,15 @@
 # NQ Scalping Alert System — Design Doc v1
 
+> **⚠ Historical document.** This is the v1 design from the Lipi/GoCharting-webhook
+> era. The system has since been rebuilt; later sections (defect logs, replays)
+> describe what was true *at the time*, not current behavior.
+>
+> **Current sources of truth:**
+> - **`STRATEGY.md`** — the implemented strategy (LVN reversal, footprint filters, 7-pt stop, POC target, sizing).
+> - **`FOOTPRINT_REVERSAL_RESEARCH.md`** — the 683-session lookahead-free backtest behind those choices.
+> - **`web/README.md`** — how the tool is built and how Telegram signals fire.
+> - **the live `/docs` page** (`/docs#playbook`) — the playbook as implemented in the dashboard.
+
 Instrument: **NQ (1-minute)** · Session focus: **10:00–12:00 ET** · Platform: **GoCharting (CME Active) + Lipi + webhooks** · Backend: **this repo (`web/`, Next.js)**
 
 ---
