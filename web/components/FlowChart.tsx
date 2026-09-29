@@ -462,13 +462,12 @@ export default function FlowChart({
         timeVisible: true,
         secondsVisible: false,
         tickMarkFormatter: (time: number) => fmtETTime(time),
-        // readability: the live candle never hugs the axis, bars keep a
-        // sane minimum spacing at wide windows, and a resize doesn't change
-        // what is on screen
-        rightOffset: 6,
-        barSpacing: 8,
-        minBarSpacing: 3,
-        lockVisibleTimeRangeOnResize: true,
+        // NOTE: no rightOffset / barSpacing / minBarSpacing here on purpose.
+        // rightOffset makes the axis draw extrapolated time labels past the
+        // last candle, and explicit spacing options fight fitContent() (the
+        // loaded-window slice IS the zoom control) — both made the time axis
+        // look wrong. lockVisibleTimeRangeOnResize is also left off so a
+        // resize keeps fitting the loaded span.
       },
       localization: {
         locale: "en-US",
