@@ -79,25 +79,6 @@ export type SignalSnapshot = {
   vwap: number;
 };
 
-/** A completed sweep-reclaim whose reclaim bar was strongly one-sided in the
- *  entry direction — the 67%-win setup measured in the theory lab. */
-export type ReclaimSetup = {
-  dir: "long" | "short";
-  /** the swept swing extreme (the stop's reference) */
-  extreme: number;
-  /** entry = the reclaim bar's close (or mid when no OHLC) */
-  entry: number;
-  stop: number;
-  target: number;
-  risk: number;
-  /** buy share of the reclaim bar's volume (0..1) — the confirmation */
-  buyPct: number;
-  /** feed-clock "HH:mm" of the reclaim bar (dedupe key) */
-  t: string;
-  timeET: string;
-  day: string;
-};
-
 const PROFILE_LABELS: Record<string, string> = {
   P0_developing_rth: "P0 Today",
   P1_opening_range: "P1 OpenRange",
@@ -181,87 +162,6 @@ export function liveMinutesToFootprint(mins: LiveMinute[]): FootprintMinute[] {
     });
   }
   return out;
-}
-
-function median(a: number[]): number {
-  if (!a.length) return 0;
-  const s = [...a].sort((x, y) => x - y);
-  return s[Math.floor(s.length / 2)];
-}
-
-/**
- * Detect a completed sweep-reclaim whose reclaim bar is strongly one-sided in
- * the entry direction. Fires only when the reclaim bar is the LAST completed
- * minute (so the bar's buy/sell is final — no lookahead, no repaint).
- * Mirrors the theory-lab filter: volume ≥ session median AND ≥65% on the entry
- * side. Stop is 0.5pt beyond the swept extreme; target is 1R.
- */
-export function detectOneSidedReclaim(minutes: FootprintMinute[]): ReclaimSetup | null {
-  const n = minutes.length;
-  if (n < 3) return null;
-  const lo = minutes.map((m) => m.low);
-  const hi = minutes.map((m) => m.high);
-  const mid = minutes.map((m) => (m.high + m.low) / 2);
-  const vol = minutes.map((m) => m.buy + m.sell);
-  const med = Math.max(50, median(vol));
-
-  let runLo = Infinity;
-  let runHi = -Infinity;
-  for (let i = 1; i < n; i++) {
-    const pl = Math.min(runLo, lo[i - 1]);
-    const ph = Math.max(runHi, hi[i - 1]);
-    runLo = pl;
-    runHi = ph;
-
-    if (lo[i] <= pl - 0.25) {
-      for (let j = i + 1; j < Math.min(n, i + 3); j++) {
-        if (mid[j] > pl) {
-          if (j === n - 1) {
-            const bar = minutes[j];
-            const total = bar.buy + bar.sell;
-            const buyPct = total > 0 ? bar.buy / total : 0.5;
-            if (total >= med && buyPct >= 0.65) {
-              const entry = bar.c > 0 ? bar.c : mid[j];
-              const stop = pl - 0.5;
-              const risk = entry - stop;
-              if (risk > 0) {
-                return {
-                  dir: "long", extreme: pl, entry, stop, target: entry + risk, risk, buyPct,
-                  t: bar.t, timeET: cdtToET(bar.t), day: bar.d ?? "",
-                };
-              }
-            }
-          }
-          break;
-        }
-      }
-    }
-
-    if (hi[i] >= ph + 0.25) {
-      for (let j = i + 1; j < Math.min(n, i + 3); j++) {
-        if (mid[j] < ph) {
-          if (j === n - 1) {
-            const bar = minutes[j];
-            const total = bar.buy + bar.sell;
-            const buyPct = total > 0 ? bar.buy / total : 0.5;
-            if (total >= med && buyPct <= 0.35) {
-              const entry = bar.c > 0 ? bar.c : mid[j];
-              const stop = ph + 0.5;
-              const risk = stop - entry;
-              if (risk > 0) {
-                return {
-                  dir: "short", extreme: ph, entry, stop, target: entry - risk, risk, buyPct,
-                  t: bar.t, timeET: cdtToET(bar.t), day: bar.d ?? "",
-                };
-              }
-            }
-          }
-          break;
-        }
-      }
-    }
-  }
-  return null;
 }
 
 /** cumulative session VWAP from live minutes (since the feed connected) */

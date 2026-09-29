@@ -1,7 +1,7 @@
 /* Live sweep-reclaim + one-sided detector. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { detectOneSidedReclaim } from "../lib/signalEngine.ts";
+import { detectOneSidedReclaim } from "../lib/reclaimSetup.ts";
 
 function m(t, high, low, buy, sell, c = 0, d = "2026-09-28") {
   return { t, d, o: c || low, c, high, low, buy, sell, delta: buy - sell, vwap: (high + low) / 2, levels: [], imb: null };

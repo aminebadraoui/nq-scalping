@@ -23,10 +23,10 @@ import {
   computeSignal,
   liveMinutesToFootprint,
   liveVwap,
-  detectOneSidedReclaim,
   type CollectedContext,
   type SignalSnapshot,
 } from "./signalEngine";
+import { detectOneSidedReclaim } from "./reclaimSetup";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
 import { sendTelegram } from "./notify";

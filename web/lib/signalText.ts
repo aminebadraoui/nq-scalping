@@ -19,7 +19,7 @@ import { sizeLine, type MechanismRead, type Ingredient } from "./mechanism";
 import type { PullbackRead } from "./pullback";
 import type { PriceActionRead } from "./priceaction";
 import type { OptionsRead } from "./options";
-import type { ReclaimSetup } from "./signalEngine";
+import type { ReclaimSetup } from "./reclaimSetup";
 import { escHtml } from "./notify";
 
 export type SignalContext = {

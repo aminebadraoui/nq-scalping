@@ -14,6 +14,7 @@ import PriceActionPanel from "@/components/PriceActionPanel";
 import OptionsPanel from "@/components/OptionsPanel";
 import SignalSummary from "@/components/SignalSummary";
 import SignalHistory from "@/components/SignalHistory";
+import SweepReclaimPanel from "@/components/SweepReclaimPanel";
 import type { ImbalanceRollup } from "@/lib/gcdata";
 import { useLive, type LiveMinute } from "@/lib/useLive";
 import { cdtToET } from "@/lib/times";
@@ -599,6 +600,7 @@ export default function DashboardPage() {
 
         {/* right column */}
         <aside className="space-y-4">
+          <SweepReclaimPanel minutes={chartMinutes} cur={live?.cur} lastPrice={lastPrice} />
           <SignalSummary signal={finalSignal} gate={cardGate} stale={mechStale} source={mechLive ? "live" : "collected"} />
           <SignalHistory />
           <MechanismPanel read={mech} asOfET={mechAsOf} stale={mechStale} source={mechLive ? "live" : "collected"} />
