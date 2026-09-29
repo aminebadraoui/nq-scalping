@@ -23,13 +23,14 @@ import {
   computeSignal,
   liveMinutesToFootprint,
   liveVwap,
+  detectOneSidedReclaim,
   type CollectedContext,
   type SignalSnapshot,
 } from "./signalEngine";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
 import { sendTelegram } from "./notify";
-import { formatSignalHtml } from "./signalText";
+import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
 
 function refreshSeconds(): number {
@@ -53,6 +54,7 @@ class SignalFeed {
   private ctxCache: { date: string; ctx: CollectedContext } | null = null;
   private lastCtxLoad = 0;
   private sent = new Set<string>();
+  private reclaimSent = new Set<string>();
 
   lastSnapshot: SignalSnapshot | null = null;
   lastError: string | null = null;
@@ -187,6 +189,46 @@ class SignalFeed {
     });
   }
 
+  /** Sweep-reclaim + one-sided confirmation — a separate, simpler signal than
+   *  the full reversal sequence (theory-lab result: 67% win @ 1R). Fires once
+   *  per distinct reclaim bar. */
+  private async checkReclaimSetup(): Promise<void> {
+    const live = getLive().state;
+    if (!live.connected || live.minutes.length < 3) return;
+    const fp = liveMinutesToFootprint(live.minutes);
+    const setup = detectOneSidedReclaim(fp);
+    if (!setup) return;
+    const key = `${setup.day}|${setup.dir}|${setup.t}`;
+    if (this.reclaimSent.has(key)) return;
+    this.reclaimSent.add(key);
+    if (this.reclaimSent.size > 500) this.reclaimSent = new Set([...this.reclaimSent].slice(-250));
+
+    const text = formatReclaimSetupHtml(setup, {
+      symbol: symbol(),
+      price: setup.entry,
+      timeET: setup.timeET,
+      source: "live",
+    });
+    const res = await sendTelegram(text, { parseMode: "HTML" });
+    if (!res.sent) this.lastError = res.reason;
+    await recordSignal({
+      timeET: setup.timeET,
+      day: setup.day,
+      symbol: symbol(),
+      side: setup.dir,
+      price: setup.entry,
+      entry: setup.entry.toFixed(2),
+      stop: setup.stop.toFixed(2),
+      target: setup.target.toFixed(2),
+      verdict: "sweep-reclaim (one-sided)",
+      headline: `NQ sweep-reclaim ${setup.dir}`,
+      source: "live",
+      test: false,
+      sent: res.sent,
+      reason: res.reason,
+    });
+  }
+
   async tick(): Promise<void> {
     if (this.ticking) return;
     this.ticking = true;
@@ -198,6 +240,7 @@ class SignalFeed {
         this.lastError = null;
         await this.maybeSend(snap);
       }
+      await this.checkReclaimSetup();
     } catch (e) {
       this.lastError = String(e);
     } finally {

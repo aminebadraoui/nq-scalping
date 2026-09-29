@@ -19,6 +19,7 @@ import { sizeLine, type MechanismRead, type Ingredient } from "./mechanism";
 import type { PullbackRead } from "./pullback";
 import type { PriceActionRead } from "./priceaction";
 import type { OptionsRead } from "./options";
+import type { ReclaimSetup } from "./signalEngine";
 import { escHtml } from "./notify";
 
 export type SignalContext = {
@@ -127,5 +128,22 @@ export function formatSignalHtml(
     `<i>${escHtml(ctx.source)} · journal every trade — every threshold here is still a hypothesis.</i>`,
   );
 
+  return L.join("\n");
+}
+
+/** Trade-ticket card for the sweep-reclaim + one-sided setup (67% lab win rate). */
+export function formatReclaimSetupHtml(setup: ReclaimSetup, ctx: SignalContext): string {
+  const L: string[] = [];
+  const side = setup.dir === "long" ? "🟢 LONG" : "🔴 SHORT";
+  L.push(`🔔 <b>NQ SWEEP-RECLAIM · ${side}</b>`);
+  L.push(`<code>${escHtml(ctx.symbol)}  ${fmt(ctx.price)}  ${escHtml(ctx.timeET)} NY</code>`);
+  L.push("");
+  L.push(`<b>ENTRY</b>  ${fmt(setup.entry)}  <i>(reclaim-bar close)</i>`);
+  L.push(`<b>STOP</b>   ${fmt(setup.stop)}  <i>(0.5pt beyond swept ${setup.dir === "long" ? "low" : "high"} ${fmt(setup.extreme)})</i>`);
+  L.push(`<b>TARGET</b> ${fmt(setup.target)}  <i>(1R = ${fmt(setup.risk)}pt)</i>`);
+  L.push("");
+  L.push(`<i>reclaim bar ${fmt(setup.buyPct * 100, 0)}% ${setup.dir === "long" ? "buy" : "sell"} · volume ≥ session median</i>`);
+  L.push("");
+  L.push(`<i>${escHtml(ctx.source)} · sweep-reclaim reversal — forward-test, journal every trade.</i>`);
   return L.join("\n");
 }
