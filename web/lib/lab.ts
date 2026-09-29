@@ -63,6 +63,7 @@ export type LabSample = {
   absDeltaPct: number;
   withVwapSlope: boolean;
   barRangePts: number;
+  oneSidedEntry: boolean;
 };
 
 export type FeatureMeta = {
@@ -215,6 +216,14 @@ export const LAB_FEATURES: FeatureMeta[] = [
     unit: "pt",
     kind: "number",
     note: "high minus low of the confirmation bar",
+  },
+  {
+    id: "oneSidedEntry",
+    label: "One-sided aggression on the reclaim bar",
+    unit: "bool",
+    kind: "boolean",
+    note: "reclaim bar volume >= session median AND >=65% of it is on the entry side (buy for long, sell for short) — the reversal is being actively bought/sold, not just faded",
+    suggest: { op: "==", value: true },
   },
 ];
 
@@ -465,6 +474,8 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
       const etHour = (Number(bar.t.slice(0, 2)) + 1) % 24; // feed clock is Central; NY is always +1
       const mm = Number(bar.t.slice(3, 5));
       const isRTH = (etHour === 9 && mm >= 30) || (etHour >= 10 && etHour <= 15);
+      const entryBuyPct = vol[r.i] > 0 ? (bar.buy ?? 0) / vol[r.i] : 0.5;
+      const oneSidedEntry = vol[r.i] >= medVol && (long ? entryBuyPct >= 0.65 : entryBuyPct <= 0.35);
 
       samples.push({
         date,
@@ -495,6 +506,7 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
         absDeltaPct: Math.abs(bar.delta ?? 0) / Math.max(1, vol[r.i]),
         withVwapSlope: slope > 0 ? long : slope < 0 ? !long : false,
         barRangePts: bar.high - bar.low,
+        oneSidedEntry,
       });
     }
   }

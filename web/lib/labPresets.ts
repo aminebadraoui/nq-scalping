@@ -10,6 +10,11 @@ import type { Theory } from "./lab";
 export const PRESETS: Theory[] = [
   { name: "Baseline — every reclaim", conditions: [], note: "no filters: what the raw trigger does" },
   {
+    name: "Reclaim + one-sided entry bar",
+    conditions: [{ feature: "oneSidedEntry", op: "==", value: true }],
+    note: "reclaim bar ≥ session-median volume and ≥65% one-sided in the entry direction — strongest single filter found (67% win @ 1R, clustered CI [64–70%], holds on holdout)",
+  },
+  {
     name: "Current playbook (LVN + divergence)",
     conditions: [
       { feature: "lvnEdge", op: "==", value: true },
