@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { detectOneSidedReclaim, swingLevels } from "@/lib/reclaimSetup";
+import { rvol, HOURLY_MEDIAN_VOLUME } from "@/lib/volumeProfile";
 
 const f = (n: number, dp = 2) =>
   n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -35,6 +36,13 @@ export default function SweepReclaimPanel({
   const curTotal = curBuy + curSell;
   const curBuyPct = curTotal > 0 ? curBuy / curTotal : 0;
   const curSellPct = 1 - curBuyPct;
+
+  // relative volume: the forming bar vs the "usual" volume of its ET hour
+  const lastT = minutes.length ? minutes[minutes.length - 1].t : "00:00";
+  const etHour = (parseInt(lastT.slice(0, 2), 10) + 1) % 24;
+  const usual = HOURLY_MEDIAN_VOLUME[etHour] ?? 0;
+  const rv = rvol(etHour, curTotal);
+  const unusual = curTotal > 0 && rv >= 2;
 
   const nearLow = lastPrice - sw.low;
   const nearHigh = sw.high - lastPrice;
@@ -104,6 +112,18 @@ export default function SweepReclaimPanel({
         </div>
         <div className="mt-1 font-mono text-[9px] text-zinc-600">≥65% one-sided + ≥ median volume = the confirmation</div>
       </div>
+
+      {/* unusual volume vs the time-of-day norm */}
+      <div className="mt-2 flex items-center justify-between rounded border border-zinc-800 px-2 py-1 font-mono text-[10px]">
+        <span className="text-zinc-500">
+          {curTotal > 0 ? `${curTotal} contracts` : "—"} this bar
+        </span>
+        <span className={unusual ? "font-bold text-warn" : "text-zinc-400"}>
+          {rv > 0 ? `${rv.toFixed(1)}× usual` : "—"} ({usual} ct/hr)
+          {unusual ? " · UNUSUAL" : ""}
+        </span>
+      </div>
+      <div className="mt-1 font-mono text-[9px] text-zinc-600">active 18:00–8:00 NY · peak 18:00 & 20:00 · RTH is two-sided (few setups)</div>
     </section>
   );
 }
