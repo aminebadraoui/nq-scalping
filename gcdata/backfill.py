@@ -104,16 +104,19 @@ def session_usable(payload: dict, session: str) -> bool:
     if not cs:
         return False
     ts = sorted(c["t"] for c in cs)
-    if len(ts) < 1360:
-        return False
     base = int(ts[0][8:10])
     mins = [int(t[11:13]) * 60 + int(t[14:16]) + (int(t[8:10]) - base) * 1440 for t in ts]
     first = mins[0] % 1440
     last = mins[-1] % 1440
     maxgap = max((mins[i + 1] - mins[i]) for i in range(len(mins) - 1)) if len(mins) > 1 else 0
     if session == "ETH":
-        return 1020 <= first <= 1035 and last == 959 and maxgap <= 5
-    return first == 510 and last == 959 and maxgap <= 5  # RTH 08:30 -> 15:59
+        # full Globex day: 17:00 CT -> 15:59 CT (1380 min); a couple of dropped
+        # minutes at the open is still usable
+        return len(ts) >= 1360 and 1020 <= first <= 1035 and last == 959 and maxgap <= 5
+    # RTH: 08:30 CT -> 14:59 CT (390 min; 14:59 CT = 15:59 New York). The 1360
+    # floor above was ETH-specific and silently marked every complete RTH
+    # session "partial".
+    return len(ts) >= 390 and first == 510 and last == 899 and maxgap <= 5
 
 
 def write_dataset(date: str, session: str, payload: dict) -> str:
