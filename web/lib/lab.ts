@@ -356,6 +356,12 @@ const g = globalThis as unknown as { __labCache?: Cache };
 const CACHE_FILE = path.join(os.tmpdir(), "nq-lab-cache.json");
 
 /** Building the sample set runs the full engine per session; cache it in-process. */
+let building: Promise<{
+  samples: LabSample[];
+  dates: string[];
+  skipped: { date: string; minutes: number }[];
+}> | null = null;
+
 export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
   samples: LabSample[];
   dates: string[];
@@ -382,6 +388,16 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
       /* no disk cache yet */
     }
   }
+
+  if (building) return building;
+  let resolveBuild!: (v: {
+    samples: LabSample[];
+    dates: string[];
+    skipped: { date: string; minutes: number }[];
+  }) => void;
+  building = new Promise((res) => {
+    resolveBuild = res;
+  });
 
   const samples: LabSample[] = [];
   const CONCURRENCY = 12;
@@ -566,7 +582,10 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
   fs.writeFile(CACHE_FILE, JSON.stringify({ key, samples, dates, skipped })).catch(() => {
     /* persistence is best-effort */
   });
-  return { samples, dates, skipped };
+  const result = { samples, dates, skipped };
+  resolveBuild(result);
+  building = null;
+  return result;
 }
 
 /* ── statistics ──────────────────────────────────────────────────────────── */
