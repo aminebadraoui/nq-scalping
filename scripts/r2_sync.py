@@ -169,11 +169,26 @@ def manifest_entry(path: str, key: str):
 def cmd_upload(dry: bool):
     files = files_to_upload()
     print(f"{len(files)} files to upload")
+    # incremental: skip files whose sha matches the manifest already on R2
+    remote_sha = {}
+    if not dry:
+        status, body = request("GET", "manifest.json")
+        if status == 200:
+            try:
+                remote_sha = {f["key"]: f.get("sha256") for f in json.loads(body).get("files", [])}
+                print(f"  manifest on R2: {len(remote_sha)} entries")
+            except Exception:
+                remote_sha = {}
     entries = []
+    skipped = 0
     for i, (path, key) in enumerate(files, 1):
+        entry = manifest_entry(path, key)
+        if entry["sha256"] == remote_sha.get(key):
+            skipped += 1
+            entries.append(entry)
+            continue
         raw = open(path, "rb").read()
         gz = gzip.compress(raw, 6)
-        entry = manifest_entry(path, key)
         if dry:
             print(f"  [dry] {key} ({entry['size_raw']} -> {entry['size_gz']} bytes)")
         else:
@@ -185,6 +200,7 @@ def cmd_upload(dry: bool):
             if status != 200:
                 sys.exit(f"upload failed for {key}: HTTP {status}")
         entries.append(entry)
+    print(f"{skipped} unchanged files skipped")
     manifest = {
         "generated": datetime.now(timezone.utc).isoformat(),
         "bucket": BUCKET,
