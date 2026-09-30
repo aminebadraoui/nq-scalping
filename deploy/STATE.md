@@ -1,77 +1,94 @@
-# Deploy state (2026-09-27)
+# Deploy state (last verified 2026-09-30)
 
 ## Live resources
 
 | Resource | Value |
 |---|---|
 | Dashboard | **https://nq-dashboard.31.97.138.30.sslip.io** (Let's Encrypt TLS, force-HTTPS) |
-| Coolify project | `scalping` → uuid `9d49tnuvlot2wcj9fl7nqyjc`, env `production` → `ncllllz139rudqio3lmwbkzw` |
-| Coolify app | `nq-dashboard` → uuid `vwtqdqezxw3lpmpzq76drgb1` (dockerfile build pack, base `/web`, port 3000, volume `/app/data`) |
-| Coolify deploy key | `ncuaupdairh9oiahtidl89h0` (private key for GitHub nq-scalping, read-only deploy key id 164629302) |
+| Coolify project | `scalping` → uuid `9d49tnuvlot2wcj9fl7nqyjc`, env `production` |
+| Coolify app | `nq-dashboard` → uuid `vwtqdqezxw3lpmpzq76drgb1` (dockerfile build pack, base `/web`, port 3000, health check `/` on 3000, no volumes) |
 | GitHub repo | `git@github.com:aminebadraoui/nq-scalping.git` (private) |
 | Neon org | `nq-scalping` → `org-falling-cell-25919411` (free) |
-| Neon project | `nq-store` → `summer-poetry-26619129`, region aws-us-east-1, pg 18 (recreated 2026-09-28 to reset the 5 GB/mo transfer quota) |
-| Neon database | `neondb` (branch `br-calm-wind-b7cplw0q`, endpoint `ep-floral-voice-b8wq234q`) |
-| DATABASE_URL | **secret** — `web/.env.local` (gitignored), Coolify app env, Mac launchd plist; the repo copy of the plist keeps a `__DATABASE_URL__` placeholder |
+| Neon project | `nq-store` → `summer-poetry-26619129`, region aws-us-east-1, pg 18 |
+| Neon branch | `main` → `br-billowing-truth-b8uofwsa` (recreated 2026-09-28 to reset the 5 GB/mo transfer quota) |
+| DATABASE_URL | **secret** — `web/.env.local` (gitignored) and Coolify app env (plain var, not "shown once") |
 
-## Data in Neon (verified 2026-09-28)
+## Data flow (all three legs live)
 
-23,010 candles_1m · 895,288 footprint_ticks · 9,098 events · 77 profile_sheets · 26/26 sessions ✓
-(Recent-only window: Neon Free caps storage at 512 MB, so the 2.5-year history stays in `gcdata/data` JSON for the lab/study. Nightly ingest is `--since <rolling 21 days>`.)
+```
+[this Mac] gcdata collectors ──► gcdata/data/*.json  (2.5y history, local only)
+        │  nightly 17:15 local (Mon–Fri, com.scalping.collect → scripts/nightly.sh)
+        ▼  web/db/ingest.ts
+   Neon Postgres (rolling ~21-day window; free tier 512 MB cap)
+        ▲
+[VPS container] live GoCharting feed ──► writes live 1-min candles + ticks to Neon
+   (readthrough-v2 build: /api/gc reads from Neon when DATABASE_URL is set)
+```
+
+- **Read-through from Neon: DONE** (dashboard serves historical views from the DB).
+- **Live tick capture → Neon: DONE** (`web/lib/liveStore.ts` batches the live
+  minutes; verified: candles/ticks max-ts track the current minute).
+- Row counts 2026-09-30: candles_1m 25,394 · footprint_ticks 987,524 ·
+  events 9,098 · profile_sheets 77 · sessions 26.
 
 ## Auto-deploy
 
-**Every push to `main` triggers a deploy** — `.github/workflows/deploy.yml` calls
-`POST /api/v1/deploy?uuid=vwtqdqezxw3lpmpzq76drgb1&force=true` with the
-`COOLIFY_BASE_URL` / `COOLIFY_TOKEN` GitHub secrets. Verified: the workflow ran
-on the very push that added it, and the app stayed `running:healthy` throughout.
+**Coolify's native GitHub webhook** (no Actions workflow — the API-key workflow
+was deleted in `7157520` "ci: deploy via Coolify's native GitHub webhook").
+Verified: repo hook `…:8000/webhooks/source/github/events/manual` active, read-only
+deploy key `164629302` ("Coolify nq-scalping"). Every push to `main` deploys.
 
-## Operate
-
+Manual redeploy:
 ```bash
-# nightly ingest (launchd, 18:30 ET weekdays — bootstrap once):
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scalping.ingest.plist
-
-# manual:
-cd web && DATABASE_URL=$(grep DATABASE_URL .env.local | cut -d= -f2) \
-  node --import ../scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events
-
-# redeploy after a push:
 curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
   "http://31.97.138.30:8000/api/v1/deploy?uuid=vwtqdqezxw3lpmpzq76drgb1&force=true"
 ```
 
-## Live verification — Sunday 2026-09-27 18:00 ET open
+## Operate
 
-- Ticks flow: session `OVERNIGHT` / `2026-09-28`, real prints with `l_sz`
-  sizes and string `side` fields; snapshot delta via `derived_values.delta`.
-- **Seamless blend confirmed in production**: chart `1380 collected + live
-  bars · 18:00 → 19:21 New York`, ladder's last bar is the live minute,
-  checklist "as of 19:21 New York · live bars", zero console errors.
-- **Cognito lockout incident**: the VPS container retried auth every 5s with a
-  mangled password → GoCharting account locked ("Password attempts exceeded").
-  Fixes: env re-set with correct plain values, **exponential reconnect backoff**
-  (10s → 120s, auth failures 60s → 300s) in `lib/live.ts`, and `verify_ticks.py`
-  now loads `gcdata/.env` (launchd runs with a minimal environment).
-- **`l_sz` is the print-size field** — added to `lib/live.ts` (before the fix
-  every live tick was sized 1 contract, corrupting live volume/delta).
+```bash
+# nightly collection + ingestion (launchd, 17:15 local Mon–Fri):
+#   com.scalping.collect → scripts/nightly.sh  (collect + ingest in one job)
+#   (com.scalping.ingest and com.scalping.tickverify were removed — dead)
 
-## Deploy lessons (2026-09-27)
+# manual:
+cd web && DATABASE_URL=$(grep '^DATABASE_URL=' .env.local | cut -d= -f2-) \
+  node --import ../scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events
 
-1. **"shown once" env vars** — PATCHing `DATABASE_URL` as `is_shown_once` again
-   left the container without the variable after redeploys. Fix: store it as a
-   PLAIN env var (`is_shown_once: false`) — the value is visible in the Coolify
-   env list but injection works.
-2. **`/api/gc?action=health`** reports what the running container sees
-   (`buildId`, `hasDbUrl`, `sessions` row count) — always check it first.
-3. **`listDatasets` needed the DB branch** too — the initial read-through patch
-   missed it and the deployed app fell back to an empty file dir (0 datasets →
-   the dashboard requested today's date → 404s + an empty-chart crash).
+# data hygiene:
+python3 scripts/repair_data.py            # audit the local JSON store
+python3 scripts/repair_data.py --repair   # trim merged holiday files, drop partial OHLC twins
+```
 
-## Next steps
+## Test suite
 
-1. **Dashboard read-through from Neon**: when `DATABASE_URL` is set, serve `/api/gc`
-   from `candles_1m`/`footprint_ticks` (fallback to files) so the deployed app
-   shows the historical views without a data volume.
-2. **Live tick capture → Neon**: batch-insert the live minutes into the DB.
-3. **Backtest engine**: query the store directly — schema is written for it.
+`npm test` — offline, ~90 tests. One network test (`parity.test.mjs`, python-vs-TS
+level sheets) is opt-in: `PARITY_NET=1 npm test`. OHLC-twin assertions only cover
+dates that have a vendor OHLC twin (recent `collect_ohlc` window).
+
+## Lessons (do not regress)
+
+1. **"shown once" env vars** — PATCHing `DATABASE_URL` as `is_shown_once` left the
+   container without the variable after redeploys. Keep it a PLAIN env var.
+2. **`/api/gc?action=health`** reports what the running container sees (`buildId`,
+   `hasDbUrl`, `sessions`) — always check it first.
+3. **Vendor quirk: holiday weeks return MERGED multi-day payloads** (~2520-minute
+   ETH files, e.g. 2026-09-08). `scripts/repair_data.py --repair` trims them to the
+   canonical 1380-minute window when it is intact; otherwise they stay partial and
+   excluded from analysis. Completeness = `_meta.kind`, not candle count.
+4. **OHLC twins collected mid-session are junk** (<390 bars, disagree with
+   footprint). Repair deletes them; only closed-session twins are trusted.
+5. **launchd schedule must be local-time-correct**: the collect plist was written
+   for Pacific (14:15 PT) on an Eastern Mac → it fired mid-session and skipped
+   for days. It now runs 17:15 local (Eastern = New York, DST moves together).
+6. **Cognito lockout** (2026-09-27): exponential reconnect backoff in `lib/live.ts`
+   (10s → 120s, auth failures 60s → 300s) — do not remove.
+7. **`l_sz` is the print-size field** in the live feed — without it every tick is
+   sized 1 contract and live volume/delta are wrong.
+
+## Credentials policy (unchanged)
+
+- Nothing secret is committed: Coolify/Neon tokens live in the gitignored skill
+  `.agents/skills/coolify-deploy/SKILL.md`; `DATABASE_URL` in `web/.env.local`;
+  GoCharting + Telegram creds in `gcdata/.env`.
+- If anything secret ever lands in git again: rotate AND rewrite history.

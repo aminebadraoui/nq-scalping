@@ -46,8 +46,9 @@ node --import ../scripts/ts-loader.mjs ./db/ingest.ts --verify                  
 ```
 
 The ingester applies `db/schema.sql` automatically on first run (idempotent
-upserts throughout). Schedule it after collection via launchd
-(`com.scalping.ingest`), e.g. 18:15 ET on weekdays.
+upserts throughout). It is scheduled by the same launchd job that collects:
+`com.scalping.collect` → `scripts/nightly.sh` (collect, then ingest), Mon–Fri
+17:15 local/US-Eastern. Data hygiene: `scripts/repair_data.py --repair`.
 
 ## Coolify (deploy the dashboard)
 

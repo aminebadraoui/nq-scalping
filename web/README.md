@@ -6,8 +6,12 @@ Two surfaces, nothing else:
   candles with real OHLC, the P0–P5 profile stack (P0 = most recent → P5 = oldest): POC / VAH / VAL / LVN
   zones drawn with distance-weighted emphasis), developing VWAP, the footprint
   minute ladder with bid×ask imbalances, the cross-bar **footprint story**
-  (POC migration, delta flips, effort-vs-result, climax→retest), and the
-  **reversal checklist** with trigger / invalidation / target.
+  (POC migration, delta flips, effort-vs-result, climax→retest), the
+  **reversal checklist** with trigger / invalidation / target, and the live
+  **price-action panel** (discount/premium across all six timeframes with OTE
+  bands). The **sweep-reclaim panel** shows the 67%-win @ 1R setup forming in
+  real time: swing levels, the reclaim bar's one-sidedness (≥65% buy/sell),
+  and unusual volume vs the time-of-day norm (≥2× = UNUSUAL).
 - **`/docs` — the documentation** (the reference): the consolidated research —
   overview, evidence, tool stack, strategies, the interactive checklist with its
   expectancy math, and every source. Anchor links: `/docs#evidence`,
