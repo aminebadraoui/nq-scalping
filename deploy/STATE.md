@@ -34,6 +34,13 @@
 - **Read-through from Neon: DONE** (dashboard serves historical views from the DB).
 - **Live tick capture → Neon: DONE** (`web/lib/liveStore.ts` batches the live
   minutes; verified: candles/ticks max-ts track the current minute).
+- **R2 is the sole data source** for history: `/api/gc` falls back Neon → R2
+  (local files are a dev/test fallback only), and the lab's session inventory
+  comes from the R2 manifest (`usable` flags, computed at upload).
+- **The theory lab is LOCAL-ONLY**: the VPS runs `LAB_ENABLED=false` (no
+  warm-up, `/api/lab` 404s); lab + backtesting happen on the Mac against the
+  R2 archive. The lab sample set is cached to disk keyed by the session
+  inventory, so re-opens are instant after the first build.
 - Row counts 2026-09-30: candles_1m 25,394 · footprint_ticks 987,524 ·
   events 9,098 · profile_sheets 77 · sessions 26.
 
