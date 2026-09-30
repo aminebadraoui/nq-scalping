@@ -339,7 +339,9 @@ export async function computeSheet(date: string, compositeDays = 5): Promise<Lev
     for (let i = 1; i < 9 && !prevTrading; i++) {
       const d = new Date(base.getTime() - i * 86400000).toISOString().slice(0, 10);
       const c = await rth(d);
-      if (c && c.length) prevTrading = d;
+      // >= 100 candles: skips weekend/holiday vendor artifacts (tiny partial
+      // files) so the sheet is deterministic regardless of store contents
+      if (c && c.length >= 100) prevTrading = d;
     }
   }
 
@@ -356,7 +358,9 @@ export async function computeSheet(date: string, compositeDays = 5): Promise<Lev
     for (let i = 0; i < 12 && compDays.length < compositeDays; i++) {
       const d = new Date(base.getTime() - i * 86400000).toISOString().slice(0, 10);
       const c = await rth(d);
-      if (c && c.length) {
+      // same >= 100-candle floor as prevTrading: junk weekend files must not
+      // silently become part of the composite (they vary store to store)
+      if (c && c.length >= 100) {
         comp.push(...c);
         compDays.push(d);
       }

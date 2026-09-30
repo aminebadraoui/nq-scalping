@@ -113,8 +113,11 @@ test("level sheet: six recency-numbered profiles with golden levels", async () =
     P2_full_session: ["30,888.00", "30,928.00", "30,753.00", 322, 4],
     P3_overnight: ["30,888.00", "30,980.00", "30,857.00", 225, 5],
     P4_prev_day_rth: ["30,769.00", "30,778.00", "30,510.00", 336, 6],
-    // the sheet lists at most 10 LVN zones; P5 has 11 filtered zones in total
-    P5_5day_composite: ["30,740.00", "30,945.00", "30,515.00", 850, 10],
+    // the sheet lists at most 10 LVN zones; P5 has 11 filtered zones in total.
+    // P5 golden = the five full sessions 09-25,24,23,22,18 (a Saturday vendor
+    // artifact once slipped in as a 6th candidate; sessions <100 candles are
+    // now excluded, so the composite is deterministic store-to-store)
+    P5_5day_composite: ["30,740.00", "30,977.00", "29,708.00", 854, 10],
   };
   for (const [key, [poc, vah, val, rows, lvnCount]] of Object.entries(GOLD)) {
     const p = sheet.profiles[key];

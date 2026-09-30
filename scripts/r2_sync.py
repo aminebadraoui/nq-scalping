@@ -36,12 +36,18 @@ from datetime import datetime, timezone
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "gcdata", "data")
 
-# files npm test needs locally (audited session + quarantine fixture)
+# files npm test needs locally (audited session + quarantine + the previous
+# sessions that feed the P4 prev-day and P5 composite sheets of the golden test)
 FIXTURES = {
     "2026-09-25_ETH.json",
     "2026-09-25_RTH.json",
     "2026-09-08_ETH.json",
     "2026-09-08_RTH.json",
+    "2026-09-24_RTH.json",
+    "2026-09-23_RTH.json",
+    "2026-09-22_RTH.json",
+    "2026-09-19_RTH.json",
+    "2026-09-18_RTH.json",
     "ohlc/2026-09-25.json",
     "backtest/results.json",
     "backtest/results_rth.json",
@@ -216,7 +222,7 @@ def cmd_upload(dry: bool):
     return manifest
 
 
-def cmd_verify():
+def cmd_verify(dry: bool = False):
     status, body = request("GET", "manifest.json")
     if status != 200:
         sys.exit(f"manifest fetch failed: HTTP {status}")
