@@ -3,10 +3,14 @@
  *
  * Mirrors lib/optionsFeed.ts and lib/live.ts: a long-lived singleton
  * that, every SIGNAL_REFRESH_SECONDS (default 30s), recomputes the full
- * signal from the LIVE GoCharting feed + collected levels and, when the
- * order-flow sequence completes (location + mechanism + trigger all
- * present — the reclaim is the last piece, i.e. the entry event), pushes
- * a formatted card to Telegram once per distinct setup.
+ * signal from the LIVE GoCharting feed + collected levels and pushes the
+ * cards below when their sequence completes.
+ *
+ * SINGLE-STRATEGY MODE: the momentum card (FEED_MOMENTUM) is the one
+ * TRADE signal. The unusual-volume heads-up alert stays on as context
+ * (FEED_UNUSUAL_VOLUME, informational only); the reversal, sweep-reclaim
+ * and pullback-ticket cards are off by default (set their FEED_* flags
+ * to 1 to re-enable).
  *
  * It is started from instrumentation.ts so it runs without any browser
  * being open. It is deliberately LIVE-ONLY: if the tick feed is not
@@ -18,6 +22,8 @@
 import { getLive } from "./live";
 import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
+import { detectMomentum, MOM_PROD } from "./momentum";
+import { momentumSize } from "./propRules";
 import {
   loadCollectedContext,
   computeSignal,
@@ -29,7 +35,7 @@ import {
 import { detectOneSidedReclaim } from "./reclaimSetup";
 import { contractsForRisk, RAPID_EOD_50K } from "./propRules";
 import { rvol, isUnusualVolume } from "./volumeProfile";
-import { utcToET } from "./times";
+import { utcToET, cdtToET } from "./times";
 import { placeOrder } from "./executor";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
@@ -66,10 +72,23 @@ function feedFlag(name: string, def: boolean): boolean {
  *  default: the owner is building on the volume-footprint alerts first. Set
  *  FEED_REVERSAL=1 to re-enable. */
 export const FEED_REVERSAL = feedFlag("FEED_REVERSAL", false);
-/** FEED_SWEEP_RECLAIM — the session-extreme sweep-reclaim 1R card. */
-export const FEED_SWEEP_RECLAIM = feedFlag("FEED_SWEEP_RECLAIM", true);
-/** FEED_UNUSUAL_VOLUME — the volume-footprint alert + its pullback watch. */
+/** FEED_SWEEP_RECLAIM — the session-extreme sweep-reclaim 1R card. OFF by
+ *  default: single-strategy focus (momentum only). The fade products fired
+ *  shorts into one-sided runs — the momentum card is the one live product. */
+export const FEED_SWEEP_RECLAIM = feedFlag("FEED_SWEEP_RECLAIM", false);
+/** FEED_UNUSUAL_VOLUME — the volume-footprint heads-up alert + its pullback
+ *  watch context. ON: the alert is informational only ("heads-up only — not
+ *  a trade signal"); the pullback trade ticket is gated separately by
+ *  FEED_PULLBACK_TICKET so the momentum card stays the ONLY trade signal. */
 export const FEED_UNUSUAL_VOLUME = feedFlag("FEED_UNUSUAL_VOLUME", true);
+/** FEED_PULLBACK_TICKET — the pullback-exhausted 1R trade ticket. OFF by
+ *  default: single-strategy focus means the momentum card is the only
+ *  trade signal; the pullback watch still prints its context messages. */
+export const FEED_PULLBACK_TICKET = feedFlag("FEED_PULLBACK_TICKET", false);
+/** FEED_MOMENTUM — the failed-flush → response → one-sided-breakout momentum
+ *  card (lib/momentum.ts, MOM_PROD). THE single active strategy. 72.9% win /
+ *  PF 2.25 in the 568-session replay — joins the one-sided run. */
+export const FEED_MOMENTUM = feedFlag("FEED_MOMENTUM", true);
 
 const CONTEXT_TTL_MS = 10 * 60 * 1000;
 /** a live feed whose last print is older than this is treated as closed */
@@ -96,6 +115,7 @@ class SignalFeed {
   private sent = new Set<string>();
   private reclaimSent = new Set<string>();
   private volumeAlerted = new Set<string>();
+  private momentumSent = new Set<string>();
   /** stage-2 watch armed by the latest unusual-volume alert (one at a time) */
   private pullbackWatch: UVWatch | null = null;
 
@@ -295,6 +315,69 @@ class SignalFeed {
     });
   }
 
+  /** Momentum: the failed-flush → one-sided response → one-sided breakout
+   *  sequence (lib/momentum.ts). Fires only when the breakout bar is the
+   *  just-completed minute — the entry event — once per distinct setup. */
+  private async checkMomentum(): Promise<void> {
+    if (!FEED_MOMENTUM) return;
+    const live = getLive().state;
+    if (!live.connected || live.minutes.length < 30) return;
+    const fp = liveMinutesToFootprint(live.minutes);
+    const sigs = detectMomentum(fp, MOM_PROD);
+    for (const s of sigs) {
+      if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
+      const key = `${s.d}|${s.dir}|${s.t}`;
+      if (this.momentumSent.has(key)) continue;
+      this.momentumSent.add(key);
+      if (this.momentumSent.size > 500) this.momentumSent = new Set([...this.momentumSent].slice(-250));
+
+      // position size grounded in the Rapid EOD 50k rules (lib/propRules.ts):
+      // fixed $170 risk, 30-micro cap, $2/pt MNQ
+      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+      const size = momentumSize(s.risk, riskBudget);
+      const sizeStr = `${size.contracts} MNQ · risk $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
+
+      // emit the order intent to the executor (dry-run by default)
+      void placeOrder({
+        symbol: symbol(),
+        dir: s.dir,
+        contracts: size.contracts,
+        entry: s.entry,
+        stop: s.stop,
+        target: s.target,
+        timeET: cdtToET(s.t),
+      }).catch(() => {});
+
+      const et = cdtToET(s.t);
+      const text = [
+        `⚡ <b>NQ MOMENTUM ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"}</b>`,
+        `<code>${symbol()}  ${fmtPx(s.entry)}  ${et} NY</code>`,
+        `failed ${s.dir === "long" ? "flush" : "rally"} → ${Math.round(s.respFrac * 100)}% response → ${Math.round(s.breakFrac * 100)}% breakout through the defended level`,
+        `<code>ENTRY ${fmtPx(s.entry)} · STOP ${fmtPx(s.stop)} · TARGET ${fmtPx(s.target)}</code> · ${sizeStr}`,
+        `<i>momentum scalp — joins the one-sided run (72.9% win · PF 2.25 in the 568-session replay)</i>`,
+      ].join("\n");
+      const res = await sendTelegram(text, { parseMode: "HTML" });
+      if (!res.sent) this.lastError = res.reason;
+      await recordSignal({
+        timeET: et,
+        day: s.d,
+        symbol: symbol(),
+        side: s.dir,
+        price: s.entry,
+        entry: s.entry.toFixed(2),
+        stop: s.stop.toFixed(2),
+        target: s.target.toFixed(2),
+        size: sizeStr,
+        verdict: "momentum (failed-flush breakout)",
+        headline: `NQ momentum ${s.dir}`,
+        source: "live",
+        test: false,
+        sent: res.sent,
+        reason: res.reason,
+      });
+    }
+  }
+
   /** Unusual-volume heads-up: a completed minute at >=2x its hour's norm with
    *  a one-sided print (>=70% buy or >=70% sell). The card carries the bar's
    *  own footprint context (POC + migration, close position, imbalance stack)
@@ -433,9 +516,11 @@ class SignalFeed {
       return;
     }
 
-    // reclaim — the pullback is exhausted; print the 1R ticket like the
-    // sweep-reclaim feed does
+    // reclaim — the pullback is exhausted. The 1R trade ticket is gated by
+    // FEED_PULLBACK_TICKET: single-strategy mode keeps the momentum card as
+    // the ONLY trade signal (the watch still expires silently here).
     this.pullbackWatch = null;
+    if (!FEED_PULLBACK_TICKET) return;
     const et = utcToET(ev.t, live.minutes[live.minutes.length - 1]?.du);
     const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || 170;
     const contracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, Math.abs(ev.entry - ev.stop))));
@@ -465,6 +550,7 @@ class SignalFeed {
       await this.checkReclaimSetup();
       await this.checkUnusualVolume();
       await this.checkPullbackWatch();
+      await this.checkMomentum();
     } catch (e) {
       this.lastError = String(e);
     } finally {

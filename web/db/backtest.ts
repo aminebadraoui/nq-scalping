@@ -9,6 +9,8 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { runSweep, sweepConfigs, walkForwardBest } from "../lib/backtest";
+import { accountLine } from "../lib/propAccount";
+import { RAPID_EOD_50K, PROP_RISK_PER_TRADE } from "../lib/propRules";
 
 async function main() {
   const configs = sweepConfigs();
@@ -33,6 +35,8 @@ async function main() {
     splitDate,
     costPts: 0.5,
     holdBars: 60,
+    // the rules every backtest is grounded in (Rapid EOD 50k)
+    rules: { ...RAPID_EOD_50K, riskPerTrade: PROP_RISK_PER_TRADE },
     walkForward: wf ? { trainBest: wf.trainBest.config.name, trainNetPts: wf.trainBest.train.netPts, testNetPts: wf.testOfBest.netPts, testTrades: wf.testOfBest.trades, testWinRate: wf.testOfBest.winRate, testProfitFactor: wf.testOfBest.profitFactor } : null,
     results,
   };
@@ -49,6 +53,13 @@ async function main() {
   for (const r of sorted) {
     console.log(
       `${r.config.name.padEnd(28)} | ${String(r.train.trades).padStart(10)} | ${String(Math.round(r.train.winRate * 100)).padStart(7)}% | ${String(r.train.netPts.toFixed(1)).padStart(8)} | ${String(r.test.trades).padStart(10)} | ${String(Math.round(r.test.winRate * 100)).padStart(7)}% | ${String(r.test.netPts.toFixed(1)).padStart(8)}`,
+    );
+  }
+  // the rules layer — every run reports it
+  console.log("\nACCOUNT (Rapid EOD 50k · $170/trade budget · 30-micro cap):");
+  for (const r of sorted) {
+    console.log(
+      `${r.config.name.padEnd(28)} | net $${r.account.dollarNet.toFixed(0).padStart(7)} · eval ${accountLine(r.account.eval)} · funded ${accountLine(r.account.funded)}`,
     );
   }
   if (wf) {

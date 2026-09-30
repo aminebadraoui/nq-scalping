@@ -56,6 +56,35 @@ export function contractsForRisk(riskDollars: number, rPts = STRATEGY.rPts, poin
   return riskDollars / (rPts * pointValue);
 }
 
+/** Fixed dollar risk per trade. $170 ≈ 8.5% of the $2,000 Max Loss Limit —
+ *  ten consecutive full losses still leaves $300 of drawdown headroom. */
+export const PROP_RISK_PER_TRADE = 170;
+
+export type MomentumSize = {
+  contracts: number;
+  dollarRisk: number;
+  capped: boolean; // true when the 30-micro contract limit bound the size
+};
+
+/** Momentum-card sizing, grounded in the Rapid EOD 50k rules:
+ *  contracts = riskBudget ÷ (riskPts × $2/MNQ), floored at 1, capped at the
+ *  plan's 30-micro contract limit. Dollar risk is what those contracts
+ *  actually risk — always ≤ riskBudget. */
+export function momentumSize(
+  riskPts: number,
+  riskBudget = PROP_RISK_PER_TRADE,
+  rules: Pick<PropRules, "maxMicro" | "pointValue"> = RAPID_EOD_50K,
+): MomentumSize {
+  const perContract = Math.max(0.01, riskPts) * rules.pointValue;
+  const raw = Math.floor(riskBudget / perContract);
+  const contracts = Math.min(rules.maxMicro, Math.max(1, raw));
+  return {
+    contracts,
+    dollarRisk: Math.round(contracts * perContract * 100) / 100,
+    capped: raw > rules.maxMicro,
+  };
+}
+
 export type EvalEstimate = {
   contracts: number;
   riskPerTrade: number;

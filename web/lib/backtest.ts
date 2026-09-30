@@ -25,6 +25,7 @@ import { aggregate, stats, listDatasets, extractFootprint, analyze, computeSheet
 import { readMechanism } from "./mechanism";
 import { readPriceAction } from "./priceaction";
 import { cdtToET } from "./times";
+import { dollarize, simulateAccount, type AccountSimResult } from "./propAccount";
 
 export type TuningConfig = {
   name: string;
@@ -344,6 +345,16 @@ export type SetupStats = {
   avgPts: number;
 };
 
+/** the rules layer every sweep run now reports: every trade sized under the
+ *  Rapid EOD 50k plan ($170 budget, 30-micro cap, $2/pt) and replayed through
+ *  the account (EOD trailing MLL, $100 lock, target/consistency/payouts). */
+export type AccountSummary = {
+  dollarNet: number;
+  dollarAvg: number;
+  eval: AccountSimResult;
+  funded: AccountSimResult;
+};
+
 export type ConfigResult = {
   config: TuningConfig;
   sessions: number;
@@ -354,6 +365,7 @@ export type ConfigResult = {
   test: SetupStats;
   bySetup: { reversal: SetupStats; pullback: SetupStats };
   byYear: { year: string; stats: SetupStats }[];
+  account: AccountSummary;
 };
 
 function summarize(trades: TradeResult[]): SetupStats {
@@ -380,7 +392,7 @@ export async function runSweep(
 ): Promise<ConfigResult[]> {
   const datasets = await listDatasets();
   const dates = datasets.filter((d) => d.sessions.includes(opts?.session ?? "RTH")).map((d) => d.date);
-  const use = opts?.maxSessions ? dates.slice(0, opts.maxSessions) : dates;
+  const use = (opts?.maxSessions ? dates.slice(0, opts.maxSessions) : dates).sort();
   const splitDate = opts?.splitDate ?? "2026-01-01";
 
   // date → prior trading day, so each session's location uses the PRIOR day's
@@ -399,6 +411,8 @@ export async function runSweep(
     test: [] as TradeResult[],
     perSetup: { reversal: [] as TradeResult[], pullback: [] as TradeResult[] },
     byYear: {} as Record<string, TradeResult[]>,
+    /** dated point P&L + risk for the rules layer (dollarize → simulateAccount) */
+    acct: [] as { date: string; pnlPts: number; riskPts: number }[],
   }));
 
   for (const date of use) {
@@ -414,23 +428,37 @@ export async function runSweep(
       a.all.push(...r.trades);
       (isTrain ? a.train : a.test).push(...r.trades);
       (a.byYear[year] ??= []).push(...r.trades);
-      for (const t of r.trades) a.perSetup[t.setup].push(t);
+      for (const t of r.trades) {
+        a.perSetup[t.setup].push(t);
+        a.acct.push({ date, pnlPts: t.pnl, riskPts: Math.abs(t.entry - t.stop) });
+      }
     }
   }
 
-  return agg.map((a) => ({
-    config: a.config,
-    sessions: a.sessions,
-    trainSessions: a.trainSessions,
-    testSessions: a.testSessions,
-    all: summarize(a.all),
-    train: summarize(a.train),
-    test: summarize(a.test),
-    bySetup: { reversal: summarize(a.perSetup.reversal), pullback: summarize(a.perSetup.pullback) },
-    byYear: Object.entries(a.byYear)
-      .sort(([x], [y]) => x.localeCompare(y))
-      .map(([year, trades]) => ({ year, stats: summarize(trades) })),
-  }));
+  return agg.map((a) => {
+    const dollars = dollarize(a.acct);
+    return {
+      config: a.config,
+      sessions: a.sessions,
+      trainSessions: a.trainSessions,
+      testSessions: a.testSessions,
+      all: summarize(a.all),
+      train: summarize(a.train),
+      test: summarize(a.test),
+      bySetup: { reversal: summarize(a.perSetup.reversal), pullback: summarize(a.perSetup.pullback) },
+      byYear: Object.entries(a.byYear)
+        .sort(([x], [y]) => x.localeCompare(y))
+        .map(([year, trades]) => ({ year, stats: summarize(trades) })),
+      account: {
+        dollarNet: Math.round(dollars.reduce((s, t) => s + t.pnl, 0) * 100) / 100,
+        dollarAvg: dollars.length
+          ? Math.round((dollars.reduce((s, t) => s + t.pnl, 0) / dollars.length) * 100) / 100
+          : 0,
+        eval: simulateAccount(dollars, "eval"),
+        funded: simulateAccount(dollars, "funded"),
+      },
+    };
+  });
 }
 
 /** pick the best config on TRAIN only, and return its out-of-sample (test) stats */
