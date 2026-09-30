@@ -31,7 +31,8 @@ import { getLive } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
 import { detectOneSidedReclaim } from "../lib/reclaimSetup";
 import { contractsForRisk } from "../lib/propRules";
-import { placeOrder, executorEnabled, startKeepAlive } from "../lib/executor";
+import { placeOrder, executorEnabled, startKeepAlive, readAccount } from "../lib/executor";
+import { guardCheck, guardState } from "../lib/accountGuard";
 
 /* load web/.env.local into process.env (gitignored) — Tradovate creds, EXECUTE_LIVE */
 function loadEnvLocal() {
@@ -68,20 +69,33 @@ function check() {
   fired.add(key);
   if (fired.size > 500) fired.delete([...fired][0]);
 
-  const contracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, setup.risk)));
-  void placeOrder({
-    symbol: symbol(),
-    dir: setup.dir,
-    contracts,
-    entry: setup.entry,
-    stop: setup.stop,
-    target: setup.target,
-    timeET: setup.timeET,
-  }).then((r) => console.log(`[executor] ${setup.dir.toUpperCase()} @ ${setup.timeET} → ${r.ok ? r.reason : "FAILED: " + r.reason}`));
+  // account guard: the MFF Rapid EOD 50k limits (EOD-trailing max loss, profit
+  // target, funded T1-news ban). A breach of these fails the account, so it
+  // takes precedence over "never skip a signal".
+  void (async () => {
+    const snap = await readAccount();
+    const g = guardCheck(snap);
+    if (g.verdict !== "ok") {
+      console.log(`[guard] BLOCKED ${setup.dir.toUpperCase()} @ ${setup.timeET} — ${g.reason}`);
+      return;
+    }
+    const contracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, setup.risk)));
+    const r = await placeOrder({
+      symbol: symbol(),
+      dir: setup.dir,
+      contracts,
+      entry: setup.entry,
+      stop: setup.stop,
+      target: setup.target,
+      timeET: setup.timeET,
+    });
+    console.log(`[executor] ${setup.dir.toUpperCase()} @ ${setup.timeET} → ${r.ok ? r.reason : "FAILED: " + r.reason}`);
+  })();
 }
 
 console.log(`[local-executor] started — ${executorEnabled() ? (process.env.EXECUTE_LIVE === "1" ? "LIVE (headed, humanized)" : "DRY-RUN (headed)") : "NO TRADOVATE CREDS"}`);
 console.log(`[local-executor] watching ${symbol()} for sweep-reclaim · risk $${riskPerTrade} · poll ${POLL_MS}ms`);
+console.log(`[guard] ${JSON.stringify(guardState())}`);
 
 // keep the Tradovate session warm all day: re-login silently if it drops, so a
 // signal never waits on the ~20s login sequence

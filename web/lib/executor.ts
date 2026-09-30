@@ -62,6 +62,21 @@ function loadCreds(): { username: string; password: string } | null {
 const pause = () => 250 + Math.random() * 800;
 const jitter = (v: number, amt = 1) => (Math.random() < 0.35 ? v + (Math.random() < 0.5 ? -amt : amt) : v);
 
+/** Wait for a selector to be visible, retrying across mid-wait client-side
+ *  navigations (Tradovate redirects the login form between two URLs). */
+async function waitForSelectorRetry(page: Page, selector: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await page.waitForSelector(selector, { state: "visible", timeout: Math.min(4000, deadline - Date.now()) });
+      return;
+    } catch {
+      // navigation in progress — poll again; a dead page still exits via the deadline
+    }
+  }
+  throw new Error(`waitForSelectorRetry: ${selector} never became visible`);
+}
+
 async function humanClick(page: Page, selector: string): Promise<void> {
   const el = page.locator(selector).first();
   await el.scrollIntoViewIfNeeded().catch(() => {});
@@ -135,6 +150,9 @@ async function humanType(page: Page, selector: string, value: string): Promise<v
 let session: { page: Page; browser: Browser } | null = null;
 /** true while an order is being placed — keep-alive must not touch the page */
 let placing = false;
+/** how many times a browser was actually launched (1 = the open session was
+ *  reused for every later operation; >1 = it closed and had to be reopened) */
+let launches = 0;
 
 /** Is the cached page still logged into the trading dashboard (not crashed,
  *  not bounced to login, not stuck on the session-limit page)? */
@@ -163,10 +181,22 @@ async function teardown() {
   }
 }
 
+/** a single in-flight login — concurrent callers (keep-alive + a just-fired
+ *  signal) await the SAME promise instead of each launching their own browser */
+let loginInFlight: Promise<Page> | null = null;
+
 async function getPage(): Promise<Page> {
   if (session && (await sessionAlive(session.page))) return session.page;
   if (session) await teardown(); // dead session — drop it and re-login fresh
+  if (!loginInFlight) {
+    loginInFlight = doLogin().finally(() => {
+      loginInFlight = null;
+    });
+  }
+  return loginInFlight;
+}
 
+async function doLogin(): Promise<Page> {
   ensureBrowsersPath();
   const { chromium } = await import("playwright");
   const creds = loadCreds();
@@ -176,6 +206,7 @@ async function getPage(): Promise<Page> {
     headless: false, // headed, local — no automation headless fingerprint
     args: ["--disable-blink-features=AutomationControlled"],
   });
+  launches++;
   const context = await browser.newContext({
     viewport: { width: 1600, height: 1000 },
     locale: "en-US",
@@ -187,7 +218,12 @@ async function getPage(): Promise<Page> {
   const page = await context.newPage();
 
   await page.goto("https://trader.tradovate.com", { waitUntil: "domcontentloaded", timeout: 60_000 });
-  await page.waitForSelector("#name-input", { timeout: 30_000 });
+
+  // The login form can live on two URLs (root or /welcome, the newer MUI form)
+  // and a client-side redirect can fire right as we start waiting. Poll with a
+  // short deadline instead of a single waitForSelector so a mid-wait navigation
+  // doesn't strand us.
+  await waitForSelectorRetry(page, "#name-input", 30_000);
   await humanType(page, "#name-input", creds.username);
   await humanType(page, "#password-input", creds.password);
   await humanClick(page, "button:has-text('Login')");
@@ -221,9 +257,11 @@ let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
 
 /** Assert the session is still warm; if it got logged out / crashed, silently
  *  re-login NOW so the next signal doesn't pay the ~20s login penalty. No-ops
- *  while an order is in flight (never disturbs a live submission). */
+ *  while an order is in flight (never disturbs a live submission), and no-ops
+ *  in dry-run (no session to keep warm — don't pop a browser for nothing). */
 export async function keepAlive(): Promise<void> {
   if (!executorEnabled() || placing) return;
+  if (process.env.EXECUTE_LIVE !== "1") return;
   if (session && (await sessionAlive(session.page))) return;
   try {
     await getPage();
@@ -234,10 +272,48 @@ export async function keepAlive(): Promise<void> {
 }
 
 /** Start the periodic keep-alive. Idempotent — call once from the long-running
- *  local executor. */
+ *  local executor. Logs in immediately on start so the browser is open and
+ *  warm before the first signal ever fires, then re-checks every interval. */
 export function startKeepAlive(intervalMs = 60_000): void {
   if (keepAliveTimer) return;
+  void keepAlive();
   keepAliveTimer = setInterval(() => void keepAlive(), intervalMs);
+}
+
+/** TEST ONLY: force-drop the cached browser so the keep-alive re-warm path can
+ *  be exercised deterministically. Not part of the production flow. */
+export async function __dropSessionForTest(): Promise<void> {
+  await teardown();
+}
+
+/** TEST ONLY: how many browsers were launched, and is one cached now? */
+export function __sessionStatsForTest(): { launches: number; hasSession: boolean } {
+  return { launches, hasSession: !!session };
+}
+
+/** Read the current account balance from the open Tradovate page's
+ *  account-summary line — used by the account guard. `realized` = equity −
+ *  open P/L (the cash balance backing the day's realized profit). Returns null
+ *  when there is no live session or the values can't be parsed. */
+export type AccountSnapshot = { equity: number; openPnl: number; realized: number };
+
+export async function readAccount(): Promise<AccountSnapshot | null> {
+  if (!session) return null;
+  try {
+    const snap = await session.page.evaluate(() => {
+      const t = (document.body.innerText || "").replace(/\s+/g, " ");
+      const eq = t.match(/EQUITY\s+([\d,]+(?:\.\d+)?)\s+USD/);
+      const pnl = t.match(/OPEN P\/L\s+(-?[\d,]+(?:\.\d+)?)\s+USD/);
+      if (!eq || !pnl) return null;
+      const equity = Number(eq[1].replace(/,/g, ""));
+      const openPnl = Number(pnl[1].replace(/,/g, ""));
+      return { equity, openPnl, realized: equity - openPnl };
+    });
+    if (!snap || !Number.isFinite(snap.equity) || !Number.isFinite(snap.realized)) return null;
+    return snap;
+  } catch {
+    return null;
+  }
 }
 
 /* ── live bracketed order ─────────────────────────────────────────────── */
