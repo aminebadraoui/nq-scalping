@@ -30,6 +30,7 @@ import { detectOneSidedReclaim } from "./reclaimSetup";
 import { contractsForRisk, RAPID_EOD_50K } from "./propRules";
 import { rvol, isUnusualVolume } from "./volumeProfile";
 import { utcToET } from "./times";
+import { placeOrder } from "./executor";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
 import { sendTelegram } from "./notify";
@@ -211,6 +212,17 @@ class SignalFeed {
     const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || 170;
     const contracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, setup.risk)));
     const sizeStr = `${contracts} MNQ · risk $${Math.round(contracts * setup.risk * RAPID_EOD_50K.pointValue)}`;
+
+    // emit the order intent to the executor (dry-run by default)
+    void placeOrder({
+      symbol: symbol(),
+      dir: setup.dir,
+      contracts,
+      entry: setup.entry,
+      stop: setup.stop,
+      target: setup.target,
+      timeET: setup.timeET,
+    }).catch(() => {});
 
     const text = formatReclaimSetupHtml(
       setup,
