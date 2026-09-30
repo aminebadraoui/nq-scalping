@@ -86,7 +86,7 @@ async function remoteJSON(key: string): Promise<unknown | null> {
     if (!r.ok) return null;
     const data = await r.json();
     fileCache.set(key, { at: Date.now(), data });
-    if (fileCache.size > 250) {
+    if (fileCache.size > 400) {
       const oldest = fileCache.keys().next().value;
       if (oldest) fileCache.delete(oldest);
     }

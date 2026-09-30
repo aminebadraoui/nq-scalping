@@ -384,11 +384,32 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
   }
 
   const samples: LabSample[] = [];
-  for (const date of dates) {
-    const fp = await extractFootprint(date, "ETH");
-    const an = await analyze(date, "ETH", undefined, undefined, 4);
-    if (!fp || !an) continue;
-    const sheet = await computeSheet(date);
+  const CONCURRENCY = 12;
+  for (let start = 0; start < dates.length; start += CONCURRENCY) {
+    const chunk = dates.slice(start, start + CONCURRENCY);
+    const built = await Promise.all(
+      chunk.map(async (date) => {
+        const fp = await extractFootprint(date, "ETH");
+        const an = await analyze(date, "ETH", undefined, undefined, 4);
+        if (!fp || !an) return [];
+        const sheet = await computeSheet(date);
+        return buildSessionSamples(date, fp, an, sheet);
+      }),
+    );
+    samples.push(...built.flat());
+  }
+
+  /** one session's samples — the engine pass, isolated so the build loop can
+   *  run sessions concurrently (12 at a time) instead of one slow round-trip
+   *  at a time. */
+  function buildSessionSamples(
+    date: string,
+    fp: Awaited<ReturnType<typeof extractFootprint>> | null,
+    an: Awaited<ReturnType<typeof analyze>> | null,
+    sheet: Awaited<ReturnType<typeof computeSheet>>,
+  ): LabSample[] {
+    if (!fp || !an) return [];
+    const samples: LabSample[] = [];
     const m = fp.minutes;
     const hi = m.map((x) => x.high);
     const lo = m.map((x) => x.low);
@@ -538,6 +559,7 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
         oneSidedEntry,
       });
     }
+    return samples;
   }
 
   g.__labCache = { key, samples, dates, skipped, at: Date.now() };
