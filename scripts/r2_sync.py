@@ -126,7 +126,8 @@ def request(method: str, key: str, body: bytes = b"", headers: dict | None = Non
         f"AWS4-HMAC-SHA256 Credential={ACCESS}/{scope}, "
         f"SignedHeaders={signed_headers}, Signature={signature}"
     )
-    req = urllib.request.Request(ENDPOINT + uri, data=body, method=method, headers=headers)    try:
+    req = urllib.request.Request(ENDPOINT + uri, data=body, method=method, headers=headers)
+    try:
         with urllib.request.urlopen(req, timeout=120) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
@@ -365,25 +366,21 @@ def cmd_rebuild(dry: bool = False):
     upload). ETH objects are downloaded to recompute candles + usable; other
     keys get minimal entries (their sha/counts refresh on the next upload)."""
     entries: list[dict] = []
-    token = ""
+    cursor = ""
+    CF_TOKEN = env("CF_API_TOKEN")
     while True:
-        q = "list-type=2&prefix=data%2F"
-        if token:
-            q += "&continuation-token=" + urllib.parse.quote(token)
-        status, body = request("GET", "", query=q)
-        if status != 200:
-            sys.exit(f"list failed: HTTP {status} {body[:200]}")
-        import xml.etree.ElementTree as ET
-
-        root = ET.fromstring(body)
-        ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
-        for obj in root.findall("s3:Contents", ns):
-            key = obj.findtext("s3:Key", "", ns)
+        url = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}/r2/buckets/{BUCKET}/objects?per_page=100"
+        if cursor:
+            url += "&cursor=" + urllib.parse.quote(cursor)
+        r = urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": f"Bearer {CF_TOKEN}"}), timeout=60)
+        page = json.loads(r.read())
+        for obj in page.get("result", []):
+            key = obj.get("key", "")
             if key.endswith(".json") and key.startswith("data/"):
                 entries.append(minimal_entry(key))
-        truncated = root.findtext("s3:IsTruncated", "false", ns) == "true"
-        token = root.findtext("s3:NextContinuationToken", "", ns) or ""
-        if not truncated or not token:
+        info = page.get("result_info", {})
+        cursor = info.get("cursor") or ""
+        if info.get("is_truncated") is False or not cursor:
             break
     print(f"{len(entries)} data objects listed")
     # ETH objects: download to recompute candles + usable
