@@ -60,7 +60,9 @@ export function sessionDateForUtc(hhmm: string, du: string): string {
 }
 
 export async function persistLiveMinute(m: LiveStoreMinute): Promise<void> {
-  if (!dbEnabled()) return;
+  // only the designated live writer persists (the VPS runs LIVE_WRITE=true;
+  // a localhost dev server also boots the feed and must not double-write)
+  if (!dbEnabled() || process.env.LIVE_WRITE !== "true") return;
   const day = m.du ?? new Date().toISOString().slice(0, 10);
   const sec = utcToEpoch(m.t, day);
   if (!Number.isFinite(sec)) return;

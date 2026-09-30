@@ -3,11 +3,13 @@
 <!--
   Nightly NQ collection + Neon ingestion.
 
-  Runs Monday-Friday at 17:15 local — this Mac is on US Eastern time, so that
-  is 17:15 New York all year round (both zones switch DST together), i.e. ~15
-  minutes after the 16:59 NY session close — so the session that just finished
-  is the one that gets collected. The script itself re-checks the clock and exits harmlessly if
-  it is ever invoked while the session is still open.
+  Runs Monday-Friday at 17:45 local — this Mac is on US Eastern time, so that
+  is 17:45 New York all year round (both zones switch DST together), i.e. ~45
+  minutes after the 16:59 NY session close. Not earlier: the vendor publishes
+  the just-closed session's FOOTPRINT/V2 history with a lag after the close
+  (measured 2026-09-30: 0/2 datasets available at 17:19). The script itself
+  re-checks the clock and exits harmlessly if it is ever invoked while the
+  session is still open.
 
   DATABASE_URL is deliberately NOT set here: scripts/nightly.sh falls back to
   web/.env.local, which keeps the Neon credential in exactly one local file
@@ -37,11 +39,11 @@
     <string>/Users/amean/PROJECTS/DEV/Scalping</string>
     <key>StartCalendarInterval</key>
     <array>
-        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>15</integer></dict>
-        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>15</integer></dict>
-        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>15</integer></dict>
-        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>15</integer></dict>
-        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
     </array>
     <key>StandardOutPath</key>
     <string>/Users/amean/PROJECTS/DEV/Scalping/gcdata/data/nightly_log.txt</string>
