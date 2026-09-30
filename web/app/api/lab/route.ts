@@ -17,8 +17,17 @@ import { PRESETS } from "@/lib/labPresets";
  * The theory is a declarative list of conditions over a fixed feature
  * vocabulary, so nothing user-supplied is ever executed — a lab where you can
  * type arbitrary code would be a remote-code-execution hole, not a feature.
+ *
+ * LAB_ENABLED=false disables the endpoint (the VPS never runs the research
+ * lab — that work happens on the local machine against the R2 archive).
  */
+const DISABLED =
+  process.env.LAB_ENABLED === "false"
+    ? Response.json({ ok: false, error: "the theory lab runs locally — this server has LAB_ENABLED=false" }, { status: 404 })
+    : null;
+
 export async function GET(req: NextRequest) {
+  if (DISABLED) return DISABLED;
   try {
     const { samples, dates, skipped } = await buildLabSamples({ force: req.nextUrl.searchParams.has("refresh") });
     const baseline = evaluateTheory({ name: "baseline", conditions: [] }, samples, dates);
@@ -37,6 +46,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (DISABLED) return DISABLED;
   try {
     const body = (await req.json()) as { theory?: Theory };
     const theory = body.theory;

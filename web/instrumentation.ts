@@ -6,7 +6,8 @@
  *
  * Also warm the theory-lab sample set in the background: building it is a
  * minutes-long pass over ~570 sessions from R2, and proxies kill long
- * requests, so the first /lab visitor finds the cache already hot.
+ * requests, so the first /lab visitor finds the cache already hot. Disabled
+ * by LAB_ENABLED=false (the VPS never runs the research lab).
  */
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === "edge") return;
@@ -16,6 +17,7 @@ export async function register(): Promise<void> {
   } catch {
     /* signals are best-effort — never block the server from starting */
   }
+  if (process.env.LAB_ENABLED === "false") return;
   try {
     const { buildLabSamples } = await import("./lib/lab");
     buildLabSamples().catch(() => {
