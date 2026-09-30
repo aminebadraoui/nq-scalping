@@ -93,13 +93,15 @@ def sig_key(secret: str, date: str, region: str, service: str) -> bytes:
     return sign(k, "aws4_request")
 
 
-def request(method: str, key: str, body: bytes = b"", headers: dict | None = None) -> tuple[int, bytes]:
-    """Signed S3 request."""
+def request(method: str, key: str, body: bytes = b"", headers: dict | None = None, query: str = "") -> tuple[int, bytes]:
+    """Signed S3 request (query = raw query string, e.g. 'list-type=2&prefix=data/')."""
     now = datetime.now(timezone.utc)
     amzdate = now.strftime("%Y%m%dT%H%M%SZ")
     datestamp = now.strftime("%Y%m%d")
     payload_hash = hashlib.sha256(body).hexdigest()
     uri = urllib.parse.quote("/" + BUCKET + "/" + key, safe="/-_.~")
+    if query:
+        uri += "?" + query
     headers = dict(headers or {})
     headers.update({
         "x-amz-date": amzdate,
@@ -124,8 +126,7 @@ def request(method: str, key: str, body: bytes = b"", headers: dict | None = Non
         f"AWS4-HMAC-SHA256 Credential={ACCESS}/{scope}, "
         f"SignedHeaders={signed_headers}, Signature={signature}"
     )
-    req = urllib.request.Request(ENDPOINT + uri, data=body, method=method, headers=headers)
-    try:
+    req = urllib.request.Request(ENDPOINT + uri, data=body, method=method, headers=headers)    try:
         with urllib.request.urlopen(req, timeout=120) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
@@ -215,19 +216,25 @@ def manifest_entry(path: str, key: str):
 def cmd_upload(dry: bool):
     files = files_to_upload()
     print(f"{len(files)} files to upload")
-    # incremental: skip files whose sha matches the manifest already on R2
-    remote_sha = {}
+    # incremental: skip files whose sha matches the manifest already on R2,
+    # and CARRY OVER remote-only entries — the archive lives on R2, not the
+    # local disk, so the manifest must keep every object it has ever seen
+    remote_files: list[dict] = []
+    remote_sha: dict[str, str] = {}
     if not dry:
         status, body = request("GET", "manifest.json")
         if status == 200:
             try:
-                remote_sha = {f["key"]: f.get("sha256") for f in json.loads(body).get("files", [])}
+                remote_files = json.loads(body).get("files", [])
+                remote_sha = {f["key"]: f.get("sha256") for f in remote_files}
                 print(f"  manifest on R2: {len(remote_sha)} entries")
             except Exception:
-                remote_sha = {}
+                remote_files = []
     entries = []
     skipped = 0
+    local_keys = set()
     for i, (path, key) in enumerate(files, 1):
+        local_keys.add(key)
         entry = manifest_entry(path, key)
         if entry["sha256"] == remote_sha.get(key):
             skipped += 1
@@ -246,7 +253,12 @@ def cmd_upload(dry: bool):
             if status != 200:
                 sys.exit(f"upload failed for {key}: HTTP {status}")
         entries.append(entry)
-    print(f"{skipped} unchanged files skipped")
+    carried = 0
+    for f in remote_files:
+        if f.get("key") not in local_keys:
+            entries.append(f)
+            carried += 1
+    print(f"{skipped} unchanged files skipped · {carried} remote-only entries carried over")
     manifest = {
         "generated": datetime.now(timezone.utc).isoformat(),
         "bucket": BUCKET,
@@ -347,8 +359,70 @@ def cmd_enrich(dry: bool = False):
         print("dry-run — manifest not written")
 
 
+def cmd_rebuild(dry: bool = False):
+    """Disaster recovery: rebuild the manifest from the bucket's object
+    listing (used when the manifest was overwritten by a buggy incremental
+    upload). ETH objects are downloaded to recompute candles + usable; other
+    keys get minimal entries (their sha/counts refresh on the next upload)."""
+    entries: list[dict] = []
+    token = ""
+    while True:
+        q = "list-type=2&prefix=data%2F"
+        if token:
+            q += "&continuation-token=" + urllib.parse.quote(token)
+        status, body = request("GET", "", query=q)
+        if status != 200:
+            sys.exit(f"list failed: HTTP {status} {body[:200]}")
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(body)
+        ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+        for obj in root.findall("s3:Contents", ns):
+            key = obj.findtext("s3:Key", "", ns)
+            if key.endswith(".json") and key.startswith("data/"):
+                entries.append(minimal_entry(key))
+        truncated = root.findtext("s3:IsTruncated", "false", ns) == "true"
+        token = root.findtext("s3:NextContinuationToken", "", ns) or ""
+        if not truncated or not token:
+            break
+    print(f"{len(entries)} data objects listed")
+    # ETH objects: download to recompute candles + usable
+    eth = [e for e in entries if e["key"].endswith("_ETH.json")]
+    for i, e in enumerate(eth, 1):
+        st, b = request("GET", e["key"])
+        if st == 200:
+            try:
+                j = json.loads(gunzip_if_needed(b))
+                cs = j.get("candles", [])
+                e["candles"] = len(cs)
+                e["usable"] = eth_usable(cs)
+                e["sha256"] = hashlib.sha256(gunzip_if_needed(b)).hexdigest()
+                e["size_raw"] = len(gunzip_if_needed(b))
+            except Exception:
+                pass
+        if i % 100 == 0:
+            print(f"  {i}/{len(eth)} ETH checked")
+    manifest = {"generated": datetime.now(timezone.utc).isoformat(), "bucket": BUCKET, "files": entries}
+    if not dry:
+        status, _ = request("PUT", "manifest.json", json.dumps(manifest).encode(), {"content-type": "application/json"})
+        usable = sum(1 for e in eth if e.get("usable"))
+        print(f"manifest rebuilt HTTP {status} — {len(entries)} entries, {usable} usable ETH sessions")
+    else:
+        print("dry-run — manifest not written")
+
+
+def minimal_entry(key: str) -> dict:
+    base = os.path.basename(key)
+    date = base[:10] if base[:10].count("-") == 2 else base.split("_")[-1][:10]
+    session = None
+    if key.startswith("data/") and not key.startswith("data/ohlc") and not key.startswith("data/options"):
+        session = "ETH" if "_ETH" in base else "RTH"
+    return {"key": key, "date": date, "session": session, "candles": None, "usable": None,
+            "size_raw": 0, "size_gz": 0, "sha256": ""}
+
+
 def main() -> int:
-    cmds = {"upload": cmd_upload, "verify": cmd_verify, "prune": cmd_prune, "enrich": cmd_enrich}
+    cmds = {"upload": cmd_upload, "verify": cmd_verify, "prune": cmd_prune, "enrich": cmd_enrich, "rebuild": cmd_rebuild}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         print(__doc__)
         return 1
