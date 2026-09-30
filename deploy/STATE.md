@@ -12,17 +12,23 @@
 | Neon project | `nq-store` → `summer-poetry-26619129`, region aws-us-east-1, pg 18 |
 | Neon branch | `main` → `br-billowing-truth-b8uofwsa` (recreated 2026-09-28 to reset the 5 GB/mo transfer quota) |
 | DATABASE_URL | **secret** — `web/.env.local` (gitignored) and Coolify app env (plain var, not "shown once") |
+| R2 bucket | `nq-history` (Cloudflare account `437b14872d288fb1221f5492055c0b91`) — full 2.5y history, gzipped objects + `manifest.json` index |
+| GC_REMOTE_URL | **secret** — public `r2.dev` URL; set in `web/.env.local` (localhost) and Coolify app env (deployed) |
 
-## Data flow (all three legs live)
+## Data flow
 
 ```
-[this Mac] gcdata collectors ──► gcdata/data/*.json  (2.5y history, local only)
+[this Mac] gcdata collectors ──► gcdata/data/*.json   (nightly landing zone + test fixtures)
         │  nightly 17:15 local (Mon–Fri, com.scalping.collect → scripts/nightly.sh)
-        ▼  web/db/ingest.ts
-   Neon Postgres (rolling ~21-day window; free tier 512 MB cap)
+        │   1. collect  2. ingest → Neon  3. upload → R2 (r2_sync.py)  4. prune local
+        ▼
+   Neon Postgres (rolling ~21-day window; free tier 512 MB cap)  ◄── live GoCharting feed
+        │                                                          (VPS container writes live
+        │                                                           candles + ticks to Neon)
+        ▼  readthrough: recent + live days
+   [dashboard] /api/gc fallback chain:  Neon → R2 (GC_REMOTE_URL) → local files
         ▲
-[VPS container] live GoCharting feed ──► writes live 1-min candles + ticks to Neon
-   (readthrough-v2 build: /api/gc reads from Neon when DATABASE_URL is set)
+   R2 nq-history — the 2.5-year archive, served from Cloudflare (localhost + deployed)
 ```
 
 - **Read-through from Neon: DONE** (dashboard serves historical views from the DB).
