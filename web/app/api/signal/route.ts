@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { getSignalFeed } from "@/lib/signalFeed";
+import { getSignalFeed, FEED_REVERSAL, FEED_SWEEP_RECLAIM, FEED_UNUSUAL_VOLUME } from "@/lib/signalFeed";
 import { getSignalHistory } from "@/lib/signalHistory";
 
 export const dynamic = "force-dynamic";
@@ -12,6 +12,11 @@ export async function GET() {
   const history = await getSignalHistory(100);
   return Response.json({
     ok: true,
+    feeds: {
+      reversal: FEED_REVERSAL,
+      sweepReclaim: FEED_SWEEP_RECLAIM,
+      unusualVolume: FEED_UNUSUAL_VOLUME,
+    },
     lastRun: feed.lastRun,
     lastError: feed.lastError,
     live: feed.liveOk,

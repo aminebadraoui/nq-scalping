@@ -48,18 +48,36 @@ See `tests/README.md` for what the suite covers and how to add a test.
 
 A server-side signal feed (`lib/signalFeed.ts`, started by `instrumentation.ts`)
 recomputes the signal every 30 s from the live GoCharting feed + collected
-levels and pushes a trade card to Telegram only when the full reversal holds:
-price at/inside an LVN, `present ≥ 4` of the 6 checklist ingredients, every
-directional box aligned, the last footprint stack on the trade's side, and the
-entry bar's delta confirming the direction. The card is a complete trade
-ticket: direction, ENTRY / STOP (7-pt scalp stop) / TARGET (nearest POC) /
-SIZE (`risk ÷ (7 × $20)`), then the full 6-point reasoning plus the price-action
-and gamma context. Backtested lookahead-free over 683 sessions: ~7.5
-signals/day, 37% win, PF 2.16 (`FOOTPRINT_REVERSAL_RESEARCH.md`). Configure
+levels and pushes cards to Telegram. **The complete inventory — nothing else
+sends to Telegram:**
+
+1. **REVERSAL card** — the LVN-reversal scalp (the full strategy). **PAUSED by
+   default** (`FEED_REVERSAL=0`): the owner is building on the volume-footprint
+   alerts first. When enabled: price at/inside an LVN, `present ≥ 4` of the 6
+   checklist ingredients, every directional box aligned, the last footprint
+   stack on the trade's side, the entry bar's delta confirming. ENTRY / STOP
+   (7-pt scalp stop) / TARGET (nearest POC) / SIZE (`risk ÷ (7 × $20)`) plus
+   the full 6-point reasoning. Backtested lookahead-free over 683 sessions:
+   ~7.5 signals/day, 37% win, PF 2.16 (`FOOTPRINT_REVERSAL_RESEARCH.md`).
+2. **Sweep-reclaim card** (`FEED_SWEEP_RECLAIM=1`) — a failed break of the
+   session extreme reclaimed one-sidedly (≥65% on the entry side,
+   session-median volume): a 1R ticket with stop 0.5 pt beyond the swept
+   extreme. Fires once per distinct reclaim bar (`lib/reclaimSetup.ts`).
+3. **Unusual-volume heads-up** (`FEED_UNUSUAL_VOLUME=1`) — a completed minute
+   at ≥2× its hour's norm with a one-sided print (≥70% buy/sell), carrying the
+   bar's POC + migration, close position, imbalance stack and nearest level.
+   Not a trade signal.
+4. **Pullback watch** (stage 2 of the volume alert, 6-minute window) —
+   `pullback starting` on the first aggressive counter-side bar, then
+   `pullback exhausted` with a full 1R ENTRY/STOP/TARGET ticket when the
+   pullback extreme is flushed and reclaimed one-sidedly, or `watch off` when
+   the move reverses outright (`lib/unusualVolume.ts`).
+
+`POST /api/signal?push=1` force-sends the current REVERSAL card (test button,
+rejected while the feed is paused). `GET /api/signal` shows the current
+server-side signal plus the `feeds` on/off state. Configure
 `TELEGRAM_BOT_TOKEN` (and optionally `TELEGRAM_CHAT_ID`) in `gcdata/.env` or as
-env vars; `SIGNAL_REFRESH_SECONDS` overrides the interval. `GET /api/signal`
-shows the current server-side signal, `POST /api/signal?push=1` forces a test
-push.
+env vars; `SIGNAL_REFRESH_SECONDS` overrides the interval.
 
 Every push is also recorded (in-memory, and to the `signals` table in Neon when
 `DATABASE_URL` is set) so the dashboard's **Signal history** panel shows a

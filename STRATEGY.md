@@ -1,5 +1,11 @@
 # Our strategy — the NQ LVN-reversal scalp
 
+> **Status: PAUSED** — the reversal card is off by default (`FEED_REVERSAL=0`
+> in `web/lib/signalFeed.ts`). The live feed currently sends the
+> volume-footprint products only (unusual volume + pullback watch) plus the
+> sweep-reclaim card. Set `FEED_REVERSAL=1` to turn this card back on. This
+> page stays the reference for when it resumes.
+
 One page, the implemented strategy. Every threshold below is checkable in the
 code, covered by tests, and (where it matters) measured by the backtest.
 

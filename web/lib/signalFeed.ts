@@ -55,6 +55,22 @@ function symbol(): string {
   return process.env.GOCHARTING_SYMBOL || "NQZ26";
 }
 
+/** env feature flags: FEED_* — "1/true/yes/on" enables, "0/false/no/off" disables. */
+function feedFlag(name: string, def: boolean): boolean {
+  const v = process.env[name];
+  if (v === undefined || v === "") return def;
+  return !/^(0|false|no|off)$/i.test(v);
+}
+
+/** FEED_REVERSAL — the LVN-reversal scalp card (the full strategy). PAUSED by
+ *  default: the owner is building on the volume-footprint alerts first. Set
+ *  FEED_REVERSAL=1 to re-enable. */
+export const FEED_REVERSAL = feedFlag("FEED_REVERSAL", false);
+/** FEED_SWEEP_RECLAIM — the session-extreme sweep-reclaim 1R card. */
+export const FEED_SWEEP_RECLAIM = feedFlag("FEED_SWEEP_RECLAIM", true);
+/** FEED_UNUSUAL_VOLUME — the volume-footprint alert + its pullback watch. */
+export const FEED_UNUSUAL_VOLUME = feedFlag("FEED_UNUSUAL_VOLUME", true);
+
 const CONTEXT_TTL_MS = 10 * 60 * 1000;
 /** a live feed whose last print is older than this is treated as closed */
 const STALE_MS = 5 * 60 * 1000;
@@ -160,6 +176,7 @@ class SignalFeed {
   }
 
   private async maybeSend(snap: SignalSnapshot): Promise<void> {
+    if (!FEED_REVERSAL) return;
     // The card gate (STRATEGY.md "When a signal exists"): every directional
     // box aligned AND all three required ingredients present — location
     // "yes" = at/inside an LVN, and "no reclaim, no trade" — AND at least
@@ -220,6 +237,7 @@ class SignalFeed {
    *  the full reversal sequence (theory-lab result: 67% win @ 1R). Fires once
    *  per distinct reclaim bar. */
   private async checkReclaimSetup(): Promise<void> {
+    if (!FEED_SWEEP_RECLAIM) return;
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 3) return;
     const fp = liveMinutesToFootprint(live.minutes);
@@ -283,6 +301,7 @@ class SignalFeed {
    *  and its location context (nearest level) — the "decision point" question.
    *  An alert, not a trade signal — fire once per minute. */
   private async checkUnusualVolume(): Promise<void> {
+    if (!FEED_UNUSUAL_VOLUME) return;
     const live = getLive().state;
     if (!live.connected || !live.minutes.length) return;
     const n = live.minutes.length;
@@ -367,6 +386,10 @@ class SignalFeed {
    *  exhaustion (a flush of the pullback extreme reclaimed one-sidedly).
    *  The pullback-start is context; the reclaim prints a full 1R ticket. */
   private async checkPullbackWatch(): Promise<void> {
+    if (!FEED_UNUSUAL_VOLUME) {
+      this.pullbackWatch = null; // no new alerts → no watch either
+      return;
+    }
     const w = this.pullbackWatch;
     if (!w) return;
     const live = getLive().state;
@@ -451,6 +474,9 @@ class SignalFeed {
 
   /** force a push of the current signal (test button / manual check) */
   async pushNow(): Promise<{ sent: boolean; reason: string }> {
+    if (!FEED_REVERSAL) {
+      return { sent: false, reason: "LVN reversal feed is paused — set FEED_REVERSAL=1 to re-enable" };
+    }
     const snap = await this.buildSnapshot();
     if (!snap) return { sent: false, reason: this.lastNote ?? "no live signal to send" };
     this.lastSnapshot = snap;
