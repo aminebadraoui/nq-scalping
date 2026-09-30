@@ -33,7 +33,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "gcdata", "data")
 
 # files npm test needs locally (audited session + quarantine fixture)
@@ -108,12 +108,12 @@ def request(method: str, key: str, body: bytes = b"", headers: dict | None = Non
         method, uri, "",
         canonical_headers, signed_headers, payload_hash,
     ])
-    scope = f"{datestamp}/auto/r2/s3v4"
+    scope = f"{datestamp}/auto/s3/aws4_request"
     to_sign = "\n".join([
         "AWS4-HMAC-SHA256", amzdate, scope,
         hashlib.sha256(canonical.encode()).hexdigest(),
     ])
-    signature = hmac.new(sig_key(SECRET, datestamp, "auto", "r2"), to_sign.encode(), hashlib.sha256).hexdigest()
+    signature = hmac.new(sig_key(SECRET, datestamp, "auto", "s3"), to_sign.encode(), hashlib.sha256).hexdigest()
     headers["authorization"] = (
         f"AWS4-HMAC-SHA256 Credential={ACCESS}/{scope}, "
         f"SignedHeaders={signed_headers}, Signature={signature}"
