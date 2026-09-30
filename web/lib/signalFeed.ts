@@ -352,9 +352,9 @@ class SignalFeed {
       const text = [
         `⚡ <b>NQ MOMENTUM ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"}</b>`,
         `<code>${symbol()}  ${fmtPx(s.entry)}  ${et} NY</code>`,
-        `failed ${s.dir === "long" ? "flush" : "rally"} → ${Math.round(s.respFrac * 100)}% response → ${Math.round(s.breakFrac * 100)}% breakout through the defended level`,
+        `failed ${s.dir === "long" ? "flush" : "rally"} → ${Math.round(s.breakFrac * 100)}% one-sided breakout through the defended level`,
         `<code>ENTRY ${fmtPx(s.entry)} · STOP ${fmtPx(s.stop)} · TARGET ${fmtPx(s.target)}</code> · ${sizeStr}`,
-        `<i>momentum scalp — joins the one-sided run (72.9% win · PF 2.25 in the 568-session replay)</i>`,
+        `<i>momentum scalp — joins the one-sided run (75.6% win · PF 2.71 in the 568-session replay)</i>`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
       if (!res.sent) this.lastError = res.reason;

@@ -237,12 +237,14 @@ function mean(arr: number[]): number {
 /* ---------------- sweep variants ---------------- */
 
 const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
-  // early-fire question: is the failed flush (or its response) alone tradable?
+  // merged-mode question: flush → immediate breakout (no separate response bar)
   { name: "prod (breakout)", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 10 } },
-  { name: "responseOnly", overrides: { fireAt: "response", stopMode: "flush", minRiskPts: 2 } },
-  { name: "flushOnly", overrides: { fireAt: "flush", stopMode: "flush", minRiskPts: 0 } },
-  { name: "flushOnly+minR2", overrides: { fireAt: "flush", stopMode: "flush", minRiskPts: 2 } },
-  { name: "responseOnly+tight", overrides: { fireAt: "response", stopMode: "flush", minRiskPts: 2, targetR: 1.5 } },
+  { name: "merged", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 10 } },
+  { name: "merged+bw4", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 4 } },
+  { name: "merged+bw6", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 6 } },
+  { name: "merged+b80", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.8, minRiskPts: 2, breakWindow: 10 } },
+  { name: "merged+minR3", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10 } },
+  { name: "merged+vwap", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 10, requireVwapSide: true } },
 ];
 
 /* ---------------- main ---------------- */

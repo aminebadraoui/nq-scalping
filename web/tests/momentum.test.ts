@@ -103,11 +103,11 @@ test("production config fires the 18:16 long on the real failed-flush tape", () 
   assert.equal(s.dir, "long");
   assert.equal(s.t, "22:16"); // 18:16 ET
   assert.equal(s.flushIdx, 10); // 22:10 flush
-  assert.equal(s.respIdx, 11); // 22:11 response
   assert.equal(s.breakIdx, 16); // 22:16 breakout
+  assert.equal(s.respIdx, 16); // merged mode: the breakout bar is its own response evidence
   assert.ok(Math.abs(s.entry - 30738.0) < 0.01, `entry ${s.entry}`);
   assert.ok(Math.abs(s.stop - 30734.5) < 0.01, `stop ${s.stop}`);
-  assert.ok(s.risk >= 2, "risk floor");
+  assert.ok(s.risk >= 3, "risk floor");
 });
 
 test("the 18:16 long is sized inside the Rapid EOD 50k rules", () => {
@@ -147,11 +147,12 @@ test("mirror: failed rally → sell response → breakdown fires a short", () =>
   const m = pad([
     // buy rally that FAILS to make a new session high (prior high 100.25)
     ["17:00", 100.25, 98.75, 90, 10],
-    // sell response with tick proof
-    ["17:01", 100.0, 98.75, 5, 45, [[99.5, 0, 12], [99.0, 2, 8]]],
+    // sell response with tick proof (and a low that IS a new session low, so
+    // the long machine correctly ignores this tape)
+    ["17:01", 100.0, 97.5, 5, 45, [[99.5, 0, 12], [99.0, 2, 8]]],
     ["17:02", 100.75, 100.0, 10, 20],
-    // one-sided sell breakout through the reference low (risk >= 2)
-    ["17:03", 101.5, 97.5, 5, 55],
+    // one-sided sell breakout through the reference low (risk >= 3)
+    ["17:03", 102.5, 97.0, 5, 55],
   ]);
   const sigs = detectMomentum(m, MOM_PROD);
   const shorts = sigs.filter((s) => s.dir === "short");
@@ -190,4 +191,27 @@ test("fireAt=flush enters on the failed flush bar itself", () => {
   assert.equal(s.t, "22:10"); // the 78%-sell failed flush
   assert.ok(Math.abs(s.entry - 30723.875) < 0.01, `entry ${s.entry}`);
   assert.ok(Math.abs(s.stop - 30712.25) < 0.01, `stop ${s.stop}`);
+});
+
+test("merged mode: strength bar → failed flush → immediate breakout fires without a response bar", () => {
+  // 17:00 one-sided BUY (the strength bar), 17:01 failed sell flush,
+  // 17:02 breakout through the strength high — no separate response bar
+  const m = pad([
+    ["17:00", 102.0, 100.5, 90, 10],
+    ["17:01", 101.5, 99.5, 10, 90],
+    ["17:02", 106.0, 101.0, 55, 5],
+  ]);
+  const merged = detectMomentum(m, MOM_PROD); // merged is the production mode
+  const longs = merged.filter((s) => s.dir === "long");
+  assert.equal(longs.length, 1);
+  assert.equal(longs[0].t, "17:02");
+  assert.equal(longs[0].flushIdx, 31); // 17:01 in the padded array
+  assert.ok(Math.abs(longs[0].entry - 103.5) < 0.01, `entry ${longs[0].entry}`);
+  assert.ok(Math.abs(longs[0].stop - 100.5) < 0.01, `stop ${longs[0].stop}`);
+  assert.ok(longs[0].risk >= 3, "risk floor");
+
+  // with a separate response required (needResponse=true) it does NOT fire:
+  // the breakout bar has no tick proof, so the response gate fails
+  const strict = detectMomentum(m, { ...MOM_PROD, needResponse: true });
+  assert.equal(strict.filter((s) => s.dir === "long").length, 0);
 });

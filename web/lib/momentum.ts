@@ -61,6 +61,10 @@ export type MomConfig = {
    *  "flush" (fire on the failed flush bar itself). Early fires use the
    *  structural flush-extreme stop. */
   fireAt: "breakout" | "response" | "flush";
+  /** require a separate one-sided response bar before the breakout. false =
+   *  merged mode: the breakout bar itself is the response evidence (covers
+   *  flush → immediate breakout sequences). */
+  needResponse: boolean;
   /** confirm the breakout with `holdBars` no-give-back bars before entry */
   holdBars: number;
   holdTolPts: number;
@@ -111,6 +115,7 @@ export const MOM_DEFAULTS: MomConfig = {
   breakVolMedMult: 0.5,
   breakWindow: 6,
   fireAt: "breakout",
+  needResponse: true,
   holdBars: 0,
   holdTolPts: 1.0,
   refLookback: 2,
@@ -128,17 +133,20 @@ export const MOM_DEFAULTS: MomConfig = {
   hourFilter: "none",
 };
 
-/** The production momentum config — frozen after the 568-session sweep
- *  (see MOMENTUM_SIGNAL.md): 502 trades, 72.9% win, PF 2.25, positive every
- *  year, ~0.9 signals per session. Tight breakout-bar stop, 75% one-sided
- *  breakout, ≥2 pt risk floor, breakout within 10 bars of the response. */
+/** The production momentum config — frozen after the 568-session sweeps
+ *  (see MOMENTUM_SIGNAL.md): merged mode (the breakout bar is its own
+ *  response evidence — covers flush → immediate breakout), 75% one-sided
+ *  breakout through the reference, ≥3 pt risk floor, breakout within 10
+ *  bars of the failed flush. Replay: 1,736 trades, 75.6% win, PF 2.71,
+ *  positive every full year, ~3.1 signals per session. */
 export const MOM_PROD: MomConfig = {
   ...MOM_DEFAULTS,
+  needResponse: false,
   stopMode: "breakout",
   stopPad: 0.5,
   breakFrac: 0.75,
   breakWindow: 10,
-  minRiskPts: 2,
+  minRiskPts: 3,
   targetR: 1,
   hourFilter: "globex",
 };
@@ -460,6 +468,51 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     } satisfies MomentumSignal;
   };
 
+  /** breakout gate shared by both directions; in merged mode (needResponse
+   *  false) the breakout bar records itself as the response evidence. */
+  const tryBreakout = (i: number, w: Watch): { fired: MomentumSignal | null; done: boolean } => {
+    const m = minutes[i];
+    const frac = fracOf(m);
+    const pass =
+      w.dir === "long"
+        ? frac >= cfg.breakFrac &&
+          volOk(m.buy + m.sell, medAt(i), cfg.breakVolFloor, cfg.breakVolMedMult) &&
+          m.high > w.refHigh
+        : frac <= 1 - cfg.breakFrac &&
+          volOk(m.buy + m.sell, medAt(i), cfg.breakVolFloor, cfg.breakVolMedMult) &&
+          m.low < w.refLow;
+    if (!pass) return { fired: null, done: false };
+    if (w.respIdx < 0) {
+      w.respIdx = i;
+      w.respFrac = frac;
+      w.respVol = m.buy + m.sell;
+      w.respProof = clusterProof(
+        m.levels,
+        w.dir === "long" ? "buy" : "sell",
+        cfg.respProofLots,
+        cfg.respProofRatio,
+      );
+    }
+    // optional no-give-back confirmation before the entry bar
+    let at = i;
+    let held = true;
+    for (let h = 1; h <= cfg.holdBars && held; h++) {
+      const hm = minutes[i + h];
+      if (
+        !hm ||
+        (w.dir === "long" ? hm.low < minutes[i].low - cfg.holdTolPts : hm.high > minutes[i].high + cfg.holdTolPts)
+      ) {
+        held = false;
+      } else {
+        at = i + h;
+      }
+    }
+    if (!held) return { fired: null, done: true }; // broke through then gave back — sequence over
+    // a risk-floor / filter rejection is NOT sequence death: a later bar in
+    // the window can still fire (its stop sits differently)
+    return { fired: emit(i, w, at, out.length), done: false };
+  };
+
   for (let i = 1; i < n; i++) {
     // the running extremes only see COMPLETED bars
     sessHi = Math.max(sessHi, minutes[i - 1].high);
@@ -479,7 +532,7 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
         longWatch = null;
         continue;
       }
-    } else if (longWatch.respIdx < 0) {
+    } else if (longWatch.respIdx < 0 && cfg.needResponse) {
       if (i - longWatch.flushIdx <= cfg.respWindow) {
         if (tryResponse(i, longWatch) && cfg.fireAt === "response") {
           const sig = emit(i, longWatch, i, out.length);
@@ -494,33 +547,18 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
         longWatch = null;
       }
     } else {
-      const m = minutes[i];
-      const frac = fracOf(m);
-      if (i - longWatch.respIdx <= cfg.breakWindow) {
-        if (
-          frac >= cfg.breakFrac &&
-          volOk(m.buy + m.sell, medAt(i), cfg.breakVolFloor, cfg.breakVolMedMult) &&
-          m.high > longWatch.refHigh
-        ) {
-          // optional no-give-back confirmation before the entry bar
-          let at = i;
-          let held = true;
-          for (let h = 1; h <= cfg.holdBars && held; h++) {
-            const hm = minutes[i + h];
-            if (!hm || hm.low < minutes[i].low - cfg.holdTolPts) held = false;
-            else at = i + h;
-          }
-          if (held) {
-            const sig = emit(i, longWatch, at, out.length);
-            if (sig) {
-              out.push(sig);
-              lastSignalIdx = i;
-            }
-            longWatch = null;
-            continue;
-          }
+      // breakout phase — from the response bar, or straight from the flush in
+      // merged mode (needResponse = false)
+      const base = longWatch.respIdx >= 0 ? longWatch.respIdx : longWatch.flushIdx;
+      if (i - base <= cfg.breakWindow) {
+        const r = tryBreakout(i, longWatch);
+        if (r.fired) {
+          out.push(r.fired);
+          lastSignalIdx = i;
           longWatch = null;
+          continue;
         }
+        if (r.done) longWatch = null;
       } else {
         longWatch = null;
       }
@@ -538,7 +576,7 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
         shortWatch = null;
         continue;
       }
-    } else if (shortWatch.respIdx < 0) {
+    } else if (shortWatch.respIdx < 0 && cfg.needResponse) {
       if (i - shortWatch.flushIdx <= cfg.respWindow) {
         if (tryResponse(i, shortWatch) && cfg.fireAt === "response") {
           const sig = emit(i, shortWatch, i, out.length);
@@ -553,32 +591,16 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
         shortWatch = null;
       }
     } else {
-      const m = minutes[i];
-      const frac = fracOf(m);
-      if (i - shortWatch.respIdx <= cfg.breakWindow) {
-        if (
-          frac <= 1 - cfg.breakFrac &&
-          volOk(m.buy + m.sell, medAt(i), cfg.breakVolFloor, cfg.breakVolMedMult) &&
-          m.low < shortWatch.refLow
-        ) {
-          let at = i;
-          let held = true;
-          for (let h = 1; h <= cfg.holdBars && held; h++) {
-            const hm = minutes[i + h];
-            if (!hm || hm.high > minutes[i].high + cfg.holdTolPts) held = false;
-            else at = i + h;
-          }
-          if (held) {
-            const sig = emit(i, shortWatch, at, out.length);
-            if (sig) {
-              out.push(sig);
-              lastSignalIdx = i;
-            }
-            shortWatch = null;
-            continue;
-          }
+      const base = shortWatch.respIdx >= 0 ? shortWatch.respIdx : shortWatch.flushIdx;
+      if (i - base <= cfg.breakWindow) {
+        const r = tryBreakout(i, shortWatch);
+        if (r.fired) {
+          out.push(r.fired);
+          lastSignalIdx = i;
           shortWatch = null;
+          continue;
         }
+        if (r.done) shortWatch = null;
       } else {
         shortWatch = null;
       }

@@ -4,11 +4,10 @@
 > TRADE signal (2026-09-30). The unusual-volume heads-up alert stays on as
 > context (`FEED_UNUSUAL_VOLUME=1`, informational only). The reversal,
 > sweep-reclaim and pullback-ticket cards are off (`FEED_* = 0` in
-> `web/lib/signalFeed.ts`). The card fires on the failed-flush → response →
-> breakout sequence described below. Validation: **502 trades, 72.9% win,
-> PF 2.25**, positive in every full year of the 568-session replay. This is
-> the product that catches the bullish run the fade products structurally
-> cannot.
+> `web/lib/signalFeed.ts`). The card fires on the failed-flush → breakout
+> sequence described below. Validation: **1,865 trades, 75.7% win, PF 2.70**,
+> positive in every full year of the 568-session replay. This is the product
+> that catches the bullish run the fade products structurally cannot.
 
 One page, the implemented signal. Every threshold below is checkable in
 `web/lib/momentum.ts` (`MOM_PROD`), covered by `web/tests/momentum.test.ts`,
@@ -35,18 +34,17 @@ short is the mirror.
 2. **FAILED flush** — the flush makes **no new session low** (low ≥ session
    low − 0.5). A flush that breaks the low is a real breakdown — the machine
    resets. *Effort without result is absorption.*
-3. **RESPONSE** — within ≤2 bars, a bar ≥65% one-sided in the trade
-   direction, closing in the upper 35%+ of the flush range, with tick-level
-   proof: ≥2 price rows of ≥3 lots, ≥1.5×-dominant, at/inside the flush zone.
-   (The 18:11 bar: B10 @ 30721.75, B6 @ 30721.50, B5 @ 30722.25.)
-4. **BREAKOUT — THE SIGNAL** — within ≤10 bars of the response, a bar
+3. **BREAKOUT — THE SIGNAL** — within ≤10 bars of the flush, a bar
    **≥75% one-sided in the trade direction** that trades **through the
    reference extreme** (max high of the flush bar + the 2 bars before it).
+   The breakout bar is its own confirmation — no separate response bar is
+   required (merged mode), so flush → immediate breakout sequences fire too.
 
 Fires at the breakout bar's close. **Stop**: breakout bar's low − 0.5 pt.
-**Target**: 1R. **Risk floor**: setups with risk < 2 pts are skipped (noise).
-**Hours**: Globex only (RTH 9:30–16:00 ET excluded — two-way tape there).
-One signal per sequence; ≥5-bar gap between signals.
+**Target**: 1R. **Risk floor**: setups with risk < 3 pts are skipped (noise;
+a filtered bar does NOT kill the sequence — a later bar in the window can
+still fire). **Hours**: Globex only (RTH 9:30–16:00 ET excluded). One signal
+per sequence; ≥5-bar gap between signals.
 
 ## What the replay measured (568 sessions, lookahead-free)
 
@@ -56,24 +54,23 @@ same-bar resolution (stop first when both stop and target sit in one bar):
 
 | Metric | Value |
 |---|---|
-| Signals | **502** (~0.9 per session) |
-| Win rate | **72.9%** (pessimistic; ambiguous = loss, 1% of trades) |
-| Profit factor | **2.25** |
-| Expectancy | **+0.29 R / trade** |
-| Net | **+643 pts** |
-| Avg risk | ~3.5 pts |
-| Mean MFE | 1.39 R (the 1R target is conservative — 17% reach 2R, 4% reach 3R) |
+| Signals | **1,865** (~3.3 per session) |
+| Win rate | **75.7%** (pessimistic; ambiguous = loss, 1% of trades) |
+| Profit factor | **2.70** |
+| Expectancy | **+0.40 R / trade** |
+| Net | **+3,933 pts** |
+| Avg risk | ~3.7 pts |
+| Mean MFE | 1.39 R (the 1R target is conservative — 15% reach 2R, 4% reach 3R) |
 
 | Year | Trades | Win rate | PF |
 |---|---|---|---|
-| 2024 | 169 | 73.4% | 2.09 |
-| 2025 | 207 | 71.5% | 1.89 |
-| 2026 (out-of-sample) | 124 | **75.0%** | 3.17 |
+| 2024 | 406 | 79.6% | 3.00 |
+| 2025 | 691 | 71.9% | 2.17 |
+| 2026 (out-of-sample) | 636 | **77.2%** | 3.20 |
 
-By direction: long 71.2% (PF 2.14), short 74.8% (PF 2.38) — the mirror is as
-good as the original. Every Globex hour prints ≥ 62% win rate. The test
-window (2026) beats the train window — the family sat on a stable plateau
-(72–73% win across every adjacent threshold variant), not a knife-edge.
+By direction: long 78.2% (PF 3.17), short 72.9% (PF 2.35). The test window
+beats the train window — the config sits on a stable plateau, not a
+knife-edge.
 
 ## Why the flush alone is NOT a signal (measured)
 
@@ -85,19 +82,19 @@ same replay — the detector has a `fireAt` knob ("flush" / "response" /
 |---|---|---|---|---|
 | **flush alone** (buy every failed flush) | 36,243 | **29.5%** | **0.26** | −77,364 |
 | response bar (one-sided counter) | 3,333 | 65.6% | 1.56 | +2,946 |
-| **breakout bar (the signal)** | 502 | **72.9%** | **2.25** | +643 |
+| **breakout bar (the signal)** | 1,865 | **75.7%** | **2.70** | +3,933 |
 
 Buying every failed flush is ruinous — most failed flushes just consolidate
-or continue. The one-sided **response** is where the trade becomes viable,
-and the **breakout** is the confirmation that concentrates the edge (and
-cuts the trade count 6.6×, which is what keeps the win rate at 73%).
-That is why the sequence fires on the breakout, not the flush.
+or continue. The **breakout** is the confirmation that concentrates the edge.
+The merged mode (breakout within 10 bars of the flush, no separate response
+bar) also covers flush → immediate breakout sequences at the same win rate —
+that is why it is the production config.
 
 Live integration: when the unusual-volume heads-up fires and the bar fails
-to make a new extreme, the alert card now prints the watch line —
+to make a new extreme, the alert card prints the watch line —
 `failed flush (no new session low) — momentum watch for a buy breakout
 above X` (mirrored for failed rallies) — so the alert doubles as the
-stage-1/2 heads-up for the card that follows.
+stage-1 heads-up for the card that follows.
 
 ## The knobs that matter (what the sweeps showed)
 
