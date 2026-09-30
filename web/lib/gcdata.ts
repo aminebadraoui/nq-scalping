@@ -75,7 +75,9 @@ export async function listUsableSessions(): Promise<UsableSessions | null> {
   };
 }
 
-const fileCache = new Map<string, { at: number; data: unknown }>();
+const fileCache = new Map<string, { at: number; data: unknown; bytes: number }>();
+let cacheBytes = 0;
+const CACHE_MAX_BYTES = 60 * 1024 * 1024; // parsed session JSON is heavy (~10-20 MB each)
 
 async function remoteJSON(key: string): Promise<unknown | null> {
   if (!REMOTE) return null;
@@ -84,11 +86,18 @@ async function remoteJSON(key: string): Promise<unknown | null> {
   try {
     const r = await fetch(`${REMOTE}/${key}`);
     if (!r.ok) return null;
+    const bytes = Number(r.headers.get("content-length") ?? 0);
     const data = await r.json();
-    fileCache.set(key, { at: Date.now(), data });
-    if (fileCache.size > 400) {
-      const oldest = fileCache.keys().next().value;
-      if (oldest) fileCache.delete(oldest);
+    // small-object cache only: whole-session files would OOM a 2 GB container
+    if (bytes > 0 && bytes <= 6 * 1024 * 1024) {
+      fileCache.set(key, { at: Date.now(), data, bytes });
+      cacheBytes += bytes;
+      while (cacheBytes > CACHE_MAX_BYTES) {
+        const oldest = fileCache.keys().next().value;
+        if (!oldest) break;
+        cacheBytes -= fileCache.get(oldest)?.bytes ?? 0;
+        fileCache.delete(oldest);
+      }
     }
     return data;
   } catch {

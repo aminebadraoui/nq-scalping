@@ -400,7 +400,7 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
   });
 
   const samples: LabSample[] = [];
-  const CONCURRENCY = 12;
+  const CONCURRENCY = 6; // keeps peak memory sane in a 2 GB container
   for (let start = 0; start < dates.length; start += CONCURRENCY) {
     const chunk = dates.slice(start, start + CONCURRENCY);
     const built = await Promise.all(
