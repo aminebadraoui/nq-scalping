@@ -37,10 +37,14 @@ type ManifestFile = {
 type Manifest = { generated: string; bucket: string; files: ManifestFile[] };
 
 let manifestPromise: Promise<Manifest | null> | null = null;
+let manifestAt = 0;
 
+/** Manifest fetch with a 5-minute TTL so nightly uploads/enrichments are
+ *  picked up without a server restart. */
 function remoteManifest(): Promise<Manifest | null> {
   if (!REMOTE) return Promise.resolve(null);
-  if (!manifestPromise) {
+  if (!manifestPromise || Date.now() - manifestAt > 5 * 60_000) {
+    manifestAt = Date.now();
     manifestPromise = fetch(`${REMOTE}/manifest.json`, { cache: "no-store" })
       .then(async (r) => (r.ok ? ((await r.json()) as Manifest) : null))
       .catch(() => null);
@@ -71,12 +75,22 @@ export async function listUsableSessions(): Promise<UsableSessions | null> {
   };
 }
 
+const fileCache = new Map<string, { at: number; data: unknown }>();
+
 async function remoteJSON(key: string): Promise<unknown | null> {
   if (!REMOTE) return null;
+  const hit = fileCache.get(key);
+  if (hit && Date.now() - hit.at < 60 * 60_000) return hit.data;
   try {
     const r = await fetch(`${REMOTE}/${key}`);
     if (!r.ok) return null;
-    return await r.json();
+    const data = await r.json();
+    fileCache.set(key, { at: Date.now(), data });
+    if (fileCache.size > 250) {
+      const oldest = fileCache.keys().next().value;
+      if (oldest) fileCache.delete(oldest);
+    }
+    return data;
   } catch {
     return null;
   }
