@@ -3,17 +3,20 @@
  * account. MyFundedFutures exposes no API, so the free path is a headless
  * Chromium (Playwright) driving trader.tradovate.com.
  *
- * Verified (2026-09-30, headless):
- *   · login:  fill #name-input / #password-input, click "Login"
- *   · mode:   click "Access Simulation" (the MFF eval/funded environment)
- *   · ticket: Buy Mkt / Sell Mkt / Buy Bid / Sell Ask buttons, a quantity
- *     combobox (input[placeholder="Select value"]), instrument combobox
+ * Verified headless (2026-09-30):
+ *   · login:  #name-input / #password-input, then "Login"
+ *   · mode:   "Access Simulation" (the MFF eval/funded environment)
+ *   · ticket: quantity input[placeholder="Select value"]; Buy Mkt / Sell Mkt
+ *   · bracket: TP/SL dropdown [data-testid="simple-tpsl-atm-strategy-select"]
+ *              → #add-tpsl-option → bracket-0-take-profit-input / stop-loss-input
+ *              (both entered in TICKS, MNQ tick = 0.25 pt)
  *
- * Default is DRY-RUN (logs only). EXECUTE_LIVE=1 switches to the real path —
- * NOT YET SAFE TO ENABLE: the market-entry path is written but untested, and
- * bracket (stop + target) attachment is still TODO. Test with 1 contract on
- * Simulation first. Credentials come from env (gitignored), never logged.
+ * Default DRY-RUN logs only. EXECUTE_LIVE=1 switches to the real path — STILL
+ * UNTESTED: test with 1 contract on Simulation and review the screenshot before
+ * enabling for real sizing. Credentials come from env (gitignored), never logged.
  * ------------------------------------------------------------------ */
+
+import type { Page } from "playwright";
 
 export type OrderIntent = {
   symbol: string;
@@ -24,6 +27,8 @@ export type OrderIntent = {
   target: number;
   timeET: string;
 };
+
+const TICK = 0.25; // MNQ
 
 export function executorEnabled(): boolean {
   return !!process.env.TRADOVATE_USERNAME && !!process.env.TRADOVATE_PASSWORD;
@@ -36,9 +41,9 @@ function loadCreds(): { username: string; password: string } | null {
 }
 
 /** Persistent headless session (login once, reuse across signals). */
-let session: { page: unknown } | null = null;
+let session: { page: Page } | null = null;
 
-async function getPage(): Promise<unknown> {
+async function getPage(): Promise<Page> {
   if (session) return session.page;
   const { chromium } = await import("playwright");
   const creds = loadCreds();
@@ -54,31 +59,44 @@ async function getPage(): Promise<unknown> {
   const sim = page.locator("button:has-text('Access Simulation'), a:has-text('Access Simulation')").first();
   if (await sim.count()) {
     await sim.click();
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(10_000);
   }
   session = { page };
   return page;
 }
 
-/** Live market-order entry. Untested — verify with 1 contract before enabling. */
+/** Live bracketed market order. Untested — verify with 1 contract first. */
 async function placeOrderLive(intent: OrderIntent): Promise<{ ok: boolean; reason: string }> {
   if (intent.contracts < 1 || intent.contracts > 30) {
     return { ok: false, reason: `refusing size ${intent.contracts} (outside 1..30)` };
   }
-  const page = (await getPage()) as {
-    fill: (s: string, v: string) => Promise<void>;
-    locator: (s: string) => { first: () => { count: () => Promise<number>; click: () => Promise<void> } };
-    screenshot: (o: { path: string }) => Promise<void>;
-  };
+  const page = await getPage();
 
-  // quantity (the order-ticket combobox)
+  // ensure the simple TP/SL bracket is enabled (reveals the tick fields)
+  const hasBracket = (await page.locator('[data-testid="bracket-0-take-profit-input"]').count()) > 0;
+  if (!hasBracket) {
+    await page.locator('[data-testid="simple-tpsl-atm-strategy-select"]').first().click();
+    await page.waitForTimeout(800);
+    await page.locator("#add-tpsl-option").first().click();
+    await page.waitForTimeout(1500);
+  }
+
+  const stopTicks = Math.max(1, Math.round(Math.abs(intent.entry - intent.stop) / TICK));
+  const targetTicks = Math.max(1, Math.round(Math.abs(intent.target - intent.entry) / TICK));
+
+  await page.fill('[data-testid="bracket-0-stop-loss-input"]', String(stopTicks));
+  await page.fill('[data-testid="bracket-0-take-profit-input"]', String(targetTicks));
   await page.fill('input[placeholder="Select value"]', String(intent.contracts));
-  // market entry
+
   const label = intent.dir === "long" ? "Buy Mkt" : "Sell Mkt";
-  const btn = page.locator(`div:has-text("${label}")`).first();
-  await btn.click();
+  await page.locator(`div:has-text("${label}")`).first().click();
+  await page.waitForTimeout(1500);
   await page.screenshot({ path: "/tmp/tradovate_order.png" });
-  return { ok: true, reason: `submitted ${label} ${intent.contracts} MNQ (bracket NOT attached — TODO)` };
+
+  return {
+    ok: true,
+    reason: `submitted ${label} ${intent.contracts} MNQ bracketed (stop ${stopTicks}t / target ${targetTicks}t)`,
+  };
 }
 
 export async function placeOrder(intent: OrderIntent): Promise<{ ok: boolean; reason: string }> {
