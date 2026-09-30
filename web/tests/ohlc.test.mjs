@@ -28,13 +28,21 @@ const COMPLETE_MINUTES = 1380;
 function isComplete(date) {
   try {
     const j = JSON.parse(readFileSync(path.join(DATA, `${date}_ETH.json`), "utf8"));
-    return (j.candles ?? []).length >= COMPLETE_MINUTES;
+    // the pipeline's own verdict (_meta.kind) — a merged holiday payload can
+    // have >1380 minutes without being a usable session, so count alone lies
+    return j._meta?.kind === "complete" || (j.candles ?? []).length === COMPLETE_MINUTES;
   } catch {
     return false;
   }
 }
 
 const authoritativeDates = footprintDates.filter(isComplete);
+
+/** Dates that have a vendor OHLC twin on disk. OHLC is only collected for the
+ *  recent window (collect_ohlc --windows), so older complete sessions are
+ *  footprint-only by design — assertions about twins apply to these dates. */
+const ohlcDates = new Set(files.map((f) => f.slice(0, 10)));
+const twinDates = authoritativeDates.filter((d) => ohlcDates.has(d));
 
 /**
  * One partial session is known-inconsistent and is deliberately quarantined:
@@ -64,9 +72,9 @@ test("every OHLC file is structurally valid", () => {
   }
 });
 
-test("every COMPLETE session has a full 390-bar RTH OHLC file", () => {
-  assert.ok(authoritativeDates.length >= 5, `${authoritativeDates.length} complete sessions`);
-  for (const d of authoritativeDates) {
+test("every COMPLETE session with an OHLC twin has a full 390-bar RTH file", () => {
+  assert.ok(twinDates.length >= 5, `${twinDates.length} complete sessions with OHLC twins`);
+  for (const d of twinDates) {
     const bars = loadOhlc(d);
     assert.ok(bars, `${d} has an OHLC file`);
     assert.equal(bars.length, 390, `${d} has 390 one-minute bars`);
@@ -75,7 +83,7 @@ test("every COMPLETE session has a full 390-bar RTH OHLC file", () => {
 
 test("complete sessions agree with their OHLC twin on every overlapping minute", () => {
   let joined = 0;
-  for (const d of authoritativeDates) {
+  for (const d of twinDates) {
     const bars = new Map((loadOhlc(d) ?? []).map((b) => [b.t.slice(11, 16), b]));
     for (const session of ["RTH", "ETH"]) {
       const candles = loadDay(d, session) ?? [];

@@ -11,12 +11,16 @@ import { WEB, DATE } from "./helpers.mjs";
 import { computeSheet } from "../lib/gcdata.ts";
 
 const GC = path.join(WEB, "..", "gcdata");
-const PY = [
-  path.join(GC, ".venv", "bin", "python"),
-  path.join(GC, "..", "..", "..", "tmp", "gcsniff", "venv", "bin", "python"),
-].find((p) => existsSync(p));
+const PY = path.join(GC, ".venv", "bin", "python");
 
-test("python and TypeScript level sheets agree exactly", { skip: !PY && "no python venv available" }, async () => {
+test(
+  "python and TypeScript level sheets agree exactly",
+  {
+    skip:
+      (!process.env.PARITY_NET && "network test — run with PARITY_NET=1 to hit GoCharting live") ||
+      (!existsSync(PY) && "no python venv available"),
+  },
+  async () => {
   const raw = execFileSync(PY, ["collect.py", "--level-sheet", "--today", DATE], {
     cwd: GC,
     env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },

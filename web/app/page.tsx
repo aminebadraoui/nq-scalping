@@ -4,11 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import FlowChart, { fmt } from "@/components/FlowChart";
 import MinuteNavigator from "@/components/MinuteNavigator";
 import SweepReclaimPanel from "@/components/SweepReclaimPanel";
+import PriceActionPanel from "@/components/PriceActionPanel";
 import PropPanel from "@/components/PropPanel";
 import SignalHistory from "@/components/SignalHistory";
 import { blendLiveMinutes, type FPMinute } from "@/lib/footprint";
 import { useLive, type LiveMinute } from "@/lib/useLive";
 import { imbalanceFor, summarizeImb } from "@/lib/imbalance";
+import { readPriceAction } from "@/lib/priceaction";
 
 type FootMinute = { t: string; d?: string; o?: number; c?: number; vwap?: number; high: number; low: number; buy: number; sell: number; delta: number };
 
@@ -113,6 +115,22 @@ export default function DashboardPage() {
   const lastPrice = lastMin ? lastMin.c || lastMin.h : snap?.ltp ?? 0;
   const chg = snap ? snap.ltp - snap.prev_close : 0;
 
+  // premium / discount location across all six timeframes, live
+  const pa = useMemo(
+    () =>
+      readPriceAction({
+        minutes: chartMinutes.map((m) => ({ high: m.h, low: m.l, t: m.t, d: m.d })),
+        lastPrice,
+        sessionHigh: snap?.high,
+        sessionLow: snap?.low,
+      }),
+    [chartMinutes, lastPrice, snap?.high, snap?.low],
+  );
+  const asOfET = new Date().toLocaleTimeString("en-US", {
+    timeZone: "America/New_York",
+    hour12: false,
+  });
+
   return (
     <main className="mx-auto min-h-screen max-w-[1600px] px-4 py-6 text-zinc-100">
       {/* header */}
@@ -199,6 +217,12 @@ export default function DashboardPage() {
 
         {/* right: the strategy */}
         <aside className="space-y-4">
+          <PriceActionPanel
+            read={pa}
+            asOfET={asOfET}
+            stale={!live?.connected}
+            source={live?.connected ? "live" : "collected"}
+          />
           <SweepReclaimPanel minutes={chartMinutes} cur={live?.cur} lastPrice={lastPrice} />
           <PropPanel />
           <SignalHistory />
