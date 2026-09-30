@@ -17,6 +17,46 @@ const OHLC_DIR = path.join(DATA_DIR, "ohlc");
 
 const OPTIONS_DIR = path.join(DATA_DIR, "options");
 
+/* ----------------- Cloudflare R2 historical store -------------------- */
+/* When GC_REMOTE_URL is set (https://pub-xxx.r2.dev), history is served
+ * from R2 instead of the local disk: objects are gzipped JSON and the
+ * manifest.json index drives listing. Neon (recent/live) still wins when
+ * the database is configured; local files are the last fallback (dev).   */
+
+const REMOTE = process.env.GC_REMOTE_URL?.replace(/\/+$/, "");
+
+type ManifestFile = {
+  key: string;
+  date: string;
+  session?: "ETH" | "RTH" | null;
+  candles?: number | null;
+};
+
+type Manifest = { generated: string; bucket: string; files: ManifestFile[] };
+
+let manifestPromise: Promise<Manifest | null> | null = null;
+
+function remoteManifest(): Promise<Manifest | null> {
+  if (!REMOTE) return Promise.resolve(null);
+  if (!manifestPromise) {
+    manifestPromise = fetch(`${REMOTE}/manifest.json`, { cache: "no-store" })
+      .then(async (r) => (r.ok ? ((await r.json()) as Manifest) : null))
+      .catch(() => null);
+  }
+  return manifestPromise;
+}
+
+async function remoteJSON(key: string): Promise<unknown | null> {
+  if (!REMOTE) return null;
+  try {
+    const r = await fetch(`${REMOTE}/${key}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
 const TICK = 25; // cents per tick (0.25 pt)
 
 export type Candle = {
@@ -34,9 +74,14 @@ export type Session = "RTH" | "ETH";
 const SAFE = /^(\d{4}-\d{2}-\d{2})_(RTH|ETH)\.json$/;
 
 async function loadDay(date: string, session: Session): Promise<Candle[] | null> {
-  if (dbEnabled()) return dbLoadDay(date, session);
+  if (dbEnabled()) {
+    const fromDb = await dbLoadDay(date, session);
+    if (fromDb) return fromDb;
+  }
   const file = `${date}_${session}.json`;
   if (!SAFE.test(file)) return null;
+  const remote = await remoteJSON(`data/${file}`);
+  if (remote) return (remote as { candles?: Candle[] }).candles ?? null;
   try {
     const raw = await fs.readFile(path.join(DATA_DIR, file), "utf8");
     const j = JSON.parse(raw);
@@ -56,15 +101,25 @@ export type OHLCBar = { o: number; h: number; l: number; c: number; v: number };
 const SAFE_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function loadOhlc(date: string): Promise<Map<string, OHLCBar>> {
-  if (dbEnabled()) return dbLoadOhlc(date);
+  if (dbEnabled()) {
+    const fromDb = await dbLoadOhlc(date);
+    if (fromDb.size > 0) return fromDb;
+  }
   const out = new Map<string, OHLCBar>();
   if (!SAFE_DATE.test(date)) return out;
-  try {
-    const raw = await fs.readFile(path.join(OHLC_DIR, `${date}.json`), "utf8");
-    const j = JSON.parse(raw);
+  const parse = (j: { bars?: { t: string; o: number; h: number; l: number; c: number; v: number }[] }) => {
     for (const b of j.bars ?? []) {
       out.set(String(b.t).slice(11, 16), { o: b.o, h: b.h, l: b.l, c: b.c, v: b.v });
     }
+  };
+  const remote = await remoteJSON(`data/ohlc/${date}.json`);
+  if (remote) {
+    parse(remote as Parameters<typeof parse>[0]);
+    return out;
+  }
+  try {
+    const raw = await fs.readFile(path.join(OHLC_DIR, `${date}.json`), "utf8");
+    parse(JSON.parse(raw));
   } catch {
     /* no OHLC file for this date — callers fall back to mid-price bars */
   }
@@ -76,6 +131,19 @@ export async function loadOhlc(date: string): Promise<Map<string, OHLCBar>> {
  * QQQ is the liquid, free proxy for NQ (NDX/SPX return 403 from CBOE). */
 
 export async function loadOptionsChain(symbol = "QQQ"): Promise<{ options: OptionRow[]; asOf: string } | null> {
+  const manifest = await remoteManifest();
+  if (manifest) {
+    const matches = manifest.files
+      .filter((f) => f.key.startsWith(`data/options/${symbol}_`) && f.key.endsWith(".json"))
+      .sort((a, b) => (a.key < b.key ? 1 : -1));
+    if (matches.length > 0) {
+      const j = await remoteJSON(matches[0].key);
+      if (j) {
+        const asOf = (matches[0].key.match(/\d{4}-\d{2}-\d{2}/) ?? [])[0] ?? "";
+        return { options: (j as { options?: OptionRow[] }).options ?? [], asOf };
+      }
+    }
+  }
   try {
     const files = await fs.readdir(OPTIONS_DIR);
     const matches = files
@@ -104,7 +172,34 @@ export async function optionsSnapshot(symbol = "QQQ"): Promise<GammaRead | null>
 export async function listDatasets(): Promise<
   { date: string; sessions: Session[]; candles: Record<Session, number> }[]
 > {
-  if (dbEnabled()) return dbListDatasets();
+  const fromDb = dbEnabled() ? await dbListDatasets() : [];
+  const dbMap = new Map(fromDb.map((d) => [d.date, d]));
+
+  const manifest = await remoteManifest();
+  const out = new Map<string, { sessions: Session[]; candles: Record<Session, number> }>();
+  const add = (date: string, session: Session, candles: number) => {
+    const e = out.get(date) ?? { sessions: [], candles: { RTH: 0, ETH: 0 } };
+    if (!e.sessions.includes(session)) e.sessions.push(session);
+    if (e.candles[session] === 0 || candles > 0) e.candles[session] = candles;
+    out.set(date, e);
+  };
+  if (manifest) {
+    for (const f of manifest.files) {
+      if (!f.key.startsWith("data/") || f.key.includes("/ohlc/") || f.key.includes("/options/")) continue;
+      const m = SAFE.exec(f.key.slice(5));
+      if (!m) continue;
+      add(m[1], m[2] as Session, f.candles ?? 0);
+    }
+  }
+  // Neon wins for dates it has (includes live rows); R2 fills the history
+  for (const d of fromDb) out.set(d.date, d);
+
+  if (out.size > 0) {
+    return [...out.entries()]
+      .map(([date, v]) => ({ date, sessions: v.sessions, candles: v.candles }))
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
+  }
+
   let files: string[] = [];
   try {
     files = await fs.readdir(DATA_DIR);

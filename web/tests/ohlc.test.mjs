@@ -13,6 +13,15 @@ const files = existsSync(path.join(DATA, "ohlc"))
 const footprintDates = readdirSync(DATA).filter((f) => /^\d{4}-\d{2}-\d{2}_RTH\.json$/.test(f)).map((f) => f.slice(0, 10)).sort();
 
 /**
+ * When the full store has been archived to R2 (scripts/r2_sync.py prune),
+ * only the test fixtures remain locally (the audited session 2026-09-25 +
+ * the quarantined 2026-09-08, with a .fixtures-only marker). The store-wide
+ * coverage/parity assertions only mean something with the full store, so
+ * they skip in fixture mode; the per-fixture assertions still run.
+ */
+const FIXTURE_ONLY = existsSync(path.join(DATA, ".fixtures-only")) || footprintDates.length < 50;
+
+/**
  * The file store now holds everything the vendor would return, and the vendor
  * THINS old history rather than truncating it: 210 of 221 collected sessions
  * come back with minutes missing from the middle and no OHLC counterpart,
@@ -72,7 +81,7 @@ test("every OHLC file is structurally valid", () => {
   }
 });
 
-test("every COMPLETE session with an OHLC twin has a full 390-bar RTH file", () => {
+test("every COMPLETE session with an OHLC twin has a full 390-bar RTH file", { skip: FIXTURE_ONLY && "full store archived to R2 — fixture mode" }, () => {
   assert.ok(twinDates.length >= 5, `${twinDates.length} complete sessions with OHLC twins`);
   for (const d of twinDates) {
     const bars = loadOhlc(d);
@@ -81,7 +90,7 @@ test("every COMPLETE session with an OHLC twin has a full 390-bar RTH file", () 
   }
 });
 
-test("complete sessions agree with their OHLC twin on every overlapping minute", () => {
+test("complete sessions agree with their OHLC twin on every overlapping minute", { skip: FIXTURE_ONLY && "full store archived to R2 — fixture mode" }, () => {
   let joined = 0;
   for (const d of twinDates) {
     const bars = new Map((loadOhlc(d) ?? []).map((b) => [b.t.slice(11, 16), b]));

@@ -75,5 +75,18 @@ log "ingest window: $SINCE .. $TO"
 INGEST_RC=$?
 log "ingest exit=$INGEST_RC"
 
+log "--- archive to R2 + free the disk ---"
+if grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
+  if python3 "$ROOT/scripts/r2_sync.py" upload 2>&1; then
+    log "r2 upload ok"
+    python3 "$ROOT/scripts/r2_sync.py" prune 2>&1
+    log "r2 prune exit=$?"
+  else
+    log "r2 upload FAILED — keeping local files until the next run"
+  fi
+else
+  log "no R2 credentials — keeping local files"
+fi
+
 log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC) ==="
 exit $INGEST_RC
