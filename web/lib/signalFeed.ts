@@ -27,6 +27,7 @@ import {
   type SignalSnapshot,
 } from "./signalEngine";
 import { detectOneSidedReclaim } from "./reclaimSetup";
+import { contractsForRisk, RAPID_EOD_50K } from "./propRules";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
 import { sendTelegram } from "./notify";
@@ -203,12 +204,21 @@ class SignalFeed {
     this.reclaimSent.add(key);
     if (this.reclaimSent.size > 500) this.reclaimSent = new Set([...this.reclaimSent].slice(-250));
 
-    const text = formatReclaimSetupHtml(setup, {
-      symbol: symbol(),
-      price: setup.entry,
-      timeET: setup.timeET,
-      source: "live",
-    });
+    // position size for a fixed dollar risk (PROP_RISK_PER_TRADE, default $170)
+    const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+    const contracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, setup.risk)));
+    const sizeStr = `${contracts} MNQ · risk $${Math.round(contracts * setup.risk * RAPID_EOD_50K.pointValue)}`;
+
+    const text = formatReclaimSetupHtml(
+      setup,
+      {
+        symbol: symbol(),
+        price: setup.entry,
+        timeET: setup.timeET,
+        source: "live",
+      },
+      sizeStr,
+    );
     const res = await sendTelegram(text, { parseMode: "HTML" });
     if (!res.sent) this.lastError = res.reason;
     await recordSignal({
@@ -220,6 +230,7 @@ class SignalFeed {
       entry: setup.entry.toFixed(2),
       stop: setup.stop.toFixed(2),
       target: setup.target.toFixed(2),
+      size: sizeStr,
       verdict: "sweep-reclaim (one-sided)",
       headline: `NQ sweep-reclaim ${setup.dir}`,
       source: "live",

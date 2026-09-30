@@ -132,7 +132,7 @@ export function formatSignalHtml(
 }
 
 /** Trade-ticket card for the sweep-reclaim + one-sided setup (67% lab win rate). */
-export function formatReclaimSetupHtml(setup: ReclaimSetup, ctx: SignalContext): string {
+export function formatReclaimSetupHtml(setup: ReclaimSetup, ctx: SignalContext, size?: string): string {
   const L: string[] = [];
   const side = setup.dir === "long" ? "🟢 LONG" : "🔴 SHORT";
   L.push(`🔔 <b>NQ SWEEP-RECLAIM · ${side}</b>`);
@@ -141,6 +141,7 @@ export function formatReclaimSetupHtml(setup: ReclaimSetup, ctx: SignalContext):
   L.push(`<b>ENTRY</b>  ${fmt(setup.entry)}  <i>(reclaim-bar close)</i>`);
   L.push(`<b>STOP</b>   ${fmt(setup.stop)}  <i>(0.5pt beyond swept ${setup.dir === "long" ? "low" : "high"} ${fmt(setup.extreme)})</i>`);
   L.push(`<b>TARGET</b> ${fmt(setup.target)}  <i>(1R = ${fmt(setup.risk)}pt)</i>`);
+  if (size) L.push(`<b>SIZE</b>   ${escHtml(size)}`);
   L.push("");
   L.push(`<i>reclaim bar ${fmt(setup.buyPct * 100, 0)}% ${setup.dir === "long" ? "buy" : "sell"} · volume ≥ session median</i>`);
   L.push("");
