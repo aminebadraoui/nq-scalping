@@ -13,7 +13,7 @@
 | Neon branch | `main` → `br-billowing-truth-b8uofwsa` (recreated 2026-09-28 to reset the 5 GB/mo transfer quota) |
 | DATABASE_URL | **secret** — `web/.env.local` (gitignored) and Coolify app env (plain var, not "shown once") |
 | R2 bucket | `nq-history` (Cloudflare account `437b14872d288fb1221f5492055c0b91`) — full 2.5y history, gzipped objects + `manifest.json` index |
-| GC_REMOTE_URL | **secret** — public `r2.dev` URL; set in `web/.env.local` (localhost) and Coolify app env (deployed) |
+| GC_REMOTE_URL | `https://pub-d68008dba02c4ad190e9814f6c41cbef.r2.dev` (public r2.dev URL of `nq-history`); set in `web/.env.local` (localhost) and Coolify app env (deployed) |
 
 ## Data flow
 
