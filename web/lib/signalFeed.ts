@@ -33,6 +33,15 @@ import { utcToET } from "./times";
 import { placeOrder } from "./executor";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
+import {
+  barPocOf,
+  barImbOf,
+  closePosOf,
+  nearestLevelOf,
+  pocStepTicks,
+  uvWatchCheck,
+  type UVWatch,
+} from "./unusualVolume";
 import { sendTelegram } from "./notify";
 import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
@@ -51,6 +60,17 @@ const CONTEXT_TTL_MS = 10 * 60 * 1000;
 const STALE_MS = 5 * 60 * 1000;
 /** need at least this many live minutes before a reversal can even form */
 const MIN_LIVE_MINUTES = 5;
+/** "at" a level = inside the codebase's standard location tolerance (NEAR) */
+const LEVEL_AT_PTS = 2.5;
+/** beyond this, the alert has no level context worth reporting */
+const LEVEL_CONTEXT_PTS = 10;
+/** stage-2 pullback watch lifetime after an unusual-volume bar (data: dominance breaks within ~1–3 min, p90) */
+const UV_WATCH_MS = 6 * 60 * 1000;
+
+function fmtPx(n: number, dp = 2): string {
+  if (!Number.isFinite(n)) return "—";
+  return n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
+}
 
 class SignalFeed {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -60,6 +80,8 @@ class SignalFeed {
   private sent = new Set<string>();
   private reclaimSent = new Set<string>();
   private volumeAlerted = new Set<string>();
+  /** stage-2 watch armed by the latest unusual-volume alert (one at a time) */
+  private pullbackWatch: UVWatch | null = null;
 
   lastSnapshot: SignalSnapshot | null = null;
   lastError: string | null = null;
@@ -255,15 +277,21 @@ class SignalFeed {
     });
   }
 
-  /** Unusual-volume heads-up: a completed minute at >=2x its hour's norm. An
-   *  alert, not a trade signal — fire once per minute. */
+  /** Unusual-volume heads-up: a completed minute at >=2x its hour's norm with
+   *  a one-sided print (>=70% buy or >=70% sell). The card carries the bar's
+   *  own footprint context (POC + migration, close position, imbalance stack)
+   *  and its location context (nearest level) — the "decision point" question.
+   *  An alert, not a trade signal — fire once per minute. */
   private async checkUnusualVolume(): Promise<void> {
     const live = getLive().state;
     if (!live.connected || !live.minutes.length) return;
-    const last = live.minutes[live.minutes.length - 1];
+    const n = live.minutes.length;
+    const last = live.minutes[n - 1];
     if (!/^\d{2}:\d{2}$/.test(last.t)) return;
     const vol = last.buy + last.sell;
     if (vol <= 0) return;
+    const buyFrac = last.buy / vol;
+    if (buyFrac < 0.7 && buyFrac > 0.3) return; // skip 50/50-ish two-way volume
     const et = utcToET(last.t, last.du);
     const etHour = parseInt(et.slice(0, 2), 10);
     if (!isUnusualVolume(etHour, vol)) return;
@@ -272,9 +300,130 @@ class SignalFeed {
     this.volumeAlerted.add(key);
     if (this.volumeAlerted.size > 500) this.volumeAlerted = new Set([...this.volumeAlerted].slice(-250));
 
+    const side = buyFrac >= 0.7 ? "buy" : "sell";
     const rv = rvol(etHour, vol);
-    const buyPct = Math.round((last.buy / vol) * 100);
-    const text = `⚠ <b>NQ UNUSUAL VOLUME</b>\n<code>${symbol()}  ${vol} contracts  ${et} NY</code>\n${rv.toFixed(1)}× the usual for this hour · ${buyPct}% buy / ${100 - buyPct}% sell\n<i>heads-up only — not a trade signal</i>`;
+    const buyPct = Math.round(buyFrac * 100);
+    const ctx = await this.ctx();
+    const details: string[] = [];
+
+    // ---- the alert bar's own footprint ----
+    const poc = barPocOf(last.levels);
+    if (poc) {
+      const prevPoc = n >= 2 ? barPocOf(live.minutes[n - 2].levels) : null;
+      const step = pocStepTicks(prevPoc?.price ?? null, poc.price);
+      const stepTxt =
+        step === null ? "" : step > 0 ? ` ↑${step} tick${step === 1 ? "" : "s"}` : step < 0 ? ` ↓${-step} tick${step === -1 ? "" : "s"}` : " flat";
+      details.push(`POC ${fmtPx(poc.price)}${stepTxt}`);
+    }
+    const pos = closePosOf(last.h, last.l, last.c);
+    if (pos !== null) {
+      details.push(pos >= 0.9 ? "closed on its high" : pos <= 0.1 ? "closed on its low" : "closed mid-range");
+    }
+    if (last.levels && Object.keys(last.levels).length) {
+      const imb = barImbOf(last.levels);
+      details.push(
+        imb
+          ? `${imb.side} stack ×${imb.len} ${fmtPx(imb.from)}–${fmtPx(imb.to)} (${imb.side === side ? "with the move" : "against the move — absorption"})`
+          : "no 3:1 stack",
+      );
+    }
+
+    // ---- location: is the move at a decision point? ----
+    const refPx = last.c > 0 ? last.c : (last.h + last.l) / 2;
+    const lvl = nearestLevelOf(ctx?.levels ?? [], refPx, LEVEL_CONTEXT_PTS);
+    details.push(
+      lvl
+        ? lvl.dist <= LEVEL_AT_PTS
+          ? `at ${lvl.label} ${lvl.kind} ${fmtPx(lvl.value)}`
+          : `near ${lvl.label} ${lvl.kind} ${fmtPx(lvl.value)} (${fmtPx(lvl.dist)} pts ${refPx >= lvl.value ? "above" : "below"})`
+        : `no level within ${LEVEL_CONTEXT_PTS} pts — middle of nowhere`,
+    );
+
+    const text = [
+      `⚠ <b>NQ UNUSUAL VOLUME</b>`,
+      `<code>${symbol()}  ${vol} contracts  ${et} NY</code>`,
+      `${rv.toFixed(1)}× the usual for this hour · ${buyPct}% buy / ${100 - buyPct}% sell`,
+      details.join(" · "),
+      `<i>heads-up only — not a trade signal</i>`,
+    ].join("\n");
+    const res = await sendTelegram(text, { parseMode: "HTML" });
+    if (!res.sent) this.lastError = res.reason;
+
+    // arm the stage-2 pullback watch on the alert bar
+    this.pullbackWatch = {
+      side,
+      high: last.h,
+      low: last.l,
+      armedIdx: n - 1,
+      armedAt: Date.now(),
+      started: false,
+      startIdx: -1,
+      pullExtreme: 0,
+    };
+  }
+
+  /** Stage 2 of the unusual-volume alert: watch the bars after a one-sided
+   *  volume bar for the pullback (first aggressive counter-side bar) and its
+   *  exhaustion (a flush of the pullback extreme reclaimed one-sidedly).
+   *  The pullback-start is context; the reclaim prints a full 1R ticket. */
+  private async checkPullbackWatch(): Promise<void> {
+    const w = this.pullbackWatch;
+    if (!w) return;
+    const live = getLive().state;
+    if (!live.connected || !live.minutes.length) return;
+    const mins = live.minutes.map((m) => ({ t: m.t, high: m.h, low: m.l, buy: m.buy, sell: m.sell, c: m.c }));
+    const ev = uvWatchCheck(w, mins, Date.now(), UV_WATCH_MS);
+    if (!ev) return;
+
+    if (ev.kind === "expired") {
+      this.pullbackWatch = null;
+      return;
+    }
+
+    if (ev.kind === "cancelled") {
+      this.pullbackWatch = null;
+      const lastMin = live.minutes[live.minutes.length - 1];
+      const text = [
+        `↩ <b>NQ PULLBACK WATCH OFF</b>`,
+        `<code>${symbol()}  ${utcToET(lastMin.t, lastMin.du)} NY</code>`,
+        `${ev.reason} — no pullback setup left to watch`,
+      ].join("\n");
+      const res = await sendTelegram(text, { parseMode: "HTML" });
+      if (!res.sent) this.lastError = res.reason;
+      return;
+    }
+
+    if (ev.kind === "start") {
+      w.started = true;
+      w.startIdx = ev.idx;
+      w.pullExtreme = ev.pullExtreme;
+      const et = utcToET(ev.t, live.minutes[ev.idx]?.du);
+      const pct = Math.round(ev.deltaPct * 100);
+      const text = [
+        `↩ <b>NQ PULLBACK STARTING</b>`,
+        `<code>${symbol()}  ${fmtPx(ev.price)}  ${et} NY</code>`,
+        `first aggressive ${ev.flipTo === "down" ? "sell" : "buy"} bar (${pct}% delta) after the unusual ${w.side} volume`,
+        `<i>watching ${fmtPx(ev.pullExtreme)} for a sweep-reclaim</i>`,
+      ].join("\n");
+      const res = await sendTelegram(text, { parseMode: "HTML" });
+      if (!res.sent) this.lastError = res.reason;
+      return;
+    }
+
+    // reclaim — the pullback is exhausted; print the 1R ticket like the
+    // sweep-reclaim feed does
+    this.pullbackWatch = null;
+    const et = utcToET(ev.t, live.minutes[live.minutes.length - 1]?.du);
+    const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+    const contracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, Math.abs(ev.entry - ev.stop))));
+    const sizeStr = `${contracts} MNQ · risk $${Math.round(contracts * Math.abs(ev.entry - ev.stop) * RAPID_EOD_50K.pointValue)}`;
+    const text = [
+      `↩ <b>NQ PULLBACK EXHAUSTED — ${ev.dir === "long" ? "🟢 LONG" : "🔴 SHORT"}</b>`,
+      `<code>${symbol()}  ${fmtPx(ev.entry)}  ${et} NY</code>`,
+      `flush of ${fmtPx(ev.swept)} reclaimed with ${Math.round(ev.buyPct * 100)}% ${ev.dir === "long" ? "buy" : "sell"} — the pullback after the unusual ${w.side} volume is likely over`,
+      `<code>ENTRY ${fmtPx(ev.entry)} · STOP ${fmtPx(ev.stop)} · TARGET ${fmtPx(ev.target)}</code> · ${sizeStr}`,
+      `<i>1R scalp — same shape as the sweep-reclaim feed</i>`,
+    ].join("\n");
     const res = await sendTelegram(text, { parseMode: "HTML" });
     if (!res.sent) this.lastError = res.reason;
   }
@@ -292,6 +441,7 @@ class SignalFeed {
       }
       await this.checkReclaimSetup();
       await this.checkUnusualVolume();
+      await this.checkPullbackWatch();
     } catch (e) {
       this.lastError = String(e);
     } finally {
