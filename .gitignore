@@ -4,6 +4,12 @@ web/.env
 web/.env.local
 web/.env.*.local
 
+# live deploy credentials live in this skill (Coolify token, Neon API key)
+.agents/skills/coolify-deploy/
+
+# ---- executor runtime state (account guard high-water mark) ----
+web/.executor-guard.json
+
 # ---- collected feed data (regenerable; Neon Postgres is the store) ----
 gcdata/data/
 gcdata/ingest_log.txt
