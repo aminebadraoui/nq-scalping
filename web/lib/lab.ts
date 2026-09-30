@@ -20,7 +20,8 @@
  *     survived in its absolute form).
  * ------------------------------------------------------------------------- */
 import { analyze, computeSheet, extractFootprint, listUsableSessions, type AbsorbEvent, type AlertEvent } from "./gcdata";
-import { readdirSync, readFileSync } from "node:fs";
+import { promises as fs, readdirSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export const EXPECTED_ETH_MINUTES = 1380;
@@ -348,6 +349,12 @@ const q = (a: number[], f: number) => {
 type Cache = { key: string; samples: LabSample[]; dates: string[]; skipped: { date: string; minutes: number }[]; at: number };
 const g = globalThis as unknown as { __labCache?: Cache };
 
+/** Rebuilding the sample set runs the full engine over ~570 sessions
+ *  (several minutes of CPU + R2 fetches), so the built set is persisted to
+ *  disk keyed by the session inventory and reused until the inventory
+ *  changes. The in-process cache handles the repeat-request fast path. */
+const CACHE_FILE = path.join(os.tmpdir(), "nq-lab-cache.json");
+
 /** Building the sample set runs the full engine per session; cache it in-process. */
 export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
   samples: LabSample[];
@@ -358,6 +365,22 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
   const key = dates.join(",");
   if (!opts.force && g.__labCache && g.__labCache.key === key && Date.now() - g.__labCache.at < 10 * 60_000) {
     return { samples: g.__labCache.samples, dates, skipped };
+  }
+  if (!opts.force) {
+    try {
+      const disk = JSON.parse(await fs.readFile(CACHE_FILE, "utf8")) as {
+        key: string;
+        samples: LabSample[];
+        dates: string[];
+        skipped: { date: string; minutes: number }[];
+      };
+      if (disk.key === key && disk.samples.length > 0) {
+        g.__labCache = { key, samples: disk.samples, dates: disk.dates, skipped: disk.skipped, at: Date.now() };
+        return { samples: disk.samples, dates: disk.dates, skipped: disk.skipped };
+      }
+    } catch {
+      /* no disk cache yet */
+    }
   }
 
   const samples: LabSample[] = [];
@@ -518,6 +541,9 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
   }
 
   g.__labCache = { key, samples, dates, skipped, at: Date.now() };
+  fs.writeFile(CACHE_FILE, JSON.stringify({ key, samples, dates, skipped })).catch(() => {
+    /* persistence is best-effort */
+  });
   return { samples, dates, skipped };
 }
 
