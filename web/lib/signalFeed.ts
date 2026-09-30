@@ -28,6 +28,8 @@ import {
 } from "./signalEngine";
 import { detectOneSidedReclaim } from "./reclaimSetup";
 import { contractsForRisk, RAPID_EOD_50K } from "./propRules";
+import { rvol, isUnusualVolume } from "./volumeProfile";
+import { utcToET } from "./times";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
 import { sendTelegram } from "./notify";
@@ -56,6 +58,7 @@ class SignalFeed {
   private lastCtxLoad = 0;
   private sent = new Set<string>();
   private reclaimSent = new Set<string>();
+  private volumeAlerted = new Set<string>();
 
   lastSnapshot: SignalSnapshot | null = null;
   lastError: string | null = null;
@@ -240,6 +243,30 @@ class SignalFeed {
     });
   }
 
+  /** Unusual-volume heads-up: a completed minute at >=2x its hour's norm. An
+   *  alert, not a trade signal — fire once per minute. */
+  private async checkUnusualVolume(): Promise<void> {
+    const live = getLive().state;
+    if (!live.connected || !live.minutes.length) return;
+    const last = live.minutes[live.minutes.length - 1];
+    if (!/^\d{2}:\d{2}$/.test(last.t)) return;
+    const vol = last.buy + last.sell;
+    if (vol <= 0) return;
+    const et = utcToET(last.t, last.du);
+    const etHour = parseInt(et.slice(0, 2), 10);
+    if (!isUnusualVolume(etHour, vol)) return;
+    const key = `${last.du ?? ""}|${last.t}`;
+    if (this.volumeAlerted.has(key)) return;
+    this.volumeAlerted.add(key);
+    if (this.volumeAlerted.size > 500) this.volumeAlerted = new Set([...this.volumeAlerted].slice(-250));
+
+    const rv = rvol(etHour, vol);
+    const buyPct = Math.round((last.buy / vol) * 100);
+    const text = `⚠ <b>NQ UNUSUAL VOLUME</b>\n<code>${symbol()}  ${vol} contracts  ${et} NY</code>\n${rv.toFixed(1)}× the usual for this hour · ${buyPct}% buy / ${100 - buyPct}% sell\n<i>heads-up only — not a trade signal</i>`;
+    const res = await sendTelegram(text, { parseMode: "HTML" });
+    if (!res.sent) this.lastError = res.reason;
+  }
+
   async tick(): Promise<void> {
     if (this.ticking) return;
     this.ticking = true;
@@ -252,6 +279,7 @@ class SignalFeed {
         await this.maybeSend(snap);
       }
       await this.checkReclaimSetup();
+      await this.checkUnusualVolume();
     } catch (e) {
       this.lastError = String(e);
     } finally {
