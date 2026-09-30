@@ -46,7 +46,7 @@ FIXTURES = {
     "2026-09-24_RTH.json",
     "2026-09-23_RTH.json",
     "2026-09-22_RTH.json",
-    "2026-09-19_RTH.json",
+    "2026-09-21_RTH.json",
     "2026-09-18_RTH.json",
     "ohlc/2026-09-25.json",
     "backtest/results.json",
@@ -154,6 +154,20 @@ def files_to_upload():
     return out
 
 
+def eth_usable(candles: list) -> bool:
+    """Mirror of web/lib/lab.ts sessionUsable: contiguous, correct session
+    window (17:00..17:15 feed-clock open, 15:59 close), >= 1360 minutes."""
+    if not candles or len(candles) < 1360:
+        return False
+    ts = [c["t"] for c in candles]
+    if not contiguous(ts):
+        return False
+    s = sorted(ts)
+    first = int(s[0][11:13]) * 60 + int(s[0][14:16])
+    last = int(s[-1][11:13]) * 60 + int(s[-1][14:16])
+    return 1020 <= first <= 1035 and last == 959
+
+
 def manifest_entry(path: str, key: str):
     raw = open(path, "rb").read()
     gz = gzip.compress(raw, 6)
@@ -161,11 +175,15 @@ def manifest_entry(path: str, key: str):
     candles = len(j.get("candles", [])) if key.startswith("data/") and key.endswith(".json") else None
     if candles is None:
         candles = len(j.get("bars", [])) if "/ohlc/" in key else None
+    usable = None
+    if key.startswith("data/") and key.endswith("_ETH.json") and not key.startswith("data/ohlc"):
+        usable = eth_usable(j.get("candles", []))
     return {
         "key": key,
         "date": os.path.basename(key)[:10] if "/options/" not in key else os.path.basename(key).split("_")[-1][:10],
         "session": ("ETH" if "_ETH" in key else "RTH") if key.startswith("data/") and "_" in os.path.basename(key) else None,
         "candles": candles,
+        "usable": usable,
         "size_raw": len(raw),
         "size_gz": len(gz),
         "sha256": hashlib.sha256(raw).hexdigest(),
@@ -277,8 +295,38 @@ def cmd_prune(dry: bool):
             f.write("full store archived to R2 — test suite runs in fixture mode\n")
 
 
+def cmd_enrich(dry: bool = False):
+    """One-off: rebuild the manifest's `usable` flags by downloading each ETH
+    object from R2 and mirroring lab.ts sessionUsable. Needed after the field
+    was introduced for stores uploaded before it existed."""
+    status, body = request("GET", "manifest.json")
+    if status != 200:
+        sys.exit(f"manifest fetch failed: HTTP {status}")
+    m = json.loads(body)
+    eth = [f for f in m["files"] if f["key"].startswith("data/") and f["key"].endswith("_ETH.json")]
+    print(f"{len(eth)} ETH objects to check")
+    for i, f in enumerate(eth, 1):
+        st, b = request("GET", f["key"])
+        if st != 200:
+            print(f"  GET {f['key']} HTTP {st} — skipping")
+            continue
+        try:
+            j = json.loads(gunzip_if_needed(b))
+            f["usable"] = eth_usable(j.get("candles", []))
+        except Exception:
+            f["usable"] = None
+        if i % 50 == 0:
+            print(f"  {i}/{len(eth)} checked")
+    if not dry:
+        st, _ = request("PUT", "manifest.json", json.dumps(m).encode(), {"content-type": "application/json"})
+        usable = sum(1 for f in eth if f.get("usable"))
+        print(f"manifest rewritten HTTP {st} — {usable} usable ETH sessions of {len(eth)}")
+    else:
+        print("dry-run — manifest not written")
+
+
 def main() -> int:
-    cmds = {"upload": cmd_upload, "verify": cmd_verify, "prune": cmd_prune}
+    cmds = {"upload": cmd_upload, "verify": cmd_verify, "prune": cmd_prune, "enrich": cmd_enrich}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         print(__doc__)
         return 1

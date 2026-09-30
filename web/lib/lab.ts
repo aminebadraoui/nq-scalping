@@ -19,7 +19,7 @@
  *     vanished when measured by the wick, and a VWAP-in-R effect that only
  *     survived in its absolute form).
  * ------------------------------------------------------------------------- */
-import { analyze, computeSheet, extractFootprint, type AbsorbEvent, type AlertEvent } from "./gcdata";
+import { analyze, computeSheet, extractFootprint, listUsableSessions, type AbsorbEvent, type AlertEvent } from "./gcdata";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -306,7 +306,13 @@ export function sessionUsable(candles: { t: string }[]): boolean {
   return first >= 1020 && first <= 1035 && last === 959 && maxgap <= 5;
 }
 
-export function discoverCompleteSessions() {
+export async function discoverCompleteSessions() {
+  // R2 is the sole data source: the manifest's per-session usable flag
+  // (computed at upload with the same contiguity/window rules) is the
+  // inventory. The local-fs scan below is the offline dev fallback.
+  const remote = await listUsableSessions();
+  if (remote) return remote;
+
   const dir = dataDir();
   const dates: string[] = [];
   const skipped: { date: string; minutes: number }[] = [];
@@ -348,7 +354,7 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
   dates: string[];
   skipped: { date: string; minutes: number }[];
 }> {
-  const { dates, skipped } = discoverCompleteSessions();
+  const { dates, skipped } = await discoverCompleteSessions();
   const key = dates.join(",");
   if (!opts.force && g.__labCache && g.__labCache.key === key && Date.now() - g.__labCache.at < 10 * 60_000) {
     return { samples: g.__labCache.samples, dates, skipped };

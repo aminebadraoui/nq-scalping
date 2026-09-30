@@ -30,6 +30,8 @@ type ManifestFile = {
   date: string;
   session?: "ETH" | "RTH" | null;
   candles?: number | null;
+  /** mirror of lab.ts sessionUsable, computed at upload time */
+  usable?: boolean | null;
 };
 
 type Manifest = { generated: string; bucket: string; files: ManifestFile[] };
@@ -44,6 +46,29 @@ function remoteManifest(): Promise<Manifest | null> {
       .catch(() => null);
   }
   return manifestPromise;
+}
+
+export type UsableSessions = {
+  dates: string[];
+  skipped: { date: string; minutes: number }[];
+};
+
+/** Lab session inventory straight from the R2 manifest (no local files).
+ *  Returns null when no remote store is configured. */
+export async function listUsableSessions(): Promise<UsableSessions | null> {
+  const manifest = await remoteManifest();
+  if (!manifest) return null;
+  const dates: string[] = [];
+  const skipped: { date: string; minutes: number }[] = [];
+  for (const f of manifest.files) {
+    if (f.session !== "ETH") continue;
+    if (f.usable) dates.push(f.date);
+    else skipped.push({ date: f.date, minutes: f.candles ?? 0 });
+  }
+  return {
+    dates: dates.sort(),
+    skipped: skipped.sort((a, b) => a.date.localeCompare(b.date)),
+  };
 }
 
 async function remoteJSON(key: string): Promise<unknown | null> {
