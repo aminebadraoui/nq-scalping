@@ -154,6 +154,28 @@ def files_to_upload():
     return out
 
 
+def contiguous(ts: list[str]) -> bool:
+    """Minutes-consecutive check without datetime parsing (same as repair_data.py)."""
+    if not ts:
+        return False
+    s = sorted(ts)
+
+    def key(t: str):
+        return (int(t[0:4]) * 372 + int(t[5:7]) * 31 + int(t[8:10]), int(t[11:13]) * 60 + int(t[14:16]))
+
+    prev = key(s[0])
+    for t in s[1:]:
+        cur = key(t)
+        if cur[0] == prev[0] and cur[1] == prev[1] + 1:
+            prev = cur
+            continue
+        if cur[0] == prev[0] + 1 and prev[1] == 24 * 60 - 1 and cur[1] == 0:
+            prev = cur
+            continue
+        return False
+    return True
+
+
 def eth_usable(candles: list) -> bool:
     """Mirror of web/lib/lab.ts sessionUsable: contiguous, correct session
     window (17:00..17:15 feed-clock open, 15:59 close), >= 1360 minutes."""
