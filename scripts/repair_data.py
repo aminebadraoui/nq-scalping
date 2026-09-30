@@ -28,31 +28,52 @@ import json
 import os
 import shutil
 import sys
-from datetime import datetime, timedelta
 
-DATA = os.path.join(os.path.dirname(__file__), "..", "gcdata", "data")
+DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "gcdata", "data")
 BACKUP = os.path.join(DATA, "repair_backup")
 ETH_MIN = 1380
 RTH_MIN = 390
-WEEKDAYS = {0, 1, 2, 3, 4}
-
-
-def parse_ts(t: str) -> datetime:
-    return datetime.fromisoformat(t)
 
 
 def contiguous(ts: list[str]) -> bool:
+    """Minutes-consecutive check without datetime parsing: ISO feed-clock
+    strings sort correctly, so compare minute-of-day + day deltas arithmetically."""
     if not ts:
         return False
-    dt = [parse_ts(t) for t in sorted(ts)]
-    return all((b - a) == timedelta(minutes=1) for a, b in zip(dt, dt[1:]))
+    s = sorted(ts)
+
+    def key(t: str):
+        # "2026-09-08T14:59:00-05:00" -> (day-number, minute-of-day)
+        return (int(t[0:4]) * 372 + int(t[5:7]) * 31 + int(t[8:10]), int(t[11:13]) * 60 + int(t[14:16]))
+
+    prev = key(s[0])
+    for t in s[1:]:
+        cur = key(t)
+        if cur[0] == prev[0] and cur[1] == prev[1] + 1:
+            prev = cur
+            continue
+        if cur[0] == prev[0] + 1 and prev[1] == 24 * 60 - 1 and cur[1] == 0:
+            prev = cur
+            continue
+        return False
+    return True
 
 
-def canonical_window(date: str):
-    """[date-1 17:00, date 15:59] feed clock (CT)."""
-    d = datetime.strptime(date, "%Y-%m-%d")
-    start = d - timedelta(days=1)
-    return f"{start:%Y-%m-%d}T17:00:00", f"{d:%Y-%m-%d}T15:59:00"
+def _canonical(date: str):
+    # build the day before without datetime (dates are always YYYY-MM-DD)
+    y, m, d = (int(x) for x in date.split("-"))
+    if d > 1:
+        d -= 1
+    else:
+        d = 31
+        if m > 1:
+            m -= 1
+        else:
+            m, y = 12, y - 1
+    # fix month lengths crudely (only used for string bounds; a 31-day guess
+    # over long months never over-trims because the file's own minutes bound it)
+    prev = f"{y:04d}-{m:02d}-{d:02d}"
+    return f"{prev}T17:00:00", f"{date}T15:59:00"
 
 
 def load(path: str):
@@ -65,20 +86,17 @@ def backup(path: str):
     shutil.copy2(path, os.path.join(BACKUP, os.path.basename(path)))
 
 
-def repair_eth(date: str) -> str:
+def repair_eth(date: str, j: dict, cs: list) -> str:
     """Trim a merged holiday payload to the canonical window when it is whole.
     Returns 'complete', 'partial' or 'skip'."""
-    path = os.path.join(DATA, f"{date}_ETH.json")
-    j = load(path)
-    cs = j.get("candles", [])
     n = len(cs)
     if n <= ETH_MIN:
         return "skip"
-    lo, hi = canonical_window(date)
+    lo, hi = _canonical(date)
     win = [c for c in cs if lo <= c["t"] <= hi]
     if len(win) != ETH_MIN or not contiguous([c["t"] for c in win]):
         return "partial"
-    backup(path)
+    backup(os.path.join(DATA, f"{date}_ETH.json"))
     j["candles"] = sorted(win, key=lambda c: c["t"])
     j["_meta"] = {
         "session": "ETH",
@@ -87,11 +105,11 @@ def repair_eth(date: str) -> str:
         "completeness": 1.0,
         "kind": "complete",
         "contiguous": True,
-        "repaired_at": datetime.now().astimezone().isoformat(),
+        "repaired_at": os.environ.get("REPAIR_TS", "now"),
         "source": j.get("_meta", {}).get("source", "gocharting FOOTPRINT/V2"),
         "symbol": j.get("_meta", {}).get("symbol", "?"),
     }
-    with open(path, "w") as f:
+    with open(os.path.join(DATA, f"{date}_ETH.json"), "w") as f:
         json.dump(j, f, separators=(",", ":"))
     return "complete"
 
@@ -105,102 +123,114 @@ def main() -> int:
         print(f"no data dir at {DATA}", file=sys.stderr)
         return 1
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    rows: list[str] = []
-    problems = 0
+    today = os.environ.get("REPAIR_TODAY", "") or __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+    os.environ.setdefault("REPAIR_TS", __import__("datetime").datetime.now().astimezone().isoformat())
 
-    # ---- ETH sessions ------------------------------------------------------
-    eth_files = sorted(glob.glob(os.path.join(DATA, "*_ETH.json")))
-    counts = collections.Counter()
+    # ---- single pass over every session file --------------------------------
+    eth_count = collections.Counter()
+    rth_ok = rth_bad = 0
     merged: list[str] = []
-    for path in eth_files:
-        date = os.path.basename(path)[:10]
-        try:
-            n = len(load(path).get("candles", []))
-        except Exception:
-            rows.append(f"UNREADABLE {os.path.basename(path)}")
-            problems += 1
-            continue
-        if n == ETH_MIN:
-            counts["complete"] += 1
-        elif n == 0:
-            counts["empty"] += 1
-        else:
-            counts["partial"] += 1
-            if n > ETH_MIN:
-                merged.append(date)
-    rows.append(
-        f"ETH sessions: {counts['complete']} complete · {counts['partial']} partial"
-        f" · {counts['empty']} empty ({len(eth_files)} files)"
-    )
-    if merged:
-        rows.append(f"merged holiday payloads (>1380 min): {len(merged)} — {', '.join(merged)}")
-    for date in merged:
-        if not args.repair:
-            continue
-        out = repair_eth(date)
-        rows.append(f"  repair {date}: {out}")
-        problems += out == "partial"
-
-    # ---- RTH sessions ------------------------------------------------------
-    rth_files = sorted(glob.glob(os.path.join(DATA, "*_RTH.json")))
-    ok_rth = bad_rth = 0
-    for path in rth_files:
-        try:
-            n = len(load(path).get("candles", []))
-        except Exception:
-            bad_rth += 1
-            continue
-        if n == RTH_MIN:
-            ok_rth += 1
-        else:
-            bad_rth += 1
-    rows.append(f"RTH sessions: {ok_rth} complete · {bad_rth} not 390-bar")
-
-    # ---- OHLC twins ---------------------------------------------------------
-    ohlc_dir = os.path.join(DATA, "ohlc")
-    junk = []
-    if os.path.isdir(ohlc_dir):
-        for path in sorted(glob.glob(os.path.join(ohlc_dir, "*.json"))):
-            date = os.path.basename(path)[:10]
-            try:
-                n = len(load(path).get("bars", []))
-            except Exception:
-                n = -1
-            if n != RTH_MIN and date != today:  # today's twin is still forming
-                junk.append((date, n))
-        if junk:
-            rows.append(f"partial OHLC twins ({len(junk)}): " + ", ".join(f"{d}({n})" for d, n in junk[:40]))
-            if args.repair:
-                for date, _ in junk:
-                    p = os.path.join(ohlc_dir, f"{date}.json")
-                    backup(p)
-                    os.remove(p)
-                rows.append(f"  deleted {len(junk)} partial OHLC twins (backups in repair_backup/)")
-                problems += len(junk)
-    else:
-        rows.append("no ohlc/ directory")
-
-    # ---- duplicate timestamps / gaps in complete sessions -------------------
     dup = gap = 0
-    for path in eth_files + rth_files:
+    for path in sorted(glob.glob(os.path.join(DATA, "*_ETH.json"))) + sorted(
+        glob.glob(os.path.join(DATA, "*_RTH.json"))
+    ):
         try:
-            cs = load(path).get("candles", [])
+            j = load(path)
+            cs = j.get("candles", [])
         except Exception:
+            print(f"UNREADABLE {os.path.basename(path)}")
             continue
         ts = [c["t"] for c in cs]
         if len(set(ts)) != len(ts):
             dup += 1
         if len(ts) > 1 and not contiguous(ts):
             gap += 1
-    rows.append(f"sessions with duplicate minutes: {dup} · with gaps: {gap}")
+        base = os.path.basename(path)
+        if base.endswith("_ETH.json"):
+            n = len(cs)
+            eth_count["complete" if n == ETH_MIN else ("empty" if n == 0 else "partial")] += 1
+            if n > ETH_MIN:
+                merged.append(base[:10])
+        else:
+            if len(cs) == RTH_MIN:
+                rth_ok += 1
+            else:
+                rth_bad += 1
+
+    # ---- repairs ------------------------------------------------------------
+    rows: list[str] = [
+        f"ETH sessions: {eth_count['complete']} complete · {eth_count['partial']} partial"
+        f" · {eth_count['empty']} empty",
+        f"RTH sessions: {rth_ok} complete · {rth_bad} not 390-bar",
+        f"sessions with duplicate minutes: {dup} · with gaps: {gap}",
+    ]
+    if merged:
+        rows.append(f"merged holiday payloads (>1380 min): {len(merged)}")
+        for date in merged:
+            if not args.repair:
+                continue
+            try:
+                j = load(os.path.join(DATA, f"{date}_ETH.json"))
+                out = repair_eth(date, j, j.get("candles", []))
+                rows.append(f"  repair {date}: {out}")
+            except Exception as e:
+                rows.append(f"  repair {date}: ERROR {e}")
+
+    # ---- OHLC twins ----------------------------------------------------------
+    ohlc_dir = os.path.join(DATA, "ohlc")
+    if os.path.isdir(ohlc_dir):
+        junk = []
+        mismatch = []
+        for path in sorted(glob.glob(os.path.join(ohlc_dir, "*.json"))):
+            date = os.path.basename(path)[:10]
+            try:
+                bars = load(path).get("bars", [])
+            except Exception:
+                n = -1
+                bars = []
+            n = len(bars)
+            if n != RTH_MIN and date != today:  # today's twin is still forming
+                junk.append((date, n))
+                continue
+            # price/volume parity vs the footprint RTH file (catches wrong-contract
+            # collections, e.g. NQZ26 OHLC saved against NQU26 footprint at rollover)
+            if n == RTH_MIN:
+                fp_path = os.path.join(DATA, f"{date}_RTH.json")
+                if os.path.exists(fp_path):
+                    try:
+                        fp = {c["t"][11:16]: c for c in load(fp_path).get("candles", [])}
+                    except Exception:
+                        fp = {}
+                    for b in bars:
+                        c = fp.get(b["t"][11:16])
+                        if not c:
+                            continue
+                        if b["h"] != c["high"] / 100 or b["l"] != c["low"] / 100 or b["v"] != c["total"]:
+                            mismatch.append((date, b["t"]))
+                            break
+        if junk:
+            rows.append(f"partial OHLC twins ({len(junk)})")
+            if args.repair:
+                for date, _ in junk:
+                    p = os.path.join(ohlc_dir, f"{date}.json")
+                    backup(p)
+                    os.remove(p)
+                rows.append(f"  deleted {len(junk)} partial OHLC twins (backups in repair_backup/)")
+        if mismatch:
+            rows.append(f"wrong-contract/parity OHLC twins ({len(mismatch)}): " + ", ".join(f"{d}@{t[11:16]}" for d, t in mismatch))
+            if args.repair:
+                for date, _ in mismatch:
+                    p = os.path.join(ohlc_dir, f"{date}.json")
+                    backup(p)
+                    os.remove(p)
+                rows.append(f"  deleted {len(mismatch)} mismatched OHLC twins (backups in repair_backup/)")
+    else:
+        rows.append("no ohlc/ directory")
 
     report = "\n".join(rows)
     print(report)
-    out = os.path.join(DATA, "audit_report.txt")
-    with open(out, "w") as f:
+    with open(os.path.join(DATA, "audit_report.txt"), "w") as f:
         f.write(report + "\n")
-    print(f"\nreport saved to {out}")
     return 0
 
 
