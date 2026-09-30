@@ -237,20 +237,12 @@ function mean(arr: number[]): number {
 /* ---------------- sweep variants ---------------- */
 
 const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
-  // sweep 4 — freeze candidates around f+bw8
-  { name: "P0", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8 } },
-  { name: "P0+pad0.75", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, stopPad: 0.75 } },
-  { name: "P0+pad1.0", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, stopPad: 1.0 } },
-  { name: "P0+vwap", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, requireVwapSide: true } },
-  { name: "P0+r70", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, respFrac: 0.7, respProofN: 3 } },
-  { name: "P0+delta", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, deltaConfirm: true } },
-  { name: "P0+t1.25", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, targetR: 1.25 } },
-  { name: "P0+pad0.75+t1.25", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, stopPad: 0.75, targetR: 1.25 } },
-  { name: "P0+pad0.75+vwap", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, stopPad: 0.75, requireVwapSide: true } },
-  { name: "P0+pad0.75+r70", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, stopPad: 0.75, respFrac: 0.7, respProofN: 3 } },
-  { name: "P0+pad0.75+r70+vwap", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 8, stopPad: 0.75, respFrac: 0.7, respProofN: 3, requireVwapSide: true } },
-  { name: "P0+b80", overrides: { stopMode: "breakout", breakFrac: 0.8, minRiskPts: 2, breakWindow: 8 } },
-  { name: "P0+bw10", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 10 } },
+  // early-fire question: is the failed flush (or its response) alone tradable?
+  { name: "prod (breakout)", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 10 } },
+  { name: "responseOnly", overrides: { fireAt: "response", stopMode: "flush", minRiskPts: 2 } },
+  { name: "flushOnly", overrides: { fireAt: "flush", stopMode: "flush", minRiskPts: 0 } },
+  { name: "flushOnly+minR2", overrides: { fireAt: "flush", stopMode: "flush", minRiskPts: 2 } },
+  { name: "responseOnly+tight", overrides: { fireAt: "response", stopMode: "flush", minRiskPts: 2, targetR: 1.5 } },
 ];
 
 /* ---------------- main ---------------- */

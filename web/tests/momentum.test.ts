@@ -171,3 +171,23 @@ test("default config (flush stop) also catches the run — the runner variant", 
   assert.ok(Math.abs(s.stop - 30712.25) < 0.01, `stop ${s.stop}`);
   assert.ok(s.risk > 20, "wide structural risk");
 });
+
+test("fireAt=response enters on the one-sided response bar (structural stop)", () => {
+  const sigs = detectMomentum(bars(TAPE), { ...MOM_DEFAULTS, fireAt: "response", stopMode: "flush" });
+  const longs = sigs.filter((s) => s.dir === "long");
+  assert.ok(longs.length >= 1);
+  const s = longs[0];
+  assert.equal(s.t, "22:11"); // the 71%-buy response bar
+  assert.ok(Math.abs(s.entry - 30721.75) < 0.01, `entry ${s.entry}`);
+  assert.ok(Math.abs(s.stop - 30712.25) < 0.01, `stop ${s.stop}`);
+});
+
+test("fireAt=flush enters on the failed flush bar itself", () => {
+  const sigs = detectMomentum(bars(TAPE), { ...MOM_DEFAULTS, fireAt: "flush", stopMode: "flush" });
+  const longs = sigs.filter((s) => s.dir === "long");
+  assert.ok(longs.length >= 1);
+  const s = longs[0];
+  assert.equal(s.t, "22:10"); // the 78%-sell failed flush
+  assert.ok(Math.abs(s.entry - 30723.875) < 0.01, `entry ${s.entry}`);
+  assert.ok(Math.abs(s.stop - 30712.25) < 0.01, `stop ${s.stop}`);
+});

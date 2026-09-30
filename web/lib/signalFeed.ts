@@ -441,6 +441,21 @@ class SignalFeed {
         : `no level within ${LEVEL_CONTEXT_PTS} pts — middle of nowhere`,
     );
 
+    // ---- the momentum watch this bar arms: a one-sided bar that FAILS to
+    //      make a new extreme is stage 1-2 of the momentum sequence ----
+    const sessLow = live.snapshot?.low ?? Math.min(...live.minutes.map((m) => m.l));
+    const sessHigh = live.snapshot?.high ?? Math.max(...live.minutes.map((m) => m.h));
+    if (side === "sell" && last.l > sessLow) {
+      let ref = -Infinity;
+      for (let k = Math.max(0, n - 3); k < n; k++) ref = Math.max(ref, live.minutes[k].h);
+      details.push(`failed flush (no new session low) — momentum watch for a buy breakout above ${fmtPx(ref)}`);
+    }
+    if (side === "buy" && last.h < sessHigh) {
+      let ref = Infinity;
+      for (let k = Math.max(0, n - 3); k < n; k++) ref = Math.min(ref, live.minutes[k].l);
+      details.push(`failed rally (no new session high) — momentum watch for a sell breakdown below ${fmtPx(ref)}`);
+    }
+
     const text = [
       `⚠ <b>NQ UNUSUAL VOLUME</b>`,
       `<code>${symbol()}  ${vol} contracts  ${et} NY</code>`,

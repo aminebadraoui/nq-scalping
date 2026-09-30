@@ -75,6 +75,30 @@ good as the original. Every Globex hour prints ≥ 62% win rate. The test
 window (2026) beats the train window — the family sat on a stable plateau
 (72–73% win across every adjacent threshold variant), not a knife-edge.
 
+## Why the flush alone is NOT a signal (measured)
+
+The question "unusual sell volume + no lower low = buy?" is testable with the
+same replay — the detector has a `fireAt` knob ("flush" / "response" /
+"breakout") and every early-fire variant was measured:
+
+| Fire point | Trades | Win rate | PF | Net pts |
+|---|---|---|---|---|
+| **flush alone** (buy every failed flush) | 36,243 | **29.5%** | **0.26** | −77,364 |
+| response bar (one-sided counter) | 3,333 | 65.6% | 1.56 | +2,946 |
+| **breakout bar (the signal)** | 502 | **72.9%** | **2.25** | +643 |
+
+Buying every failed flush is ruinous — most failed flushes just consolidate
+or continue. The one-sided **response** is where the trade becomes viable,
+and the **breakout** is the confirmation that concentrates the edge (and
+cuts the trade count 6.6×, which is what keeps the win rate at 73%).
+That is why the sequence fires on the breakout, not the flush.
+
+Live integration: when the unusual-volume heads-up fires and the bar fails
+to make a new extreme, the alert card now prints the watch line —
+`failed flush (no new session low) — momentum watch for a buy breakout
+above X` (mirrored for failed rallies) — so the alert doubles as the
+stage-1/2 heads-up for the card that follows.
+
 ## The knobs that matter (what the sweeps showed)
 
 Four sweeps, ~80 config variants, judged on the 2026-01-01 chronological

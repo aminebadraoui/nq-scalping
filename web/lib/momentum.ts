@@ -56,6 +56,11 @@ export type MomConfig = {
   breakVolFloor: number;
   breakVolMedMult: number;
   breakWindow: number;
+  /** where the sequence fires: "breakout" (the validated signal) or the
+   *  earlier stages — "response" (fire on the one-sided response bar) or
+   *  "flush" (fire on the failed flush bar itself). Early fires use the
+   *  structural flush-extreme stop. */
+  fireAt: "breakout" | "response" | "flush";
   /** confirm the breakout with `holdBars` no-give-back bars before entry */
   holdBars: number;
   holdTolPts: number;
@@ -105,6 +110,7 @@ export const MOM_DEFAULTS: MomConfig = {
   breakVolFloor: 15,
   breakVolMedMult: 0.5,
   breakWindow: 6,
+  fireAt: "breakout",
   holdBars: 0,
   holdTolPts: 1.0,
   refLookback: 2,
@@ -382,14 +388,16 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     const entryBar = minutes[at];
     const entry = closeOf(entryBar);
     const dir = w.dir;
+    // non-breakout fires have no breakout bar — they always use the
+    // structural stop under the flush extreme
     const stop =
-      cfg.stopMode === "flush"
+      cfg.stopMode === "breakout" && cfg.fireAt === "breakout"
         ? dir === "long"
-          ? w.flushLow - cfg.stopPad
-          : w.flushHigh + cfg.stopPad
-        : dir === "long"
           ? bk.low - cfg.stopPad
-          : bk.high + cfg.stopPad;
+          : bk.high + cfg.stopPad
+        : dir === "long"
+          ? w.flushLow - cfg.stopPad
+          : w.flushHigh + cfg.stopPad;
     const risk = Math.abs(entry - stop);
     if (!(risk > 0) || risk > cfg.maxRiskPts || risk < cfg.minRiskPts) return null;
     if (cfg.requireVwapSide) {
@@ -462,9 +470,26 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     // ---- long watch ----
     if (!longWatch) {
       longWatch = startLong(i);
+      if (longWatch && cfg.fireAt === "flush") {
+        const sig = emit(i, longWatch, i, out.length);
+        if (sig) {
+          out.push(sig);
+          lastSignalIdx = i;
+        }
+        longWatch = null;
+        continue;
+      }
     } else if (longWatch.respIdx < 0) {
       if (i - longWatch.flushIdx <= cfg.respWindow) {
-        tryResponse(i, longWatch);
+        if (tryResponse(i, longWatch) && cfg.fireAt === "response") {
+          const sig = emit(i, longWatch, i, out.length);
+          if (sig) {
+            out.push(sig);
+            lastSignalIdx = i;
+          }
+          longWatch = null;
+          continue;
+        }
       } else {
         longWatch = null;
       }
@@ -504,9 +529,26 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     // ---- short watch ----
     if (!shortWatch) {
       shortWatch = startShort(i);
+      if (shortWatch && cfg.fireAt === "flush") {
+        const sig = emit(i, shortWatch, i, out.length);
+        if (sig) {
+          out.push(sig);
+          lastSignalIdx = i;
+        }
+        shortWatch = null;
+        continue;
+      }
     } else if (shortWatch.respIdx < 0) {
       if (i - shortWatch.flushIdx <= cfg.respWindow) {
-        tryResponse(i, shortWatch);
+        if (tryResponse(i, shortWatch) && cfg.fireAt === "response") {
+          const sig = emit(i, shortWatch, i, out.length);
+          if (sig) {
+            out.push(sig);
+            lastSignalIdx = i;
+          }
+          shortWatch = null;
+          continue;
+        }
       } else {
         shortWatch = null;
       }

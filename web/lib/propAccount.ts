@@ -163,7 +163,7 @@ export function simulateAccount(
 
 /** one-line account summary for harness output */
 export function accountLine(s: AccountSimResult): string {
-  if (s.breachDay) return `breach ${s.breachDay} (equity $${s.finalEquity.toFixed(0)})`;
+  if (s.breachDay) return `breach ${s.breachDay} (equity $${(s.breachEquity ?? 0).toFixed(0)})`;
   if (s.stage === "eval") {
     return s.passDay
       ? `PASS ${s.passDay} · $${s.finalEquity.toFixed(0)} · consist ${s.consistencyOk ? "✓" : "✗"} · days ${s.tradingDays}/${s.minDaysOk ? "✓" : "✗"}`
