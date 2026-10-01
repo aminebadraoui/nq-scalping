@@ -41,9 +41,14 @@ export type OpenDriveConfig = {
    *  "scan" = scan the WHOLE 9:30-9:59 window: first new opening extreme
    *  backed by cumD >= floor and a one-sided bar = the real move (96% hit
    *  at TP10/SL30, 87% of days);
+   *  "pullback" = the trader's morning instinct, made objective: trend
+   *  (15-bar cumD) + a counter bar that holds the 5-bar low with SHRINKING
+   *  counter-delta (exhaustion) + a reclaim bar with the trend — enter at
+   *  the reclaim close, stop under the pullback low (69.8% win, +5.2 pts
+   *  net per trade in the 9:30-10:30 window);
    *  "daily" = the 9:30 bar's own delta sign (available EVERY day:
    *  TP15/SL35 touches +15 in ~1 bar 79% of sessions, +4.4 pts gross). */
-  mode: "drive" | "daily" | "scan";
+  mode: "drive" | "daily" | "scan" | "pullback";
 };
 
 export const OPEN_DEFAULTS: OpenDriveConfig = {
@@ -166,6 +171,84 @@ export function detectOpenDrive(minutes: MomMinute[], cfg: OpenDriveConfig = OPE
       breakVwapPos: 0.5,
       flushRangeR: 0,
     });
+    return out;
+  }
+
+  if (cfg.mode === "pullback") {
+    // 9:30-10:30: trend + exhausted pullback + reclaim (lib/pullbackEntry study)
+    const endK = Math.min(n - 1, i0 + 60);
+    let lastSignal = i0 - 10;
+    for (let k = i0 + 16; k <= endK; k++) {
+      if (k - lastSignal < 5) continue;
+      // the trend: trailing 15-bar cumulative delta before the current bar
+      let D = 0;
+      for (let j = Math.max(i0, k - 15); j < k; j++) D += minutes[j].buy - minutes[j].sell;
+      if (D === 0) continue;
+      const pb = minutes[k - 1];
+      const pbD = pb.buy - pb.sell;
+      const dir: "long" | "short" = D > 0 ? "long" : "short";
+      if (dir === "long" ? pbD >= 0 : pbD <= 0) continue; // last bar must be counter-trend
+      // structure held + shrinking counter-aggression
+      let lo5 = Infinity;
+      let hi5 = -Infinity;
+      for (let j = k - 6; j <= k - 2; j++) {
+        lo5 = Math.min(lo5, minutes[j].low);
+        hi5 = Math.max(hi5, minutes[j].high);
+      }
+      if (dir === "long" ? pb.low < lo5 - 0.25 : pb.high > hi5 + 0.25) continue;
+      const prevD = minutes[k - 2].buy - minutes[k - 2].sell;
+      if (Math.abs(pbD) >= Math.abs(prevD)) continue; // exhaustion required
+      // trigger: reclaim the pullback with trend-side delta
+      const m = minutes[k];
+      const mD = m.buy - m.sell;
+      if (dir === "long" ? !(closeOf(m) > pb.high && mD > 0) : !(closeOf(m) < pb.low && mD < 0)) continue;
+      const entry = closeOf(m);
+      const stop = dir === "long" ? pb.low - cfg.stopPad : pb.high + cfg.stopPad;
+      const risk = Math.abs(entry - stop);
+      if (!(risk > 0) || risk > cfg.maxRiskPts) continue;
+      const target = dir === "long" ? entry + cfg.targetR * risk : entry - cfg.targetR * risk;
+      lastSignal = k;
+      out.push({
+        dir,
+        kind: "flush" as const,
+        flushIdx: k - 1,
+        respIdx: k,
+        breakIdx: k,
+        entryIdx: k,
+        entry,
+        stop,
+        target,
+        risk,
+        t: m.t,
+        d: m.d,
+        hourET: hourET(m.t),
+        flushFrac: 0.5,
+        flushVol: m.buy + m.sell,
+        flushRange: m.high - m.low,
+        failDepth: 0,
+        respFrac: m.buy + m.sell > 0 ? m.buy / (m.buy + m.sell) : 0.5,
+        respVol: m.buy + m.sell,
+        respDelay: 1,
+        respProof: 0,
+        breakFrac: m.buy + m.sell > 0 ? m.buy / (m.buy + m.sell) : 0.5,
+        breakVol: m.buy + m.sell,
+        breakDelay: 1,
+        refDist: 0,
+        progressPts: 0,
+        medVol: medVol(k),
+        distVwapPts: 0,
+        cumDelta: D,
+        deltaFromFlush: D,
+        atr14: atrAt(k),
+        riskPts: risk,
+        trailLowDist: 0,
+        trailHighDist: 0,
+        breakRangeR: (m.high - m.low) / Math.max(0.25, atrAt(k)),
+        breakStack: "none",
+        breakVwapPos: 0.5,
+        flushRangeR: 0,
+      });
+    }
     return out;
   }
 
@@ -323,3 +406,14 @@ export function detectOpenDrive(minutes: MomMinute[], cfg: OpenDriveConfig = OPE
   }
   return out;
 }
+
+/** The pullback-entry config — the trader's morning pattern made objective
+ *  (trend + exhausted pullback + reclaim). 9:30-10:30 study: 69.8% win at
+ *  1R, +5.2 pts net per trade, 440 trades over 568 sessions. */
+export const PULLBACK_PROD: OpenDriveConfig = {
+  ...OPEN_DEFAULTS,
+  mode: "pullback",
+  stopPad: 0.5,
+  targetR: 1,
+  maxRiskPts: 25,
+};

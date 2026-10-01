@@ -23,7 +23,7 @@ import { getLive } from "./live";
 import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD } from "./momentum";
-import { detectOpenDrive, OPEN_PROD } from "./openDrive";
+import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD } from "./openDrive";
 import { momentumSize } from "./propRules";
 import {
   loadCollectedContext,
@@ -400,10 +400,14 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 60) return;
     const fp = liveMinutesToFootprint(live.minutes);
-    const sigs = detectOpenDrive(fp, OPEN_PROD);
-    for (const s of sigs) {
+    const jobs = [
+      { key: "open", title: "OPEN DRIVE", sigs: detectOpenDrive(fp, OPEN_PROD), plan: "fixed TP/SL plan" },
+      { key: "pullback", title: "OPEN PULLBACK", sigs: detectOpenDrive(fp, PULLBACK_PROD), plan: "1R plan" },
+    ];
+    for (const job of jobs) {
+    for (const s of job.sigs) {
       if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
-      const key = `${s.d}|${s.dir}|${s.t}`;
+      const key = `${job.key}|${s.d}|${s.dir}|${s.t}`;
       if (this.openSent.has(key)) continue;
       this.openSent.add(key);
       if (this.openSent.size > 200) this.openSent = new Set([...this.openSent].slice(-100));
@@ -423,16 +427,20 @@ class SignalFeed {
       }).catch(() => {});
 
       const et = cdtToET(s.t);
+      const evidence =
+        job.key === "pullback"
+          ? `trend delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · pullback reclaimed with ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`
+          : `opening-range breakout · delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`;
       const text = [
-        `🔔 <b>OPEN DRIVE ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
+        `🔔 <b>${job.title} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
         `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
         `<code>STOP    ${fmtPx(s.stop)}</code>`,
         `<code>TARGET  ${fmtPx(s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `opening-range breakout · delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`,
-        `<i>fixed TP/SL plan · experimental — journal separately</i>`,
+        evidence,
+        `<i>${job.plan} · experimental — journal separately</i>`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
       if (!res.sent) this.lastError = res.reason;
@@ -446,13 +454,14 @@ class SignalFeed {
         stop: s.stop.toFixed(2),
         target: s.target.toFixed(2),
         size: sizeStr,
-        verdict: "open drive (experimental)",
-        headline: `NQ open drive ${s.dir}`,
+        verdict: job.key === "pullback" ? "open pullback (experimental)" : "open drive (experimental)",
+        headline: `NQ ${job.key === "pullback" ? "open pullback" : "open drive"} ${s.dir}`,
         source: "live",
         test: false,
         sent: res.sent,
         reason: res.reason,
       });
+    }
     }
   }
 

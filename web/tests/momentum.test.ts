@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, MOM_DEFAULTS, EXP_PROD, type MomMinute } from "../lib/momentum";
-import { detectOpenDrive, OPEN_PROD } from "../lib/openDrive";
+import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD } from "../lib/openDrive";
 import { momentumSize, RAPID_EOD_50K } from "../lib/propRules";
 
 /** compact bar builder: [t, high, low, buy, sell, levels?] */
@@ -292,4 +292,34 @@ test("open drive: cumulative delta + huge bar through the opening high fires lon
   assert.ok(Math.abs(s.stop - (entry - 35)) < 0.01, `stop ${s.stop}`);
   assert.ok(Math.abs(s.target - (entry + 15)) < 0.01, `target ${s.target}`);
   assert.ok(Math.abs(s.risk - 35) < 0.01, `risk ${s.risk}`);
+});
+
+test("pullback mode: trend + exhausted pullback + reclaim fires the morning entry", () => {
+  const quiet: [string, number, number, number, number][] = [];
+  for (let i = 0; i < 58; i++) {
+    const t = `06:${String(i % 60).padStart(2, "0")}`;
+    quiet.push([t, 100.25, 99.75, 50, 50]);
+  }
+  const win: [string, number, number, number, number][] = [];
+  // 08:30-08:44: 15 up-trend bars (+40 delta each)
+  for (let j = 0; j < 15; j++) {
+    win.push([`08:${String(30 + j).padStart(2, "0")}`, 101 + j, 100 + j, 70, 30]);
+  }
+  // 08:45: first counter bar (delta -40) — too big to be "shrinking" yet
+  win.push(["08:45", 115.5, 114.8, 10, 50]);
+  // 08:46: the pullback (delta -20, shrinking vs -40, holds the 5-bar low)
+  win.push(["08:46", 115.0, 114.6, 30, 50]);
+  // 08:47: the reclaim — closes above the pullback high with buy delta
+  win.push(["08:47", 115.5, 114.7, 60, 20]);
+  const m = bars([...quiet, ...win]);
+  const sigs = detectOpenDrive(m, PULLBACK_PROD);
+  assert.equal(sigs.length, 1);
+  const s = sigs[0];
+  assert.equal(s.dir, "long");
+  assert.equal(s.t, "08:47");
+  assert.ok(s.cumDelta > 0, `trend delta ${s.cumDelta}`);
+  const entry = (115.5 + 114.7) / 2; // 115.1
+  assert.ok(Math.abs(s.entry - entry) < 0.01, `entry ${s.entry}`);
+  assert.ok(Math.abs(s.stop - 114.1) < 0.01, `stop ${s.stop}`); // pullback low 114.6 - 0.5
+  assert.ok(Math.abs(s.target - (entry + (entry - 114.1))) < 0.01, `target ${s.target}`);
 });
