@@ -156,3 +156,249 @@ main().catch((e) => {
   console.error(e);
   process.exit(1);
 });
+
+
+/* ---------------- failed local flush → buy the close ---------------- */
+
+async function flushHold() {
+  const dates = await archiveDates();
+  console.log(`failed-local-flush study over ${dates.length} sessions (9:30-10:30)…`);
+  const t0 = Date.now();
+  const hourET = (t: string): number => (Number(t.slice(0, 2)) + 1) % 24;
+  const mmOf = (t: string): number => Number(t.slice(3, 5));
+  const VARIANTS = [
+    { name: "fh60", minDelta: 60, minFrac: 0.55 },
+    { name: "fh40", minDelta: 40, minFrac: 0.55 },
+    { name: "fh80", minDelta: 80, minFrac: 0.55 },
+    { name: "fh60f60", minDelta: 60, minFrac: 0.6 },
+  ];
+  const agg = new Map<string, { n: number; wins: number; exp: number }>();
+  for (const date of dates) {
+    const minutes = await loadSessionMinutes(date);
+    if (!minutes) continue;
+    let i0 = -1;
+    for (let i = 0; i < minutes.length; i++) if (hourET(minutes[i].t) === 9 && mmOf(minutes[i].t) >= 30) { i0 = i; break; }
+    if (i0 < 0 || i0 + 4 >= minutes.length) continue;
+    const endK = Math.min(minutes.length - 1, i0 + 60);
+    let lastSignal = i0 - 10;
+    for (let k = i0 + 2; k <= endK; k++) {
+      if (k - lastSignal < 5) continue;
+      const h = hourET(minutes[k].t);
+      if (h !== 9 && h !== 10) continue;
+      const m = minutes[k];
+      const vol = m.buy + m.sell;
+      if (vol < 200) continue;
+      const arr: number[] = [];
+      for (let j = Math.max(0, k - 15); j < k; j++) arr.push(minutes[j].buy + minutes[j].sell);
+      const medV = arr.sort((x, y) => x - y)[Math.floor(arr.length / 2)] ?? 1;
+      if (vol < 1.5 * medV) continue;
+      const delta = m.buy - m.sell;
+      const frac = vol > 0 ? m.buy / vol : 0.5;
+      let dir: "long" | "short" | null = null;
+      let usedVariant = false;
+      for (const v of VARIANTS) {
+        dir = delta <= -v.minDelta && frac <= 1 - v.minFrac ? "long" : delta >= v.minDelta && frac >= v.minFrac ? "short" : null;
+        if (dir === null) continue;
+        let lo5 = Infinity;
+        let hi5 = -Infinity;
+        for (let j = k - 5; j < k; j++) {
+          lo5 = Math.min(lo5, minutes[j].low);
+          hi5 = Math.max(hi5, minutes[j].high);
+        }
+        const held = dir === "long" ? m.low >= lo5 - 0.5 : m.high <= hi5 + 0.5;
+        if (!held) continue;
+        const entry = closeOf(m);
+        const stop = dir === "long" ? m.low - 0.5 : m.high + 0.5;
+        const risk = Math.abs(entry - stop);
+        if (!(risk > 0) || risk > 25) continue;
+        const target = dir === "long" ? entry + risk : entry - risk;
+        let win = false;
+        for (let j = k + 1; j <= Math.min(minutes.length - 1, k + 60); j++) {
+          const b = minutes[j];
+          const fav = dir === "long" ? b.high - entry : entry - b.low;
+          const adv = dir === "long" ? entry - b.low : b.high - entry;
+          if (adv >= risk) break;
+          if (fav >= risk) { win = true; break; }
+        }
+        const key = `${v.name}|${dir}`;
+        const a = agg.get(key) ?? { n: 0, wins: 0, exp: 0 };
+        a.n++;
+        if (win) { a.wins++; a.exp += risk - 0.5; } else { a.exp += -risk - 0.5; }
+        agg.set(key, a);
+        usedVariant = true;
+      }
+      if (usedVariant) lastSignal = k;
+    }
+  }
+  console.log(`${(Date.now() - t0) / 1000}s\n`);
+  console.log("variant  | dir   | n   | wr     | exp pts/trade (net)");
+  for (const v of VARIANTS) {
+    for (const dir of ["long", "short"]) {
+      const a = agg.get(`${v.name}|${dir}`);
+      if (!a) continue;
+      const wr = a.n ? (100 * a.wins) / a.n : 0;
+      console.log(`${v.name.padEnd(8)} | ${dir.padEnd(5)} | ${String(a.n).padStart(4)} | ${wr.toFixed(1).padStart(5)}% | ${(a.exp / a.n).toFixed(2).padStart(8)}`);
+    }
+  }
+}
+
+
+/* ------- opening-range extreme defense (the 9:31-low defense trade) ------- */
+
+async function rangeDefense() {
+  const dates = await archiveDates();
+  console.log(`opening-range defense study over ${dates.length} sessions…`);
+  const t0 = Date.now();
+  const hourET = (t: string): number => (Number(t.slice(0, 2)) + 1) % 24;
+  const mmOf = (t: string): number => Number(t.slice(3, 5));
+  const agg = new Map<string, { n: number; wins: number; exp: number }>();
+  for (const date of dates) {
+    const minutes = await loadSessionMinutes(date);
+    if (!minutes) continue;
+    let i0 = -1;
+    for (let i = 0; i < minutes.length; i++) if (hourET(minutes[i].t) === 9 && mmOf(minutes[i].t) >= 30) { i0 = i; break; }
+    if (i0 < 0 || i0 + 8 >= minutes.length) continue;
+    // the opening range = first 6 minutes (9:30-9:35)
+    let rHi = -Infinity;
+    let rLo = Infinity;
+    for (let k = i0; k <= Math.min(i0 + 5, minutes.length - 1); k++) {
+      rHi = Math.max(rHi, minutes[k].high);
+      rLo = Math.min(rLo, minutes[k].low);
+    }
+    let lastSignal = i0 - 10;
+    for (let k = i0 + 6; k <= Math.min(minutes.length - 1, i0 + 30); k++) {
+      if (k - lastSignal < 5) continue;
+      const h = hourET(minutes[k].t);
+      if (h !== 9 && h !== 10) continue;
+      const m = minutes[k];
+      const vol = m.buy + m.sell;
+      const arr: number[] = [];
+      for (let j = Math.max(0, k - 15); j < k; j++) arr.push(minutes[j].buy + minutes[j].sell);
+      const medV = arr.sort((x, y) => x - y)[Math.floor(arr.length / 2)] ?? 1;
+      if (vol < Math.max(300, 1.5 * medV)) continue;
+      const delta = m.buy - m.sell;
+      const frac = vol > 0 ? m.buy / vol : 0.5;
+      // flush into the range extreme that HOLDS it
+      let dir: "long" | "short" | null = null;
+      let held: boolean;
+      if (delta < -60 && frac < 0.5) {
+        dir = "long";
+        held = m.low >= rLo - 1;
+      } else if (delta > 60 && frac > 0.5) {
+        dir = "short";
+        held = m.high <= rHi + 1;
+      } else continue;
+      if (!held) continue;
+      const entry = closeOf(m);
+      const stop = dir === "long" ? m.low - 0.5 : m.high + 0.5;
+      const risk = Math.abs(entry - stop);
+      if (!(risk > 0) || risk > 25) continue;
+      const target = dir === "long" ? entry + risk : entry - risk;
+      let win = false;
+      for (let j = k + 1; j <= Math.min(minutes.length - 1, k + 60); j++) {
+        const b = minutes[j];
+        const fav = dir === "long" ? b.high - entry : entry - b.low;
+        const adv = dir === "long" ? entry - b.low : b.high - entry;
+        if (adv >= risk) break;
+        if (fav >= risk) { win = true; break; }
+      }
+      const key = dir;
+      const a = agg.get(key) ?? { n: 0, wins: 0, exp: 0 };
+      a.n++;
+      if (win) { a.wins++; a.exp += risk - 0.5; } else { a.exp += -risk - 0.5; }
+      agg.set(key, a);
+      lastSignal = k;
+    }
+  }
+  console.log(`${(Date.now() - t0) / 1000}s\n`);
+  for (const [dir, a] of agg) {
+    const wr = a.n ? (100 * a.wins) / a.n : 0;
+    console.log(`rangeDefense ${dir}: n=${a.n} wr=${wr.toFixed(1)}% exp=${(a.exp / a.n).toFixed(2)} pts/trade (net)`);
+  }
+}
+
+
+/* -------- opening-range-low limit fade (your 9:36:01 fill pattern) -------- */
+
+async function orlFade() {
+  const dates = await archiveDates();
+  console.log(`ORL limit-fade study over ${dates.length} sessions…`);
+  const t0 = Date.now();
+  const hourET = (t: string): number => (Number(t.slice(0, 2)) + 1) % 24;
+  const mmOf = (t: string): number => Number(t.slice(3, 5));
+  const PLANS: { name: string; entryPad: number; stopPad: number; target: number }[] = [
+    { name: "p0s8t25", entryPad: 0, stopPad: 8, target: 25 },
+    { name: "p2s8t25", entryPad: 2, stopPad: 8, target: 25 },
+    { name: "p5s10t30", entryPad: 5, stopPad: 10, target: 30 },
+    { name: "p5s10t45", entryPad: 5, stopPad: 10, target: 45 },
+  ];
+  const agg = new Map<string, { n: number; wins: number; exp: number }>();
+  for (const date of dates) {
+    const minutes = await loadSessionMinutes(date);
+    if (!minutes) continue;
+    let i0 = -1;
+    for (let i = 0; i < minutes.length; i++) if (hourET(minutes[i].t) === 9 && mmOf(minutes[i].t) >= 30) { i0 = i; break; }
+    if (i0 < 0 || i0 + 8 >= minutes.length) continue;
+    // opening range = first 6 minutes
+    let rHi = -Infinity;
+    let rLo = Infinity;
+    for (let k = i0; k <= Math.min(i0 + 5, minutes.length - 1); k++) {
+      rHi = Math.max(rHi, minutes[k].high);
+      rLo = Math.min(rLo, minutes[k].low);
+    }
+    // condition: a flush bar (after the range) holds the range low
+    let defended = false;
+    for (let k = i0 + 6; k <= Math.min(minutes.length - 1, i0 + 15); k++) {
+      const m = minutes[k];
+      const vol = m.buy + m.sell;
+      const arr: number[] = [];
+      for (let j = Math.max(0, k - 15); j < k; j++) arr.push(minutes[j].buy + minutes[j].sell);
+      const medV = arr.sort((x, y) => x - y)[Math.floor(arr.length / 2)] ?? 1;
+      if (vol < Math.max(300, 1.5 * medV)) continue;
+      if (m.buy - m.sell < -60 && m.low >= rLo - 1) { defended = true; break; }
+    }
+    if (!defended) continue;
+    for (const plan of PLANS) {
+      const entry = rLo + plan.entryPad;
+      const stop = rLo - plan.stopPad;
+      const target = entry + plan.target;
+      // the limit gets filled only if price trades down to it; then score
+      let filled = false;
+      let fillBar = -1;
+      for (let k = i0 + 6; k <= Math.min(minutes.length - 1, i0 + 30); k++) {
+        if (minutes[k].low <= entry) { filled = true; fillBar = k; break; }
+      }
+      if (!filled) continue;
+      let win = false;
+      let stopOut = false;
+      for (let j = fillBar + 1; j <= Math.min(minutes.length - 1, fillBar + 60); j++) {
+        const b = minutes[j];
+        if (b.low <= stop) { stopOut = true; break; }
+        if (b.high >= target) { win = true; break; }
+      }
+      const key = plan.name;
+      const a = agg.get(key) ?? { n: 0, wins: 0, exp: 0 };
+      a.n++;
+      if (win) { a.wins++; a.exp += plan.target - 0.5; } else if (stopOut) { a.exp += -(entry - stop) - 0.5; } else { a.exp += 0; }
+      agg.set(key, a);
+    }
+  }
+  console.log(`${(Date.now() - t0) / 1000}s\n`);
+  console.log("plan       | n   | wr     | exp pts/trade (net)");
+  for (const plan of PLANS) {
+    const a = agg.get(plan.name);
+    if (!a) continue;
+    const wr = a.n ? (100 * a.wins) / a.n : 0;
+    console.log(`${plan.name.padEnd(10)} | ${String(a.n).padStart(4)} | ${wr.toFixed(1).padStart(5)}% | ${(a.exp / a.n).toFixed(2).padStart(8)}`);
+  }
+}
+
+if (process.argv.includes("--orl")) {
+  orlFade().catch((e) => { console.error(e); process.exit(1); });
+} else if (process.argv.includes("--range")) {
+  rangeDefense().catch((e) => { console.error(e); process.exit(1); });
+} else if (process.argv.includes("--flush")) {
+  flushHold().catch((e) => { console.error(e); process.exit(1); });
+} else {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}
