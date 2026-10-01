@@ -449,7 +449,7 @@ class SignalFeed {
         `<code>TARGET  ${fmtPx(s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
+        `${s.breakFrac >= 0.65 || s.breakFrac <= 0.35 ? "A+ " : ""}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
         `<i>0.75R plan · experimental — journal separately</i>`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });

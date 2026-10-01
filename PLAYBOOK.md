@@ -131,6 +131,13 @@ eval PASS, consistency ✓, never breaches. (The 1R version: 73.9%; the
 interaction cell "≥5 clusters + ≥65% + big" shows 84.8% next-bar accuracy
 but converts worse in 1R mechanics.)
 
+**A+ tier (rerun flow, second pattern):** the same setup at **≥65%
+one-sidedness** — 1,699 trades, **80.1% WR, PF 3.07**, per year
+82.4% / 81.0% / 77.9% / 81.1%, 491 sessions, never breaches. The card
+prints `A+` when the bar clears 65% — the higher-conviction RTH trade.
+The absorption-fade family (fading extreme pushes) was measured and
+rejected: 31.2% WR, breaches the account.
+
 ---
 
 ## ARCHIVED / OFF

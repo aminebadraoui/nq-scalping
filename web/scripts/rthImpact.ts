@@ -125,6 +125,28 @@ async function main() {
       if (cond(-1)) scoreStrat("fp3-t0.75", -1, { tR: 0.75 });
       if (cond(1) && biasDir === 1) scoreStrat("fp3+bias+stop0.5", 1, { stopPad: 0.5 });
       if (cond(-1) && biasDir === -1) scoreStrat("fp3+bias+stop0.5", -1, { stopPad: 0.5 });
+      // rerun flow — improve the 0.75R winner
+      if (cond(1) && biasDir === 1) scoreStrat("fp3-t0.75+bias", 1, { tR: 0.75 });
+      if (cond(-1) && biasDir === -1) scoreStrat("fp3-t0.75+bias", -1, { tR: 0.75 });
+      if (cond(1) && cumD15 > 0) scoreStrat("fp3-t0.75+trend", 1, { tR: 0.75 });
+      if (cond(-1) && cumD15 < 0) scoreStrat("fp3-t0.75+trend", -1, { tR: 0.75 });
+      if (cond(1)) scoreStrat("fp3-t0.75+stop0.5", 1, { tR: 0.75, stopPad: 0.5 });
+      if (cond(-1)) scoreStrat("fp3-t0.75+stop0.5", -1, { tR: 0.75, stopPad: 0.5 });
+      if (vol >= 0.5 * medVol(k) && (buyC >= 3 && frac >= 0.65 && rr >= 1.0)) scoreStrat("fp3-65-big-t0.75", 1, { tR: 0.75 });
+      if (vol >= 0.5 * medVol(k) && (sellC >= 3 && frac <= 0.35 && rr >= 1.0)) scoreStrat("fp3-65-big-t0.75", -1, { tR: 0.75 });
+      // second family: absorption fade at the 20-bar extreme
+      let hi20 = -Infinity;
+      let lo20 = Infinity;
+      for (let j = k - 20; j < k; j++) {
+        hi20 = Math.max(hi20, minutes[j].high);
+        lo20 = Math.min(lo20, minutes[j].low);
+      }
+      const pushUp = vol >= 1.0 * medVol(k) && frac >= 0.65 && m.high <= hi20 + 0.5;
+      const pushDn = vol >= 1.0 * medVol(k) && frac <= 0.35 && m.low >= lo20 - 0.5;
+      if (pushUp) scoreStrat("absorb-fade", -1, { tR: 0.75 });
+      if (pushDn) scoreStrat("absorb-fade", 1, { tR: 0.75 });
+      if (pushUp) scoreStrat("absorb-fade-1R", -1, { tR: 1 });
+      if (pushDn) scoreStrat("absorb-fade-1R", 1, { tR: 1 });
       if (vol >= 0.5 * medVol(k) && (buyC >= 3 && frac >= 0.65 && rr >= 0.8)) scoreStrat("fp3-65-mid", 1);
       if (vol >= 0.5 * medVol(k) && (sellC >= 3 && frac <= 0.35 && rr >= 0.8)) scoreStrat("fp3-65-mid", -1);
       // the top interaction cells: >=5 dominant clusters + >=65% one-sided + big candle
@@ -152,6 +174,8 @@ async function main() {
 
   const w = strat.get("fp3-t0.75");
   if (w) writeFileSync("/tmp/rth_winner.json", JSON.stringify(w.trades));
+  const w2 = strat.get("fp3-65-big-t0.75");
+  if (w2) writeFileSync("/tmp/rth_winner2.json", JSON.stringify(w2.trades));
   console.log("\n== strategy variants (1R, stop under bar, RTH) ==");
   for (const [key, a] of [...strat.entries()].sort()) {
     const wr = a.n ? (100 * a.wins) / a.n : 0;
