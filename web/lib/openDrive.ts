@@ -32,6 +32,11 @@ export type OpenDriveConfig = {
   /** "close" = the bar must CLOSE through the opening extreme; "high" =
    *  a trade-through is enough (entry still at the close) */
   entryMode: "close" | "high";
+  /** fixed stop/target distances (pts). 0 = the 1R mechanics. The open
+   *  excursion study: TP10/SL30 hits 89% in ~1 bar with +5.6 pts
+   *  expectancy under the strict direction rule. */
+  fixedTpPts: number;
+  fixedSlPts: number;
 };
 
 export const OPEN_DEFAULTS: OpenDriveConfig = {
@@ -45,16 +50,21 @@ export const OPEN_DEFAULTS: OpenDriveConfig = {
   targetR: 1,
   windowMin: 30,
   entryMode: "close",
+  fixedTpPts: 0,
+  fixedSlPts: 0,
 };
 
-/** The experimental production config — the strict variant of the sweep:
- *  74.3% win / PF 2.82 over 74 trades (best quality, ~1 signal per 8
- *  sessions; sample too small to fully validate). FEED_OPEN defaults OFF —
+/** The experimental production config — the strict direction rule with the
+ *  fixed-stop plan from the open excursion study: TP 10 / SL 30 touches the
+ *  target within ~1 bar 89% of the time (median adverse excursion ~1 pt,
+ *  gross +5.6 pts/trade; ~+5.1 after 0.5 cost). FEED_OPEN defaults OFF —
  *  journal every card separately if enabled. */
 export const OPEN_PROD: OpenDriveConfig = {
   ...OPEN_DEFAULTS,
   cumDeltaFloor: 300,
   minBuyFrac: 0.5,
+  fixedTpPts: 10,
+  fixedSlPts: 30,
 };
 
 function med(a: number[]): number {
@@ -125,10 +135,21 @@ export function detectOpenDrive(minutes: MomMinute[], cfg: OpenDriveConfig = OPE
     if (!dir) continue;
 
     const entry = closeOf(m);
-    const stop = dir === "long" ? m.low - cfg.stopPad : m.high + cfg.stopPad;
-    const risk = Math.abs(entry - stop);
-    if (!(risk > 0) || risk < cfg.minRiskPts || risk > cfg.maxRiskPts) continue;
-    const target = dir === "long" ? entry + cfg.targetR * risk : entry - cfg.targetR * risk;
+    let stop: number;
+    let target: number;
+    let risk: number;
+    if (cfg.fixedSlPts > 0) {
+      // fixed-stop plan (the open excursion study): wide stop, small TP,
+      // tiny size — the 89%-in-one-bar plan
+      stop = dir === "long" ? entry - cfg.fixedSlPts : entry + cfg.fixedSlPts;
+      target = dir === "long" ? entry + cfg.fixedTpPts : entry - cfg.fixedTpPts;
+      risk = cfg.fixedSlPts;
+    } else {
+      stop = dir === "long" ? m.low - cfg.stopPad : m.high + cfg.stopPad;
+      risk = Math.abs(entry - stop);
+      if (!(risk > 0) || risk < cfg.minRiskPts || risk > cfg.maxRiskPts) continue;
+      target = dir === "long" ? entry + cfg.targetR * risk : entry - cfg.targetR * risk;
+    }
 
     fired = true;
     out.push({

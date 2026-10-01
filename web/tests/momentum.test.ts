@@ -287,5 +287,8 @@ test("open drive: cumulative delta + huge bar through the opening high fires lon
   assert.equal(s.t, "08:31"); // 9:31 ET
   assert.ok(s.cumDelta >= 300, `cumD ${s.cumDelta}`);
   assert.ok(Math.abs(s.entry - 105.25) < 0.01, `entry ${s.entry}`);
-  assert.ok(Math.abs(s.stop - 99.5) < 0.01, `stop ${s.stop}`);
+  // the fixed TP/SL plan: 30-pt stop, 10-pt target from the entry
+  assert.ok(Math.abs(s.stop - 75.25) < 0.01, `stop ${s.stop}`);
+  assert.ok(Math.abs(s.target - 115.25) < 0.01, `target ${s.target}`);
+  assert.ok(Math.abs(s.risk - 30) < 0.01, `risk ${s.risk}`);
 });
