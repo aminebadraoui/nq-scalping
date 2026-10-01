@@ -9,6 +9,18 @@ import {
   type Session,
 } from "@/lib/gcdata";
 import { getOptionsFeed } from "@/lib/optionsFeed";
+import { crossTradeEnabled, mapInstrument } from "@/lib/crossTrade";
+import {
+  FEED_MOMENTUM,
+  FEED_RTH,
+  FEED_OPEN,
+  FEED_OPEN_DRIVE,
+  FEED_OPEN_PULLBACK,
+  FEED_OPEN_SNIPER,
+  FEED_REVERSAL,
+  FEED_SWEEP_RECLAIM,
+  FEED_PULLBACK_TICKET,
+} from "@/lib/signalFeed";
 
 const SESSIONS: Session[] = ["RTH", "ETH"];
 
@@ -69,13 +81,33 @@ export async function GET(req: NextRequest) {
         } catch (e) {
           sessionsInfo = { error: String(e) };
         }
+        // the execution arm — what THIS container would do at the next signal
+        const acct = process.env.CROSSTRADE_ACCOUNT ?? "";
+        const masked = acct.length > 8 ? `${acct.slice(0, 4)}…${acct.slice(-4)}` : acct || null;
         return Response.json({
           ok: true,
-          buildId: "readthrough-v2",
+          buildId: "readthrough-v3",
           sessions: sessionsInfo,
           hasDbUrl: !!process.env.DATABASE_URL,
           dbUrlHost: process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : null,
           dataDir: process.env.GC_DATA_DIR ?? null,
+          execution: {
+            crosstradeConfigured: crossTradeEnabled(),
+            account: masked,
+            instrument: mapInstrument(process.env.GOCHARTING_SYMBOL || "NQZ26", process.env.CROSSTRADE_INSTRUMENT),
+            executeLive: process.env.EXECUTE_LIVE === "1",
+            feeds: {
+              momentum: FEED_MOMENTUM,
+              rth: FEED_RTH,
+              openDrive: FEED_OPEN_DRIVE,
+              open: FEED_OPEN,
+              openPullback: FEED_OPEN_PULLBACK,
+              openSniper: FEED_OPEN_SNIPER,
+              reversal: FEED_REVERSAL,
+              sweepReclaim: FEED_SWEEP_RECLAIM,
+              pullbackTicket: FEED_PULLBACK_TICKET,
+            },
+          },
           now: new Date().toISOString(),
         });
       }
