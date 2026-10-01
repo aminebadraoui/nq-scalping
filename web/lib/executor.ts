@@ -18,6 +18,7 @@
 import { existsSync } from "fs";
 import path from "path";
 import type { Browser, Page } from "playwright";
+import { crossTradeEnabled, placeCrossTradeOrder } from "./crossTrade";
 
 /** Playwright is installed into <repo>/.playwright-browsers (gitignored), not
  *  the user's default cache — point the launcher at it so a headed launch never
@@ -261,6 +262,7 @@ let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
  *  in dry-run (no session to keep warm — don't pop a browser for nothing). */
 export async function keepAlive(): Promise<void> {
   if (!executorEnabled() || placing) return;
+  if (crossTradeEnabled()) return; // CrossTrade backend — no browser session to warm
   if (process.env.EXECUTE_LIVE !== "1") return;
   if (session && (await sessionAlive(session.page))) return;
   try {
@@ -398,6 +400,11 @@ async function placeOrderLiveInner(intent: OrderIntent): Promise<{ ok: boolean; 
 }
 
 export async function placeOrder(intent: OrderIntent): Promise<{ ok: boolean; reason: string }> {
+  // CrossTrade webhook backend takes priority when configured — one HTTP
+  // POST at signal time instead of the headed-browser path below.
+  if (crossTradeEnabled()) {
+    return placeCrossTradeOrder(intent);
+  }
   if (!executorEnabled()) return { ok: false, reason: "TRADOVATE_* not configured" };
 
   const live = process.env.EXECUTE_LIVE === "1";

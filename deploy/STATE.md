@@ -56,6 +56,28 @@
 - Row counts 2026-09-30: candles_1m 25,394 · footprint_ticks 987,524 ·
   events 9,098 · profile_sheets 77 · sessions 26.
 
+## Trade execution (2026-10-01)
+
+- **CrossTrade webhook backend**: `web/lib/crossTrade.ts` places bracketed market
+  orders on the MFF Tradovate account (eval, `MFFUEVREOD706880006`) via the
+  CrossTrade cloud webhook — no Tradovate API key, no browser, no VPS. Wired
+  inside `placeOrder()` (lib/executor.ts): when `CROSSTRADE_*` is set it takes
+  priority over the Playwright path, which remains the fallback.
+- **The VPS is the single live executor**: `EXECUTE_LIVE=1` lives ONLY in the
+  Coolify app env. Local `web/.env.local` keeps `EXECUTE_LIVE=0` so the Mac
+  never double-executes. Coolify env: `CROSSTRADE_URL`, `CROSSTRADE_KEY`,
+  `CROSSTRADE_ACCOUNT`, `EXECUTE_LIVE=1` (plain vars, not shown-once).
+- Feed defaults trade momentum + RTH + open-drive at normal sizing
+  (`FIXED_CONTRACTS` unset, `$170` risk budget, 30-micro cap). The sweep-reclaim
+  and pullback cards remain off (`FEED_*` defaults in lib/signalFeed.ts).
+- Orders carry exchange-side brackets (stop/target computed by CrossTrade from
+  the live quote), `require_market_position=flat`, and CrossTrade flags them
+  `isAutomated` for Tradovate compliance. No auto-retry on network timeout —
+  verify Alert History instead (exactly-once is not guaranteed).
+- Account-guard parity is NOT yet wired for the CrossTrade path (the MFF floor/
+  consistency guard reads the browser page). Sizing embeds the loss math
+  (10×$170 < $2,000 MLL), but the guard is a known follow-up.
+
 ## Auto-deploy
 
 **Coolify's native GitHub webhook** (no Actions workflow — the API-key workflow
