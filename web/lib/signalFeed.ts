@@ -84,9 +84,9 @@ export const FEED_PULLBACK_TICKET = feedFlag("FEED_PULLBACK_TICKET", false);
  *  PF 2.25 in the 568-session replay — joins the one-sided run. */
 export const FEED_MOMENTUM = feedFlag("FEED_MOMENTUM", true);
 /** FEED_RTH — the RTH soft-continuation card (lib/softMomentum.ts).
- *  EXPERIMENTAL: 69.4% win / +2.6 pts net over 3,815 trades — off by
- *  default; journal separately if enabled. */
-export const FEED_RTH = feedFlag("FEED_RTH", false);
+ *  ON: footprint-proven continuation — 10,325 trades, 82.2% win, PF 3.47,
+ *  every year ≥ 77.7%, account sim never breaches (see PLAYBOOK.md). */
+export const FEED_RTH = feedFlag("FEED_RTH", true);
 /** FEED_OPEN — the 9:30 opening-drive card (lib/openDrive.ts). EXPERIMENTAL:
  *  74.3% win / PF 2.82 over only 74 trades — off by default; journal
  *  separately from the main strategy if enabled. */
