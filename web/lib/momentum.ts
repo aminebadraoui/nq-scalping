@@ -94,7 +94,7 @@ export type MomConfig = {
    *  multiplier makes the gates unreachable mid-session. */
   volCapAbs: number;
   /** hour filter: "none" = all hours, "globex" = skip RTH (9:30–16:00 ET) */
-  hourFilter: "none" | "globex";
+  hourFilter: "none" | "globex" | "globexOpen";
   /** breakout bar quality: minimum range ÷ ATR14 (candle size filter;
    *  0 = off). The feature study: big one-sided bars continue, small bars
    *  don't. */
@@ -322,6 +322,14 @@ function barPocPos(levels: { price: number; buy: number; sell: number }[], range
   return range > 0.25 && pocPrice > 0 ? (pocPrice - low) / range : 0.5;
 }
 
+/** RTH exclusion per the hour filter. "globexOpen" allows the 9:30-9:59
+ *  opening drive but excludes the rest of RTH (10:00-16:00). */
+function rthBlocked(hh: number, mm: number, filter: "none" | "globex" | "globexOpen"): boolean {
+  if (filter === "none") return false;
+  if (filter === "globexOpen") return (hh >= 10 && hh <= 15) || (hh === 16 && mm === 0);
+  return (hh === 9 && mm >= 30) || (hh >= 10 && hh <= 15) || (hh === 16 && mm === 0);
+}
+
 export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAULTS): MomentumSignal[] {
   const n = minutes.length;
   const out: MomentumSignal[] = [];
@@ -515,12 +523,7 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
       if (dir === "long" && bk.high <= sessHi) return null;
       if (dir === "short" && bk.low >= sessLo) return null;
     }
-    if (cfg.hourFilter === "globex") {
-      const hh = hourET(entryBar.t);
-      const mm = Number(entryBar.t.slice(3, 5));
-      const rth = (hh === 9 && mm >= 30) || (hh >= 10 && hh <= 15) || (hh === 16 && mm === 0);
-      if (rth) return null;
-    }
+    if (rthBlocked(hourET(entryBar.t), Number(entryBar.t.slice(3, 5)), cfg.hourFilter)) return null;
     if (cfg.deltaConfirm) {
       const d = cumD[at] - cumD[w.flushIdx];
       if (dir === "long" && d <= 0) return null;
@@ -765,7 +768,7 @@ export type ExpansionConfig = {
   stopPad: number;
   targetR: number;
   minGapBars: number;
-  hourFilter: "none" | "globex";
+  hourFilter: "none" | "globex" | "globexOpen";
   medWindow: number;
   /** candle POC gates (same as the momentum detector's) */
   requireBreakPoc: boolean;
@@ -833,11 +836,7 @@ export function detectExpansionScalp(minutes: MomMinute[], cfg: ExpansionConfig 
     const dir: "long" | "short" = m.buy > m.sell ? "long" : "short";
     const stack = barStack(m.levels);
     if (cfg.requireStack && stack !== (dir === "long" ? "buy" : "sell")) continue;
-    if (cfg.hourFilter === "globex") {
-      const hh = hourET(m.t);
-      const mm = Number(m.t.slice(3, 5));
-      if ((hh === 9 && mm >= 30) || (hh >= 10 && hh <= 15) || (hh === 16 && mm === 0)) continue;
-    }
+    if (rthBlocked(hourET(m.t), Number(m.t.slice(3, 5)), cfg.hourFilter)) continue;
     if (cfg.requireBreakPoc || cfg.requirePocMove) {
       const pocPos = barPocPos(m.levels, range, m.low);
       let pocMove = 0;

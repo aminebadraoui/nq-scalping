@@ -235,6 +235,7 @@ const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
   { name: "prod+local2", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 2 } },
   { name: "prod+local3", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 3 } },
   { name: "prod+local5", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 5 } },
+  { name: "prod+open", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, hourFilter: "globexOpen" } },
   { name: "prod+local60", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 60 } },
   { name: "prod+local120", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 120 } },
 ];
@@ -252,6 +253,7 @@ const EXPANSION_VARIANTS: { name: string; overrides: Partial<ExpansionConfig> }[
   { name: "exp1.6s+poc", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, requireBreakPoc: true } },
   { name: "exp1.6s+pocMove", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, requirePocMove: true } },
   { name: "exp1.6s+poc+pocMove", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, requireBreakPoc: true, requirePocMove: true } },
+  { name: "exp1.6s+open", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, hourFilter: "globexOpen" } },
 ];
 
 /* ---------------- main ---------------- */

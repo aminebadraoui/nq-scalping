@@ -76,6 +76,17 @@ through are filtered equally well downstream. Kept as a config option; the
 live unusual-volume watch line now reports BOTH (session + local 20-bar)
 failure reads for the manual trader.
 
+**The 9:30 open window: TESTED — ZERO signals.** `hourFilter: "globexOpen"`
+(allows 9:30–9:59, excludes the rest of RTH) was swept on both triggers:
+signal counts are IDENTICAL to the globex-only configs (1,828 and 4,189) —
+across 568 sessions the ≥70/75% one-sided gates never complete at the
+open. The opening drive is real but two-way at the 1-minute bar level
+(2026-09-30: 9:30 = 52% buy on 5.4k, 9:31 = 63.5% buy on 7.9k, +72 pts).
+Catching the open would require lowering one-sidedness below the validated
+floor, and the measured cliff says that destroys the edge (70% → 76% WR,
+60% territory trends toward the 29.5% flush-only disaster). Kept as a
+research knob; the open stays silent by design.
+
 ## What each footprint feature says on its own
 
 - **Delta share** — the strongest bar-level directional signal: >50% buy →
