@@ -110,6 +110,12 @@ export type MomConfig = {
   /** skip breakout bars that are churn: both buy AND sell dominant clusters
    *  present (both-side diagonals = two-way volatility, not a run). */
   churnVeto: boolean;
+  /** breakout bar's candle POC must sit in the trade direction's half
+   *  (top half for longs) — the POC-position lead (57% vs 43% next-bar up). */
+  requireBreakPoc: boolean;
+  /** breakout bar's POC must migrate in the trade direction vs the prior
+   *  bar (POC up >0 for longs) — the POC-migration lead (59% vs 40%). */
+  requirePocMove: boolean;
 };
 
 export const MOM_DEFAULTS: MomConfig = {
@@ -150,6 +156,8 @@ export const MOM_DEFAULTS: MomConfig = {
   requireBreakStack: false,
   quietBeforeFlush: false,
   churnVeto: false,
+  requireBreakPoc: false,
+  requirePocMove: false,
 };
 
 /** The production momentum config — frozen after the 568-session sweeps
@@ -290,6 +298,20 @@ function barVwapPos(levels: { price: number; buy: number; sell: number }[], rang
     den += v;
   }
   return den > 0 ? (num / den - low) / range : 0.5;
+}
+
+/** candle POC position: the most-traded price, as 0..1 of the bar's range */
+function barPocPos(levels: { price: number; buy: number; sell: number }[], range: number, low: number): number {
+  let pocPrice = 0;
+  let pocVol = -1;
+  for (const l of levels) {
+    const v = l.buy + l.sell;
+    if (v > pocVol) {
+      pocVol = v;
+      pocPrice = l.price;
+    }
+  }
+  return range > 0.25 && pocPrice > 0 ? (pocPrice - low) / range : 0.5;
 }
 
 export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAULTS): MomentumSignal[] {
@@ -511,6 +533,18 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
       }
       if (domBuy >= 3 && domSell >= 3) return null; // churn bar — two-way, not a run
     }
+    // candle POC gates (feature study: POC at the bar's top → 57% next-bar
+    // up vs 43% at the bottom; POC migrating up >1 pt → 59% vs 40%)
+    const breakPocPos = barPocPos(bk.levels, bkRange, bk.low);
+    let breakPocMove = 0;
+    if (k >= 1) {
+      const pr = minutes[k - 1];
+      const prRange = pr.high - pr.low;
+      const prPoc = prRange > 0.25 ? barPocPos(pr.levels, prRange, pr.low) * prRange + pr.low : 0;
+      if (prPoc > 0) breakPocMove = breakPocPos * bkRange + bk.low - prPoc;
+    }
+    if (cfg.requireBreakPoc && (dir === "long" ? breakPocPos < 0.5 : breakPocPos > 0.5)) return null;
+    if (cfg.requirePocMove && (dir === "long" ? breakPocMove <= 0 : breakPocMove >= 0)) return null;
     const target = dir === "long" ? entry + cfg.targetR * risk : entry - cfg.targetR * risk;
     const flushBar = minutes[w.flushIdx];
     const respBar = minutes[w.respIdx];
@@ -723,6 +757,9 @@ export type ExpansionConfig = {
   minGapBars: number;
   hourFilter: "none" | "globex";
   medWindow: number;
+  /** candle POC gates (same as the momentum detector's) */
+  requireBreakPoc: boolean;
+  requirePocMove: boolean;
 };
 
 export const EXP_DEFAULTS: ExpansionConfig = {
@@ -739,6 +776,8 @@ export const EXP_DEFAULTS: ExpansionConfig = {
   minGapBars: 5,
   hourFilter: "globex",
   medWindow: 60,
+  requireBreakPoc: false,
+  requirePocMove: false,
 };
 
 /** The production expansion config — frozen after the 568-session sweeps:
@@ -788,6 +827,18 @@ export function detectExpansionScalp(minutes: MomMinute[], cfg: ExpansionConfig 
       const hh = hourET(m.t);
       const mm = Number(m.t.slice(3, 5));
       if ((hh === 9 && mm >= 30) || (hh >= 10 && hh <= 15) || (hh === 16 && mm === 0)) continue;
+    }
+    if (cfg.requireBreakPoc || cfg.requirePocMove) {
+      const pocPos = barPocPos(m.levels, range, m.low);
+      let pocMove = 0;
+      if (i >= 1) {
+        const pr = minutes[i - 1];
+        const prRange = pr.high - pr.low;
+        const prPoc = prRange > 0.25 ? barPocPos(pr.levels, prRange, pr.low) * prRange + pr.low : 0;
+        if (prPoc > 0) pocMove = pocPos * range + m.low - prPoc;
+      }
+      if (cfg.requireBreakPoc && (dir === "long" ? pocPos < 0.5 : pocPos > 0.5)) continue;
+      if (cfg.requirePocMove && (dir === "long" ? pocMove <= 0 : pocMove >= 0)) continue;
     }
 
     const entry = closeOf(m);

@@ -56,6 +56,15 @@ type BarFeatures = {
   unf: "buyHeavy" | "sellHeavy" | "mixed" | "quiet";
   topQ: number;
   botQ: number;
+  /** diagonal imbalance row counts (buy lifting vs sell hitting, 3:1) */
+  dBuy: number;
+  dSell: number;
+  /** candle POC: the most-traded price, as a position in the bar (0..1) */
+  pocPos: number;
+  /** raw POC price — lets the caller compute the next bar's migration */
+  pocPrice: number;
+  /** candle POC migration: this bar's POC vs the previous bar's (pts) */
+  pocMove: number;
 };
 
 const FEATURES: Feature[] = [
@@ -68,6 +77,10 @@ const FEATURES: Feature[] = [
   { name: "imb", bucket: (f) => f.imb },
   { name: "stack", bucket: (f) => f.stack },
   { name: "unf", bucket: (f) => f.unf },
+  { name: "dBuy", bucket: (f) => bucketOf(f.dBuy, [1, 2, 4], ["0", "1", "2-3", ">=4"]) },
+  { name: "dSell", bucket: (f) => bucketOf(f.dSell, [1, 2, 4], ["0", "1", "2-3", ">=4"]) },
+  { name: "pocPos", bucket: (f) => bucketOf(f.pocPos, [0.25, 0.4, 0.6, 0.75], ["<0.25", "0.25-0.4", "0.4-0.6", "0.6-0.75", ">0.75"]) },
+  { name: "pocMove", bucket: (f) => bucketOf(f.pocMove, [-1, -0.25, 0.25, 1], ["<-1", "-1--0.25", "flat", "0.25-1", ">1"]) },
 ];
 
 function barFeatures(minutes: MomMinute[], i: number, atr14: number, medEff: number): BarFeatures {
@@ -106,6 +119,17 @@ function barFeatures(minutes: MomMinute[], i: number, atr14: number, medEff: num
   const stackSide = levels.some((l) => l.dBuy || l.hBuy) && levels.some((l) => l.dSell || l.hSell) ? "both" : "none";
   void stackSide;
   const vwapPos = range > 0.25 ? (vden > 0 ? (vnum / vden - m.low) / range : 0.5) : 0.5;
+  // candle POC = the price level with the most volume
+  let pocPrice = 0;
+  let pocVol = -1;
+  for (const l of levels) {
+    const v = l.buy + l.sell;
+    if (v > pocVol) {
+      pocVol = v;
+      pocPrice = l.price;
+    }
+  }
+  const pocPos = range > 0.25 && pocPrice > 0 ? (pocPrice - m.low) / range : 0.5;
   return {
     rangeR: range / Math.max(0.25, atr14),
     expansion: range / Math.max(0.5, minutes[i - 1] ? minutes[i - 1].high - minutes[i - 1].low : range),
@@ -118,6 +142,11 @@ function barFeatures(minutes: MomMinute[], i: number, atr14: number, medEff: num
     unf: unfBuy >= 3 && unfBuy > unfSell ? "buyHeavy" : unfSell >= 3 && unfSell > unfBuy ? "sellHeavy" : unfBuy + unfSell >= 4 ? "mixed" : "quiet",
     topQ: vden > 0 ? topV / vden : 0,
     botQ: vden > 0 ? botV / vden : 0,
+    dBuy,
+    dSell,
+    pocPos,
+    pocPrice,
+    pocMove: 0, // filled by the caller (needs the previous bar's POC)
   };
 }
 
@@ -142,10 +171,12 @@ async function main() {
   const xeffDelta = new Map<string, Cell>(); // effRel × deltaFrac
   const xposDelta = new Map<string, Cell>(); // vwapPos × deltaFrac
   const xrStack = new Map<string, Cell>(); // rangeR × stack
+  const xpocDelta = new Map<string, Cell>(); // pocPos × deltaFrac
 
   let totalBars = 0;
   const sigRateTot = { n: 0, sig: 0 };
   const all = cell();
+  let prevPoc = 0;
 
   for (const date of dates) {
     const minutes = await loadSessionMinutes(date);
@@ -173,6 +204,8 @@ async function main() {
       const m = minutes[i];
       const mid = (m.high + m.low) / 2;
       const f = barFeatures(minutes, i, atr[i], medEff[i]);
+      f.pocMove = prevPoc > 0 ? f.pocPrice - prevPoc : 0;
+      prevPoc = f.pocPrice;
       const fwd1 = (minutes[i + 1].high + minutes[i + 1].low) / 2 - mid;
       let fav3 = 0;
       let adv3 = 0;
@@ -211,6 +244,7 @@ async function main() {
       add(xeffDelta, `${bucketOf(f.effRel, EFF.edges, EFF.labels)} × ${bucketOf(f.deltaFrac, DELTA.edges, DELTA.labels)}`, one);
       add(xposDelta, `${bucketOf(f.vwapPos, VWAPPOS.edges, VWAPPOS.labels)} × ${bucketOf(f.deltaFrac, DELTA.edges, DELTA.labels)}`, one);
       add(xrStack, `${bucketOf(f.rangeR, RANGER.edges, RANGER.labels)} × ${f.stack}`, one);
+      add(xpocDelta, `${bucketOf(f.pocPos, [0.25, 0.4, 0.6, 0.75], ["<0.25", "0.25-0.4", "0.4-0.6", "0.6-0.75", ">0.75"])} × ${bucketOf(f.deltaFrac, DELTA.edges, DELTA.labels)}`, one);
     }
   }
 
@@ -240,6 +274,7 @@ async function main() {
   printMatrix("effRel × deltaFrac", xeffDelta);
   printMatrix("vwapPos × deltaFrac", xposDelta);
   printMatrix("rangeR × stack", xrStack);
+  printMatrix("pocPos × deltaFrac", xpocDelta);
 }
 
 main().catch((e) => {

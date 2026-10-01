@@ -34,6 +34,38 @@ The same pattern with **dominant cluster stacks** (≥3 rows, ≥3 lots, ≥2:1)
 excursions are the largest in the dataset, both ways); quiet bars have no
 direction at all.
 
+## Diagonal reads and candle POC (measured 2026-09-30)
+
+**Diagonal imbalances (buy lifting vs sell hitting, 3:1):** real bar-level
+directionality — dBuy-only bars: **62% next-bar up**, dSell-only: **37%**;
+≥4 buy-diagonal rows → **59% up, +1.24 pts**. Zero diagonals (clean bars)
+carry the highest signal-precursor rate (sig10 3.8% vs 2.4% baseline) —
+quiet clean bars precede runs. The strategy already extracts the strongest
+part of this via the **cluster-stack requirement** (≥3 dominant rows,
+direction-matching) on the expansion trigger, and the "both-side = churn"
+read is embedded in the delta gates (`churnVeto` tested redundant: 75.8%
+vs 76.1%).
+
+**Candle POC (the bar's most-traded price):** monotonically directional —
+
+| POC position in bar | next-bar up |
+|---|---|
+| bottom (<0.25) | 43% |
+| mid-low | 47% |
+| mid | 50% |
+| mid-high | 53% |
+| **top (>0.75)** | **57%** · +0.87 pts |
+
+POC migration is stronger still: POC up >1 pt vs prior bar → **59% up**;
+down <−1 → **40%**.
+
+**As production gates: TESTED & REJECTED** — `requireBreakPoc` and
+`requirePocMove` were swept on both triggers: momentum 76.1% → 75.5%/76.0%,
+expansion 78.4% → 78.1%/78.2%. The 75% one-sidedness + size gates already
+capture what POC adds. The POC read remains a valuable *manual* tool
+(where did the value trade, and is it migrating your way) — just not a
+better machine gate.
+
 ## What each footprint feature says on its own
 
 - **Delta share** — the strongest bar-level directional signal: >50% buy →

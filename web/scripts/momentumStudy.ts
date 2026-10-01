@@ -227,6 +227,9 @@ const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
   { name: "prod+quietBefore", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, quietBeforeFlush: true } },
   { name: "prod+churnVeto", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, churnVeto: true } },
   { name: "prod+quiet+churn", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, quietBeforeFlush: true, churnVeto: true } },
+  { name: "prod+poc", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, requireBreakPoc: true } },
+  { name: "prod+pocMove", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, requirePocMove: true } },
+  { name: "prod+poc+pocMove", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, requireBreakPoc: true, requirePocMove: true } },
 ];
 
 const EXPANSION_VARIANTS: { name: string; overrides: Partial<ExpansionConfig> }[] = [
@@ -239,6 +242,9 @@ const EXPANSION_VARIANTS: { name: string; overrides: Partial<ExpansionConfig> }[
   { name: "exp1.6s+df0.4", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.4, requireStack: true } },
   { name: "exp1.6s+df0.6", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.6, requireStack: true } },
   { name: "exp1.4s+df0.4", overrides: { minRangeR: 1.4, minAbsDeltaFrac: 0.4, requireStack: true } },
+  { name: "exp1.6s+poc", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, requireBreakPoc: true } },
+  { name: "exp1.6s+pocMove", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, requirePocMove: true } },
+  { name: "exp1.6s+poc+pocMove", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, requireBreakPoc: true, requirePocMove: true } },
 ];
 
 /* ---------------- main ---------------- */
