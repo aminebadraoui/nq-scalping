@@ -3,17 +3,22 @@
  *
  *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
  *     scripts/momentumStudy.ts [--max N] [--split 2026-01-01] \
- *     [--cfg flushFrac=0.3,breakFrac=0.6] [--sweep] [--dump out.json]
+ *     [--cfg flushFrac=0.3,breakFrac=0.6] [--sweep] [--dump out.json] \
+ *     [--offline] [--warm [--warm-concurrency 16]]
  *
- * Sessions are disk-cached (parsed candles) so threshold sweeps re-run
- * in seconds. Signals are scored forward with the pessimistic same-bar
- * rule (stop first when both stop and target sit in one bar), 0.5 pt
- * round-trip cost, 60-bar time exit.
+ * Storage: R2 is the record; sessions are fetched once into a persistent
+ * local gzip cache (~/.cache/nq-archive, MOM_CACHE_DIR overrides) and every
+ * later sweep is pure disk I/O. --warm prefetches the whole store in
+ * parallel (sha256-verified with MOM_VERIFY_SHA=1); --offline lists
+ * sessions straight from the R2 manifest instead of the database.
+ * Signals are scored forward with the pessimistic same-bar rule (stop
+ * first when both stop and target sit in one bar), 0.5 pt round-trip
+ * cost, 60-bar time exit.
  * ------------------------------------------------------------------ */
 
 import { promises as fs } from "node:fs";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
-import { loadSessionMinutes, archiveDates } from "../lib/archive";
+import { loadSessionMinutes, archiveDates, warmArchive, cacheDir } from "../lib/archive";
 import { detectOpenDrive, OPEN_DEFAULTS, type OpenDriveConfig } from "../lib/openDrive";
 import {
   detectMomentum,
@@ -37,11 +42,14 @@ const HOLD_BARS = 60;
 /* ---------------- CLI ---------------- */
 
 function parseArgs(argv: string[]) {
-  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion" | "open" | "overlap"; sequential: boolean } = {
+  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion" | "open" | "overlap"; sequential: boolean; warm: boolean; offline: boolean; warmConcurrency: number } = {
     cfg: {},
     sweep: false,
     mode: "momentum",
     sequential: false,
+    warm: false,
+    offline: false,
+    warmConcurrency: 16,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -49,6 +57,9 @@ function parseArgs(argv: string[]) {
     else if (a === "--split") o.split = argv[++i];
     else if (a === "--mode") o.mode = argv[++i] as "momentum" | "expansion" | "open" | "overlap";
     else if (a === "--sequential") o.sequential = true;
+    else if (a === "--warm") o.warm = true;
+    else if (a === "--warm-concurrency") o.warmConcurrency = Number(argv[++i]);
+    else if (a === "--offline") o.offline = true;
     else if (a === "--cfg") {
       for (const kv of argv[++i].split(",")) {
         const [k, v] = kv.split("=");
@@ -298,7 +309,14 @@ async function main() {
           : [{ name: "custom", cfg: { ...MOM_DEFAULTS, ...o.cfg } }];
 
   console.log(`mode: ${mode} | split: ${splitDate} | variants: ${variants.map((v) => v.name).join(", ")}`);
-  let dates = await archiveDates();
+  if (o.warm) {
+    console.log(`warming local archive (${cacheDir()}) — concurrency ${o.warmConcurrency}`);
+    const t0 = Date.now();
+    const res = await warmArchive({ concurrency: o.warmConcurrency });
+    console.log(`warm done in ${((Date.now() - t0) / 1000).toFixed(0)}s · ${res.ok} ok · ${res.failed} failed · ${(res.bytes / 1e9).toFixed(2)} GB`);
+    process.exit(res.failed ? 1 : 0);
+  }
+  let dates = await archiveDates(o.offline ? { source: "manifest" } : {});
   if (!dates.length) {
     console.error("no session inventory (set GC_REMOTE_URL)");
     process.exit(1);
