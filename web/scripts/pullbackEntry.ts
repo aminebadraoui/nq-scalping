@@ -393,7 +393,110 @@ async function orlFade() {
   }
 }
 
-if (process.argv.includes("--orl")) {
+
+/* -------- the sniper: your exact 4-condition reproduction, backtested -------- */
+
+async function sniper() {
+  const dates = await archiveDates();
+  console.log(`SNIPER study over ${dates.length} sessions…`);
+  const t0 = Date.now();
+  const hourET = (t: string): number => (Number(t.slice(0, 2)) + 1) % 24;
+  const mmOf = (t: string): number => Number(t.slice(3, 5));
+  const PLANS = [
+    { name: "p9s10-FH", pad: 9.5, stop: 10, target: "flushHigh" },
+    { name: "p9s10-t45", pad: 9.5, stop: 10, target: "45" },
+    { name: "p9s10-2R", pad: 9.5, stop: 10, target: "2R" },
+    { name: "p9s12-t45", pad: 9.5, stop: 12, target: "45" },
+    { name: "p12s10-t45", pad: 12, stop: 10, target: "45" },
+    { name: "p9s10-FH-fp1", pad: 9.5, stop: 10, target: "flushHigh", fp: 1 },
+    { name: "p9s10-FH-fp2", pad: 9.5, stop: 10, target: "flushHigh", fp: 2 },
+  ];
+  const agg = new Map<string, { n: number; wins: number; exp: number; days: Set<string> }>();
+  for (const date of dates) {
+    const minutes = await loadSessionMinutes(date);
+    if (!minutes) continue;
+    let i0 = -1;
+    for (let i = 0; i < minutes.length; i++) if (hourET(minutes[i].t) === 9 && mmOf(minutes[i].t) >= 30) { i0 = i; break; }
+    if (i0 < 0 || i0 + 8 >= minutes.length) continue;
+    // opening range = first 6 minutes
+    let rHi = -Infinity;
+    let rLo = Infinity;
+    for (let k = i0; k <= Math.min(i0 + 5, minutes.length - 1); k++) {
+      rHi = Math.max(rHi, minutes[k].high);
+      rLo = Math.min(rLo, minutes[k].low);
+    }
+    // find the flush: big, one-sided toward the anchor, holding it
+    let flushBar = -1;
+    for (let k = i0 + 6; k <= Math.min(minutes.length - 1, i0 + 15); k++) {
+      const m = minutes[k];
+      const vol = m.buy + m.sell;
+      const arr: number[] = [];
+      for (let j = Math.max(0, k - 15); j < k; j++) arr.push(minutes[j].buy + minutes[j].sell);
+      const medV = arr.sort((x, y) => x - y)[Math.floor(arr.length / 2)] ?? 1;
+      if (vol < Math.max(300, 1.5 * medV)) continue;
+      const delta = m.buy - m.sell;
+      const frac = vol > 0 ? m.buy / vol : 0.5;
+      if (delta > -60 && delta < 60) continue;
+      if (delta <= -60 && frac <= 0.45 && m.low >= rLo - 1) { flushBar = k; break; }
+      if (delta >= 60 && frac >= 0.55 && m.high <= rHi + 1) { flushBar = k; break; }
+    }
+    if (flushBar < 0) continue;
+    const fm = minutes[flushBar];
+    const dir: "long" | "short" = fm.buy < fm.sell ? "long" : "short";
+    const anchor = dir === "long" ? rLo : rHi;
+    // footprint defense: dominant clusters at the anchor zone during the flush
+    let fpCount = 0;
+    for (const l of fm.levels) {
+      const near = dir === "long" ? l.price <= rLo + 2 : l.price >= rHi - 2;
+      if (!near) continue;
+      if (dir === "long" && l.buy >= 3 && l.buy >= 2 * l.sell) fpCount++;
+      if (dir === "short" && l.sell >= 3 && l.sell >= 2 * l.buy) fpCount++;
+    }
+    for (const plan of PLANS) {
+      if (plan.fp !== undefined && fpCount < plan.fp) continue;
+      const entry = dir === "long" ? anchor + plan.pad : anchor - plan.pad;
+      const stop = dir === "long" ? anchor - plan.stop : anchor + plan.stop;
+      let target: number;
+      if (plan.target === "flushHigh") target = dir === "long" ? fm.high : fm.low;
+      else if (plan.target === "2R") target = dir === "long" ? entry + 2 * (entry - stop) : entry - 2 * (entry - stop);
+      else target = dir === "long" ? entry + Number(plan.target) : entry - Number(plan.target);
+      // the limit fills only on a retest
+      let fillBar = -1;
+      for (let k = flushBar; k <= Math.min(minutes.length - 1, flushBar + 30); k++) {
+        if (dir === "long" ? minutes[k].low <= entry : minutes[k].high >= entry) { fillBar = k; break; }
+      }
+      if (fillBar < 0) continue;
+      let win = false;
+      let stopped = false;
+      for (let j = fillBar; j <= Math.min(minutes.length - 1, fillBar + 60); j++) {
+        const b = minutes[j];
+        if (dir === "long" ? b.low <= stop : b.high >= stop) { stopped = true; break; }
+        if (dir === "long" ? b.high >= target : b.low <= target) { win = true; break; }
+      }
+      const key = `${plan.name}|${dir}`;
+      const a = agg.get(key) ?? { n: 0, wins: 0, exp: 0, days: new Set() };
+      a.n++;
+      a.days.add(date);
+      const risk = Math.abs(entry - stop);
+      if (win) { a.wins++; a.exp += Math.abs(target - entry) - 0.5; } else if (stopped) { a.exp += -risk - 0.5; } else { a.exp += 0; }
+      agg.set(key, a);
+    }
+  }
+  console.log(`${(Date.now() - t0) / 1000}s\n`);
+  console.log("plan           | dir   | n   | wr     | exp pts/trade (net) | days");
+  for (const plan of PLANS) {
+    for (const dir of ["long", "short"]) {
+      const a = agg.get(`${plan.name}|${dir}`);
+      if (!a) continue;
+      const wr = a.n ? (100 * a.wins) / a.n : 0;
+      console.log(`${plan.name.padEnd(14)} | ${dir.padEnd(5)} | ${String(a.n).padStart(4)} | ${wr.toFixed(1).padStart(5)}% | ${(a.exp / a.n).toFixed(2).padStart(19)} | ${(100 * a.days.size / dates.length).toFixed(0)}%`);
+    }
+  }
+}
+
+if (process.argv.includes("--sniper")) {
+  sniper().catch((e) => { console.error(e); process.exit(1); });
+} else if (process.argv.includes("--orl")) {
   orlFade().catch((e) => { console.error(e); process.exit(1); });
 } else if (process.argv.includes("--range")) {
   rangeDefense().catch((e) => { console.error(e); process.exit(1); });

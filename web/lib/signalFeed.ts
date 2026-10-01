@@ -23,7 +23,7 @@ import { getLive } from "./live";
 import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD } from "./momentum";
-import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD } from "./openDrive";
+import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
 import { momentumSize } from "./propRules";
 import {
   loadCollectedContext,
@@ -401,8 +401,9 @@ class SignalFeed {
     if (!live.connected || live.minutes.length < 60) return;
     const fp = liveMinutesToFootprint(live.minutes);
     const jobs = [
-      { key: "open", title: "OPEN DRIVE", sigs: detectOpenDrive(fp, OPEN_PROD), plan: "fixed TP/SL plan" },
-      { key: "pullback", title: "OPEN PULLBACK", sigs: detectOpenDrive(fp, PULLBACK_PROD), plan: "1R plan" },
+      { key: "open", title: "OPEN DRIVE", sigs: detectOpenDrive(fp, OPEN_PROD), plan: "fixed TP/SL plan", resting: false },
+      { key: "pullback", title: "OPEN PULLBACK", sigs: detectOpenDrive(fp, PULLBACK_PROD), plan: "1R plan", resting: false },
+      { key: "sniper", title: "OPEN SNIPER", sigs: detectOpenDrive(fp, SNIPER_PROD), plan: "resting limit · flush-high target", resting: true },
     ];
     for (const job of jobs) {
     for (const s of job.sigs) {
@@ -428,9 +429,11 @@ class SignalFeed {
 
       const et = cdtToET(s.t);
       const evidence =
-        job.key === "pullback"
-          ? `trend delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · pullback reclaimed with ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`
-          : `opening-range breakout · delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`;
+        job.key === "sniper"
+          ? `flush ${s.flushVol} ct held the opening ${s.dir === "long" ? "low" : "high"} · rest the limit`
+          : job.key === "pullback"
+            ? `trend delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · pullback reclaimed with ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`
+            : `opening-range breakout · delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`;
       const text = [
         `🔔 <b>${job.title} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
@@ -454,8 +457,8 @@ class SignalFeed {
         stop: s.stop.toFixed(2),
         target: s.target.toFixed(2),
         size: sizeStr,
-        verdict: job.key === "pullback" ? "open pullback (experimental)" : "open drive (experimental)",
-        headline: `NQ ${job.key === "pullback" ? "open pullback" : "open drive"} ${s.dir}`,
+        verdict: job.key === "sniper" ? "open sniper (experimental)" : job.key === "pullback" ? "open pullback (experimental)" : "open drive (experimental)",
+        headline: `NQ ${job.key === "sniper" ? "open sniper" : job.key === "pullback" ? "open pullback" : "open drive"} ${s.dir}`,
         source: "live",
         test: false,
         sent: res.sent,

@@ -37,10 +37,16 @@ export type OpenDriveConfig = {
    *  expectancy under the strict direction rule. */
   fixedTpPts: number;
   fixedSlPts: number;
+  /** sniper limit/stops distances (pts) around the opening-range anchor */
+  sniperPad: number;
+  sniperStop: number;
   /** "drive" = the strict cumulative-delta drive (rare, highest quality);
    *  "scan" = scan the WHOLE 9:30-9:59 window: first new opening extreme
    *  backed by cumD >= floor and a one-sided bar = the real move (96% hit
    *  at TP10/SL30, 87% of days);
+   *  "sniper" = the 9:36:01 trade: a big one-sided flush that HOLDS the
+   *  opening-range anchor → rest a limit at anchor+9.5, stop anchor-10,
+   *  target the flush's high (55.8% win, +6.5 pts net, ~1 day in 11);
    *  "pullback" = the trader's morning instinct, made objective: trend
    *  (15-bar cumD) + a counter bar that holds the 5-bar low with SHRINKING
    *  counter-delta (exhaustion) + a reclaim bar with the trend — enter at
@@ -48,7 +54,7 @@ export type OpenDriveConfig = {
    *  net per trade in the 9:30-10:30 window);
    *  "daily" = the 9:30 bar's own delta sign (available EVERY day:
    *  TP15/SL35 touches +15 in ~1 bar 79% of sessions, +4.4 pts gross). */
-  mode: "drive" | "daily" | "scan" | "pullback";
+  mode: "drive" | "daily" | "scan" | "pullback" | "sniper";
 };
 
 export const OPEN_DEFAULTS: OpenDriveConfig = {
@@ -65,6 +71,8 @@ export const OPEN_DEFAULTS: OpenDriveConfig = {
   fixedTpPts: 0,
   fixedSlPts: 0,
   mode: "drive",
+  sniperPad: 9.5,
+  sniperStop: 10,
 };
 
 /** The experimental production config — the strict direction rule with the
@@ -171,6 +179,82 @@ export function detectOpenDrive(minutes: MomMinute[], cfg: OpenDriveConfig = OPE
       breakVwapPos: 0.5,
       flushRangeR: 0,
     });
+    return out;
+  }
+
+  if (cfg.mode === "sniper") {
+    // the 9:36:01 pattern: opening-range anchor + a big one-sided flush that
+    // holds it → the card prints the resting-limit ticket
+    let rHi = -Infinity;
+    let rLo = Infinity;
+    for (let k = i0; k <= Math.min(i0 + 5, minutes.length - 1); k++) {
+      rHi = Math.max(rHi, minutes[k].high);
+      rLo = Math.min(rLo, minutes[k].low);
+    }
+    for (let k = i0 + 6; k <= Math.min(n - 1, i0 + 15); k++) {
+      const m = minutes[k];
+      const vol = m.buy + m.sell;
+      const arr: number[] = [];
+      for (let j = Math.max(0, k - 15); j < k; j++) arr.push(minutes[j].buy + minutes[j].sell);
+      const medV = arr.sort((x, y) => x - y)[Math.floor(arr.length / 2)] ?? 1;
+      if (vol < Math.max(300, 1.5 * medV)) continue;
+      const delta = m.buy - m.sell;
+      const frac = vol > 0 ? m.buy / vol : 0.5;
+      let dir: "long" | "short" | null = null;
+      let anchor = 0;
+      if (delta <= -60 && frac <= 0.45 && m.low >= rLo - 1) {
+        dir = "long";
+        anchor = rLo;
+      } else if (delta >= 60 && frac >= 0.55 && m.high <= rHi + 1) {
+        dir = "short";
+        anchor = rHi;
+      }
+      if (!dir) continue;
+      const entry = dir === "long" ? anchor + cfg.sniperPad : anchor - cfg.sniperPad;
+      const stop = dir === "long" ? anchor - cfg.sniperStop : anchor + cfg.sniperStop;
+      const target = dir === "long" ? m.high : m.low;
+      out.push({
+        dir,
+        kind: "flush" as const,
+        flushIdx: k,
+        respIdx: k,
+        breakIdx: k,
+        entryIdx: k,
+        entry,
+        stop,
+        target,
+        risk: Math.abs(entry - stop),
+        t: m.t,
+        d: m.d,
+        hourET: hourET(m.t),
+        flushFrac: frac,
+        flushVol: vol,
+        flushRange: m.high - m.low,
+        failDepth: dir === "long" ? m.low - rLo : rHi - m.high,
+        respFrac: frac,
+        respVol: vol,
+        respDelay: 0,
+        respProof: 0,
+        breakFrac: frac,
+        breakVol: vol,
+        breakDelay: 0,
+        refDist: 0,
+        progressPts: 0,
+        medVol: medV,
+        distVwapPts: 0,
+        cumDelta: delta,
+        deltaFromFlush: delta,
+        atr14: atrAt(k),
+        riskPts: Math.abs(entry - stop),
+        trailLowDist: 0,
+        trailHighDist: 0,
+        breakRangeR: (m.high - m.low) / Math.max(0.25, atrAt(k)),
+        breakStack: "none",
+        breakVwapPos: 0.5,
+        flushRangeR: 0,
+      });
+      return out;
+    }
     return out;
   }
 
@@ -416,4 +500,15 @@ export const PULLBACK_PROD: OpenDriveConfig = {
   stopPad: 0.5,
   targetR: 1,
   maxRiskPts: 25,
+};
+
+/** The sniper config — the 9:36:01 trade: opening-range anchor + a big
+ *  one-sided flush holding it → rest a limit at anchor ± 9.5, stop at
+ *  anchor ∓ 10, target the flush's extreme. Archive: 55.8% win, +6.5 pts
+ *  net (longs), ~1 day in 11. */
+export const SNIPER_PROD: OpenDriveConfig = {
+  ...OPEN_DEFAULTS,
+  mode: "sniper",
+  sniperPad: 9.5,
+  sniperStop: 10,
 };

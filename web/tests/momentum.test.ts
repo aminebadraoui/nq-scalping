@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, MOM_DEFAULTS, EXP_PROD, type MomMinute } from "../lib/momentum";
-import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD } from "../lib/openDrive";
+import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "../lib/openDrive";
 import { momentumSize, RAPID_EOD_50K } from "../lib/propRules";
 
 /** compact bar builder: [t, high, low, buy, sell, levels?] */
@@ -322,4 +322,32 @@ test("pullback mode: trend + exhausted pullback + reclaim fires the morning entr
   assert.ok(Math.abs(s.entry - entry) < 0.01, `entry ${s.entry}`);
   assert.ok(Math.abs(s.stop - 114.1) < 0.01, `stop ${s.stop}`); // pullback low 114.6 - 0.5
   assert.ok(Math.abs(s.target - (entry + (entry - 114.1))) < 0.01, `target ${s.target}`);
+});
+
+test("sniper: big one-sided flush holding the opening-range anchor prints the resting-limit ticket", () => {
+  const quiet: [string, number, number, number, number][] = [];
+  for (let i = 0; i < 58; i++) {
+    const t = `06:${String(i % 60).padStart(2, "0")}`;
+    quiet.push([t, 100.25, 99.75, 50, 50]);
+  }
+  const m = bars([
+    ...quiet,
+    // opening range 9:30-9:35 (hourET 9): anchor low = 99.5
+    ["08:30", 101.0, 99.5, 60, 60],
+    ["08:31", 101.5, 100.0, 60, 60],
+    ["08:32", 102.0, 100.5, 60, 60],
+    ["08:33", 102.5, 101.0, 60, 60],
+    ["08:34", 103.0, 101.5, 60, 60],
+    ["08:35", 103.5, 102.0, 60, 60],
+    // 9:36 flush: big, 60% sell, holds the anchor (low 99.75 >= 99.5 - 1)
+    ["08:36", 102.0, 99.75, 200, 300],
+  ]);
+  const sigs = detectOpenDrive(m, SNIPER_PROD);
+  assert.equal(sigs.length, 1);
+  const s = sigs[0];
+  assert.equal(s.dir, "long");
+  assert.equal(s.t, "08:36");
+  assert.ok(Math.abs(s.entry - 109.0) < 0.01, `entry ${s.entry}`); // anchor 99.5 + 9.5
+  assert.ok(Math.abs(s.stop - 89.5) < 0.01, `stop ${s.stop}`); // anchor 99.5 - 10
+  assert.ok(Math.abs(s.target - 102.0) < 0.01, `target ${s.target}`); // the flush's high
 });
