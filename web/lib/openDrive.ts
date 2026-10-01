@@ -117,7 +117,7 @@ export function detectOpenDrive(minutes: MomMinute[], cfg: OpenDriveConfig = OPE
     const m = minutes[i0];
     cumD = m.buy - m.sell;
     if (cumD === 0) return out;
-    const dir: 1 | -1 = cumD > 0 ? 1 : -1;
+    const dir: "long" | "short" = cumD > 0 ? "long" : "short";
     const entry = closeOf(m);
     const stop = dir === "long" ? entry - cfg.fixedSlPts : entry + cfg.fixedSlPts;
     const target = dir === "long" ? entry + cfg.fixedTpPts : entry - cfg.fixedTpPts;
