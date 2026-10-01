@@ -360,12 +360,17 @@ test("RTH soft-continuation: 60% one-sided RTH bar fires, Globex bars don't", ()
   for (let i = 0; i < 30; i++) quiet.push([`07:${String(i % 60).padStart(2, "0")}`, 100.25, 99.75, 50, 50]);
   const m = bars([
     ...quiet,
-    ["08:31", 103.0, 99.0, 60, 40], // 9:31 ET, 60% buy, risk 3.0 → fires
+    // 9:31 ET: 60% buy, range 4.0 (≥1×ATR14), 3 dominant buy clusters
+    ["08:31", 103.0, 99.0, 60, 40, [[102.5, 8, 1], [101.5, 7, 1], [100.5, 6, 2], [99.5, 5, 0]]],
   ]);
   const sigs = detectSoftMomentum(m, SOFT_PROD);
   assert.equal(sigs.length, 1);
   assert.equal(sigs[0].dir, "long");
   assert.equal(sigs[0].t, "08:31");
+  // 0.75R plan: entry = mid 101.0, stop = 98.0 (risk 3), target = 103.25
+  assert.ok(Math.abs(sigs[0].entry - 101.0) < 0.01, `entry ${sigs[0].entry}`);
+  assert.ok(Math.abs(sigs[0].stop - 98.0) < 0.01, `stop ${sigs[0].stop}`);
+  assert.ok(Math.abs(sigs[0].target - 103.25) < 0.01, `target ${sigs[0].target}`);
   // and a Globex-hours 60% bar does NOT fire
   const m2 = bars([
     ...quiet,
