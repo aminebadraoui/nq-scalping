@@ -94,7 +94,7 @@ export type MomConfig = {
    *  multiplier makes the gates unreachable mid-session. */
   volCapAbs: number;
   /** hour filter: "none" = all hours, "globex" = skip RTH (9:30–16:00 ET) */
-  hourFilter: "none" | "globex" | "globexOpen";
+  hourFilter: "none" | "globex" | "globexOpen" | "globexCore";
   /** breakout bar quality: minimum range ÷ ATR14 (candle size filter;
    *  0 = off). The feature study: big one-sided bars continue, small bars
    *  don't. */
@@ -324,9 +324,10 @@ function barPocPos(levels: { price: number; buy: number; sell: number }[], range
 
 /** RTH exclusion per the hour filter. "globexOpen" allows the 9:30-9:59
  *  opening drive but excludes the rest of RTH (10:00-16:00). */
-function rthBlocked(hh: number, mm: number, filter: "none" | "globex" | "globexOpen"): boolean {
+function rthBlocked(hh: number, mm: number, filter: "none" | "globex" | "globexOpen" | "globexCore"): boolean {
   if (filter === "none") return false;
   if (filter === "globexOpen") return (hh >= 10 && hh <= 15) || (hh === 16 && mm === 0);
+  if (filter === "globexCore") return (hh === 19) || (hh === 23) || (hh === 9 && mm >= 30) || (hh >= 10 && hh <= 15) || (hh === 16 && mm === 0);
   return (hh === 9 && mm >= 30) || (hh >= 10 && hh <= 15) || (hh === 16 && mm === 0);
 }
 
@@ -768,7 +769,7 @@ export type ExpansionConfig = {
   stopPad: number;
   targetR: number;
   minGapBars: number;
-  hourFilter: "none" | "globex" | "globexOpen";
+  hourFilter: "none" | "globex" | "globexOpen" | "globexCore";
   medWindow: number;
   /** candle POC gates (same as the momentum detector's) */
   requireBreakPoc: boolean;

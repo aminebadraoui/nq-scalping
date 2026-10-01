@@ -21,6 +21,8 @@ import {
   closeOf,
   MOM_DEFAULTS,
   EXP_DEFAULTS,
+  MOM_PROD,
+  EXP_PROD,
   type MomConfig,
   type ExpansionConfig,
   type MomMinute,
@@ -35,7 +37,7 @@ const HOLD_BARS = 60;
 /* ---------------- CLI ---------------- */
 
 function parseArgs(argv: string[]) {
-  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion" | "open"; sequential: boolean } = {
+  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion" | "open" | "overlap"; sequential: boolean } = {
     cfg: {},
     sweep: false,
     mode: "momentum",
@@ -45,7 +47,7 @@ function parseArgs(argv: string[]) {
     const a = argv[i];
     if (a === "--max") o.max = Number(argv[++i]);
     else if (a === "--split") o.split = argv[++i];
-    else if (a === "--mode") o.mode = argv[++i] as "momentum" | "expansion" | "open";
+    else if (a === "--mode") o.mode = argv[++i] as "momentum" | "expansion" | "open" | "overlap";
     else if (a === "--sequential") o.sequential = true;
     else if (a === "--cfg") {
       for (const kv of argv[++i].split(",")) {
@@ -239,6 +241,10 @@ const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
   { name: "prod+open", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, hourFilter: "globexOpen" } },
   { name: "prod+local60", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 60 } },
   { name: "prod+local120", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 120 } },
+  { name: "prod+t1.25", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, targetR: 1.25 } },
+  { name: "prod+t1.5", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, targetR: 1.5 } },
+  { name: "prod+t2", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, targetR: 2 } },
+  { name: "prod+core", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, hourFilter: "globexCore" } },
 ];
 
 const EXPANSION_VARIANTS: { name: string; overrides: Partial<ExpansionConfig> }[] = [
@@ -255,6 +261,10 @@ const EXPANSION_VARIANTS: { name: string; overrides: Partial<ExpansionConfig> }[
   { name: "exp1.6s+pocMove", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, requirePocMove: true } },
   { name: "exp1.6s+poc+pocMove", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, requireBreakPoc: true, requirePocMove: true } },
   { name: "exp1.6s+open", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, hourFilter: "globexOpen" } },
+  { name: "exp1.6s+t1.25", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, targetR: 1.25 } },
+  { name: "exp1.6s+t1.5", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, targetR: 1.5 } },
+  { name: "exp1.6s+t2", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, targetR: 2 } },
+  { name: "exp1.6s+core", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, hourFilter: "globexCore" } },
 ];
 
 const OPEN_VARIANTS: { name: string; overrides: Partial<OpenDriveConfig> }[] = [
@@ -262,6 +272,11 @@ const OPEN_VARIANTS: { name: string; overrides: Partial<OpenDriveConfig> }[] = [
   { name: "soft200", overrides: { cumDeltaFloor: 200, minBuyFrac: 0.5, volMedMult: 1.5, minRangeR: 1.5, entryMode: "high", windowMin: 45 } },
   { name: "soft300c", overrides: { cumDeltaFloor: 300, minBuyFrac: 0.5, volMedMult: 1.5, minRangeR: 1.5, entryMode: "close", windowMin: 45 } },
   { name: "o300f50", overrides: { cumDeltaFloor: 300, minBuyFrac: 0.5 } },
+];
+
+const OVERLAP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
+  { name: "A+ 1R", overrides: {} },
+  { name: "A+ t1.25", overrides: { targetR: 1.25 } },
 ];
 
 /* ---------------- main ---------------- */
@@ -274,7 +289,9 @@ async function main() {
   const variants: { name: string; cfg: MomConfig | ExpansionConfig | OpenDriveConfig }[] =
     mode === "open"
       ? OPEN_VARIANTS.map((v) => ({ name: v.name, cfg: { ...OPEN_DEFAULTS, ...v.overrides } }))
-      : mode === "expansion"
+      : mode === "overlap"
+        ? OVERLAP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...v.overrides } }))
+        : mode === "expansion"
         ? EXPANSION_VARIANTS.map((v) => ({ name: v.name, cfg: { ...EXP_DEFAULTS, ...v.overrides } }))
         : o.sweep
           ? SWEEP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...o.cfg, ...v.overrides } }))
@@ -310,7 +327,17 @@ async function main() {
       loaded++;
       for (let v = 0; v < variants.length; v++) {
         const signals =
-          mode === "open"
+          mode === "overlap"
+            ? (() => {
+                const mom = detectMomentum(minutes, MOM_PROD);
+                const exp = detectExpansionScalp(minutes, EXP_PROD);
+                const mk = new Set(mom.map((x) => `${x.entryIdx}|${x.dir}`));
+                const tR = (variants[v].cfg as MomConfig).targetR;
+                return exp
+                  .filter((x) => mk.has(`${x.entryIdx}|${x.dir}`))
+                  .map((x) => ({ ...x, target: x.dir === "long" ? x.entry + tR * x.risk : x.entry - tR * x.risk }));
+              })()
+            : mode === "open"
             ? detectOpenDrive(minutes, variants[v].cfg as OpenDriveConfig)
             : mode === "expansion"
               ? detectExpansionScalp(minutes, variants[v].cfg as ExpansionConfig)

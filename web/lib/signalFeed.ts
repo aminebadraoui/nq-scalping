@@ -323,10 +323,16 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
-    const sigs = [...detectMomentum(fp, MOM_PROD), ...detectExpansionScalp(fp, EXP_PROD)];
+    const momSigs = detectMomentum(fp, MOM_PROD);
+    const expSigs = detectExpansionScalp(fp, EXP_PROD);
+    // A+ = both triggers fire on the same bar (78.9% win / PF 3.23 — the
+    // highest-conviction Globex signal). The momentum signal wins the dedupe.
+    const expKeys = new Set(expSigs.map((x) => `${x.d}|${x.dir}|${x.t}`));
+    const sigs = [...momSigs, ...expSigs];
     for (const s of sigs) {
       if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
       const key = `${s.d}|${s.dir}|${s.t}`;
+      const aPlus = expKeys.has(key) && momSigs.some((x) => `${x.d}|${x.dir}|${x.t}` === key);
       if (this.momentumSent.has(key)) continue;
       this.momentumSent.add(key);
       if (this.momentumSent.size > 500) this.momentumSent = new Set([...this.momentumSent].slice(-250));
@@ -371,7 +377,7 @@ class SignalFeed {
         `<code>TARGET  ${fmtPx(s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `${firstToday ? "1st today · " : ""}${evidence}`,
+        `${aPlus ? "A+ both triggers · " : ""}${firstToday ? "1st today · " : ""}${evidence}`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
       if (!res.sent) this.lastError = res.reason;
