@@ -16,9 +16,12 @@ import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import {
   detectMomentum,
+  detectExpansionScalp,
   closeOf,
   MOM_DEFAULTS,
+  EXP_DEFAULTS,
   type MomConfig,
+  type ExpansionConfig,
   type MomMinute,
   type MomentumSignal,
 } from "../lib/momentum";
@@ -31,14 +34,18 @@ const HOLD_BARS = 60;
 /* ---------------- CLI ---------------- */
 
 function parseArgs(argv: string[]) {
-  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean } = {
+  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion"; sequential: boolean } = {
     cfg: {},
     sweep: false,
+    mode: "momentum",
+    sequential: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--max") o.max = Number(argv[++i]);
     else if (a === "--split") o.split = argv[++i];
+    else if (a === "--mode") o.mode = argv[++i] as "momentum" | "expansion";
+    else if (a === "--sequential") o.sequential = true;
     else if (a === "--cfg") {
       for (const kv of argv[++i].split(",")) {
         const [k, v] = kv.split("=");
@@ -116,6 +123,22 @@ function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string): S
 
   const pnl = (exit - entry) * dir - COST_PTS;
   return { ...sig, date, exit, pnl, hit, heldBars, mfeR: mfe, maeR: mae, runPts: run, hit2R, hit3R, ambiguous };
+}
+
+/** one trade at a time: a signal whose entry bar falls inside an open trade
+ *  (entryIdx ≤ open trade's exit bar) is skipped — the live trader cannot be
+ *  in two trades. Signals are processed in order. */
+function scoreSequential(minutes: MomMinute[], signals: MomentumSignal[], date: string): ScoredSignal[] {
+  const out: ScoredSignal[] = [];
+  let openUntil = -1;
+  for (const s of signals) {
+    if (s.entryIdx <= openUntil) continue;
+    const sc = scoreSignal(minutes, s, date);
+    if (!sc) continue;
+    out.push(sc);
+    openUntil = sc.entryIdx + sc.heldBars;
+  }
+  return out;
 }
 
 /* ---------------- aggregation ---------------- */
@@ -201,6 +224,21 @@ const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
   { name: "prod+rr0.8+stack", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.8, requireBreakStack: true } },
   { name: "prod+rr1.0+stack", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0, requireBreakStack: true } },
   { name: "prod+rr1.0+stack+b85", overrides: { stopMode: "breakout", breakFrac: 0.85, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0, requireBreakStack: true } },
+  { name: "prod+quietBefore", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, quietBeforeFlush: true } },
+  { name: "prod+churnVeto", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, churnVeto: true } },
+  { name: "prod+quiet+churn", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, quietBeforeFlush: true, churnVeto: true } },
+];
+
+const EXPANSION_VARIANTS: { name: string; overrides: Partial<ExpansionConfig> }[] = [
+  { name: "exp1.4s", overrides: { minRangeR: 1.4, minAbsDeltaFrac: 0.5, requireStack: true } },
+  { name: "exp1.4ns", overrides: { minRangeR: 1.4, minAbsDeltaFrac: 0.5, requireStack: false } },
+  { name: "exp1.6s", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true } },
+  { name: "exp1.6ns", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: false } },
+  { name: "exp1.8s", overrides: { minRangeR: 1.8, minAbsDeltaFrac: 0.5, requireStack: true } },
+  { name: "exp2.0s", overrides: { minRangeR: 2.0, minAbsDeltaFrac: 0.5, requireStack: true } },
+  { name: "exp1.6s+df0.4", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.4, requireStack: true } },
+  { name: "exp1.6s+df0.6", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.6, requireStack: true } },
+  { name: "exp1.4s+df0.4", overrides: { minRangeR: 1.4, minAbsDeltaFrac: 0.4, requireStack: true } },
 ];
 
 /* ---------------- main ---------------- */
@@ -209,11 +247,15 @@ async function main() {
   const argv = process.argv.slice(2);
   const o = parseArgs(argv);
   const splitDate = o.split ?? "2026-01-01";
-  const variants = o.sweep
-    ? SWEEP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...o.cfg, ...v.overrides } }))
-    : [{ name: "custom", cfg: { ...MOM_DEFAULTS, ...o.cfg } }];
+  const mode = o.mode;
+  const variants: { name: string; cfg: MomConfig | ExpansionConfig }[] =
+    mode === "expansion"
+      ? EXPANSION_VARIANTS.map((v) => ({ name: v.name, cfg: { ...EXP_DEFAULTS, ...v.overrides } }))
+      : o.sweep
+        ? SWEEP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...o.cfg, ...v.overrides } }))
+        : [{ name: "custom", cfg: { ...MOM_DEFAULTS, ...o.cfg } }];
 
-  console.log("split:", splitDate, "| variants:", variants.map((v) => v.name).join(", "));
+  console.log(`mode: ${mode} | split: ${splitDate} | variants: ${variants.map((v) => v.name).join(", ")}`);
   let dates = await archiveDates();
   if (!dates.length) {
     console.error("no session inventory (set GC_REMOTE_URL)");
@@ -242,10 +284,17 @@ async function main() {
       }
       loaded++;
       for (let v = 0; v < variants.length; v++) {
-        const signals = detectMomentum(minutes, variants[v].cfg);
-        for (const s of signals) {
-          const sc = scoreSignal(minutes, s, date);
-          if (sc) perVariant[v].push(sc);
+        const signals =
+          mode === "expansion"
+            ? detectExpansionScalp(minutes, variants[v].cfg as ExpansionConfig)
+            : detectMomentum(minutes, variants[v].cfg as MomConfig);
+        if (o.sequential) {
+          perVariant[v].push(...scoreSequential(minutes, signals, date));
+        } else {
+          for (const s of signals) {
+            const sc = scoreSignal(minutes, s, date);
+            if (sc) perVariant[v].push(sc);
+          }
         }
       }
     }

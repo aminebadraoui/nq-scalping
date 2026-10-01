@@ -22,7 +22,7 @@
 import { getLive } from "./live";
 import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
-import { detectMomentum, MOM_PROD } from "./momentum";
+import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD } from "./momentum";
 import { momentumSize } from "./propRules";
 import {
   loadCollectedContext,
@@ -315,15 +315,18 @@ class SignalFeed {
     });
   }
 
-  /** Momentum: the failed-flush → one-sided response → one-sided breakout
-   *  sequence (lib/momentum.ts). Fires only when the breakout bar is the
-   *  just-completed minute — the entry event — once per distinct setup. */
+  /** Momentum — the one-sided run card, two triggers (lib/momentum.ts):
+   *  1) the failed-flush → one-sided breakout sequence (MOM_PROD)
+   *  2) the huge-bar expansion scalp (EXP_PROD)
+   *  Same ticket mechanics (entry at the bar's close, stop under its low,
+   *  1R target); same-bar double-fires are deduped to one card. Fires only
+   *  when the trigger bar is the just-completed minute. */
   private async checkMomentum(): Promise<void> {
     if (!FEED_MOMENTUM) return;
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
-    const sigs = detectMomentum(fp, MOM_PROD);
+    const sigs = [...detectMomentum(fp, MOM_PROD), ...detectExpansionScalp(fp, EXP_PROD)];
     for (const s of sigs) {
       if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
       const key = `${s.d}|${s.dir}|${s.t}`;
@@ -349,12 +352,16 @@ class SignalFeed {
       }).catch(() => {});
 
       const et = cdtToET(s.t);
+      const evidence =
+        s.kind === "expansion"
+          ? `huge one-sided bar (${s.breakRangeR.toFixed(1)}× ATR · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}) — jump the continuation`
+          : `failed ${s.dir === "long" ? "flush" : "rally"} → ${Math.round(s.breakFrac * 100)}% one-sided breakout through the defended level`;
       const text = [
         `⚡ <b>NQ MOMENTUM ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"}</b>`,
         `<code>${symbol()}  ${fmtPx(s.entry)}  ${et} NY</code>`,
-        `failed ${s.dir === "long" ? "flush" : "rally"} → ${Math.round(s.breakFrac * 100)}% one-sided breakout through the defended level`,
+        evidence,
         `<code>ENTRY ${fmtPx(s.entry)} · STOP ${fmtPx(s.stop)} · TARGET ${fmtPx(s.target)}</code> · ${sizeStr}`,
-        `<i>momentum scalp — joins the one-sided run (75.6% win · PF 2.71 in the 568-session replay)</i>`,
+        `<i>one-sided run scalp — 77.5% win · PF 2.98 in the 568-session replay</i>`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
       if (!res.sent) this.lastError = res.reason;
@@ -368,7 +375,7 @@ class SignalFeed {
         stop: s.stop.toFixed(2),
         target: s.target.toFixed(2),
         size: sizeStr,
-        verdict: "momentum (failed-flush breakout)",
+        verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
         headline: `NQ momentum ${s.dir}`,
         source: "live",
         test: false,

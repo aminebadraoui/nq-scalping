@@ -11,7 +11,7 @@
  * detector requires a warm-up window for its session median volume. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { detectMomentum, MOM_PROD, MOM_DEFAULTS, type MomMinute } from "../lib/momentum";
+import { detectMomentum, detectExpansionScalp, MOM_PROD, MOM_DEFAULTS, EXP_PROD, type MomMinute } from "../lib/momentum";
 import { momentumSize, RAPID_EOD_50K } from "../lib/propRules";
 
 /** compact bar builder: [t, high, low, buy, sell, levels?] */
@@ -214,4 +214,49 @@ test("merged mode: strength bar → failed flush → immediate breakout fires wi
   // the breakout bar has no tick proof, so the response gate fails
   const strict = detectMomentum(m, { ...MOM_PROD, needResponse: true });
   assert.equal(strict.filter((s) => s.dir === "long").length, 0);
+});
+
+test("expansion: the real tape has no huge-bar signal (covers the other run class)", () => {
+  // tonight's run was 60-63% one-sided — under the expansion's 0.5 delta
+  // gate. The two triggers catch different runs; the combined card needs both.
+  const sigs = detectExpansionScalp(bars(TAPE), EXP_PROD);
+  assert.equal(sigs.length, 0);
+});
+
+test("expansion fires on a huge one-sided bar with a matching stack", () => {
+  const m = pad([
+    // 6-pt bar on a ~0.5-pt ATR (12× ATR), 90% buy, buy stack
+    ["17:00", 105.0, 99.0, 90, 10, [[104.5, 8, 0], [104.0, 10, 1], [103.5, 6, 0], [103.0, 5, 1]]],
+  ]);
+  const sigs = detectExpansionScalp(m, EXP_PROD);
+  const longs = sigs.filter((s) => s.dir === "long");
+  assert.equal(longs.length, 1);
+  const s = longs[0];
+  assert.equal(s.kind, "expansion");
+  assert.equal(s.t, "17:00");
+  assert.ok(Math.abs(s.entry - 102.0) < 0.01, `entry ${s.entry}`);
+  assert.ok(Math.abs(s.stop - 98.5) < 0.01, `stop ${s.stop}`);
+  assert.ok(s.breakRangeR >= 1.6, `rangeR ${s.breakRangeR}`);
+});
+
+test("expansion gate: a 63%-one-sided huge bar does NOT fire (tonight's 18:41 class)", () => {
+  const m = pad([
+    ["17:00", 105.0, 99.0, 63, 37, [[104.5, 8, 2], [104.0, 9, 4], [103.5, 5, 3], [103.0, 4, 2]]],
+  ]);
+  const sigs = detectExpansionScalp(m, EXP_PROD);
+  assert.equal(sigs.length, 0, "63% one-sided is below the 0.5 delta gate");
+});
+
+test("churn veto: a huge two-way bar (both stacks) does not fire", () => {
+  const m = pad([
+    ["17:00", 105.0, 99.0, 50, 50, [[104.5, 8, 0], [104.0, 9, 0], [103.5, 0, 8], [103.0, 0, 9]]],
+  ]);
+  const sigs = detectExpansionScalp(m, { ...EXP_PROD, minAbsDeltaFrac: 0.05 });
+  assert.equal(sigs.length, 0, "balanced bar fails the delta gate anyway");
+  // and the momentum detector's churnVeto blocks it even when one-sidedness passes
+  const momSigs = detectMomentum(
+    m,
+    { ...MOM_PROD, churnVeto: true, breakFrac: 0.5, minRiskPts: 3 },
+  );
+  assert.equal(momSigs.length, 0);
 });

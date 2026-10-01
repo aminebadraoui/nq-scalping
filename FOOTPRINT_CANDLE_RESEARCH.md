@@ -75,15 +75,17 @@ research knob, not production.
 
 ## Untapped leads (documented for later)
 
-1. **The 86% bar** — huge bar (>1.6×ATR) + >50% one-sided delta + matching
-   stack: a standalone 1–2 bar scalp (next-bar move +2.5–3.9 pts, 82–86%
-   directional). Needs its own entry/exit study (next-bar only, wide stops).
+1. ~~The 86% bar~~ — **ADOPTED**: the huge-bar expansion scalp is now the
+   second trigger of the production card (`EXP_PROD` in `lib/momentum.ts`;
+   combined card: 4,822 trades, 77.5% win, PF 2.98). Sequential replay
+   confirmed (one trade at a time): 4,152 trades, 78.4% win, PF 3.14.
 2. **Compression → signal** — quiet (<0.4×ATR) and no-stack bars precede
    momentum signals at 1.6–2× the baseline rate: a "quiet before the storm"
-   heads-up is derivable from the same features.
-3. **Churn detection** — both-side diagonals flag two-way volatility: a
-   stop-out warning for tight-stop trades (the momentum card's maeR 0.45
-   family could exclude churn-flagged sessions).
+   heads-up is derivable from the same features (`quietBeforeFlush` knob
+   exists, not yet adopted).
+3. **Churn detection** — both-side diagonals flag two-way volatility:
+   `churnVeto` knob exists (tested), not adopted — the delta gate already
+   filters most churn bars.
 4. **vwapPos as a close proxy** — monotonic directionality without OHLC;
    usable live for any bar lacking a true close.
 

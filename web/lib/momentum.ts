@@ -103,6 +103,13 @@ export type MomConfig = {
    *  trade direction (buy stack for longs). Feature study: big bar + buy
    *  stack → 77% next-bar up. */
   requireBreakStack: boolean;
+  /** the bar BEFORE the flush must be quiet (range < 0.7× ATR14) — the
+   *  compression → expansion lead from the feature study (quiet bars
+   *  precede signals at ~2× the baseline rate). */
+  quietBeforeFlush: boolean;
+  /** skip breakout bars that are churn: both buy AND sell dominant clusters
+   *  present (both-side diagonals = two-way volatility, not a run). */
+  churnVeto: boolean;
 };
 
 export const MOM_DEFAULTS: MomConfig = {
@@ -141,6 +148,8 @@ export const MOM_DEFAULTS: MomConfig = {
   hourFilter: "none",
   minBreakRangeR: 0,
   requireBreakStack: false,
+  quietBeforeFlush: false,
+  churnVeto: false,
 };
 
 /** The production momentum config — frozen after the 568-session sweeps
@@ -165,6 +174,9 @@ export const MOM_PROD: MomConfig = {
 
 export type MomentumSignal = {
   dir: "long" | "short";
+  /** which trigger produced the signal: the failed-flush sequence or the
+   *  standalone huge-bar expansion scalp */
+  kind: "flush" | "expansion";
   flushIdx: number;
   respIdx: number;
   breakIdx: number;
@@ -351,6 +363,11 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     if (frac > cfg.flushFrac) return null;
     if (!volOk(m.buy + m.sell, medAt(i), cfg.flushVolFloor, cfg.flushVolMedMult)) return null;
     if (m.low < sessLo - cfg.failTolPts) return null; // real breakdown — not ours
+    if (cfg.quietBeforeFlush && i >= 1) {
+      const pr = minutes[i - 1];
+      const prr = (pr.high - pr.low) / Math.max(0.25, atrAt(i - 1));
+      if (prr >= 0.7) return null; // no compression before the flush — skip
+    }
     const from = Math.max(0, i - cfg.refLookback);
     let refHigh = -Infinity;
     for (let k = from; k <= i; k++) refHigh = Math.max(refHigh, minutes[k].high);
@@ -382,6 +399,11 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     if (frac < 1 - cfg.flushFrac) return null;
     if (!volOk(m.buy + m.sell, medAt(i), cfg.flushVolFloor, cfg.flushVolMedMult)) return null;
     if (m.high > sessHi + cfg.failTolPts) return null; // real breakout up — not ours
+    if (cfg.quietBeforeFlush && i >= 1) {
+      const pr = minutes[i - 1];
+      const prr = (pr.high - pr.low) / Math.max(0.25, atrAt(i - 1));
+      if (prr >= 0.7) return null;
+    }
     const from = Math.max(0, i - cfg.refLookback);
     let refLow = Infinity;
     for (let k = from; k <= i; k++) refLow = Math.min(refLow, minutes[k].low);
@@ -480,11 +502,21 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     const breakStack = barStack(bk.levels);
     if (cfg.minBreakRangeR > 0 && breakRangeR < cfg.minBreakRangeR) return null;
     if (cfg.requireBreakStack && breakStack !== (dir === "long" ? "buy" : "sell")) return null;
+    if (cfg.churnVeto) {
+      let domBuy = 0;
+      let domSell = 0;
+      for (const l of bk.levels) {
+        if (l.buy >= 3 && l.buy >= 2 * l.sell) domBuy++;
+        if (l.sell >= 3 && l.sell >= 2 * l.buy) domSell++;
+      }
+      if (domBuy >= 3 && domSell >= 3) return null; // churn bar — two-way, not a run
+    }
     const target = dir === "long" ? entry + cfg.targetR * risk : entry - cfg.targetR * risk;
     const flushBar = minutes[w.flushIdx];
     const respBar = minutes[w.respIdx];
     return {
       dir,
+      kind: "flush" as const,
       flushIdx: w.flushIdx,
       respIdx: w.respIdx,
       breakIdx: k,
@@ -663,5 +695,147 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     }
   }
 
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Expansion scalp — the "86% bar" standalone (feature-study lead #1).
+ *
+ * A HUGE one-sided bar with a direction-matching cluster stack continues
+ * next bar 77-86% of the time: fire at its close, stop under its low,
+ * 1R target. No flush sequence required — pure candle-size × footprint.
+ * ------------------------------------------------------------------ */
+
+export type ExpansionConfig = {
+  /** bar range ÷ ATR14 must be at least this (1.6 = "huge") */
+  minRangeR: number;
+  /** |delta| share of volume (0.5 = the extreme bin) */
+  minAbsDeltaFrac: number;
+  /** require a dominant cluster stack matching the trade direction */
+  requireStack: boolean;
+  volFloor: number;
+  volMedMult: number;
+  volCapAbs: number;
+  minRiskPts: number;
+  maxRiskPts: number;
+  stopPad: number;
+  targetR: number;
+  minGapBars: number;
+  hourFilter: "none" | "globex";
+  medWindow: number;
+};
+
+export const EXP_DEFAULTS: ExpansionConfig = {
+  minRangeR: 1.6,
+  minAbsDeltaFrac: 0.5,
+  requireStack: true,
+  volFloor: 15,
+  volMedMult: 0.5,
+  volCapAbs: 250,
+  minRiskPts: 3,
+  maxRiskPts: 15,
+  stopPad: 0.5,
+  targetR: 1,
+  minGapBars: 5,
+  hourFilter: "globex",
+  medWindow: 60,
+};
+
+/** The production expansion config — frozen after the 568-session sweeps:
+ *  huge bar (≥1.6× ATR14) with ≥75% one-sided delta and a direction-matching
+ *  cluster stack, stop under its low, 1R target. Sequential replay: 4,144
+ *  trades, 78.4% win, PF 3.14 — combined with the flush trigger: 4,822
+ *  trades, 77.5% win, PF 2.98. */
+export const EXP_PROD: ExpansionConfig = {
+  ...EXP_DEFAULTS,
+  hourFilter: "globex",
+};
+
+export function detectExpansionScalp(minutes: MomMinute[], cfg: ExpansionConfig = EXP_DEFAULTS): MomentumSignal[] {
+  const n = minutes.length;
+  const out: MomentumSignal[] = [];
+  if (n < 30) return out;
+
+  const atrAt = (i: number): number => {
+    const from = Math.max(0, i - 14);
+    const arr: number[] = [];
+    for (let k = from; k < i; k++) arr.push(minutes[k].high - minutes[k].low);
+    return med(arr);
+  };
+  const medAt = (i: number): number => {
+    const from = Math.max(0, i - cfg.medWindow);
+    const arr: number[] = [];
+    for (let k = from; k < i; k++) arr.push(minutes[k].buy + minutes[k].sell);
+    return med(arr);
+  };
+  const hourET = (t: string): number => (Number(t.slice(0, 2)) + 1) % 24;
+
+  let lastSignalIdx = -10_000;
+  for (let i = 1; i < n; i++) {
+    if (i - lastSignalIdx < cfg.minGapBars) continue;
+    const m = minutes[i];
+    const vol = m.buy + m.sell;
+    if (vol < Math.max(cfg.volFloor, Math.min(cfg.volMedMult * medAt(i), cfg.volCapAbs))) continue;
+    const range = m.high - m.low;
+    if (range / Math.max(0.25, atrAt(i)) < cfg.minRangeR) continue;
+    const frac = vol > 0 ? m.buy / vol : 0.5;
+    const absD = Math.abs(m.buy - m.sell) / vol;
+    if (absD < cfg.minAbsDeltaFrac) continue;
+    const dir: "long" | "short" = m.buy > m.sell ? "long" : "short";
+    const stack = barStack(m.levels);
+    if (cfg.requireStack && stack !== (dir === "long" ? "buy" : "sell")) continue;
+    if (cfg.hourFilter === "globex") {
+      const hh = hourET(m.t);
+      const mm = Number(m.t.slice(3, 5));
+      if ((hh === 9 && mm >= 30) || (hh >= 10 && hh <= 15) || (hh === 16 && mm === 0)) continue;
+    }
+
+    const entry = closeOf(m);
+    const stop = dir === "long" ? m.low - cfg.stopPad : m.high + cfg.stopPad;
+    const risk = Math.abs(entry - stop);
+    if (!(risk > 0) || risk < cfg.minRiskPts || risk > cfg.maxRiskPts) continue;
+    const target = dir === "long" ? entry + cfg.targetR * risk : entry - cfg.targetR * risk;
+    lastSignalIdx = i;
+    out.push({
+      dir,
+      kind: "expansion" as const,
+      flushIdx: i - 1,
+      respIdx: i,
+      breakIdx: i,
+      entryIdx: i,
+      entry,
+      stop,
+      target,
+      risk,
+      t: m.t,
+      d: m.d,
+      hourET: hourET(m.t),
+      flushFrac: 0.5,
+      flushVol: vol,
+      flushRange: range,
+      failDepth: 0,
+      respFrac: frac,
+      respVol: vol,
+      respDelay: 1,
+      respProof: 0,
+      breakFrac: frac,
+      breakVol: vol,
+      breakDelay: 1,
+      refDist: 0,
+      progressPts: 0,
+      medVol: medAt(i),
+      distVwapPts: 0,
+      cumDelta: 0,
+      deltaFromFlush: 0,
+      atr14: atrAt(i),
+      riskPts: risk,
+      trailLowDist: 0,
+      trailHighDist: 0,
+      breakRangeR: range / Math.max(0.25, atrAt(i)),
+      breakStack: stack,
+      breakVwapPos: barVwapPos(m.levels, range, m.low),
+      flushRangeR: 0,
+    });
+  }
   return out;
 }

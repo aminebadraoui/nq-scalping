@@ -4,10 +4,10 @@
 > TRADE signal (2026-09-30). The unusual-volume heads-up alert stays on as
 > context (`FEED_UNUSUAL_VOLUME=1`, informational only). The reversal,
 > sweep-reclaim and pullback-ticket cards are off (`FEED_* = 0` in
-> `web/lib/signalFeed.ts`). The card fires on the failed-flush → breakout
-> sequence described below. Validation: **1,828 trades, 76.1% win, PF 2.76**,
-> positive in every full year of the 568-session replay. This is the product
-> that catches the bullish run the fade products structurally cannot.
+> `web/lib/signalFeed.ts`). The card has **two triggers, one ticket**:
+> the failed-flush breakout and the huge-bar expansion scalp. Validation:
+> **4,822 trades, 77.5% win, PF 2.98**, positive in every full year of the
+> 568-session replay (sequential, one trade at a time).
 
 One page, the implemented signal. Every threshold below is checkable in
 `web/lib/momentum.ts` (`MOM_PROD`), covered by `web/tests/momentum.test.ts`,
@@ -49,6 +49,19 @@ a filtered bar does NOT kill the sequence — a later bar in the window can
 still fire). **Hours**: Globex only (RTH 9:30–16:00 ET excluded). One signal
 per sequence; ≥5-bar gap between signals.
 
+## Trigger 2 — the huge-bar expansion scalp
+
+From the footprint × candle-size research (`FOOTPRINT_CANDLE_RESEARCH.md`):
+a bar with range **≥1.6× ATR14** and **≥75% one-sided delta** plus a
+direction-matching cluster stack continues next bar 77-86% of the time.
+Fire at its close, stop under its low, 1R target (risk 3–15 pts).
+No flush sequence required — the bar itself is the evidence.
+
+The two triggers catch **different run classes** and share one ticket:
+tonight's 18:16 run was caught by the flush trigger (6-pt bar, 86% buy but
+only 0.86× ATR — below the expansion's size gate); the huge-bar class is
+caught by the expansion trigger. Same-bar double-fires dedupe to one card.
+
 ## What the replay measured (568 sessions, lookahead-free)
 
 Bar-by-bar over the complete R2 archive (2023-12 → 2026-09), mid-bar
@@ -57,23 +70,25 @@ same-bar resolution (stop first when both stop and target sit in one bar):
 
 | Metric | Value |
 |---|---|
-| Signals | **1,828** (~3.2 per session) |
-| Win rate | **76.1%** (pessimistic; ambiguous = loss, 1% of trades) |
-| Profit factor | **2.76** |
-| Expectancy | **+0.41 R / trade** |
-| Net | **+3,934 pts** |
-| Avg risk | ~3.6 pts |
-| Mean MFE | 1.38 R (the 1R target is conservative — 15% reach 2R, 3% reach 3R) |
+| Signals | **4,822** (~8.5 per session, both triggers, deduped) |
+| Win rate | **77.5%** (pessimistic; ambiguous = loss, 1% of trades) |
+| Profit factor | **2.98** |
+| Expectancy | **+0.43 R / trade** |
+| Net | **+11,680 pts** |
+| Avg risk | ~4.8 pts (flush ~3.6, expansion ~5.2) |
+| Mean MFE | 1.36 R (13% reach 2R, 2% reach 3R) |
 
 | Year | Trades | Win rate | PF |
 |---|---|---|---|
-| 2024 | 453 | 79.5% | 2.97 |
-| 2025 | 736 | 72.3% | 2.19 |
-| 2026 (out-of-sample) | 634 | **78.1%** | 3.33 |
+| 2024 | 1,287 | 80.0% | 3.18 |
+| 2025 | 1,938 | 75.3% | 2.59 |
+| 2026 (out-of-sample) | 1,578 | **77.9%** | 3.28 |
 
-By direction: long 79.0% (PF 3.26), short 73.2% (PF 2.36). The test window
-beats the train window — the config sits on a stable plateau, not a
-knife-edge.
+By direction: long 78.5% (PF 3.08), short 76.4% (PF 2.88). Sequential
+(one-trade-at-a-time) replay: ~1% of signals overlap and get skipped; the
+numbers above already reflect it. Trigger split: flush 1,828 trades
+(76.1% / PF 2.76), expansion 4,152 (78.4% / PF 3.14), 1,150 same-bar
+overlaps deduped (78.8% / PF 3.21 — the best subset).
 
 ## Why the flush alone is NOT a signal (measured)
 
