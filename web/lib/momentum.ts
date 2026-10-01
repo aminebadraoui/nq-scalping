@@ -95,6 +95,14 @@ export type MomConfig = {
   volCapAbs: number;
   /** hour filter: "none" = all hours, "globex" = skip RTH (9:30–16:00 ET) */
   hourFilter: "none" | "globex";
+  /** breakout bar quality: minimum range ÷ ATR14 (candle size filter;
+   *  0 = off). The feature study: big one-sided bars continue, small bars
+   *  don't. */
+  minBreakRangeR: number;
+  /** require a dominant cluster stack on the breakout bar, matching the
+   *  trade direction (buy stack for longs). Feature study: big bar + buy
+   *  stack → 77% next-bar up. */
+  requireBreakStack: boolean;
 };
 
 export const MOM_DEFAULTS: MomConfig = {
@@ -131,14 +139,17 @@ export const MOM_DEFAULTS: MomConfig = {
   medWindow: 60,
   volCapAbs: 250,
   hourFilter: "none",
+  minBreakRangeR: 0,
+  requireBreakStack: false,
 };
 
 /** The production momentum config — frozen after the 568-session sweeps
  *  (see MOMENTUM_SIGNAL.md): merged mode (the breakout bar is its own
  *  response evidence — covers flush → immediate breakout), 75% one-sided
- *  breakout through the reference, ≥3 pt risk floor, breakout within 10
- *  bars of the failed flush. Replay: 1,736 trades, 75.6% win, PF 2.71,
- *  positive every full year, ~3.1 signals per session. */
+ *  breakout through the reference, ≥3 pt risk floor, breakout bar range
+ *  ≥ 0.85× ATR14 (candle-size gate), breakout within 10 bars of the failed
+ *  flush. Replay: ~1,820 trades, ~76% win, PF ~2.75, positive every full
+ *  year, ~3.2 signals per session. */
 export const MOM_PROD: MomConfig = {
   ...MOM_DEFAULTS,
   needResponse: false,
@@ -149,6 +160,7 @@ export const MOM_PROD: MomConfig = {
   minRiskPts: 3,
   targetR: 1,
   hourFilter: "globex",
+  minBreakRangeR: 0.85,
 };
 
 export type MomentumSignal = {
@@ -187,6 +199,11 @@ export type MomentumSignal = {
   /** flush vs the trailing 20-bar low/high — the local context of the probe */
   trailLowDist: number;
   trailHighDist: number;
+  /** breakout bar candle-size × footprint features (see footprintCandleStudy) */
+  breakRangeR: number;
+  breakStack: "buy" | "sell" | "none";
+  breakVwapPos: number;
+  flushRangeR: number;
 };
 
 function med(a: number[]): number {
@@ -235,6 +252,33 @@ type Watch = {
   trailLowDist: number;
   trailHighDist: number;
 };
+
+/** dominant cluster stack on a bar: ≥3 price rows with side ≥3 lots and
+ *  ≥2× the opposite side, one side clearly ahead. */
+function barStack(levels: { price: number; buy: number; sell: number }[]): "buy" | "sell" | "none" {
+  let buy = 0;
+  let sell = 0;
+  for (const l of levels) {
+    if (l.buy >= 3 && l.buy >= 2 * l.sell) buy++;
+    if (l.sell >= 3 && l.sell >= 2 * l.buy) sell++;
+  }
+  if (buy >= 3 && buy > sell) return "buy";
+  if (sell >= 3 && sell > buy) return "sell";
+  return "none";
+}
+
+/** volume-weighted price position inside the bar's range (0..1) */
+function barVwapPos(levels: { price: number; buy: number; sell: number }[], range: number, low: number): number {
+  if (!(range > 0.25)) return 0.5;
+  let num = 0;
+  let den = 0;
+  for (const l of levels) {
+    const v = l.buy + l.sell;
+    num += l.price * v;
+    den += v;
+  }
+  return den > 0 ? (num / den - low) / range : 0.5;
+}
 
 export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAULTS): MomentumSignal[] {
   const n = minutes.length;
@@ -428,6 +472,14 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
       if (dir === "long" && d <= 0) return null;
       if (dir === "short" && d >= 0) return null;
     }
+    // candle-size × footprint quality gates (footprintCandleStudy findings:
+    // big one-sided bars continue, small bars don't; a direction-matching
+    // cluster stack on the breakout bar raises next-bar continuation to ~77%)
+    const bkRange = bk.high - bk.low;
+    const breakRangeR = bkRange / Math.max(0.25, atrAt(k));
+    const breakStack = barStack(bk.levels);
+    if (cfg.minBreakRangeR > 0 && breakRangeR < cfg.minBreakRangeR) return null;
+    if (cfg.requireBreakStack && breakStack !== (dir === "long" ? "buy" : "sell")) return null;
     const target = dir === "long" ? entry + cfg.targetR * risk : entry - cfg.targetR * risk;
     const flushBar = minutes[w.flushIdx];
     const respBar = minutes[w.respIdx];
@@ -465,6 +517,10 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
       riskPts: risk,
       trailLowDist: w.trailLowDist,
       trailHighDist: w.trailHighDist,
+      breakRangeR,
+      breakStack,
+      breakVwapPos: barVwapPos(bk.levels, bkRange, bk.low),
+      flushRangeR: flushBar.high - flushBar.low === 0 ? 0 : (flushBar.high - flushBar.low) / Math.max(0.25, atrAt(w.flushIdx)),
     } satisfies MomentumSignal;
   };
 

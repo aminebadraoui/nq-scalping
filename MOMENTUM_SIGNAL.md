@@ -5,7 +5,7 @@
 > context (`FEED_UNUSUAL_VOLUME=1`, informational only). The reversal,
 > sweep-reclaim and pullback-ticket cards are off (`FEED_* = 0` in
 > `web/lib/signalFeed.ts`). The card fires on the failed-flush → breakout
-> sequence described below. Validation: **1,865 trades, 75.7% win, PF 2.70**,
+> sequence described below. Validation: **1,828 trades, 76.1% win, PF 2.76**,
 > positive in every full year of the 568-session replay. This is the product
 > that catches the bullish run the fade products structurally cannot.
 
@@ -39,6 +39,9 @@ short is the mirror.
    reference extreme** (max high of the flush bar + the 2 bars before it).
    The breakout bar is its own confirmation — no separate response bar is
    required (merged mode), so flush → immediate breakout sequences fire too.
+   **Candle-size gate**: the breakout bar's range must be **≥0.85× ATR14**
+   (a big one-sided bar continues; a small one doesn't — see
+   `FOOTPRINT_CANDLE_RESEARCH.md`).
 
 Fires at the breakout bar's close. **Stop**: breakout bar's low − 0.5 pt.
 **Target**: 1R. **Risk floor**: setups with risk < 3 pts are skipped (noise;
@@ -54,21 +57,21 @@ same-bar resolution (stop first when both stop and target sit in one bar):
 
 | Metric | Value |
 |---|---|
-| Signals | **1,865** (~3.3 per session) |
-| Win rate | **75.7%** (pessimistic; ambiguous = loss, 1% of trades) |
-| Profit factor | **2.70** |
-| Expectancy | **+0.40 R / trade** |
-| Net | **+3,933 pts** |
-| Avg risk | ~3.7 pts |
-| Mean MFE | 1.39 R (the 1R target is conservative — 15% reach 2R, 4% reach 3R) |
+| Signals | **1,828** (~3.2 per session) |
+| Win rate | **76.1%** (pessimistic; ambiguous = loss, 1% of trades) |
+| Profit factor | **2.76** |
+| Expectancy | **+0.41 R / trade** |
+| Net | **+3,934 pts** |
+| Avg risk | ~3.6 pts |
+| Mean MFE | 1.38 R (the 1R target is conservative — 15% reach 2R, 3% reach 3R) |
 
 | Year | Trades | Win rate | PF |
 |---|---|---|---|
-| 2024 | 406 | 79.6% | 3.00 |
-| 2025 | 691 | 71.9% | 2.17 |
-| 2026 (out-of-sample) | 636 | **77.2%** | 3.20 |
+| 2024 | 453 | 79.5% | 2.97 |
+| 2025 | 736 | 72.3% | 2.19 |
+| 2026 (out-of-sample) | 634 | **78.1%** | 3.33 |
 
-By direction: long 78.2% (PF 3.17), short 72.9% (PF 2.35). The test window
+By direction: long 79.0% (PF 3.26), short 73.2% (PF 2.36). The test window
 beats the train window — the config sits on a stable plateau, not a
 knife-edge.
 

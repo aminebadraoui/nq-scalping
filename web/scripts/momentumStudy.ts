@@ -12,10 +12,8 @@
  * ------------------------------------------------------------------ */
 
 import { promises as fs } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { listUsableSessions } from "../lib/gcdata";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import {
   detectMomentum,
   closeOf,
@@ -26,7 +24,6 @@ import {
 } from "../lib/momentum";
 
 const REMOTE = process.env.GC_REMOTE_URL?.replace(/\/+$/, "") ?? "";
-const CACHE_DIR = process.env.MOM_CACHE_DIR || path.join(os.tmpdir(), "nq-mom-cache");
 const CONCURRENCY = 8;
 const COST_PTS = 0.5;
 const HOLD_BARS = 60;
@@ -52,50 +49,6 @@ function parseArgs(argv: string[]) {
     else if (a === "--sweep") o.sweep = true;
   }
   return o;
-}
-
-/* ---------------- session loading (disk-cached) ---------------- */
-
-type RawCandle = {
-  t: string;
-  high: number;
-  low: number;
-  total: number;
-  buy: number;
-  sell: number;
-  levels: Record<string, [number, number, number, number, number]>;
-};
-
-async function loadSessionMinutes(date: string): Promise<MomMinute[] | null> {
-  await fs.mkdir(CACHE_DIR, { recursive: true });
-  const cacheFile = path.join(CACHE_DIR, `${date}_ETH.json`);
-  let j: { candles?: RawCandle[] };
-  try {
-    j = JSON.parse(await fs.readFile(cacheFile, "utf8"));
-  } catch {
-    if (!REMOTE) return null;
-    const r = await fetch(`${REMOTE}/data/${date}_ETH.json`);
-    if (!r.ok) return null;
-    j = (await r.json()) as { candles?: RawCandle[] };
-    await fs.writeFile(cacheFile, JSON.stringify(j)).catch(() => {});
-  }
-  const candles = j.candles ?? [];
-  if (candles.length < 60) return null;
-  return candles.map((c) => ({
-    t: c.t.slice(11, 16),
-    d: c.t.slice(0, 10),
-    o: 0,
-    c: 0,
-    high: c.high / 100,
-    low: c.low / 100,
-    buy: c.buy,
-    sell: c.sell,
-    levels: Object.entries(c.levels).map(([p, v]) => ({
-      price: Number(p) / 100,
-      buy: v[1],
-      sell: v[2],
-    })),
-  }));
 }
 
 /* ---------------- trade scoring ---------------- */
@@ -237,14 +190,17 @@ function mean(arr: number[]): number {
 /* ---------------- sweep variants ---------------- */
 
 const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
-  // merged-mode question: flush → immediate breakout (no separate response bar)
-  { name: "prod (breakout)", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 10 } },
-  { name: "merged", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 10 } },
-  { name: "merged+bw4", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 4 } },
-  { name: "merged+bw6", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 6 } },
-  { name: "merged+b80", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.8, minRiskPts: 2, breakWindow: 10 } },
-  { name: "merged+minR3", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10 } },
-  { name: "merged+vwap", overrides: { needResponse: false, stopMode: "breakout", breakFrac: 0.75, minRiskPts: 2, breakWindow: 10, requireVwapSide: true } },
+  // candle-size × footprint research: breakout-bar quality filters
+  { name: "prod", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false } },
+  { name: "prod+rr0.8", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.8 } },
+  { name: "prod+rr0.85", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85 } },
+  { name: "prod+rr0.9", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.9 } },
+  { name: "prod+rr1.0", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0 } },
+  { name: "prod+rr1.2", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.2 } },
+  { name: "prod+stack", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, requireBreakStack: true } },
+  { name: "prod+rr0.8+stack", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.8, requireBreakStack: true } },
+  { name: "prod+rr1.0+stack", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0, requireBreakStack: true } },
+  { name: "prod+rr1.0+stack+b85", overrides: { stopMode: "breakout", breakFrac: 0.85, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0, requireBreakStack: true } },
 ];
 
 /* ---------------- main ---------------- */
@@ -258,12 +214,11 @@ async function main() {
     : [{ name: "custom", cfg: { ...MOM_DEFAULTS, ...o.cfg } }];
 
   console.log("split:", splitDate, "| variants:", variants.map((v) => v.name).join(", "));
-  const inv = await listUsableSessions();
-  if (!inv) {
+  let dates = await archiveDates();
+  if (!dates.length) {
     console.error("no session inventory (set GC_REMOTE_URL)");
     process.exit(1);
   }
-  let dates = inv.dates;
   if (o.max) dates = dates.slice(0, o.max);
   console.log(`replaying ${dates.length} sessions…`);
   const t0 = Date.now();
