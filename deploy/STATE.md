@@ -37,6 +37,18 @@
 - **R2 is the sole data source** for history: `/api/gc` falls back Neon → R2
   (local files are a dev/test fallback only), and the lab's session inventory
   comes from the R2 manifest (`usable` flags, computed at upload).
+- **Backtest storage (2026-10-01)**: R2 stays the record; `web/lib/archive.ts`
+  caches sessions as gzip in `~/.cache/nq-archive` (`MOM_CACHE_DIR` overrides),
+  sha256-verified when `MOM_VERIFY_SHA=1`; `momentumStudy --warm` prefetches
+  the whole store in parallel, `--offline` lists sessions from the manifest
+  (DB-free). 10 years ≈ 540 MB gzipped — sweeps after warm are disk-only.
+- **Vendor retention ceiling (re-verified 2026-10-01)**: GoCharting serves a
+  rolling window of the last ~11 quarterly contracts (~2.75y, currently from
+  2023-12-18, NQH24 tenure). Contract-aware backfill: `gcdata/contracts.py`
+  (generated calendar) + `gcdata/backfill_tenures.py --only-gaps` (heals
+  sparse sessions only); `scripts/backfill_contracts.sh` delegates to it.
+  Deeper history needs CME DataMine / Databento — the R2+gz-cache flow is
+  source-agnostic.
 - **The theory lab is LOCAL-ONLY**: the VPS runs `LAB_ENABLED=false` (no
   warm-up, `/api/lab` 404s); lab + backtesting happen on the Mac against the
   R2 archive. The lab sample set is cached to disk keyed by the session
