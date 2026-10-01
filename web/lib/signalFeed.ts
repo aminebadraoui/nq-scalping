@@ -87,10 +87,19 @@ export const FEED_MOMENTUM = feedFlag("FEED_MOMENTUM", true);
  *  ON: footprint-proven continuation — 10,325 trades, 82.2% win, PF 3.47,
  *  every year ≥ 77.7%, account sim never breaches (see PLAYBOOK.md). */
 export const FEED_RTH = feedFlag("FEED_RTH", true);
-/** FEED_OPEN — the 9:30 opening-drive card (lib/openDrive.ts). EXPERIMENTAL:
- *  74.3% win / PF 2.82 over only 74 trades — off by default; journal
- *  separately from the main strategy if enabled. */
-export const FEED_OPEN = feedFlag("FEED_OPEN", false);
+/** FEED_OPEN — master switch for the 9:30-10:30 open family. */
+export const FEED_OPEN = feedFlag("FEED_OPEN", true);
+/** FEED_OPEN_DRIVE — the scan: first new opening extreme backed by
+ *  cumD >= 300 and a >=55% one-sided bar. TP +15 / SL -35. 96% hit,
+ *  87% of days. ON. */
+export const FEED_OPEN_DRIVE = feedFlag("FEED_OPEN_DRIVE", true);
+/** FEED_OPEN_PULLBACK — trend + exhausted pullback + reclaim, 1R.
+ *  69.8% win, +5.2 pts, 4 days in 5. OFF until requested. */
+export const FEED_OPEN_PULLBACK = feedFlag("FEED_OPEN_PULLBACK", false);
+/** FEED_OPEN_SNIPER — the 9:36:01 trade: big flush holding the opening
+ *  anchor, resting limit, flush-high target. 55.8% win, +6.5 pts,
+ *  ~1 day in 11. OFF until requested. */
+export const FEED_OPEN_SNIPER = feedFlag("FEED_OPEN_SNIPER", false);
 
 const CONTEXT_TTL_MS = 10 * 60 * 1000;
 /** a live feed whose last print is older than this is treated as closed */
@@ -485,9 +494,9 @@ class SignalFeed {
     if (!live.connected || live.minutes.length < 60) return;
     const fp = liveMinutesToFootprint(live.minutes);
     const jobs = [
-      { key: "open", title: "OPEN DRIVE", sigs: detectOpenDrive(fp, OPEN_PROD), plan: "fixed TP/SL plan", resting: false },
-      { key: "pullback", title: "OPEN PULLBACK", sigs: detectOpenDrive(fp, PULLBACK_PROD), plan: "1R plan", resting: false },
-      { key: "sniper", title: "OPEN SNIPER", sigs: detectOpenDrive(fp, SNIPER_PROD), plan: "resting limit · flush-high target", resting: true },
+      { key: "open", title: "OPEN DRIVE", sigs: FEED_OPEN_DRIVE ? detectOpenDrive(fp, OPEN_PROD) : [], plan: "fixed TP/SL plan", resting: false },
+      { key: "pullback", title: "OPEN PULLBACK", sigs: FEED_OPEN_PULLBACK ? detectOpenDrive(fp, PULLBACK_PROD) : [], plan: "1R plan", resting: false },
+      { key: "sniper", title: "OPEN SNIPER", sigs: FEED_OPEN_SNIPER ? detectOpenDrive(fp, SNIPER_PROD) : [], plan: "resting limit · flush-high target", resting: true },
     ];
     for (const job of jobs) {
     for (const s of job.sigs) {
@@ -615,7 +624,7 @@ class SignalFeed {
       `⚠ <b>NQ ${vol} ct · ${et} NY</b>`,
       `${rv.toFixed(1)}× volume · ${buyPct}% buy`,
       ...(watch.length ? [``, ...watch] : []),
-      `<i>heads-up only</i>`,
+      `<i>heads-up only · WR: momentum 77.5% · RTH 82.2% · drive 96% · pullback 69.8% · sniper 55.8%</i>`,
     ].join("\n");
     const res = await sendTelegram(text, { parseMode: "HTML" });
     if (!res.sent) this.lastError = res.reason;
