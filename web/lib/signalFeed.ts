@@ -118,6 +118,12 @@ const MIN_LIVE_MINUTES = 5;
 /** stage-2 pullback watch lifetime after an unusual-volume bar (data: dominance breaks within ~1–3 min, p90) */
 const UV_WATCH_MS = 6 * 60 * 1000;
 
+function distTxt(from: number, to: number): string {
+  const pts = Math.abs(to - from);
+  const ticks = Math.round(pts / 0.25);
+  return `${to < from ? "−" : "+"}${pts.toFixed(2)} pts · ${ticks} ticks`;
+}
+
 function fmtPx(n: number, dp = 2): string {
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
@@ -396,8 +402,8 @@ class SignalFeed {
         `⚡ <b>${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
         `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
-        `<code>STOP    ${fmtPx(s.stop)}</code>`,
-        `<code>TARGET  ${fmtPx(s.target)}</code>`,
+        `<code>STOP    ${fmtPx(s.stop)}   ${distTxt(s.entry, s.stop)}</code>`,
+        `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
         `${aPlus ? "A+ both triggers · " : ""}${firstToday ? "1st today · " : ""}${evidence}`,
@@ -463,8 +469,8 @@ class SignalFeed {
         `🟦 <b>RTH ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
         `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
-        `<code>STOP    ${fmtPx(s.stop)}</code>`,
-        `<code>TARGET  ${fmtPx(s.target)}</code>`,
+        `<code>STOP    ${fmtPx(s.stop)}   ${distTxt(s.entry, s.stop)}</code>`,
+        `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
         `${s.breakFrac >= 0.65 || s.breakFrac <= 0.35 ? "A+ " : ""}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
@@ -544,8 +550,8 @@ class SignalFeed {
         `🔔 <b>${job.title} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
         `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
-        `<code>STOP    ${fmtPx(s.stop)}</code>`,
-        `<code>TARGET  ${fmtPx(s.target)}</code>`,
+        `<code>STOP    ${fmtPx(s.stop)}   ${distTxt(s.entry, s.stop)}</code>`,
+        `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
         evidence,
