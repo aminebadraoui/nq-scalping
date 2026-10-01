@@ -332,9 +332,14 @@ class SignalFeed {
       if (this.momentumSent.size > 500) this.momentumSent = new Set([...this.momentumSent].slice(-250));
 
       // position size grounded in the Rapid EOD 50k rules (lib/propRules.ts):
-      // fixed $170 risk, 30-micro cap, $2/pt MNQ
+      // fixed $170 risk, 30-micro cap, $2/pt MNQ. FIXED_CONTRACTS overrides
+      // with an exact contract count (the sizing study optimum: 9).
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
-      const size = momentumSize(s.risk, riskBudget);
+      const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
+      const size =
+        fixed > 0
+          ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * s.risk * 2, capped: false }
+          : momentumSize(s.risk, riskBudget);
 
       // emit the order intent to the executor (dry-run by default)
       void placeOrder({
@@ -414,7 +419,11 @@ class SignalFeed {
       if (this.openSent.size > 200) this.openSent = new Set([...this.openSent].slice(-100));
 
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
-      const size = momentumSize(s.risk, riskBudget);
+      const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
+      const size =
+        fixed > 0
+          ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * s.risk * 2, capped: false }
+          : momentumSize(s.risk, riskBudget);
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
 
       void placeOrder({
