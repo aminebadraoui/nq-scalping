@@ -101,6 +101,15 @@ export const FEED_OPEN_PULLBACK = feedFlag("FEED_OPEN_PULLBACK", false);
  *  ~1 day in 11. OFF until requested. */
 export const FEED_OPEN_SNIPER = feedFlag("FEED_OPEN_SNIPER", false);
 
+/** fixed contracts per card family: the sizing study optimum is 9 for the
+ *  momentum + RTH cards (median day +$347, 0% annual breach); the open
+ *  family's wide 35-pt drive stop breaches at >=4, so it keeps the
+ *  $170-budget sizing. FIXED_CONTRACTS env overrides everything. */
+function fixedContracts(defaultN: number): number {
+  const f = Number(process.env.FIXED_CONTRACTS) || 0;
+  return f > 0 ? Math.min(30, f) : defaultN;
+}
+
 const CONTEXT_TTL_MS = 10 * 60 * 1000;
 /** a live feed whose last print is older than this is treated as closed */
 const STALE_MS = 5 * 60 * 1000;
@@ -432,10 +441,10 @@ class SignalFeed {
       if (this.rthSent.size > 200) this.rthSent = new Set([...this.rthSent].slice(-100));
 
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
-      const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
+      const fixed = fixedContracts(9);
       const size =
         fixed > 0
-          ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * s.risk * 2, capped: false }
+          ? { contracts: fixed, dollarRisk: fixed * s.risk * 2, capped: false }
           : momentumSize(s.risk, riskBudget);
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
 
@@ -507,10 +516,10 @@ class SignalFeed {
       if (this.openSent.size > 200) this.openSent = new Set([...this.openSent].slice(-100));
 
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
-      const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
+      const fixed = fixedContracts(9);
       const size =
         fixed > 0
-          ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * s.risk * 2, capped: false }
+          ? { contracts: fixed, dollarRisk: fixed * s.risk * 2, capped: false }
           : momentumSize(s.risk, riskBudget);
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
 

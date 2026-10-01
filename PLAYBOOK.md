@@ -138,6 +138,46 @@ prints `A+` when the bar clears 65% — the higher-conviction RTH trade.
 The absorption-fade family (fading extreme pushes) was measured and
 rejected: 31.2% WR, breaches the account.
 
+
+---
+
+## RISK MANAGEMENT — the measured balance (scripts/riskMgmt.ts)
+
+The stop-width × target × contracts grid over every live strategy
+(568 sessions, first-touch, MFF account sim):
+
+| Strategy config | WR | exp pts | median exposure | Verdict |
+|---|---|---|---|---|
+| momentum 1R (structural stop) | 77.5% | +2.42 | 1 bar | keep — widening stops buys ~0 and only adds exposure |
+| momentum 1.5×stop / 1.25×tgt | 61.0% | +2.45 | 5 bars | wider stop: same money, 5× exposure — reject |
+| **RTH 0.75R** | **83.7%** | +3.41 | **1 bar** | max win-rate config |
+| **RTH 1.25×stop / 1R** | 71.3% | **+3.94** | 2 bars | best expectancy, still tiny exposure |
+| open drive (fixed 15/35) | 69.8% | +13.4 | 4 bars | never scale — breaches at ≥4 contracts |
+
+Daily goals (P = probability of the day reaching the goal, 2000 sampled days,
+real sequences through the account sim):
+
+| Config | C | P(≥$500) | P(≥$900) | Breach |
+|---|---|---|---|---|
+| RTH 0.75R | 6 | 66% | 28% | none |
+| **RTH 0.75R** | **9** | **83%** | **56%** | none |
+| RTH 1.25/1R | 6 | 65% | 41% | none |
+| **RTH 1.25/1R** | **9** | 76% | **60%** | none |
+| momentum 1R | 9 | 30% | 9% | none |
+| open drive | 4+ | — | — | BREACHES |
+
+**The balance, adopted:**
+- Structural stops everywhere (the bar's own low — "safe ticks" comes from
+  the 80%+ hit rates, not from widening).
+- Momentum + RTH cards size **9 contracts** by default (median day +$347;
+  worst real day −$619; 0% annual breach); `FIXED_CONTRACTS` env overrides.
+- The open family keeps the $170-budget sizing (2 MNQ on the drive's 35-pt
+  stop) — scaling it breaches.
+- **$200-per-trade minimum is incompatible** with these scalps at ≤9
+  contracts (a win is $80–120; $200 needs 2R targets that kill the WR).
+  The goal that survives contact with the data is **$500–900 per DAY via
+  2+ trades** — which the RTH card delivers at 83%/56% or 76%/60%.
+
 ---
 
 ## ARCHIVED / OFF
