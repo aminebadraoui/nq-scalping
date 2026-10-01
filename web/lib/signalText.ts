@@ -21,6 +21,7 @@ import type { PriceActionRead } from "./priceaction";
 import type { OptionsRead } from "./options";
 import type { ReclaimSetup } from "./reclaimSetup";
 import { escHtml } from "./notify";
+import { STATS } from "./strategyStats";
 
 export type SignalContext = {
   symbol: string;
@@ -122,6 +123,14 @@ export function formatSignalHtml(
     if (walls.length) L.push(`<code>${escHtml(walls.join(" · "))}</code>`);
   }
 
+  // ---- strategy identity + measured stats ----
+  L.push("");
+  L.push(
+    setup === "PULLBACK"
+      ? `<i>${STATS.sweepReclaim.name.toLowerCase()} family · ${STATS.sweepReclaim.stat}</i>`
+      : `<i>${STATS.reversal.name} · ${STATS.reversal.stat}</i>`,
+  );
+
   // ---- footer ----
   L.push("");
   L.push(
@@ -145,6 +154,8 @@ export function formatReclaimSetupHtml(setup: ReclaimSetup, ctx: SignalContext, 
   L.push("");
   L.push(`<i>reclaim bar ${fmt(setup.buyPct * 100, 0)}% ${setup.dir === "long" ? "buy" : "sell"} · volume ≥ session median</i>`);
   L.push("");
-  L.push(`<i>${escHtml(ctx.source)} · sweep-reclaim reversal — forward-test, journal every trade.</i>`);
+  L.push(`<i>${STATS.sweepReclaim.stat} — forward-test, journal every trade.</i>`);
+  L.push("");
+  L.push(`<i>${escHtml(ctx.source)} · sweep-reclaim reversal.</i>`);
   return L.join("\n");
 }

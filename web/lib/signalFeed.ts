@@ -45,6 +45,7 @@ import { uvWatchCheck, type UVWatch } from "./unusualVolume";
 import { sendTelegram } from "./notify";
 import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
+import { STATS, headsUpWrLine } from "./strategyStats";
 
 function refreshSeconds(): number {
   const n = Number(process.env.SIGNAL_REFRESH_SECONDS);
@@ -80,8 +81,8 @@ export const FEED_UNUSUAL_VOLUME = feedFlag("FEED_UNUSUAL_VOLUME", true);
  *  trade signal; the pullback watch still prints its context messages. */
 export const FEED_PULLBACK_TICKET = feedFlag("FEED_PULLBACK_TICKET", false);
 /** FEED_MOMENTUM — the failed-flush → response → one-sided-breakout momentum
- *  card (lib/momentum.ts, MOM_PROD). THE single active strategy. 72.9% win /
- *  PF 2.25 in the 568-session replay — joins the one-sided run. */
+ *  card (lib/momentum.ts, MOM_PROD). THE single active strategy. 77.5% win /
+ *  PF 2.98 in the 568-session replay — joins the one-sided run. */
 export const FEED_MOMENTUM = feedFlag("FEED_MOMENTUM", true);
 /** FEED_RTH — the RTH soft-continuation card (lib/softMomentum.ts).
  *  ON: footprint-proven continuation — 10,325 trades, 82.2% win, PF 3.47,
@@ -90,8 +91,8 @@ export const FEED_RTH = feedFlag("FEED_RTH", true);
 /** FEED_OPEN — master switch for the 9:30-10:30 open family. */
 export const FEED_OPEN = feedFlag("FEED_OPEN", true);
 /** FEED_OPEN_DRIVE — the scan: first new opening extreme backed by
- *  cumD >= 300 and a >=55% one-sided bar. TP +15 / SL -35. 96% hit,
- *  87% of days. ON. */
+ *  cumD >= 300 and a >=55% one-sided bar. TP +15 / SL -35. 93% hit
+ *  at TP15/SL35 (96% at TP10/SL30), 87% of days. ON. */
 export const FEED_OPEN_DRIVE = feedFlag("FEED_OPEN_DRIVE", true);
 /** FEED_OPEN_PULLBACK — trend + exhausted pullback + reclaim, 1R.
  *  69.8% win, +5.2 pts, 4 days in 5. OFF until requested. */
@@ -396,17 +397,19 @@ class SignalFeed {
         s.kind === "expansion"
           ? `huge bar ${s.breakRangeR.toFixed(1)}×ATR · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`
           : `failed ${s.dir === "long" ? "flush" : "rally"} · ${Math.round(s.breakFrac * 100)}% breakout`;
-      // speed format: title line carries direction + price + time, then the
-      // three ticket numbers each on their own line, size, one evidence line
+      // speed format: title line carries strategy + direction + price + time,
+      // then the three ticket numbers each on their own line, size, one
+      // evidence line, then the measured win-rate line
       const text = [
-        `⚡ <b>${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
+        `⚡ <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
         `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
         `<code>STOP    ${fmtPx(s.stop)}   ${distTxt(s.entry, s.stop)}</code>`,
         `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `${aPlus ? "A+ both triggers · " : ""}${firstToday ? "1st today · " : ""}${evidence}`,
+        `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${evidence}`,
+        `<i>${STATS.momentum.stat}</i>`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
       if (!res.sent) this.lastError = res.reason;
@@ -465,16 +468,17 @@ class SignalFeed {
       }).catch(() => {});
 
       const et = cdtToET(s.t);
+      const aPlus = s.breakFrac >= 0.65 || s.breakFrac <= 0.35;
       const text = [
-        `🟦 <b>RTH ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
+        `🟦 <b>${STATS.rth.name} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
         `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
         `<code>STOP    ${fmtPx(s.stop)}   ${distTxt(s.entry, s.stop)}</code>`,
         `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `${s.breakFrac >= 0.65 || s.breakFrac <= 0.35 ? "A+ " : ""}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
-        `<i>0.75R plan · experimental — journal separately</i>`,
+        `${aPlus ? `A+ (${STATS.rth.aPlus}) · ` : ""}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
+        `<i>${STATS.rth.stat} · 0.75R plan — journal separately</i>`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
       if (!res.sent) this.lastError = res.reason;
@@ -509,9 +513,9 @@ class SignalFeed {
     if (!live.connected || live.minutes.length < 60) return;
     const fp = liveMinutesToFootprint(live.minutes);
     const jobs = [
-      { key: "open", title: "OPEN DRIVE", sigs: FEED_OPEN_DRIVE ? detectOpenDrive(fp, OPEN_PROD) : [], plan: "fixed TP/SL plan", resting: false },
-      { key: "pullback", title: "OPEN PULLBACK", sigs: FEED_OPEN_PULLBACK ? detectOpenDrive(fp, PULLBACK_PROD) : [], plan: "1R plan", resting: false },
-      { key: "sniper", title: "OPEN SNIPER", sigs: FEED_OPEN_SNIPER ? detectOpenDrive(fp, SNIPER_PROD) : [], plan: "resting limit · flush-high target", resting: true },
+      { key: "open", title: STATS.openDrive.name, sigs: FEED_OPEN_DRIVE ? detectOpenDrive(fp, OPEN_PROD) : [], plan: "fixed TP/SL plan", resting: false, stat: STATS.openDrive.stat },
+      { key: "pullback", title: STATS.openPullback.name, sigs: FEED_OPEN_PULLBACK ? detectOpenDrive(fp, PULLBACK_PROD) : [], plan: "1R plan", resting: false, stat: STATS.openPullback.stat },
+      { key: "sniper", title: STATS.openSniper.name, sigs: FEED_OPEN_SNIPER ? detectOpenDrive(fp, SNIPER_PROD) : [], plan: "resting limit · flush-high target", resting: true, stat: STATS.openSniper.stat },
     ];
     for (const job of jobs) {
     for (const s of job.sigs) {
@@ -555,7 +559,7 @@ class SignalFeed {
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
         evidence,
-        `<i>${job.plan} · experimental — journal separately</i>`,
+        `<i>${job.stat} · ${job.plan} · experimental — journal separately</i>`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
       if (!res.sent) this.lastError = res.reason;
@@ -639,7 +643,7 @@ class SignalFeed {
       `⚠ <b>NQ ${vol} ct · ${et} NY</b>`,
       `${rv.toFixed(1)}× volume · ${buyPct}% buy`,
       ...(watch.length ? [``, ...watch] : []),
-      `<i>heads-up only · WR: momentum 77.5% · RTH 82.2% · drive 96% · pullback 69.8% · sniper 55.8%</i>`,
+      `<i>heads-up only · ${headsUpWrLine()}</i>`,
     ].join("\n");
     const res = await sendTelegram(text, { parseMode: "HTML" });
     if (!res.sent) this.lastError = res.reason;
@@ -723,7 +727,7 @@ class SignalFeed {
       `<code>${symbol()}  ${fmtPx(ev.entry)}  ${et} NY</code>`,
       `flush of ${fmtPx(ev.swept)} reclaimed with ${Math.round(ev.buyPct * 100)}% ${ev.dir === "long" ? "buy" : "sell"} — the pullback after the unusual ${w.side} volume is likely over`,
       `<code>ENTRY ${fmtPx(ev.entry)} · STOP ${fmtPx(ev.stop)} · TARGET ${fmtPx(ev.target)}</code> · ${sizeStr}`,
-      `<i>1R scalp — same shape as the sweep-reclaim feed</i>`,
+      `<i>1R scalp — ${STATS.sweepReclaim.name.toLowerCase()} family (${STATS.sweepReclaim.stat})</i>`,
     ].join("\n");
     const res = await sendTelegram(text, { parseMode: "HTML" });
     if (!res.sent) this.lastError = res.reason;

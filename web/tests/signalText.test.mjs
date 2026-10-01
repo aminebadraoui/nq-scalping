@@ -2,7 +2,7 @@
  * layout (trade ticket + full reasoning) and HTML safety are pinned. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatSignalHtml } from "../lib/signalText.ts";
+import { formatSignalHtml, formatReclaimSetupHtml } from "../lib/signalText.ts";
 
 const mech = {
   side: "long",
@@ -70,6 +70,9 @@ test("long card includes the trade ticket and the full reasoning", () => {
   assert.match(html, /◐ <code>3 Fuel/);
   assert.match(html, /✗ <code>5 Footprint/);
   assert.match(html, /dealers net LONG gamma — chop/);
+  // strategy name + measured win rate are part of the card
+  assert.match(html, /NQ SCALP SIGNAL · REVERSAL/);
+  assert.match(html, /REVERSAL · 37% win · PF 2\.16 · 683 sessions/);
 });
 
 test("escapes HTML in dynamic values", () => {
@@ -93,4 +96,26 @@ test("no-trade card announces NO TRADE", () => {
     source: "live",
   });
   assert.match(html, /NO TRADE/);
+});
+
+test("sweep-reclaim card carries its name and lab win rate", () => {
+  const html = formatReclaimSetupHtml(
+    {
+      dir: "long",
+      extreme: 99.5,
+      entry: 100.0,
+      stop: 99.0,
+      target: 101.0,
+      risk: 1.0,
+      buyPct: 0.72,
+      t: "09:45",
+      timeET: "10:45",
+      day: "2026-10-01",
+    },
+    { symbol: "NQZ26", price: 100.0, timeET: "10:45", source: "live" },
+    "9 MNQ · $18",
+  );
+  assert.match(html, /NQ SWEEP-RECLAIM · 🟢 LONG/);
+  assert.match(html, /67% lab win @ 1R/);
+  assert.match(html, /9 MNQ/);
 });
