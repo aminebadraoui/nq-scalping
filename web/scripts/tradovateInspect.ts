@@ -87,10 +87,10 @@ async function main() {
       const out: string[] = [];
       const tables = document.querySelectorAll("table, [role='table'], [class*='table']");
       for (const t of tables) {
-        const txt = t.innerText;
+        const txt = (t as HTMLElement).innerText;
         if (txt.includes("ORDER QTY")) {
           for (const tr of t.querySelectorAll("tr, [role='row']")) {
-            const r = tr.innerText.replace(/\n/g, " | ");
+            const r = (tr as HTMLElement).innerText.replace(/\n/g, " | ");
             if (r.trim() && !r.includes("ORDER QTY")) out.push(r);
           }
         }

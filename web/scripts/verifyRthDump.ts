@@ -51,7 +51,7 @@ async function main() {
   }
   if (byHour.size) {
     console.log("by hour:");
-    for (const [h, tr] of [...byHour.entries()].sort((a, b) => a - b)) {
+    for (const [h, tr] of [...byHour.entries()].sort((a, b) => a[0] - b[0])) {
       const w = tr.filter((t) => t.pnlPts > 0).length;
       console.log(`  ${h}:00: n=${tr.length} wr=${((100 * w) / tr.length).toFixed(1)}%`);
     }
