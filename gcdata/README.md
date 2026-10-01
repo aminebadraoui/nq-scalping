@@ -34,6 +34,58 @@ is the vendor's window, captured in time by the contract walk. Older history
 needs CME DataMine or a CME-authorized reseller (Databento) — the collector
 scripts above accept whatever source builds the same JSON shape.
 
+## Archive file format contract (for any importer)
+
+Whatever source fills 2016→2023 (CME DataMine T&S, Databento trades/MBO,
+or anything else), the importer only has to emit this per-session JSON —
+then `r2_sync.py upload` and the whole downstream stack work unchanged:
+
+```json
+{
+  "fp_day": { "tick_size": 25, "…": "…" },
+  "candles": [
+    {
+      "t": "2024-05-06T17:00:00",   // feed clock = US Central (CT)
+      "high": 1789450,              // price in CENTS (×100), ints only
+      "low": 1789325,
+      "total": 183,                 // contracts traded that minute
+      "buy": 121,                   // aggressor-buy volume
+      "sell": 62,                   // aggressor-sell volume
+      "levels": {                   // price-cents → [total, buy, sell, buyTrades, sellTrades]
+        "1789375": [12, 8, 4, 7, 3]
+      }
+    }
+  ],
+  "_meta": {
+    "session": "ETH",               // or "RTH"
+    "kind": "complete",             // "complete" | "partial" | "empty"
+    "symbol": "NQM24",              // contract that served the data
+    "candles": 1380,
+    "expected": 1380,
+    "completeness": 1.0,
+    "contiguous": true,
+    "collected_at": "…ISO…",
+    "source": "…vendor name…"
+  }
+}
+```
+
+Rules the importer must satisfy:
+
+1. **One file per (date, session)** — `data/<date>_ETH.json`, `data/<date>_RTH.json`.
+2. **ETH window = 17:00 CT → 15:59 CT (1,380 contiguous minutes); RTH = 08:30 CT
+   → 14:59 CT (390).** A missing minute in the middle fabricates structure, so
+   `session_usable` (gap-based, mirrored in `web/lib/lab.ts` and
+   `scripts/r2_sync.py`) rejects non-contiguous files.
+3. **Aggressor classification**: each trade's side comes from comparing the
+   trade price to the prevailing best bid/ask at that instant (buy if traded at
+   or above the ask, sell if at or below the bid) — the same rule GoCharting's
+   FOOTPRINT/V2 applies. Footprint levels are per-minute, per-price-cent
+   aggregates of those trades.
+4. `buy` + `sell` must equal `total` per candle and per level row.
+5. `r2_sync.py` gzips + uploads and writes `manifest.json` (sha256, counts,
+   `usable`); `web/lib/archive.ts` then caches/verifies exactly as today.
+
 ## Contract-aware backfill
 
 `contracts.py` is the single source of truth for which symbol was the front
