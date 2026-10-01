@@ -14,21 +14,39 @@ true front month) wins and complete files are never overwritten.
 
 Usage:
     .venv/bin/python backfill_tenures.py [--from 2017-03-01] [--to today] \
-        [--sessions ETH RTH] [--force] [--plan] [--sleep 2]
+        [--sessions ETH RTH] [--force] [--plan] [--sleep 2] [--only-gaps]
+
+--only-gaps skips every date whose ETH session is already flagged usable
+in the R2 manifest (GC_REMOTE_URL/manifest.json), so a re-run only heals
+the sparse/partial/missing sessions instead of re-downloading the archive.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import os
 import sys
 import time
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import backfill  # noqa: E402  (load_env, weekdays, needs_fetch, fetch, write_dataset)
 from contracts import tenures  # noqa: E402
+
+PUBLIC_MANIFEST = "https://pub-d68008dba02c4ad190e9814f6c41cbef.r2.dev/manifest.json"
+
+
+def manifest_usable_dates() -> set[str]:
+    url = os.environ.get("GC_REMOTE_URL", "").rstrip("/") + "/manifest.json"
+    if not url.startswith("https://"):
+        url = PUBLIC_MANIFEST
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        m = json.loads(r.read())
+    return {f["date"] for f in m.get("files", []) if f.get("session") == "ETH" and f.get("usable")}
 
 
 def main():
@@ -40,6 +58,7 @@ def main():
     ap.add_argument("--force", action="store_true", help="re-fetch dates already complete on disk")
     ap.add_argument("--plan", action="store_true", help="print the contract calendar and exit")
     ap.add_argument("--sleep", type=float, default=2.0, help="pause between contracts (s)")
+    ap.add_argument("--only-gaps", action="store_true", help="skip dates already usable in the R2 manifest")
     args = ap.parse_args()
 
     end = dt.date.today().isoformat() if args.end == "today" else args.end
@@ -50,10 +69,17 @@ def main():
             print(f"  {sym:<6} {fr} .. {to}")
         return 0
 
+    usable: set[str] | None = None
+    if args.only_gaps:
+        usable = manifest_usable_dates()
+        print(f"--only-gaps: {len(usable)} dates already usable in R2 — those are skipped")
+
     grand = {"complete": 0, "partial": 0, "empty": 0, "miss": 0}
     for n, (sym, fr, to) in enumerate(rows, 1):
         dates = backfill.weekdays(fr, to)
         todo = [d for d in dates if args.force or backfill.needs_fetch(d, args.sessions)]
+        if usable is not None:
+            todo = [d for d in todo if d not in usable]
         if not todo:
             print(f"[{n}/{len(rows)}] {sym} {fr}..{to}: {len(dates)} dates all complete on disk", flush=True)
             continue
