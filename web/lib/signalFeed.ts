@@ -23,6 +23,7 @@ import { getLive } from "./live";
 import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD } from "./momentum";
+import { detectOpenDrive, OPEN_PROD } from "./openDrive";
 import { momentumSize } from "./propRules";
 import {
   loadCollectedContext,
@@ -81,6 +82,10 @@ export const FEED_PULLBACK_TICKET = feedFlag("FEED_PULLBACK_TICKET", false);
  *  card (lib/momentum.ts, MOM_PROD). THE single active strategy. 72.9% win /
  *  PF 2.25 in the 568-session replay — joins the one-sided run. */
 export const FEED_MOMENTUM = feedFlag("FEED_MOMENTUM", true);
+/** FEED_OPEN — the 9:30 opening-drive card (lib/openDrive.ts). EXPERIMENTAL:
+ *  74.3% win / PF 2.82 over only 74 trades — off by default; journal
+ *  separately from the main strategy if enabled. */
+export const FEED_OPEN = feedFlag("FEED_OPEN", false);
 
 const CONTEXT_TTL_MS = 10 * 60 * 1000;
 /** a live feed whose last print is older than this is treated as closed */
@@ -378,6 +383,72 @@ class SignalFeed {
     }
   }
 
+  /** The 9:30 opening-drive card (lib/openDrive.ts) — EXPERIMENTAL, off by
+   *  default. One signal per day by construction; fires only when the drive
+   *  bar is the just-completed minute. */
+  private openSent = new Set<string>();
+
+  private async checkOpen(): Promise<void> {
+    if (!FEED_OPEN) return;
+    const live = getLive().state;
+    if (!live.connected || live.minutes.length < 60) return;
+    const fp = liveMinutesToFootprint(live.minutes);
+    const sigs = detectOpenDrive(fp, OPEN_PROD);
+    for (const s of sigs) {
+      if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
+      const key = `${s.d}|${s.dir}|${s.t}`;
+      if (this.openSent.has(key)) continue;
+      this.openSent.add(key);
+      if (this.openSent.size > 200) this.openSent = new Set([...this.openSent].slice(-100));
+
+      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+      const size = momentumSize(s.risk, riskBudget);
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
+
+      void placeOrder({
+        symbol: symbol(),
+        dir: s.dir,
+        contracts: size.contracts,
+        entry: s.entry,
+        stop: s.stop,
+        target: s.target,
+        timeET: cdtToET(s.t),
+      }).catch(() => {});
+
+      const et = cdtToET(s.t);
+      const text = [
+        `🔔 <b>OPEN DRIVE ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
+        ``,
+        `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
+        `<code>STOP    ${fmtPx(s.stop)}</code>`,
+        `<code>TARGET  ${fmtPx(s.target)}</code>`,
+        `<code>SIZE    ${sizeStr}</code>`,
+        ``,
+        `cumulative delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · ${Math.round(s.breakFrac * 100)}% bar through the opening ${s.dir === "long" ? "high" : "low"}`,
+        `<i>experimental — journal separately</i>`,
+      ].join("\n");
+      const res = await sendTelegram(text, { parseMode: "HTML" });
+      if (!res.sent) this.lastError = res.reason;
+      await recordSignal({
+        timeET: et,
+        day: s.d,
+        symbol: symbol(),
+        side: s.dir,
+        price: s.entry,
+        entry: s.entry.toFixed(2),
+        stop: s.stop.toFixed(2),
+        target: s.target.toFixed(2),
+        size: sizeStr,
+        verdict: "open drive (experimental)",
+        headline: `NQ open drive ${s.dir}`,
+        source: "live",
+        test: false,
+        sent: res.sent,
+        reason: res.reason,
+      });
+    }
+  }
+
   /** Unusual-volume heads-up: a completed minute at >=2x its hour's norm with
    *  a one-sided print (>=70% buy or >=70% sell). The card carries the bar's
    *  own footprint context (POC + migration, close position, imbalance stack)
@@ -542,6 +613,7 @@ class SignalFeed {
       await this.checkUnusualVolume();
       await this.checkPullbackWatch();
       await this.checkMomentum();
+      await this.checkOpen();
     } catch (e) {
       this.lastError = String(e);
     } finally {

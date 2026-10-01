@@ -12,6 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, MOM_DEFAULTS, EXP_PROD, type MomMinute } from "../lib/momentum";
+import { detectOpenDrive, OPEN_PROD } from "../lib/openDrive";
 import { momentumSize, RAPID_EOD_50K } from "../lib/propRules";
 
 /** compact bar builder: [t, high, low, buy, sell, levels?] */
@@ -259,4 +260,32 @@ test("churn veto: a huge two-way bar (both stacks) does not fire", () => {
     { ...MOM_PROD, churnVeto: true, breakFrac: 0.5, minRiskPts: 3 },
   );
   assert.equal(momSigs.length, 0);
+});
+
+test("open drive: cumulative delta + huge bar through the opening high fires long", () => {
+  // 58 quiet overnight bars (hourET 7), then the 9:30 open: two-way open
+  // bar, then the drive bar — 60% buy, huge range, cumD >= 300, closes
+  // through the opening high (detector needs >= 60 bars of warm-up)
+  const quiet: [string, number, number, number, number][] = [];
+  for (let i = 0; i < 58; i++) {
+    const h = Math.floor(i / 60);
+    const t = `06:${String(i % 60).padStart(2, "0")}`;
+    quiet.push([t, 100.25, 99.75, 50, 50]);
+  }
+  const m = bars([
+    ...quiet,
+    ["08:30", 101.5, 99.75, 200, 100], // 9:30 open bar, +100 delta
+    ["08:31", 110.5, 100.0, 1200, 800], // drive bar: 60% buy, cumD 500
+    ["08:32", 106.0, 105.0, 60, 60],
+    ["08:33", 106.5, 105.5, 60, 60],
+    ["08:34", 107.0, 106.0, 60, 60],
+  ]);
+  const sigs = detectOpenDrive(m, OPEN_PROD);
+  assert.equal(sigs.length, 1);
+  const s = sigs[0];
+  assert.equal(s.dir, "long");
+  assert.equal(s.t, "08:31"); // 9:31 ET
+  assert.ok(s.cumDelta >= 300, `cumD ${s.cumDelta}`);
+  assert.ok(Math.abs(s.entry - 105.25) < 0.01, `entry ${s.entry}`);
+  assert.ok(Math.abs(s.stop - 99.5) < 0.01, `stop ${s.stop}`);
 });

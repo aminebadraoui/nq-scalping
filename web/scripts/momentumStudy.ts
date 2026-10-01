@@ -14,6 +14,7 @@
 import { promises as fs } from "node:fs";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
+import { detectOpenDrive, OPEN_DEFAULTS, type OpenDriveConfig } from "../lib/openDrive";
 import {
   detectMomentum,
   detectExpansionScalp,
@@ -34,7 +35,7 @@ const HOLD_BARS = 60;
 /* ---------------- CLI ---------------- */
 
 function parseArgs(argv: string[]) {
-  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion"; sequential: boolean } = {
+  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion" | "open"; sequential: boolean } = {
     cfg: {},
     sweep: false,
     mode: "momentum",
@@ -44,7 +45,7 @@ function parseArgs(argv: string[]) {
     const a = argv[i];
     if (a === "--max") o.max = Number(argv[++i]);
     else if (a === "--split") o.split = argv[++i];
-    else if (a === "--mode") o.mode = argv[++i] as "momentum" | "expansion";
+    else if (a === "--mode") o.mode = argv[++i] as "momentum" | "expansion" | "open";
     else if (a === "--sequential") o.sequential = true;
     else if (a === "--cfg") {
       for (const kv of argv[++i].split(",")) {
@@ -256,6 +257,13 @@ const EXPANSION_VARIANTS: { name: string; overrides: Partial<ExpansionConfig> }[
   { name: "exp1.6s+open", overrides: { minRangeR: 1.6, minAbsDeltaFrac: 0.5, requireStack: true, hourFilter: "globexOpen" } },
 ];
 
+const OPEN_VARIANTS: { name: string; overrides: Partial<OpenDriveConfig> }[] = [
+  { name: "soft300", overrides: { cumDeltaFloor: 300, minBuyFrac: 0.5, volMedMult: 1.5, minRangeR: 1.5, entryMode: "high", windowMin: 45 } },
+  { name: "soft200", overrides: { cumDeltaFloor: 200, minBuyFrac: 0.5, volMedMult: 1.5, minRangeR: 1.5, entryMode: "high", windowMin: 45 } },
+  { name: "soft300c", overrides: { cumDeltaFloor: 300, minBuyFrac: 0.5, volMedMult: 1.5, minRangeR: 1.5, entryMode: "close", windowMin: 45 } },
+  { name: "o300f50", overrides: { cumDeltaFloor: 300, minBuyFrac: 0.5 } },
+];
+
 /* ---------------- main ---------------- */
 
 async function main() {
@@ -263,12 +271,14 @@ async function main() {
   const o = parseArgs(argv);
   const splitDate = o.split ?? "2026-01-01";
   const mode = o.mode;
-  const variants: { name: string; cfg: MomConfig | ExpansionConfig }[] =
-    mode === "expansion"
-      ? EXPANSION_VARIANTS.map((v) => ({ name: v.name, cfg: { ...EXP_DEFAULTS, ...v.overrides } }))
-      : o.sweep
-        ? SWEEP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...o.cfg, ...v.overrides } }))
-        : [{ name: "custom", cfg: { ...MOM_DEFAULTS, ...o.cfg } }];
+  const variants: { name: string; cfg: MomConfig | ExpansionConfig | OpenDriveConfig }[] =
+    mode === "open"
+      ? OPEN_VARIANTS.map((v) => ({ name: v.name, cfg: { ...OPEN_DEFAULTS, ...v.overrides } }))
+      : mode === "expansion"
+        ? EXPANSION_VARIANTS.map((v) => ({ name: v.name, cfg: { ...EXP_DEFAULTS, ...v.overrides } }))
+        : o.sweep
+          ? SWEEP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...o.cfg, ...v.overrides } }))
+          : [{ name: "custom", cfg: { ...MOM_DEFAULTS, ...o.cfg } }];
 
   console.log(`mode: ${mode} | split: ${splitDate} | variants: ${variants.map((v) => v.name).join(", ")}`);
   let dates = await archiveDates();
@@ -300,9 +310,11 @@ async function main() {
       loaded++;
       for (let v = 0; v < variants.length; v++) {
         const signals =
-          mode === "expansion"
-            ? detectExpansionScalp(minutes, variants[v].cfg as ExpansionConfig)
-            : detectMomentum(minutes, variants[v].cfg as MomConfig);
+          mode === "open"
+            ? detectOpenDrive(minutes, variants[v].cfg as OpenDriveConfig)
+            : mode === "expansion"
+              ? detectExpansionScalp(minutes, variants[v].cfg as ExpansionConfig)
+              : detectMomentum(minutes, variants[v].cfg as MomConfig);
         if (o.sequential) {
           perVariant[v].push(...scoreSequential(minutes, signals, date));
         } else {
