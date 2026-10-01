@@ -109,6 +109,10 @@ class SignalFeed {
   private reclaimSent = new Set<string>();
   private volumeAlerted = new Set<string>();
   private momentumSent = new Set<string>();
+  /** days that already got a momentum card — the first card of the day is
+   *  the best one (77.2% win / PF 3.15 vs 2.96 for the rest), so it gets a
+   *  "1st today" marker for the one-trade-per-day discipline. */
+  private cardedDays = new Set<string>();
   /** stage-2 watch armed by the latest unusual-volume alert (one at a time) */
   private pullbackWatch: UVWatch | null = null;
 
@@ -344,6 +348,9 @@ class SignalFeed {
       }).catch(() => {});
 
       const et = cdtToET(s.t);
+      const firstToday = !this.cardedDays.has(s.d);
+      this.cardedDays.add(s.d);
+      if (this.cardedDays.size > 20) this.cardedDays = new Set([...this.cardedDays].slice(-10));
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
       const evidence =
         s.kind === "expansion"
@@ -359,7 +366,7 @@ class SignalFeed {
         `<code>TARGET  ${fmtPx(s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        evidence,
+        `${firstToday ? "1st today · " : ""}${evidence}`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
       if (!res.sent) this.lastError = res.reason;
