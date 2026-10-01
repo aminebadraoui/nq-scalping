@@ -38,9 +38,12 @@ export type OpenDriveConfig = {
   fixedTpPts: number;
   fixedSlPts: number;
   /** "drive" = the strict cumulative-delta drive (rare, highest quality);
+   *  "scan" = scan the WHOLE 9:30-9:59 window: first new opening extreme
+   *  backed by cumD >= floor and a one-sided bar = the real move (96% hit
+   *  at TP10/SL30, 87% of days);
    *  "daily" = the 9:30 bar's own delta sign (available EVERY day:
    *  TP15/SL35 touches +15 in ~1 bar 79% of sessions, +4.4 pts gross). */
-  mode: "drive" | "daily";
+  mode: "drive" | "daily" | "scan";
 };
 
 export const OPEN_DEFAULTS: OpenDriveConfig = {
@@ -66,7 +69,9 @@ export const OPEN_DEFAULTS: OpenDriveConfig = {
  *  journal every card separately if enabled. */
 export const OPEN_PROD: OpenDriveConfig = {
   ...OPEN_DEFAULTS,
-  mode: "daily",
+  mode: "scan",
+  cumDeltaFloor: 300,
+  minBuyFrac: 0.55,
   fixedTpPts: 15,
   fixedSlPts: 35,
 };
@@ -161,6 +166,74 @@ export function detectOpenDrive(minutes: MomMinute[], cfg: OpenDriveConfig = OPE
       breakVwapPos: 0.5,
       flushRangeR: 0,
     });
+    return out;
+  }
+
+  if (cfg.mode === "scan") {
+    // scan the whole 9:30-9:59 window: the FIRST new opening extreme that
+    // cumulative delta and one-sidedness actually back = the real move
+    let cumS = 0;
+    let winHi = -Infinity;
+    let winLo = Infinity;
+    for (let k = i0; k < Math.min(n - 1, i0 + cfg.windowMin); k++) {
+      const m = minutes[k];
+      const vol = m.buy + m.sell;
+      const frac = vol > 0 ? m.buy / vol : 0.5;
+      const priorHi = winHi;
+      const priorLo = winLo;
+      winHi = Math.max(winHi, m.high);
+      winLo = Math.min(winLo, m.low);
+      cumS += m.buy - m.sell;
+      if (k === i0) continue;
+      let dir: "long" | "short" | null = null;
+      if (m.high > priorHi && priorHi > -Infinity && cumS >= cfg.cumDeltaFloor && frac >= cfg.minBuyFrac) dir = "long";
+      else if (m.low < priorLo && priorLo < Infinity && cumS <= -cfg.cumDeltaFloor && frac <= 1 - cfg.minBuyFrac) dir = "short";
+      if (!dir) continue;
+      const entry = closeOf(m);
+      const stop = dir === "long" ? entry - cfg.fixedSlPts : entry + cfg.fixedSlPts;
+      const target = dir === "long" ? entry + cfg.fixedTpPts : entry - cfg.fixedTpPts;
+      out.push({
+        dir,
+        kind: "flush" as const,
+        flushIdx: i0,
+        respIdx: k,
+        breakIdx: k,
+        entryIdx: k,
+        entry,
+        stop,
+        target,
+        risk: cfg.fixedSlPts,
+        t: m.t,
+        d: m.d,
+        hourET: hourET(m.t),
+        flushFrac: 0.5,
+        flushVol: vol,
+        flushRange: m.high - m.low,
+        failDepth: 0,
+        respFrac: frac,
+        respVol: vol,
+        respDelay: 0,
+        respProof: 0,
+        breakFrac: frac,
+        breakVol: vol,
+        breakDelay: 0,
+        refDist: 0,
+        progressPts: 0,
+        medVol: medVol(k),
+        distVwapPts: 0,
+        cumDelta: cumS,
+        deltaFromFlush: cumS,
+        atr14: atrAt(k),
+        riskPts: cfg.fixedSlPts,
+        trailLowDist: 0,
+        trailHighDist: 0,
+        breakRangeR: (m.high - m.low) / Math.max(0.25, atrAt(k)),
+        breakStack: "none",
+        breakVwapPos: 0.5,
+        flushRangeR: 0,
+      });
+      return out;
+    }
     return out;
   }
 

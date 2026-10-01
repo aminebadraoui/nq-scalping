@@ -284,10 +284,10 @@ test("open drive: cumulative delta + huge bar through the opening high fires lon
   assert.equal(sigs.length, 1);
   const s = sigs[0];
   assert.equal(s.dir, "long");
-  assert.equal(s.t, "08:30"); // the 9:30 bar itself (daily mode)
-  assert.ok(s.cumDelta >= 100, `cumD ${s.cumDelta}`);
-  // daily fixed plan: TP 15 / SL 35 from the 9:30 close
-  const entry = (101.5 + 99.75) / 2; // 100.625
+  assert.equal(s.t, "08:31"); // the drive bar breaking the opening high (scan mode)
+  assert.ok(s.cumDelta >= 300, `cumD ${s.cumDelta}`);
+  // scan fixed plan: TP 15 / SL 35 from the drive bar's close
+  const entry = (110.5 + 100.0) / 2; // 105.25
   assert.ok(Math.abs(s.entry - entry) < 0.01, `entry ${s.entry}`);
   assert.ok(Math.abs(s.stop - (entry - 35)) < 0.01, `stop ${s.stop}`);
   assert.ok(Math.abs(s.target - (entry + 15)) < 0.01, `target ${s.target}`);

@@ -431,7 +431,7 @@ class SignalFeed {
         `<code>TARGET  ${fmtPx(s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `cumulative delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · ${Math.round(s.breakFrac * 100)}% bar through the opening ${s.dir === "long" ? "high" : "low"}`,
+        `opening-range breakout · delta ${s.cumDelta >= 0 ? "+" : ""}${s.cumDelta} · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`,
         `<i>fixed TP/SL plan · experimental — journal separately</i>`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
