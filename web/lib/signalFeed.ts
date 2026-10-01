@@ -24,6 +24,7 @@ import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD } from "./momentum";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
+import { detectSoftMomentum, SOFT_PROD } from "./softMomentum";
 import { momentumSize } from "./propRules";
 import {
   loadCollectedContext,
@@ -82,6 +83,10 @@ export const FEED_PULLBACK_TICKET = feedFlag("FEED_PULLBACK_TICKET", false);
  *  card (lib/momentum.ts, MOM_PROD). THE single active strategy. 72.9% win /
  *  PF 2.25 in the 568-session replay — joins the one-sided run. */
 export const FEED_MOMENTUM = feedFlag("FEED_MOMENTUM", true);
+/** FEED_RTH — the RTH soft-continuation card (lib/softMomentum.ts).
+ *  EXPERIMENTAL: 69.4% win / +2.6 pts net over 3,815 trades — off by
+ *  default; journal separately if enabled. */
+export const FEED_RTH = feedFlag("FEED_RTH", false);
 /** FEED_OPEN — the 9:30 opening-drive card (lib/openDrive.ts). EXPERIMENTAL:
  *  74.3% win / PF 2.82 over only 74 trades — off by default; journal
  *  separately from the main strategy if enabled. */
@@ -401,6 +406,74 @@ class SignalFeed {
     }
   }
 
+  /** RTH soft-continuation (lib/softMomentum.ts) — EXPERIMENTAL, off by
+   *  default. 60% one-sided bars continue in the thick RTH tape. */
+  private rthSent = new Set<string>();
+
+  private async checkRth(): Promise<void> {
+    if (!FEED_RTH) return;
+    const live = getLive().state;
+    if (!live.connected || live.minutes.length < 30) return;
+    const fp = liveMinutesToFootprint(live.minutes);
+    for (const s of detectSoftMomentum(fp, SOFT_PROD)) {
+      if (s.breakIdx !== fp.length - 1) continue;
+      const key = `${s.d}|${s.dir}|${s.t}`;
+      if (this.rthSent.has(key)) continue;
+      this.rthSent.add(key);
+      if (this.rthSent.size > 200) this.rthSent = new Set([...this.rthSent].slice(-100));
+
+      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+      const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
+      const size =
+        fixed > 0
+          ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * s.risk * 2, capped: false }
+          : momentumSize(s.risk, riskBudget);
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
+
+      void placeOrder({
+        symbol: symbol(),
+        dir: s.dir,
+        contracts: size.contracts,
+        entry: s.entry,
+        stop: s.stop,
+        target: s.target,
+        timeET: cdtToET(s.t),
+      }).catch(() => {});
+
+      const et = cdtToET(s.t);
+      const text = [
+        `🟦 <b>RTH ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
+        ``,
+        `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
+        `<code>STOP    ${fmtPx(s.stop)}</code>`,
+        `<code>TARGET  ${fmtPx(s.target)}</code>`,
+        `<code>SIZE    ${sizeStr}</code>`,
+        ``,
+        `${Math.round(s.breakFrac * 100)}% one-sided bar · RTH continuation`,
+        `<i>1R plan · experimental — journal separately</i>`,
+      ].join("\n");
+      const res = await sendTelegram(text, { parseMode: "HTML" });
+      if (!res.sent) this.lastError = res.reason;
+      await recordSignal({
+        timeET: et,
+        day: s.d,
+        symbol: symbol(),
+        side: s.dir,
+        price: s.entry,
+        entry: s.entry.toFixed(2),
+        stop: s.stop.toFixed(2),
+        target: s.target.toFixed(2),
+        size: sizeStr,
+        verdict: "rth soft-continuation (experimental)",
+        headline: `NQ RTH ${s.dir}`,
+        source: "live",
+        test: false,
+        sent: res.sent,
+        reason: res.reason,
+      });
+    }
+  }
+
   /** The 9:30 opening-drive card (lib/openDrive.ts) — EXPERIMENTAL, off by
    *  default. One signal per day by construction; fires only when the drive
    *  bar is the just-completed minute. */
@@ -648,6 +721,7 @@ class SignalFeed {
       await this.checkPullbackWatch();
       await this.checkMomentum();
       await this.checkOpen();
+      await this.checkRth();
     } catch (e) {
       this.lastError = String(e);
     } finally {

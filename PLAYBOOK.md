@@ -110,6 +110,24 @@ separately.
 
 ---
 
+## 🟦 THE RTH CARD — soft continuation (`FEED_RTH=0`, experimental)
+
+The strategy the thick two-way RTH tape (9:30–16:00 ET) actually rewards.
+The Globex gates (≥75% one-sided) never complete there; at 60% the
+continuation edge reappears (`lib/softMomentum.ts`):
+
+1. Bar in RTH hours with **buy-frac ≥ 0.60** (mirror ≤ 0.40),
+2. volume ≥ 0.5 × trailing 60-bar median,
+3. risk 3–15 pts → entry at the close, stop under the bar (1 pt pad),
+   **1R target**, ≥5-bar gap.
+
+Validation: 3,815 longs (69.4% WR, +2.60 pts net) + 3,937 shorts (67.1%,
++2.29) over 568 sessions — ~6.7 signals per RTH day. The extreme-bar fade
+(≥1.8×ATR churn) and the RTH pullback (65.3%) both measured worse.
+Account sim: passes eval, consistency ✓, never breaches.
+
+---
+
 ## ARCHIVED / OFF
 
 - **LVN reversal** — `STRATEGY.md` (the original playbook; `FEED_REVERSAL=0`).

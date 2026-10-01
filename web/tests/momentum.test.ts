@@ -13,6 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, MOM_DEFAULTS, EXP_PROD, type MomMinute } from "../lib/momentum";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "../lib/openDrive";
+import { detectSoftMomentum, SOFT_PROD, inRTH } from "../lib/softMomentum";
 import { momentumSize, RAPID_EOD_50K } from "../lib/propRules";
 
 /** compact bar builder: [t, high, low, buy, sell, levels?] */
@@ -350,4 +351,35 @@ test("sniper: big one-sided flush holding the opening-range anchor prints the re
   assert.ok(Math.abs(s.entry - 109.0) < 0.01, `entry ${s.entry}`); // anchor 99.5 + 9.5
   assert.ok(Math.abs(s.stop - 89.5) < 0.01, `stop ${s.stop}`); // anchor 99.5 - 10
   assert.ok(Math.abs(s.target - 102.0) < 0.01, `target ${s.target}`); // the flush's high
+});
+
+test("RTH soft-continuation: 60% one-sided RTH bar fires, Globex bars don't", () => {
+  assert.equal(inRTH("13:30"), true, "9:30 ET is RTH"); // feed clock 8:30 Central
+  assert.equal(inRTH("20:00"), false, "evening is not RTH");
+  const quiet: [string, number, number, number, number][] = [];
+  for (let i = 0; i < 30; i++) quiet.push([`07:${String(i % 60).padStart(2, "0")}`, 100.25, 99.75, 50, 50]);
+  const m = bars([
+    ...quiet,
+    ["08:31", 103.0, 99.0, 60, 40], // 9:31 ET, 60% buy, risk 3.0 → fires
+  ]);
+  const sigs = detectSoftMomentum(m, SOFT_PROD);
+  assert.equal(sigs.length, 1);
+  assert.equal(sigs[0].dir, "long");
+  assert.equal(sigs[0].t, "08:31");
+  // and a Globex-hours 60% bar does NOT fire
+  const m2 = bars([
+    ...quiet,
+    ["13:00", 101.5, 100.0, 60, 40], // 14:00 ET? 13:00 Central = 14:00 ET → RTH! use 15:00 Central = 16:00 ET boundary
+  ]);
+  void m2;
+  const m3 = bars([
+    ...quiet,
+    ["11:00", 101.5, 100.0, 60, 40], // 12:00 ET → RTH → would fire (fine)
+  ]);
+  void m3;
+  const m4 = bars([
+    ...quiet,
+    ["21:00", 101.5, 100.0, 60, 40], // 22:00 ET → Globex → no fire
+  ]);
+  assert.equal(detectSoftMomentum(m4, SOFT_PROD).length, 0);
 });
