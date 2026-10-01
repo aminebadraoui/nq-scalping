@@ -230,6 +230,9 @@ const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
   { name: "prod+poc", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, requireBreakPoc: true } },
   { name: "prod+pocMove", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, requirePocMove: true } },
   { name: "prod+poc+pocMove", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, requireBreakPoc: true, requirePocMove: true } },
+  { name: "prod+local20", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 20 } },
+  { name: "prod+local60", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 60 } },
+  { name: "prod+local120", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 120 } },
 ];
 
 const EXPANSION_VARIANTS: { name: string; overrides: Partial<ExpansionConfig> }[] = [

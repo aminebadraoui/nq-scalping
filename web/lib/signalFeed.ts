@@ -452,15 +452,26 @@ class SignalFeed {
     //      make a new extreme is stage 1-2 of the momentum sequence ----
     const sessLow = live.snapshot?.low ?? Math.min(...live.minutes.map((m) => m.l));
     const sessHigh = live.snapshot?.high ?? Math.max(...live.minutes.map((m) => m.h));
-    if (side === "sell" && last.l > sessLow) {
+    const prior = live.minutes.slice(Math.max(0, n - 21), n - 1);
+    const trailLo = prior.length ? Math.min(...prior.map((m) => m.l)) : Infinity;
+    const trailHi = prior.length ? Math.max(...prior.map((m) => m.h)) : -Infinity;
+    if (side === "sell") {
       let ref = -Infinity;
       for (let k = Math.max(0, n - 3); k < n; k++) ref = Math.max(ref, live.minutes[k].h);
-      details.push(`failed flush (no new session low) — momentum watch for a buy breakout above ${fmtPx(ref)}`);
+      if (last.l > sessLow) {
+        details.push(`failed flush (no new session low) — momentum watch for a buy breakout above ${fmtPx(ref)}`);
+      } else if (last.l > trailLo) {
+        details.push(`failed flush (no new LOCAL swing low — 20 bars) — momentum watch for a buy breakout above ${fmtPx(ref)}`);
+      }
     }
-    if (side === "buy" && last.h < sessHigh) {
+    if (side === "buy") {
       let ref = Infinity;
       for (let k = Math.max(0, n - 3); k < n; k++) ref = Math.min(ref, live.minutes[k].l);
-      details.push(`failed rally (no new session high) — momentum watch for a sell breakdown below ${fmtPx(ref)}`);
+      if (last.h < sessHigh) {
+        details.push(`failed rally (no new session high) — momentum watch for a sell breakdown below ${fmtPx(ref)}`);
+      } else if (last.h < trailHi) {
+        details.push(`failed rally (no new LOCAL swing high — 20 bars) — momentum watch for a sell breakdown below ${fmtPx(ref)}`);
+      }
     }
 
     const text = [

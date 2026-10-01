@@ -66,6 +66,16 @@ capture what POC adds. The POC read remains a valuable *manual* tool
 (where did the value trade, and is it migrating your way) — just not a
 better machine gate.
 
+**Failure anchor (session vs local swing): TESTED — A WASH.** The flush's
+"failed" test was re-anchored from the session extreme to the trailing
+20/60-bar swing (`failAnchor: "local"`): 76.2% / PF 2.75 vs 76.1% / 2.76
+session-anchored, shorts 73.4% vs 73.2%. The anchor barely matters because
+the 75% breakout gate does the real filtering — the session criterion only
+"measures" near the day's extreme, but the far-from-extreme flushes it lets
+through are filtered equally well downstream. Kept as a config option; the
+live unusual-volume watch line now reports BOTH (session + local 20-bar)
+failure reads for the manual trader.
+
 ## What each footprint feature says on its own
 
 - **Delta share** — the strongest bar-level directional signal: >50% buy →

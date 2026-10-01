@@ -116,6 +116,12 @@ export type MomConfig = {
   /** breakout bar's POC must migrate in the trade direction vs the prior
    *  bar (POC up >0 for longs) — the POC-migration lead (59% vs 40%). */
   requirePocMove: boolean;
+  /** what the flush must fail to break: "session" = the day's running
+   *  extreme (only meaningful near the extremes), "local" = the trailing
+   *  failLocalBars-bar extreme (the last swing low/high — measures effort
+   *  vs result at ANY location). */
+  failAnchor: "session" | "local";
+  failLocalBars: number;
 };
 
 export const MOM_DEFAULTS: MomConfig = {
@@ -158,6 +164,8 @@ export const MOM_DEFAULTS: MomConfig = {
   churnVeto: false,
   requireBreakPoc: false,
   requirePocMove: false,
+  failAnchor: "session",
+  failLocalBars: 20,
 };
 
 /** The production momentum config — frozen after the 568-session sweeps
@@ -384,7 +392,8 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     const frac = fracOf(m);
     if (frac > cfg.flushFrac) return null;
     if (!volOk(m.buy + m.sell, medAt(i), cfg.flushVolFloor, cfg.flushVolMedMult)) return null;
-    if (m.low < sessLo - cfg.failTolPts) return null; // real breakdown — not ours
+    const anchorLow = cfg.failAnchor === "local" ? trailExtremes(i, cfg.failLocalBars).lo : sessLo;
+    if (m.low < anchorLow - cfg.failTolPts) return null; // real breakdown — not ours
     if (cfg.quietBeforeFlush && i >= 1) {
       const pr = minutes[i - 1];
       const prr = (pr.high - pr.low) / Math.max(0.25, atrAt(i - 1));
@@ -420,7 +429,8 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     const frac = fracOf(m);
     if (frac < 1 - cfg.flushFrac) return null;
     if (!volOk(m.buy + m.sell, medAt(i), cfg.flushVolFloor, cfg.flushVolMedMult)) return null;
-    if (m.high > sessHi + cfg.failTolPts) return null; // real breakout up — not ours
+    const anchorHigh = cfg.failAnchor === "local" ? trailExtremes(i, cfg.failLocalBars).hi : sessHi;
+    if (m.high > anchorHigh + cfg.failTolPts) return null; // real breakout up — not ours
     if (cfg.quietBeforeFlush && i >= 1) {
       const pr = minutes[i - 1];
       const prr = (pr.high - pr.low) / Math.max(0.25, atrAt(i - 1));
