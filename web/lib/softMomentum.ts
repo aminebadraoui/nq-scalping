@@ -55,7 +55,8 @@ const mmOf = (t: string): number => Number(t.slice(3, 5));
 export const inRTH = (t: string): boolean => {
   const h = hourET(t);
   const mm = mmOf(t);
-  return (h === 9 && mm >= 30) || (h >= 10 && h <= 16);
+  // 9:30-16:00 only — hour 16 includes just the closing minute, not 16:01+
+  return (h === 9 && mm >= 30) || (h >= 10 && h <= 15) || (h === 16 && mm === 0);
 };
 
 export function detectSoftMomentum(minutes: MomMinute[], cfg: SoftConfig = SOFT_DEFAULTS): MomentumSignal[] {
