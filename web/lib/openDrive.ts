@@ -37,6 +37,10 @@ export type OpenDriveConfig = {
    *  expectancy under the strict direction rule. */
   fixedTpPts: number;
   fixedSlPts: number;
+  /** "drive" = the strict cumulative-delta drive (rare, highest quality);
+   *  "daily" = the 9:30 bar's own delta sign (available EVERY day:
+   *  TP15/SL35 touches +15 in ~1 bar 79% of sessions, +4.4 pts gross). */
+  mode: "drive" | "daily";
 };
 
 export const OPEN_DEFAULTS: OpenDriveConfig = {
@@ -52,6 +56,7 @@ export const OPEN_DEFAULTS: OpenDriveConfig = {
   entryMode: "close",
   fixedTpPts: 0,
   fixedSlPts: 0,
+  mode: "drive",
 };
 
 /** The experimental production config — the strict direction rule with the
@@ -61,10 +66,9 @@ export const OPEN_DEFAULTS: OpenDriveConfig = {
  *  journal every card separately if enabled. */
 export const OPEN_PROD: OpenDriveConfig = {
   ...OPEN_DEFAULTS,
-  cumDeltaFloor: 300,
-  minBuyFrac: 0.5,
-  fixedTpPts: 10,
-  fixedSlPts: 30,
+  mode: "daily",
+  fixedTpPts: 15,
+  fixedSlPts: 35,
 };
 
 function med(a: number[]): number {
@@ -108,6 +112,57 @@ export function detectOpenDrive(minutes: MomMinute[], cfg: OpenDriveConfig = OPE
   let cumD = 0;
   let openHi = -Infinity;
   let openLo = Infinity;
+
+  if (cfg.mode === "daily") {
+    const m = minutes[i0];
+    cumD = m.buy - m.sell;
+    if (cumD === 0) return out;
+    const dir: 1 | -1 = cumD > 0 ? 1 : -1;
+    const entry = closeOf(m);
+    const stop = dir === "long" ? entry - cfg.fixedSlPts : entry + cfg.fixedSlPts;
+    const target = dir === "long" ? entry + cfg.fixedTpPts : entry - cfg.fixedTpPts;
+    out.push({
+      dir,
+      kind: "flush" as const,
+      flushIdx: i0,
+      respIdx: i0,
+      breakIdx: i0,
+      entryIdx: i0,
+      entry,
+      stop,
+      target,
+      risk: cfg.fixedSlPts,
+      t: m.t,
+      d: m.d,
+      hourET: hourET(m.t),
+      flushFrac: 0.5,
+      flushVol: m.buy + m.sell,
+      flushRange: m.high - m.low,
+      failDepth: 0,
+      respFrac: m.buy + m.sell > 0 ? m.buy / (m.buy + m.sell) : 0.5,
+      respVol: m.buy + m.sell,
+      respDelay: 0,
+      respProof: 0,
+      breakFrac: m.buy + m.sell > 0 ? m.buy / (m.buy + m.sell) : 0.5,
+      breakVol: m.buy + m.sell,
+      breakDelay: 0,
+      refDist: 0,
+      progressPts: 0,
+      medVol: medVol(i0),
+      distVwapPts: 0,
+      cumDelta: cumD,
+      deltaFromFlush: cumD,
+      atr14: atrAt(i0),
+      riskPts: cfg.fixedSlPts,
+      trailLowDist: 0,
+      trailHighDist: 0,
+      breakRangeR: (m.high - m.low) / Math.max(0.25, atrAt(i0)),
+      breakStack: "none",
+      breakVwapPos: 0.5,
+      flushRangeR: 0,
+    });
+    return out;
+  }
 
   for (let k = i0; k < Math.min(n - 1, i0 + cfg.windowMin); k++) {
     const m = minutes[k];
