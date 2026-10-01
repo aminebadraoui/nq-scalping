@@ -79,14 +79,16 @@ research knob, not production.
    second trigger of the production card (`EXP_PROD` in `lib/momentum.ts`;
    combined card: 4,822 trades, 77.5% win, PF 2.98). Sequential replay
    confirmed (one trade at a time): 4,152 trades, 78.4% win, PF 3.14.
-2. **Compression → signal** — quiet (<0.4×ATR) and no-stack bars precede
-   momentum signals at 1.6–2× the baseline rate: a "quiet before the storm"
-   heads-up is derivable from the same features (`quietBeforeFlush` knob
-   exists, not yet adopted).
-3. **Churn detection** — both-side diagonals flag two-way volatility:
-   `churnVeto` knob exists (tested), not adopted — the delta gate already
-   filters most churn bars.
-4. **vwapPos as a close proxy** — monotonic directionality without OHLC;
-   usable live for any bar lacking a true close.
+2. ~~Compression → signal~~ — **TESTED & REJECTED as a filter**: requiring a
+   quiet bar before the flush (`quietBeforeFlush`) cut trades to 833 and
+   dropped the win rate to 74.4% (vs 76.1%). Compression precedes signals,
+   but requiring it removes better trades. Kept as a research knob; the
+   heads-up application (an alert line, not a filter) remains possible.
+3. ~~Churn detection~~ — **TESTED & REJECTED**: `churnVeto` (skip breakout
+   bars with both-side dominant clusters) gave 75.8% vs 76.1% — the 75%
+   delta gate already filters churn bars. Kept as a research knob.
+4. **vwapPos as a close proxy** — monotonic directionality without OHLC
+   (bottom-position bars 34% next-bar up, top-position 64%); used as a
+   feature in the study, not yet a production gate.
 
 *Educational research only — not financial advice.*
