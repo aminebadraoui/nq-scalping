@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { OverviewSection } from "@/components/docs/Overview";
 import { PlaybookSection } from "@/components/docs/Playbook";
+import { LiveStrategiesSection } from "@/components/docs/LiveStrategies";
 import { EvidenceSection } from "@/components/docs/Evidence";
 import { ToolsSection } from "@/components/docs/Tools";
 import { StrategiesSection } from "@/components/docs/Strategies";
@@ -16,12 +17,13 @@ export const metadata: Metadata = {
 
 const TOC = [
   { id: "playbook", n: "00", label: "Our playbook", note: "how we trade it — the implemented strategy" },
-  { id: "overview", n: "01", label: "Overview", note: "the model, in one screen" },
-  { id: "evidence", n: "02", label: "Evidence", note: "what the data actually says" },
-  { id: "tools", n: "03", label: "Tool stack", note: "ranked, with each tool's tell" },
-  { id: "strategies", n: "04", label: "Strategies studied", note: "the generic research plays" },
-  { id: "checklist", n: "05", label: "Checklist & math", note: "desk tools + expectancy" },
-  { id: "sources", n: "06", label: "Sources", note: "everything cited" },
+  { id: "live-strategies", n: "01", label: "Live strategies", note: "every feed strategy, condition by condition + backtests" },
+  { id: "overview", n: "02", label: "Overview", note: "the model, in one screen" },
+  { id: "evidence", n: "03", label: "Evidence", note: "what the data actually says" },
+  { id: "tools", n: "04", label: "Tool stack", note: "ranked, with each tool's tell" },
+  { id: "strategies", n: "05", label: "Strategies studied", note: "the generic research plays" },
+  { id: "checklist", n: "06", label: "Checklist & math", note: "desk tools + expectancy" },
+  { id: "sources", n: "07", label: "Sources", note: "everything cited" },
 ];
 
 export default function DocsPage() {
@@ -70,6 +72,9 @@ export default function DocsPage() {
       <div className="space-y-16">
         <section id="playbook" className="scroll-mt-20">
           <PlaybookSection />
+        </section>
+        <section id="live-strategies" className="scroll-mt-20">
+          <LiveStrategiesSection />
         </section>
         <section id="overview" className="scroll-mt-20">
           <OverviewSection />
