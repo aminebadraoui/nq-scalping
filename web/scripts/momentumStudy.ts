@@ -231,6 +231,10 @@ const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
   { name: "prod+pocMove", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, requirePocMove: true } },
   { name: "prod+poc+pocMove", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, requireBreakPoc: true, requirePocMove: true } },
   { name: "prod+local20", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 20 } },
+  { name: "prod+local1", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 1 } },
+  { name: "prod+local2", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 2 } },
+  { name: "prod+local3", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 3 } },
+  { name: "prod+local5", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 5 } },
   { name: "prod+local60", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 60 } },
   { name: "prod+local120", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, failAnchor: "local", failLocalBars: 120 } },
 ];

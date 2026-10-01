@@ -39,15 +39,7 @@ import { utcToET, cdtToET } from "./times";
 import { placeOrder } from "./executor";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
-import {
-  barPocOf,
-  barImbOf,
-  closePosOf,
-  nearestLevelOf,
-  pocStepTicks,
-  uvWatchCheck,
-  type UVWatch,
-} from "./unusualVolume";
+import { uvWatchCheck, type UVWatch } from "./unusualVolume";
 import { sendTelegram } from "./notify";
 import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
@@ -95,10 +87,6 @@ const CONTEXT_TTL_MS = 10 * 60 * 1000;
 const STALE_MS = 5 * 60 * 1000;
 /** need at least this many live minutes before a reversal can even form */
 const MIN_LIVE_MINUTES = 5;
-/** "at" a level = inside the codebase's standard location tolerance (NEAR) */
-const LEVEL_AT_PTS = 2.5;
-/** beyond this, the alert has no level context worth reporting */
-const LEVEL_CONTEXT_PTS = 10;
 /** stage-2 pullback watch lifetime after an unusual-volume bar (data: dominance breaks within ~1–3 min, p90) */
 const UV_WATCH_MS = 6 * 60 * 1000;
 
@@ -338,7 +326,6 @@ class SignalFeed {
       // fixed $170 risk, 30-micro cap, $2/pt MNQ
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
       const size = momentumSize(s.risk, riskBudget);
-      const sizeStr = `${size.contracts} MNQ · risk $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
 
       // emit the order intent to the executor (dry-run by default)
       void placeOrder({
@@ -352,16 +339,22 @@ class SignalFeed {
       }).catch(() => {});
 
       const et = cdtToET(s.t);
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
       const evidence =
         s.kind === "expansion"
-          ? `huge one-sided bar (${s.breakRangeR.toFixed(1)}× ATR · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}) — jump the continuation`
-          : `failed ${s.dir === "long" ? "flush" : "rally"} → ${Math.round(s.breakFrac * 100)}% one-sided breakout through the defended level`;
+          ? `huge bar ${s.breakRangeR.toFixed(1)}×ATR · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`
+          : `failed ${s.dir === "long" ? "flush" : "rally"} · ${Math.round(s.breakFrac * 100)}% breakout`;
+      // speed format: title line carries direction + price + time, then the
+      // three ticket numbers each on their own line, size, one evidence line
       const text = [
-        `⚡ <b>NQ MOMENTUM ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"}</b>`,
-        `<code>${symbol()}  ${fmtPx(s.entry)}  ${et} NY</code>`,
+        `⚡ <b>${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
+        ``,
+        `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
+        `<code>STOP    ${fmtPx(s.stop)}</code>`,
+        `<code>TARGET  ${fmtPx(s.target)}</code>`,
+        `<code>SIZE    ${sizeStr}</code>`,
+        ``,
         evidence,
-        `<code>ENTRY ${fmtPx(s.entry)} · STOP ${fmtPx(s.stop)} · TARGET ${fmtPx(s.target)}</code> · ${sizeStr}`,
-        `<i>one-sided run scalp — 77.5% win · PF 2.98 in the 568-session replay</i>`,
       ].join("\n");
       const res = await sendTelegram(text, { parseMode: "HTML" });
       if (!res.sent) this.lastError = res.reason;
@@ -412,41 +405,7 @@ class SignalFeed {
     const side = buyFrac >= 0.7 ? "buy" : "sell";
     const rv = rvol(etHour, vol);
     const buyPct = Math.round(buyFrac * 100);
-    const ctx = await this.ctx();
-    const details: string[] = [];
-
-    // ---- the alert bar's own footprint ----
-    const poc = barPocOf(last.levels);
-    if (poc) {
-      const prevPoc = n >= 2 ? barPocOf(live.minutes[n - 2].levels) : null;
-      const step = pocStepTicks(prevPoc?.price ?? null, poc.price);
-      const stepTxt =
-        step === null ? "" : step > 0 ? ` ↑${step} tick${step === 1 ? "" : "s"}` : step < 0 ? ` ↓${-step} tick${step === -1 ? "" : "s"}` : " flat";
-      details.push(`POC ${fmtPx(poc.price)}${stepTxt}`);
-    }
-    const pos = closePosOf(last.h, last.l, last.c);
-    if (pos !== null) {
-      details.push(pos >= 0.9 ? "closed on its high" : pos <= 0.1 ? "closed on its low" : "closed mid-range");
-    }
-    if (last.levels && Object.keys(last.levels).length) {
-      const imb = barImbOf(last.levels);
-      details.push(
-        imb
-          ? `${imb.side} stack ×${imb.len} ${fmtPx(imb.from)}–${fmtPx(imb.to)} (${imb.side === side ? "with the move" : "against the move — absorption"})`
-          : "no 3:1 stack",
-      );
-    }
-
-    // ---- location: is the move at a decision point? ----
-    const refPx = last.c > 0 ? last.c : (last.h + last.l) / 2;
-    const lvl = nearestLevelOf(ctx?.levels ?? [], refPx, LEVEL_CONTEXT_PTS);
-    details.push(
-      lvl
-        ? lvl.dist <= LEVEL_AT_PTS
-          ? `at ${lvl.label} ${lvl.kind} ${fmtPx(lvl.value)}`
-          : `near ${lvl.label} ${lvl.kind} ${fmtPx(lvl.value)} (${fmtPx(lvl.dist)} pts ${refPx >= lvl.value ? "above" : "below"})`
-        : `no level within ${LEVEL_CONTEXT_PTS} pts — middle of nowhere`,
-    );
+    const watch: string[] = [];
 
     // ---- the momentum watch this bar arms: a one-sided bar that FAILS to
     //      make a new extreme is stage 1-2 of the momentum sequence ----
@@ -459,27 +418,26 @@ class SignalFeed {
       let ref = -Infinity;
       for (let k = Math.max(0, n - 3); k < n; k++) ref = Math.max(ref, live.minutes[k].h);
       if (last.l > sessLow) {
-        details.push(`failed flush (no new session low) — momentum watch for a buy breakout above ${fmtPx(ref)}`);
+        watch.push(`failed flush (no new session low) → watch buy breakout > ${fmtPx(ref)}`);
       } else if (last.l > trailLo) {
-        details.push(`failed flush (no new LOCAL swing low — 20 bars) — momentum watch for a buy breakout above ${fmtPx(ref)}`);
+        watch.push(`failed flush (no new local low) → watch buy breakout > ${fmtPx(ref)}`);
       }
     }
     if (side === "buy") {
       let ref = Infinity;
       for (let k = Math.max(0, n - 3); k < n; k++) ref = Math.min(ref, live.minutes[k].l);
       if (last.h < sessHigh) {
-        details.push(`failed rally (no new session high) — momentum watch for a sell breakdown below ${fmtPx(ref)}`);
+        watch.push(`failed rally (no new session high) → watch sell breakdown < ${fmtPx(ref)}`);
       } else if (last.h < trailHi) {
-        details.push(`failed rally (no new LOCAL swing high — 20 bars) — momentum watch for a sell breakdown below ${fmtPx(ref)}`);
+        watch.push(`failed rally (no new local high) → watch sell breakdown < ${fmtPx(ref)}`);
       }
     }
 
     const text = [
-      `⚠ <b>NQ UNUSUAL VOLUME</b>`,
-      `<code>${symbol()}  ${vol} contracts  ${et} NY</code>`,
-      `${rv.toFixed(1)}× the usual for this hour · ${buyPct}% buy / ${100 - buyPct}% sell`,
-      details.join(" · "),
-      `<i>heads-up only — not a trade signal</i>`,
+      `⚠ <b>NQ ${vol} ct · ${et} NY</b>`,
+      `${rv.toFixed(1)}× volume · ${buyPct}% buy`,
+      ...(watch.length ? [``, ...watch] : []),
+      `<i>heads-up only</i>`,
     ].join("\n");
     const res = await sendTelegram(text, { parseMode: "HTML" });
     if (!res.sent) this.lastError = res.reason;
