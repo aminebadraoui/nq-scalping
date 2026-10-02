@@ -154,6 +154,11 @@ The stop-width × target × contracts grid over every live strategy
 | **RTH 1.25×stop / 1R** | 71.3% | **+3.94** | 2 bars | best expectancy, still tiny exposure |
 | open drive (fixed 15/35) | 69.8% | +13.4 | 4 bars | never scale — breaches at ≥4 contracts |
 
+(2026-10-02 confirmation: a dedicated stop-pad sweep over 648 sessions —
+pads 0.25→1.5 and a 00–02 ET night pad — degrades WR/PF monotonically and
+worsens the worst-day tail; stop-runs are 5% of stops with no hour
+clustering. `research/context-veto-stoprun-2026-10-02.md`.)
+
 Daily goals (P = probability of the day reaching the goal, 2000 sampled days,
 real sequences through the account sim):
 

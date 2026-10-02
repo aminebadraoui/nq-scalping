@@ -21,12 +21,12 @@ def third_friday(year: int, month: int) -> dt.date:
     return d
 
 
-def symbol(year: int, month: int) -> str:
-    """NQH24, NQM25, ... for the contract expiring in `month` of `year`."""
-    return "NQ" + MONTH_LETTERS[(month // 3) - 1] + f"{year % 100:02d}"
+def symbol(year: int, month: int, prefix: str = "NQ") -> str:
+    """NQH24, ESM25, ... for the contract expiring in `month` of `year`."""
+    return prefix + MONTH_LETTERS[(month // 3) - 1] + f"{year % 100:02d}"
 
 
-def tenures(start: dt.date | str, end: dt.date | str | None = None) -> list[tuple[str, dt.date, dt.date]]:
+def tenures(start: dt.date | str, end: dt.date | str | None = None, prefix: str = "NQ") -> list[tuple[str, dt.date, dt.date]]:
     """Yield (symbol, from, to) front-month tenure rows covering [start, end].
 
     Rows are clamped to the requested range and ordered oldest first, so a
@@ -51,7 +51,7 @@ def tenures(start: dt.date | str, end: dt.date | str | None = None) -> list[tupl
         fr = max(fr, start)
         to = min(exp, end)
         if fr <= to:
-            out.append((symbol(y, q), fr, to))
+            out.append((symbol(y, q, prefix), fr, to))
         prev_exp = exp
         if (y, q) >= (end.year, end.month):
             break
@@ -62,9 +62,9 @@ def tenures(start: dt.date | str, end: dt.date | str | None = None) -> list[tupl
     return out
 
 
-def contract_for(date: dt.date | str) -> str:
+def contract_for(date: dt.date | str, prefix: str = "NQ") -> str:
     """Front-month symbol for a single date."""
     date = dt.date.fromisoformat(date) if isinstance(date, str) else date
-    for sym, fr, to in tenures(date, date):
+    for sym, fr, to in tenures(date, date, prefix):
         return sym
     raise ValueError(f"no contract tenure for {date}")

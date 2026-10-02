@@ -112,6 +112,28 @@ else
   log "no R2 credentials — keeping local files"
 fi
 
+log "--- ES cross-asset archive (data/es, separate manifest-es.json) ---"
+if pgrep -f "python.*backfill_es\.py" >/dev/null 2>&1; then
+  log "long ES backfill already running — skipping tonight's ES pass (it covers this window)"
+else
+  cd "$ROOT/gcdata" || exit 1
+  ./.venv/bin/python backfill_es.py --from "$FROM" --to "$TO" 2>&1
+  ES_BF_RC=$?
+  log "es backfill exit=$ES_BF_RC"
+  if grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
+    if python3 "$ROOT/scripts/es_r2_sync.py" upload 2>&1; then
+      log "es r2 upload ok"
+      python3 "$ROOT/scripts/es_r2_sync.py" prune 2>&1
+      log "es r2 prune exit=$?"
+    else
+      log "es r2 upload FAILED — keeping local es files until the next run"
+    fi
+  else
+    log "no R2 credentials — keeping local es files"
+  fi
+  cd "$ROOT/web" || exit 1
+fi
+
 log "--- weekly risk-stack backtest (Fridays only) ---"
 # Integrated full-stack sim (all families + protections through the MFF
 # account rules). Weekly cadence: it re-validates the protection math as

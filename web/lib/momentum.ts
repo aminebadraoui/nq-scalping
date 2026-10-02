@@ -132,6 +132,15 @@ export type MomConfig = {
    *  vs result at ANY location). */
   failAnchor: "session" | "local";
   failLocalBars: number;
+  /** breakout must clear the trailing trailProgBars-bar extreme in the trade
+   *  direction (long: high above the trailing high) — vetoes breakouts that
+   *  fire INSIDE overhead congestion rather than through it (the 21:18
+   *  failed-breakout class from the 2026-10-02 trade review). */
+  requireTrailProgress: boolean;
+  trailProgBars: number;
+  /** wider stop pad in the 00:00–02:00 ET window (undefined = off) — the
+   *  stop-run study's hour-conditional pad candidate. */
+  stopPadNight?: number;
 };
 
 export const MOM_DEFAULTS: MomConfig = {
@@ -176,6 +185,8 @@ export const MOM_DEFAULTS: MomConfig = {
   requirePocMove: false,
   failAnchor: "session",
   failLocalBars: 20,
+  requireTrailProgress: false,
+  trailProgBars: 20,
 };
 
 /** The production momentum config — see MOMENTUM_SIGNAL.md.
@@ -541,14 +552,16 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     const dir = w.dir;
     // non-breakout fires have no breakout bar — they always use the
     // structural stop under the flush extreme
+    const hET = hourET(entryBar.t);
+    const pad = cfg.stopPadNight !== undefined && hET >= 0 && hET < 2 ? cfg.stopPadNight : cfg.stopPad;
     const stop =
       cfg.stopMode === "breakout" && cfg.fireAt === "breakout"
         ? dir === "long"
-          ? bk.low - cfg.stopPad
-          : bk.high + cfg.stopPad
+          ? bk.low - pad
+          : bk.high + pad
         : dir === "long"
-          ? w.flushLow - cfg.stopPad
-          : w.flushHigh + cfg.stopPad;
+          ? w.flushLow - pad
+          : w.flushHigh + pad;
     const risk = Math.abs(entry - stop);
     if (!(risk > 0) || risk > cfg.maxRiskPts || risk < cfg.minRiskPts) return null;
     if (cfg.requireVwapSide) {
@@ -559,6 +572,11 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     if (cfg.requireProgress) {
       if (dir === "long" && bk.high <= sessHi) return null;
       if (dir === "short" && bk.low >= sessLo) return null;
+    }
+    if (cfg.requireTrailProgress && cfg.fireAt === "breakout") {
+      const tr = trailExtremes(k, cfg.trailProgBars);
+      if (dir === "long" && bk.high <= tr.hi) return null;
+      if (dir === "short" && bk.low >= tr.lo) return null;
     }
     if (rthBlocked(hourET(entryBar.t), Number(entryBar.t.slice(3, 5)), cfg.hourFilter)) return null;
     if (cfg.deltaConfirm) {
@@ -816,6 +834,20 @@ export type ExpansionConfig = {
   /** candle POC gates (same as the momentum detector's) */
   requireBreakPoc: boolean;
   requirePocMove: boolean;
+  /** session-context gate: "cumDelta" = expansion direction must agree with
+   *  the session cumulative-delta sign; "vwap" = entry must sit on the
+   *  session-VWAP side of the trade; "both" = both. "none" = off.
+   *  (The 22:50 counter-trend short from the 2026-10-02 trade review.) */
+  sessionTrend: "none" | "cumDelta" | "vwap" | "both";
+  /** veto entries at an exact double top/bottom: a long whose high makes no
+   *  new trailing swing high (≤ trailHigh + tol), short mirror. 0 = off.
+   *  (The 00:41 double-top long from the 2026-10-02 trade review.) */
+  swingVetoTolPts: number;
+  /** trailing bars for the swing-extreme veto */
+  swingLookback: number;
+  /** wider stop pad in the 00:00–02:00 ET window (undefined = off) — the
+   *  stop-run study's hour-conditional pad candidate. */
+  stopPadNight?: number;
 };
 
 export const EXP_DEFAULTS: ExpansionConfig = {
@@ -834,6 +866,9 @@ export const EXP_DEFAULTS: ExpansionConfig = {
   medWindow: 60,
   requireBreakPoc: false,
   requirePocMove: false,
+  sessionTrend: "none",
+  swingVetoTolPts: 0,
+  swingLookback: 20,
 };
 
 /** The production expansion config — frozen after the 568-session sweeps:
@@ -851,6 +886,37 @@ export function detectExpansionScalp(minutes: MomMinute[], cfg: ExpansionConfig 
   const out: MomentumSignal[] = [];
   if (n < 30) return out;
 
+  // session prefixes: vwap + cumulative delta (lookahead-free — the context
+  // the vetoes read; also recorded on the signal for feature studies)
+  const vwap: number[] = new Array(n);
+  const cumD: number[] = new Array(n);
+  {
+    let vn = 0;
+    let vd = 0;
+    let cd = 0;
+    for (let i = 0; i < n; i++) {
+      const m = minutes[i];
+      const v = m.buy + m.sell;
+      if (v > 0) {
+        vn += ((m.high + m.low + closeOf(m)) / 3) * v;
+        vd += v;
+      }
+      vwap[i] = vd > 0 ? vn / vd : 0;
+      cd += m.buy - m.sell;
+      cumD[i] = cd;
+    }
+  }
+  /** trailing swing high/low over the bars BEFORE i (no lookahead) */
+  const trailHiAt = (i: number): number => {
+    let hi = -Infinity;
+    for (let k = Math.max(0, i - cfg.swingLookback); k < i; k++) hi = Math.max(hi, minutes[k].high);
+    return hi;
+  };
+  const trailLoAt = (i: number): number => {
+    let lo = Infinity;
+    for (let k = Math.max(0, i - cfg.swingLookback); k < i; k++) lo = Math.min(lo, minutes[k].low);
+    return lo;
+  };
   const atrAt = (i: number): number => {
     const from = Math.max(0, i - 14);
     const arr: number[] = [];
@@ -893,8 +959,24 @@ export function detectExpansionScalp(minutes: MomMinute[], cfg: ExpansionConfig 
       if (cfg.requirePocMove && (dir === "long" ? pocMove <= 0 : pocMove >= 0)) continue;
     }
 
+    // session-context vetoes (the 2026-10-02 trade review's expansion loss
+    // classes: counter-trend single huge bars + exact double-top entries)
+    if (cfg.sessionTrend === "cumDelta" || cfg.sessionTrend === "both") {
+      if (dir === "long" && cumD[i] <= 0) continue;
+      if (dir === "short" && cumD[i] >= 0) continue;
+    }
+    if (cfg.sessionTrend === "vwap" || cfg.sessionTrend === "both") {
+      if (dir === "long" && closeOf(m) < vwap[i]) continue;
+      if (dir === "short" && closeOf(m) > vwap[i]) continue;
+    }
+    if (cfg.swingVetoTolPts > 0) {
+      if (dir === "long" && m.high <= trailHiAt(i) + cfg.swingVetoTolPts) continue;
+      if (dir === "short" && m.low >= trailLoAt(i) - cfg.swingVetoTolPts) continue;
+    }
+
     const entry = closeOf(m);
-    const stop = dir === "long" ? m.low - cfg.stopPad : m.high + cfg.stopPad;
+    const pad = cfg.stopPadNight !== undefined && hourET(m.t) >= 0 && hourET(m.t) < 2 ? cfg.stopPadNight : cfg.stopPad;
+    const stop = dir === "long" ? m.low - pad : m.high + pad;
     const risk = Math.abs(entry - stop);
     if (!(risk > 0) || risk < cfg.minRiskPts || risk > cfg.maxRiskPts) continue;
     const target = dir === "long" ? entry + cfg.targetR * risk : entry - cfg.targetR * risk;
@@ -927,8 +1009,8 @@ export function detectExpansionScalp(minutes: MomMinute[], cfg: ExpansionConfig 
       refDist: 0,
       progressPts: 0,
       medVol: medAt(i),
-      distVwapPts: 0,
-      cumDelta: 0,
+      distVwapPts: closeOf(m) - vwap[i],
+      cumDelta: cumD[i],
       deltaFromFlush: 0,
       atr14: atrAt(i),
       riskPts: risk,

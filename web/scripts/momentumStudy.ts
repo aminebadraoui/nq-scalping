@@ -42,7 +42,7 @@ const HOLD_BARS = 60;
 /* ---------------- CLI ---------------- */
 
 function parseArgs(argv: string[]) {
-  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion" | "open" | "overlap"; sequential: boolean; warm: boolean; offline: boolean; warmConcurrency: number } = {
+  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion" | "open" | "overlap" | "veto"; sequential: boolean; warm: boolean; offline: boolean; warmConcurrency: number } = {
     cfg: {},
     sweep: false,
     mode: "momentum",
@@ -55,7 +55,7 @@ function parseArgs(argv: string[]) {
     const a = argv[i];
     if (a === "--max") o.max = Number(argv[++i]);
     else if (a === "--split") o.split = argv[++i];
-    else if (a === "--mode") o.mode = argv[++i] as "momentum" | "expansion" | "open" | "overlap";
+    else if (a === "--mode") o.mode = argv[++i] as "momentum" | "expansion" | "open" | "overlap" | "veto";
     else if (a === "--sequential") o.sequential = true;
     else if (a === "--warm") o.warm = true;
     else if (a === "--warm-concurrency") o.warmConcurrency = Number(argv[++i]);
@@ -298,6 +298,26 @@ const OVERLAP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
   { name: "A+ t1.25", overrides: { targetR: 1.25 } },
 ];
 
+/* Context-veto study — the 2026-10-02 trade review's refinement candidates:
+ *   mom:  breakout must clear the trailing N-bar extreme (the 21:18 case —
+ *         the broken reference sat INSIDE the prior congestion)
+ *   exp:  direction must agree with session cumulative delta / VWAP (22:50),
+ *         and no exact double-top/bottom entries (00:41, swing veto). */
+const VETO_VARIANTS: { name: string; kind: "mom" | "exp"; cfg: MomConfig | ExpansionConfig }[] = [
+  { name: "mom base", kind: "mom", cfg: { ...MOM_PROD } },
+  { name: "mom+trail20", kind: "mom", cfg: { ...MOM_PROD, requireTrailProgress: true, trailProgBars: 20 } },
+  { name: "mom+trail60", kind: "mom", cfg: { ...MOM_PROD, requireTrailProgress: true, trailProgBars: 60 } },
+  { name: "mom+trail120", kind: "mom", cfg: { ...MOM_PROD, requireTrailProgress: true, trailProgBars: 120 } },
+  { name: "exp base", kind: "exp", cfg: { ...EXP_PROD } },
+  { name: "exp+cumD", kind: "exp", cfg: { ...EXP_PROD, sessionTrend: "cumDelta" } },
+  { name: "exp+vwap", kind: "exp", cfg: { ...EXP_PROD, sessionTrend: "vwap" } },
+  { name: "exp+both", kind: "exp", cfg: { ...EXP_PROD, sessionTrend: "both" } },
+  { name: "exp+swing.25", kind: "exp", cfg: { ...EXP_PROD, swingVetoTolPts: 0.25 } },
+  { name: "exp+swing.5", kind: "exp", cfg: { ...EXP_PROD, swingVetoTolPts: 0.5 } },
+  { name: "exp+cumD+swing.25", kind: "exp", cfg: { ...EXP_PROD, sessionTrend: "cumDelta", swingVetoTolPts: 0.25 } },
+  { name: "exp+both+swing.25", kind: "exp", cfg: { ...EXP_PROD, sessionTrend: "both", swingVetoTolPts: 0.25 } },
+];
+
 /* ---------------- main ---------------- */
 
 async function main() {
@@ -305,16 +325,18 @@ async function main() {
   const o = parseArgs(argv);
   const splitDate = o.split ?? "2026-01-01";
   const mode = o.mode;
-  const variants: { name: string; cfg: MomConfig | ExpansionConfig | OpenDriveConfig }[] =
-    mode === "open"
-      ? OPEN_VARIANTS.map((v) => ({ name: v.name, cfg: { ...OPEN_DEFAULTS, ...v.overrides } }))
-      : mode === "overlap"
-        ? OVERLAP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...v.overrides } }))
-        : mode === "expansion"
-        ? EXPANSION_VARIANTS.map((v) => ({ name: v.name, cfg: { ...EXP_DEFAULTS, ...v.overrides } }))
-        : o.sweep
-          ? SWEEP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...o.cfg, ...v.overrides } }))
-          : [{ name: "custom", cfg: { ...MOM_DEFAULTS, ...o.cfg } }];
+  const variants: { name: string; kind?: "mom" | "exp"; cfg: MomConfig | ExpansionConfig | OpenDriveConfig }[] =
+    mode === "veto"
+      ? VETO_VARIANTS
+      : mode === "open"
+        ? OPEN_VARIANTS.map((v) => ({ name: v.name, cfg: { ...OPEN_DEFAULTS, ...v.overrides } }))
+        : mode === "overlap"
+          ? OVERLAP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...v.overrides } }))
+          : mode === "expansion"
+            ? EXPANSION_VARIANTS.map((v) => ({ name: v.name, cfg: { ...EXP_DEFAULTS, ...v.overrides } }))
+            : o.sweep
+              ? SWEEP_VARIANTS.map((v) => ({ name: v.name, cfg: { ...MOM_DEFAULTS, ...o.cfg, ...v.overrides } }))
+              : [{ name: "custom", cfg: { ...MOM_DEFAULTS, ...o.cfg } }];
 
   console.log(`mode: ${mode} | split: ${splitDate} | variants: ${variants.map((v) => v.name).join(", ")}`);
   if (o.warm) {
@@ -353,7 +375,11 @@ async function main() {
       loaded++;
       for (let v = 0; v < variants.length; v++) {
         const signals =
-          mode === "overlap"
+          mode === "veto"
+            ? variants[v].kind === "exp"
+              ? detectExpansionScalp(minutes, variants[v].cfg as ExpansionConfig)
+              : detectMomentum(minutes, variants[v].cfg as MomConfig)
+            : mode === "overlap"
             ? (() => {
                 const mom = detectMomentum(minutes, MOM_PROD);
                 const exp = detectExpansionScalp(minutes, EXP_PROD);

@@ -252,10 +252,27 @@ export default function JournalPage() {
         {/* left column: narrative + insights */}
         <div className="space-y-5 xl:col-span-2">
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">AI strategy review</h2>
-              {narrative && <span className="font-mono text-[9px] text-zinc-600">{narrative.source === "llm" ? "DeepSeek" : "deterministic"} · {narrative.run_at?.slice(0, 16).replace("T", " ") ?? ""}</span>}
+              <span className="flex items-center gap-1.5">
+                {narrative && run && narrative.run_at < run.run_at && (
+                  <span className="rounded border border-warn/50 bg-warn/10 px-1 py-0.5 font-mono text-[9px] text-warn">
+                    older than trades — run strategyInsights.ts
+                  </span>
+                )}
+                {narrative && (
+                  <span className="font-mono text-[9px] text-zinc-600">
+                    {narrative.source === "llm" ? "DeepSeek" : "deterministic"} · {narrative.run_at?.slice(0, 16).replace("T", " ") ?? ""}Z
+                  </span>
+                )}
+              </span>
             </div>
+            {narrative && (
+              <p className="mb-2 font-mono text-[10px] text-zinc-500">
+                dataset: {String((narrative.evidence as Record<string, unknown>).trades ?? "—")} trades · window since{" "}
+                {String((narrative.evidence as Record<string, unknown>).windowStart ?? "—").slice(0, 10)}
+              </p>
+            )}
             {narrative ? (
               <Narrative text={narrative.finding} />
             ) : (

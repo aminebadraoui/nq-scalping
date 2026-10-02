@@ -421,3 +421,99 @@ test("signalFeed push helper calls sendTelegram, not itself", () => {
   assert.ok(m![0].includes("sendTelegram"), "push helper must call sendTelegram");
   assert.ok(!m![0].includes("this.push(text)"), "push helper must not recurse");
 });
+
+/* ── expansion context vetoes (trade-review 2026-10-02 refinement targets) ── */
+
+/** 30 sell-heavy quiet bars so the session context is decisively one-sided */
+function quietSell(n = 30, base = 100): Bar[] {
+  const out: Bar[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = `${String(Math.floor(i / 60) + 16).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}`;
+    out.push([t, base + 0.25, base - 0.25, 30, 70]);
+  }
+  return out;
+}
+
+const BUY_STACK: [number, number, number][] = [
+  [100, 8, 2],
+  [99, 6, 2],
+  [98, 5, 2],
+];
+const SELL_STACK: [number, number, number][] = [
+  [100, 2, 8],
+  [99, 2, 6],
+  [98, 2, 5],
+];
+
+test("expansion sessionTrend gates veto counter-trend huge bars", () => {
+  const up = bars([...quietSell(30), ["18:30", 101, 95, 80, 20, BUY_STACK]]);
+  assert.equal(detectExpansionScalp(up, EXP_PROD).length, 1, "baseline fires the huge up bar");
+  assert.equal(detectExpansionScalp(up, { ...EXP_PROD, sessionTrend: "cumDelta" }).length, 0, "cumD is negative — long vetoed");
+  assert.equal(detectExpansionScalp(up, { ...EXP_PROD, sessionTrend: "vwap" }).length, 0, "entry below session VWAP — long vetoed");
+  assert.equal(detectExpansionScalp(up, { ...EXP_PROD, sessionTrend: "both" }).length, 0, "both gates — long vetoed");
+
+  const down = bars([...quietSell(30), ["18:30", 101, 95, 20, 80, SELL_STACK]]);
+  assert.equal(detectExpansionScalp(down, { ...EXP_PROD, sessionTrend: "cumDelta" }).length, 1, "cumD is negative — short allowed");
+  assert.equal(detectExpansionScalp(down, { ...EXP_PROD, sessionTrend: "both" }).length, 1, "short is on the VWAP side too — allowed");
+});
+
+test("expansion swing veto skips exact double-top entries", () => {
+  const tape = pad([
+    ["18:30", 101, 95, 80, 20, BUY_STACK],
+    ["18:31", 100.25, 99.75, 50, 50],
+    ["18:32", 100.25, 99.75, 50, 50],
+    ["18:33", 100.25, 99.75, 50, 50],
+    ["18:34", 100.25, 99.75, 50, 50],
+    ["18:35", 100.25, 99.75, 50, 50],
+    ["18:36", 101, 95, 80, 20, BUY_STACK], // high == the 18:30 high, to the tick
+  ]);
+  assert.equal(detectExpansionScalp(tape, EXP_PROD).length, 2, "both huge bars fire without the veto");
+  assert.equal(detectExpansionScalp(tape, { ...EXP_PROD, swingVetoTolPts: 0.25 }).length, 1, "second bar is a double top — vetoed");
+});
+
+test("expansion signals carry real session cumDelta + VWAP distance", () => {
+  const tape = bars([...quietSell(30), ["18:30", 101, 95, 80, 20, BUY_STACK]]);
+  const sigs = detectExpansionScalp(tape, EXP_PROD);
+  assert.equal(sigs.length, 1);
+  assert.equal(sigs[0].cumDelta, 30 * (30 - 70) + (80 - 20), "cumDelta is the true session cumulative delta");
+  assert.ok(sigs[0].distVwapPts < 0, `entry should sit below session VWAP, got ${sigs[0].distVwapPts}`);
+});
+
+test("stopPadNight widens the stop only in the 00–02 ET window", () => {
+  const tape = pad([["23:30", 101, 95, 80, 20, BUY_STACK]]); // 00:30 ET
+  const prod = detectExpansionScalp(tape, EXP_PROD)[0];
+  const night = detectExpansionScalp(tape, { ...EXP_PROD, stopPadNight: 1.0 })[0];
+  assert.equal(prod.stop, 94.5, "production pad 0.5");
+  assert.equal(night.stop, 94.0, "night pad 1.0 applies at 00:30 ET");
+});
+
+test("requireTrailProgress vetoes breakouts inside overhead congestion", () => {
+  const tape = pad([
+    ["18:00", 108, 107, 60, 40], // the congestion spike — the range top to clear
+      ["18:01", 100.25, 99.75, 50, 50],
+      ["18:02", 100.25, 99.75, 50, 50],
+      ["18:03", 100.25, 99.75, 50, 50],
+      ["18:04", 100.25, 99.75, 50, 50],
+      ["18:05", 100.25, 99.75, 50, 50],
+      ["18:06", 100.25, 99.75, 50, 50],
+      ["18:07", 100.25, 99.75, 50, 50],
+      ["18:08", 100.25, 99.75, 50, 50],
+      ["18:09", 100.25, 99.75, 50, 50],
+      ["18:10", 100.25, 99.75, 50, 50],
+      ["18:11", 102.5, 100.0, 20, 80], // failed flush (holds the session low)
+      ["18:12", 100.25, 99.75, 50, 50],
+      ["18:13", 100.25, 99.75, 50, 50],
+    ["18:14", 104, 99, 80, 20], // breakout through the ref, but below the 108 congestion top
+  ]);
+  assert.equal(detectMomentum(tape, MOM_PROD).length, 1, "baseline fires the breakout");
+  assert.equal(
+    detectMomentum(tape, { ...MOM_PROD, requireTrailProgress: true, trailProgBars: 20 }).length,
+    0,
+    "the 108 spike sits inside the 20-bar window — vetoed",
+  );
+  assert.equal(
+    detectMomentum(tape, { ...MOM_PROD, requireTrailProgress: true, trailProgBars: 6 }).length,
+    1,
+    "the 108 spike is outside the 6-bar window — fires",
+  );
+});
