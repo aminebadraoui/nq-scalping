@@ -145,14 +145,27 @@ export async function GET(req: NextRequest) {
                 let acc = 0;
                 for (const m of st.minutes) acc += m.buy + m.sell;
                 const snapVol = Number(st.snapshot?.volume ?? 0);
+                const now = Date.now();
                 return {
                   connected: st.connected,
                   minutes: st.minutes.length,
                   lastMessageMs: st.lastMessage ?? 0,
+                  lastTradeAgeSec: st.lastTradeMs ? Math.round((now - st.lastTradeMs) / 1000) : null,
+                  lastVolChangeAgeSec: st.lastVolChangeMs ? Math.round((now - st.lastVolChangeMs) / 1000) : null,
                   accumulatedVol: acc,
                   snapshotVol: snapVol,
                   ratio: snapVol > 0 ? +(acc / snapVol).toFixed(2) : null,
                 };
+              } catch {
+                return null;
+              }
+            })(),
+            // the calendar's view of the market — "open per calendar but no
+            // prints arriving" is the dead-feed signature
+            market: await (async () => {
+              try {
+                const { marketStatus } = await import("@/lib/marketHours");
+                return marketStatus(Date.now());
               } catch {
                 return null;
               }

@@ -134,6 +134,16 @@
 
 ## Expansion retrace entry (2026-10-02)
 
+- **Market-hours calendar** (`lib/marketHours.ts`): the one place that knows
+  when CME Globex is open (Sun 18:00 ET → Fri close, daily 17:00–18:00 halt,
+  2026 holidays + early closes). The live-feed watchdog now keys off it: a
+  reconnect is forced whenever the market SHOULD be open but no print has
+  arrived for 3 minutes (the old watchdog required vendor volume to be
+  moving — impossible for a dead feed, which is why the open-drive window
+  saw zero data for days). The 18:00 ET session rollover clears the buffer
+  and re-subscribes. `/api/gc?action=health` reports `market` + trade/volume
+  ages so a dead feed is distinguishable from a closed market at a glance.
+
 - **Full decision-set capture** (self-improvement data contract): every
   detector candidate is now recorded in `signals`, not just the traded
   subset — overrides-vetoed and news-blackout candidates land as

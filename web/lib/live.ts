@@ -2,6 +2,8 @@ import { promises as fs } from "fs";
 import path from "path";
 import { decodeFootprintForDateResponse, splitFrame, type BootCandle } from "./footprintProto";
 import { persistLiveMinute } from "./liveStore";
+import { marketOpenAt } from "./marketHours";
+import { sessionDayOf } from "./times";
 
 /* ------------------------------------------------------------------ */
 /* Live GoCharting feed (server-side singleton)                        */
@@ -49,6 +51,10 @@ export type LiveMinute = {
 export type LiveState = {
   connected: boolean;
   lastMessage: number;
+  /** last trade print (ms) and last vendor day-volume change (ms) — exposed
+   *  so the health endpoint can distinguish a dead feed from a closed market */
+  lastTradeMs: number;
+  lastVolChangeMs: number;
   snapshot: Snapshot | null;
   ticks: Tick[];
   minutes: LiveMinute[];
@@ -103,12 +109,7 @@ function nyDate(offsetDays = 0): string {
 
 /** Globex hours: Sun 18:00 ET → Fri 17:00 ET, minus the daily 17:00–18:00 halt. */
 function globexOpen(now = new Date()): boolean {
-  const p = nyParts(now);
-  const hm = p.hour * 60 + p.minute;
-  if (p.dow === "Sat") return false;
-  if (p.dow === "Sun") return hm >= 18 * 60;
-  if (p.dow === "Fri") return hm < 17 * 60;
-  return hm < 17 * 60 || hm >= 18 * 60; // Mon–Thu
+  return marketOpenAt(now.getTime());
 }
 
 /**
@@ -238,14 +239,17 @@ class LiveFeed {
    *  flowing (seen ~1h after connect — the 1-hour IdToken lifetime). If the
    *  market is demonstrably trading but no print arrives, force a reconnect
    *  with a fresh token + subscriptions. */
-  private lastTradeMs = 0;
   private lastVol = -1;
-  private lastVolChangeMs = 0;
   private lastForcedReconnectMs = 0;
+  /** the Globex session day the buffer currently belongs to — crossing it
+   *  (18:00 ET rollover) clears the buffer and re-subscribes */
+  private lastSessionDay = "";
 
   state: LiveState = {
     connected: false,
     lastMessage: 0,
+    lastTradeMs: 0,
+    lastVolChangeMs: 0,
     snapshot: null,
     ticks: [],
     minutes: [],
@@ -414,7 +418,7 @@ class LiveFeed {
         // a dropped subscription from a closed market)
         if (p.volume !== this.lastVol) {
           this.lastVol = p.volume;
-          this.lastVolChangeMs = Date.now();
+          this.state.lastVolChangeMs = Date.now();
         }
         // keep the current minute's last price honest even without ticks
         if (!this.state.cur) {
@@ -423,7 +427,7 @@ class LiveFeed {
         this.emit();
       }
     } else if (j.channel === "trade" && j.payload) {
-      this.lastTradeMs = Date.now();
+      this.state.lastTradeMs = Date.now();
       const p = Object.values(j.payload)[0] as any;
       const items = Array.isArray(p) ? p : p?.items ?? p?.data ?? [];
       for (const d of items) {
@@ -515,8 +519,29 @@ class LiveFeed {
   start() {
     if (this.timer) return;
     this.connect();
+    this.lastSessionDay = sessionDayOf(Date.now());
     let ticks = 0;
     this.timer = setInterval(() => {
+      const now = Date.now();
+      // ---- session rollover (18:00 ET): the data streams die at the
+      //      boundary and do not come back on their own (observed: a fresh
+      //      connect after the rollover received heartbeats but zero prints
+      //      and a frozen day volume). Clear the old session's buffer, force
+      //      a full reconnect + re-subscribe, and re-seed from footprint. ----
+      const sessionDay = sessionDayOf(now);
+      if (this.lastSessionDay && sessionDay !== this.lastSessionDay) {
+        console.log(`[live] session rollover ${this.lastSessionDay} → ${sessionDay} — clearing buffer, reconnecting`);
+        this.state.minutes = [];
+        this.state.cur = null;
+        this.state.ticks = [];
+        this.bootstrapped = false;
+        this.lastSessionDay = sessionDay;
+        try {
+          this.ws?.close(); // onclose → backoff reconnect → subscribeChannels
+        } catch {
+          /* ignore */
+        }
+      }
       if (this.state.connected) {
         this.ws?.send(JSON.stringify({ command: "PING", payload: {} }));
         ticks++;
@@ -525,18 +550,22 @@ class LiveFeed {
         if (ticks % 12 === 0) this.subscribeChannels();
         // watchdog 1: no message at all for 5 minutes while "connected" means
         // the socket is dead but silent — force a reconnect
-        const now = Date.now();
         const dead = this.state.lastMessage && now - this.state.lastMessage > 300_000;
-        // watchdog 2: volume is moving (market open) but no print for 3 minutes
-        // → the trade subscription has gone quiet; reconnect for a fresh token
+        // watchdog 2: the market SHOULD be open (calendar) but no print has
+        // arrived for 3 minutes → the trade subscription is dead; reconnect.
+        // The old version required vendor volume to be MOVING — exactly what
+        // a dead feed can never show — so it sat silent across whole
+        // sessions (the 9:30 open-drive window saw no data for days).
         const tradesStale =
-          this.lastVolChangeMs > 0 &&
-          now - this.lastVolChangeMs < 120_000 &&
-          this.lastTradeMs > 0 &&
-          now - this.lastTradeMs > 180_000 &&
+          marketOpenAt(now) &&
+          this.state.lastTradeMs > 0 &&
+          now - this.state.lastTradeMs > 180_000 &&
           now - this.lastForcedReconnectMs > 180_000;
         if (dead || tradesStale) {
           this.lastForcedReconnectMs = now;
+          console.log(
+            `[live] forced reconnect (${dead ? "socket silent" : `no print for ${Math.round((now - this.state.lastTradeMs) / 1000)}s while market open`})`,
+          );
           try {
             this.ws?.close();
           } catch {
