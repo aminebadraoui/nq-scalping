@@ -1,4 +1,4 @@
-import { cappedContracts } from "../lib/propRules";
+import { cappedContracts , daySizeMultiplier, parseSizeTiers } from "../lib/propRules";
 /* Unit tests grounding sizing in the MyFundedFutures Rapid EOD 50k rules.
  *
  * Rule source (fetched 2026-09-30):
@@ -91,4 +91,24 @@ test("cappedContracts: dollar ceiling resizes fixed counts on wide stops", () =>
   assert.equal(cappedContracts(9, 35, 0), 9); // cap off
   assert.equal(cappedContracts(9, 200, 200), 1); // floor at 1 contract
   assert.equal(cappedContracts(3, 12.5, 200), 3); // never raises above fixed
+});
+
+test("daySizeMultiplier: full size below thresholds, tiered above", () => {
+  const tiers = [
+    { threshold: 600, multiplier: 1 / 3 },
+    { threshold: 300, multiplier: 2 / 3 },
+  ];
+  assert.equal(daySizeMultiplier(0, tiers), 1);
+  assert.equal(daySizeMultiplier(299, tiers), 1);
+  assert.ok(Math.abs(daySizeMultiplier(300, tiers) - 2 / 3) < 1e-9);
+  assert.ok(Math.abs(daySizeMultiplier(599, tiers) - 2 / 3) < 1e-9);
+  assert.ok(Math.abs(daySizeMultiplier(600, tiers) - 1 / 3) < 1e-9);
+  assert.equal(daySizeMultiplier(900, []), 1); // disabled
+});
+
+test("parseSizeTiers: parses, validates, sorts descending", () => {
+  const t = parseSizeTiers("600:0.33,300:0.66,999:2,bad");
+  assert.equal(t.length, 2);
+  assert.deepEqual(t[0], { threshold: 600, multiplier: 0.33 });
+  assert.deepEqual(t[1], { threshold: 300, multiplier: 0.66 });
 });

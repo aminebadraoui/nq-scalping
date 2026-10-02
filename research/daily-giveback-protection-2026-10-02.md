@@ -52,6 +52,24 @@ Readings:
 - Further reading: [SMB — A Rule for Giving Back Profits](https://www.smbtraining.com/blog/a-4-the-trading-community-a-rule-for-giving-back-profits),
   [FTMO — risk management in practice](https://ftmo.com/en/blog/risk-management-and-psychology-in-practice-how-to-trade-without-stress/).
 
+## Tiered sizing — smaller bets as the day's profit climbs
+
+Replay (648 sessions, live sizing): tiered contracts by day P&L:
+
+| Schedule | Total | vs base | >$900 breach days | Tiered trades |
+|---|---|---|---|---|
+| baseline (full size all day) | $60,316 | 100% | **4** | — |
+| **2/3 @ +$300, 1/3 @ +$600** | **$58,573** | **97%** | **0** | 226 |
+| 1/2 @ +$250, 1/4 @ +$500 | $56,849 | 94% | 0 | 309 |
+
+The default schedule (2/3 @ $300, 1/3 @ $600) keeps 97% of total profit and
+eliminates the days that would breach the $900 consistency cap — the cap makes
+the day's payoff curve concave, so shrinking above +$300 costs almost nothing
+while removing the eval-failing tail. This is cheaper than the give-back halt
+(which costs 10-24%) because it fires on GREEN days, where the marginal dollar
+has negative expected value anyway. `SIZE_TIERS` env overrides; `SIZE_TIERS=""`
+disables.
+
 ## Implemented
 
 - `accountGuard`: `dayPeak` tracked + persisted to Neon; new `halt-giveback`

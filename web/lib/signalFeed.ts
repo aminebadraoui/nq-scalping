@@ -25,7 +25,7 @@ import { optionsSnapshot } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD } from "./momentum";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
 import { detectSoftMomentum, SOFT_PROD } from "./softMomentum";
-import { momentumSize, cappedContracts } from "./propRules";
+import { momentumSize, cappedContracts, daySizeMultiplier, parseSizeTiers, DEFAULT_SIZE_TIERS } from "./propRules";
 import {
   loadCollectedContext,
   computeSignal,
@@ -49,6 +49,7 @@ import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
 import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
+import { crossGuardDayPnl } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations } from "./execWatch";
 import { logExec } from "./execLog";
@@ -147,6 +148,16 @@ function distTxt(from: number, to: number): string {
   const ticks = Math.round(pts / 0.25);
   return `${to < from ? "−" : "+"}${pts.toFixed(2)} pts · ${ticks} ticks`;
 }
+
+/** day-P&L tiered sizing: shrink contracts as the day's profit climbs
+ *  (profit protection + $900 consistency-cap safety). Defaults from the
+ *  648-session replay (97% of profit, zero breach days): 2/3 size above
+ *  +$300, 1/3 size above +$600. SIZE_TIERS="300:0.66,600:0.33" overrides,
+ *  SIZE_TIERS="" disables. */
+const sizeTiers = (() => {
+  const raw = process.env.SIZE_TIERS;
+  return raw === undefined ? DEFAULT_SIZE_TIERS : parseSizeTiers(raw);
+})();
 
 /** capture the detector's feature vector at signal time — the input the
  *  strategy analysis layer (lib/strategyInsights.ts) mines for improvement
@@ -263,6 +274,17 @@ class SignalFeed {
     ].join("|");
   }
 
+  /** shrink contracts as the day's profit climbs (tiered sizing) */
+  private async applyDayTier(
+    size: { contracts: number; dollarRisk: number; capped: boolean },
+    riskPts: number,
+  ): Promise<{ contracts: number; dollarRisk: number; capped: boolean; mult: number }> {
+    const dayPnl = crossTradeEnabled() ? await crossGuardDayPnl() : 0;
+    const mult = daySizeMultiplier(dayPnl, sizeTiers);
+    const contracts = Math.max(1, Math.round(size.contracts * mult));
+    return { contracts, dollarRisk: contracts * riskPts * 2, capped: size.capped, mult };
+  }
+
   /** announce cards? Live feeds always do; dry-run feeds (local dev) are
    *  SILENT by default — they must opt in with TELEGRAM_ALLOW_DRYRUN=1,
    *  so a stale local instance can never confuse the operator again. */
@@ -360,7 +382,12 @@ class SignalFeed {
 
     // position size for a fixed dollar risk (PROP_RISK_PER_TRADE, default $170)
     const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || 170;
-    const contracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, setup.risk)));
+    const rawContracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, setup.risk)));
+    const tiered = await this.applyDayTier(
+      { contracts: rawContracts, dollarRisk: rawContracts * setup.risk * 2, capped: false },
+      setup.risk,
+    );
+    const contracts = tiered.contracts;
     const sizeStr = `${contracts} MNQ · risk $${Math.round(contracts * setup.risk * RAPID_EOD_50K.pointValue)}`;
 
     // emit the order intent to the executor (dry-run by default)
@@ -492,10 +519,12 @@ class SignalFeed {
       // with an exact contract count (the sizing study optimum: 9).
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
       const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
-      const size =
+      const size = await this.applyDayTier(
         fixed > 0
           ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * s.risk * 2, capped: false }
-          : momentumSize(s.risk, riskBudget);
+          : momentumSize(s.risk, riskBudget),
+        s.risk,
+      );
 
       // emit the order intent to the executor (dry-run by default).
       // Scale-out is ON by default (re-validated 2026-10-02 on the rr1.0
@@ -570,7 +599,7 @@ class SignalFeed {
 
       this.cardedDays.add(s.d);
       if (this.cardedDays.size > 20) this.cardedDays = new Set([...this.cardedDays].slice(-10));
-      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
       const evidence =
         s.kind === "expansion"
           ? `huge bar ${s.breakRangeR.toFixed(1)}×ATR · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`
@@ -670,12 +699,11 @@ class SignalFeed {
       const fixed = fixedContracts(9);
       const contracts =
         fixed > 0 ? cappedContracts(fixed, s.risk, cap) : momentumSize(s.risk, riskBudget).contracts;
-      const size = {
-        contracts,
-        dollarRisk: contracts * s.risk * 2,
-        capped: fixed > 0 && cap > 0 && fixed > contracts,
-      };
-      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}`;
+      const size = await this.applyDayTier(
+        { contracts, dollarRisk: contracts * s.risk * 2, capped: fixed > 0 && cap > 0 && fixed > contracts },
+        s.risk,
+      );
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
 
       const et = cdtToET(s.t);
       void placeOrder({
@@ -798,12 +826,11 @@ class SignalFeed {
       const fixed = fixedContracts(9);
       const contracts =
         fixed > 0 ? cappedContracts(fixed, s.risk, cap) : momentumSize(s.risk, riskBudget).contracts;
-      const size = {
-        contracts,
-        dollarRisk: contracts * s.risk * 2,
-        capped: fixed > 0 && cap > 0 && fixed > contracts,
-      };
-      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}`;
+      const size = await this.applyDayTier(
+        { contracts, dollarRisk: contracts * s.risk * 2, capped: fixed > 0 && cap > 0 && fixed > contracts },
+        s.risk,
+      );
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
 
       const et = cdtToET(s.t);
       void placeOrder({

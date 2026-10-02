@@ -17,6 +17,7 @@
 import { existsSync } from "fs";
 import path from "path";
 import { guardCheck, guardState, hydrateGuardFromDb, type GuardDecision } from "./accountGuard";
+import { etDayAndClock } from "./newsGate";
 
 type Snapshot = { equity: number; realized: number };
 
@@ -82,4 +83,16 @@ export async function crossGuardGate(): Promise<GuardDecision> {
   bootstrap(snap);
   await hydrateGuardFromDb(); // restore the persisted floor/day counter (redeploy-safe)
   return guardCheck(snap);
+}
+
+/** today's realized P&L per the guard's day reference (0 before the
+ *  first gate check of the day). Used by the feed's tiered sizing. */
+export async function crossGuardDayPnl(): Promise<number> {
+  if (!enabled()) return 0;
+  const snap = await fetchSnapshot();
+  if (!snap) return 0; // sizing fails open — the gate still protects the order
+  const s = guardState();
+  const today = etDayAndClock(Date.now()).day;
+  if (s.dayKey !== today) return 0;
+  return snap.realized - s.dayStartRealized;
 }

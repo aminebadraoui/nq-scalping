@@ -104,6 +104,43 @@ export type EvalEstimate = {
  * (3–35 pts), so a fixed contract count alone lets dollar risk swing
  * from ~$50 to ~$600. cap <= 0 = no ceiling (raw fixed count).
  */
+/**
+ * Day-P&L tiered sizing: shrink contracts as the day's profit climbs
+ * (profit protection + consistency-cap safety). tiers = "300:0.66,600:0.33"
+ * means 2/3 size once the day exceeds +$300 and 1/3 size above +$600;
+ * below the first threshold = full size. The 648-session replay showed
+ * the default schedule keeps 97% of total profit while eliminating the
+ * days that breach the $900 consistency cap. Empty/off = full size.
+ */
+export type SizeTier = { threshold: number; multiplier: number };
+
+export function parseSizeTiers(raw: string): SizeTier[] {
+  const out: SizeTier[] = [];
+  for (const part of raw.split(",")) {
+    const m = part.trim().match(/^([\d.]+):([\d.]+)$/);
+    if (!m) continue;
+    const threshold = Number(m[1]);
+    const multiplier = Number(m[2]);
+    if (Number.isFinite(threshold) && Number.isFinite(multiplier) && multiplier > 0 && multiplier <= 1) {
+      out.push({ threshold, multiplier });
+    }
+  }
+  return out.sort((a, b) => b.threshold - a.threshold);
+}
+
+export const DEFAULT_SIZE_TIERS: SizeTier[] = [
+  { threshold: 600, multiplier: 1 / 3 },
+  { threshold: 300, multiplier: 2 / 3 },
+];
+
+/** contracts multiplier for the current day P&L (1 = full size) */
+export function daySizeMultiplier(dayPnl: number, tiers: SizeTier[]): number {
+  for (const t of tiers) {
+    if (dayPnl >= t.threshold) return t.multiplier;
+  }
+  return 1;
+}
+
 export function cappedContracts(
   fixed: number,
   riskPts: number,
