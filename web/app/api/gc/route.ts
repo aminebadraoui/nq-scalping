@@ -96,6 +96,33 @@ export async function GET(req: NextRequest) {
             account: masked,
             instrument: mapInstrument(process.env.GOCHARTING_SYMBOL || "NQZ26", process.env.CROSSTRADE_INSTRUMENT),
             executeLive: process.env.EXECUTE_LIVE === "1",
+            protections: await (async () => {
+              try {
+                const { guardState } = await import("@/lib/accountGuard");
+                const { daySizeMultiplier, parseSizeTiers, DEFAULT_SIZE_TIERS } = await import("@/lib/propRules");
+                const s = guardState();
+                const gbPct = Number(process.env.GUARD_GIVEBACK_PCT ?? "0.5");
+                const gbFloor = Number(process.env.GUARD_GIVEBACK_FLOOR ?? "250");
+                const limit = Math.max(gbFloor, gbPct * s.dayPeak);
+                const tiers = process.env.SIZE_TIERS !== undefined ? parseSizeTiers(process.env.SIZE_TIERS) : DEFAULT_SIZE_TIERS;
+                return {
+                  dayKey: s.dayKey,
+                  dayPnl: Math.round(s.dayPnl),
+                  dayPeak: Math.round(s.dayPeak),
+                  giveback: {
+                    armed: gbPct > 0,
+                    pct: gbPct,
+                    floor: gbFloor,
+                    haltAt: Math.round(s.dayPeak - limit),
+                  },
+                  tier: daySizeMultiplier(s.dayPnl, tiers),
+                  tiers,
+                  consistencyCap: s.consistencyCap,
+                };
+              } catch {
+                return null;
+              }
+            })(),
             feeds: {
               momentum: FEED_MOMENTUM,
               rth: FEED_RTH,

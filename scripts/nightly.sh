@@ -112,9 +112,23 @@ else
   log "no R2 credentials — keeping local files"
 fi
 
+log "--- weekly risk-stack backtest (Fridays only) ---"
+# Integrated full-stack sim (all families + protections through the MFF
+# account rules). Weekly cadence: it re-validates the protection math as
+# the archive grows; ~1 min on the warm cache.
+RISKSTACK_RC=0
+if [ "$(date +%u)" = "5" ]; then
+  /opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./scripts/riskStackStudy.ts --offline 2>&1 | tail -14
+  RISKSTACK_RC=${PIPESTATUS[0]}
+  log "riskStack exit=$RISKSTACK_RC"
+else
+  log "not Friday — skipping the weekly risk-stack backtest"
+fi
+
 FINAL_RC=$INGEST_RC
 if [ "$RECONCILE_RC" -ne 0 ]; then FINAL_RC=$RECONCILE_RC; fi
 if [ "$ANALYSIS_RC" -ne 0 ]; then FINAL_RC=$ANALYSIS_RC; fi
 if [ "$INSIGHTS_RC" -ne 0 ]; then FINAL_RC=$INSIGHTS_RC; fi
-log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC reconcile=$RECONCILE_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC) ==="
+if [ "$RISKSTACK_RC" -ne 0 ]; then FINAL_RC=$RISKSTACK_RC; fi
+log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC reconcile=$RECONCILE_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC riskstack=$RISKSTACK_RC) ==="
 exit $FINAL_RC

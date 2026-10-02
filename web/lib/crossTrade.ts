@@ -249,6 +249,7 @@ export function classifyResponse(status: number, bodyText: string): { ok: boolea
       return { ok: false, reason: `rejected (${status}) ${err}` };
     }
   }
+  markEntryPlaced();
   return { ok: true, reason: `accepted (${status})${body ? ` ${body}` : ""}` };
 }
 
@@ -390,6 +391,7 @@ export async function placeCrossTradeScaleOut(
   const bankRes = await post(`bank ${bankOrderId}`, bankPayload);
   const runnerRes = await post(`runner ${runnerOrderId}`, runnerPayload);
   const ok = bankRes.ok && runnerRes.ok;
+  if (ok) markEntryPlaced();
   return {
     ok,
     reason: `bank: ${bankRes.reason} · runner: ${runnerRes.reason}`,
@@ -411,6 +413,39 @@ export async function placeCrossTradeScaleOut(
  * unreadable reply). Exactly-once semantics match the webhook path:
  * no automatic retry on ambiguous replies.
  * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * Flat-entry latch — a hard temporal barrier against stacked entries.
+ * After OUR entry, a new entry is refused outright for 60s (no read can
+ * be trusted that fast — the 14:21 stack came from a stale CrossTrade
+ * read that showed "flat" while a position was open), and afterwards a
+ * fresh positions read must CONFIRM flat before the latch clears.
+ * ------------------------------------------------------------------ */
+
+let entryPlacedAt = 0;
+let awaitingFlat = false;
+
+export function markEntryPlaced() {
+  entryPlacedAt = Date.now();
+  awaitingFlat = true;
+}
+
+export type StackDecision = "allow" | "refuse_recent_entry" | "refuse_position_open" | "confirm_flat";
+
+/** pure latch decision (unit-tested): elapsed = ms since our entry,
+ *  held = MNQ contracts held per the fresh read (null = read failed). */
+export function stackGuardDecision(
+  awaiting: boolean,
+  elapsedMs: number,
+  held: number | null,
+  minConfirmMs = 60_000,
+): StackDecision {
+  if (!awaiting) return held ? "refuse_position_open" : "allow";
+  if (elapsedMs < minConfirmMs) return "refuse_recent_entry";
+  if (held === null) return "refuse_recent_entry"; // unreadable book — keep refusing
+  if (held > 0) return "refuse_position_open";
+  return "confirm_flat";
+}
 
 /** place a bracketed market order with ABSOLUTE stop/target prices */
 export async function placeCrossTradeOrderREST(
@@ -434,7 +469,15 @@ export async function placeCrossTradeOrderREST(
   const headers = { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
   const account = cfg.account;
 
-  // ---- flat check (require_market_position=flat equivalent) ----
+  // ---- flat check (require_market_position=flat equivalent) + latch ----
+  const latchNow = Date.now();
+  const latchGate = stackGuardDecision(awaitingFlat, latchNow - entryPlacedAt, null);
+  if (latchGate === "refuse_recent_entry") {
+    return {
+      ok: false,
+      reason: `crossTrade: entry placed ${Math.round((latchNow - entryPlacedAt) / 1000)}s ago — refusing to stack until the book confirms flat`,
+    };
+  }
   try {
     const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`, {
       headers,
@@ -447,15 +490,20 @@ export async function placeCrossTradeOrderREST(
       const inner = Array.isArray(row.data) ? (row.data as Array<Record<string, unknown>>) : [row];
       flat.push(...inner);
     }
-    const held = flat.filter((p) => {
+    const heldCount = flat.filter((p) => {
       const r = p as Record<string, unknown>;
       const qty = Number(r.netPos ?? r.qty ?? 0);
       const ins = String(r.instrument ?? r.contractName ?? "");
       return qty !== 0 && ins.includes("MNQ");
-    });
-    if (held.length > 0) {
+    }).length;
+    const decision = stackGuardDecision(awaitingFlat, latchNow - entryPlacedAt, heldCount);
+    if (decision === "refuse_position_open") {
       return { ok: false, reason: "crossTrade: not flat — an MNQ position is open (refusing)" };
     }
+    if (decision === "refuse_recent_entry") {
+      return { ok: false, reason: `crossTrade: our entry is ${Math.round((latchNow - entryPlacedAt) / 1000)}s old and the book is unreadable — refusing to stack` };
+    }
+    if (decision === "confirm_flat") awaitingFlat = false; // confirmed by a successful read
   } catch (e) {
     return { ok: false, reason: `crossTrade: cannot verify flat state (${String(e)}) — refusing` };
   }
@@ -500,6 +548,7 @@ export async function placeCrossTradeOrderREST(
     if (j && j.success === false) {
       return { ok: false, reason: `REST rejected: ${String(j.error ?? bodyText).slice(0, 200)}` };
     }
+    markEntryPlaced();
     return { ok: true, reason: `REST placed ${orderId}` };
   } catch (e) {
     return {
@@ -507,4 +556,10 @@ export async function placeCrossTradeOrderREST(
       reason: `REST UNKNOWN (network: ${String(e)}) — reconcile before acting; no automatic retry`,
     };
   }
+}
+
+/** TEST ONLY: reset the flat-entry latch. */
+export function __resetLatchForTest() {
+  entryPlacedAt = 0;
+  awaitingFlat = false;
 }

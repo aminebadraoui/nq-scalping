@@ -146,6 +146,22 @@
   gate check; the day rollover and EOD commit persist. The local
   `.executor-guard.json` remains as the offline fallback.
 
+## Final hardening (2026-10-02)
+
+- **Flat-entry latch** (`lib/crossTrade.ts`): after our own entry, a new
+  entry is refused outright for 60s (a stale CrossTrade read showed
+  "flat" while a position was open on 10-02 — that is exactly how the
+  14:21 stacked double happened), then a fresh positions read must
+  CONFIRM flat before the latch clears. `stackGuardDecision` is pure +
+  tested.
+- **Protection status in health**: `/api/gc?action=health` now reports
+  `protections` — day key, day P&L, peak, the give-back halt level, the
+  active day tier, and the consistency cap.
+- **Weekly risk-stack backtest**: `scripts/riskStackStudy.ts` re-runs the
+  integrated full-stack sim (all families, live sizing, protections,
+  MFF account rules) every FRIDAY in nightly.sh — the protection math
+  re-validates as the archive grows.
+
 ## Trade execution (2026-10-01)
 
 - **CrossTrade webhook backend**: `web/lib/crossTrade.ts` places bracketed market

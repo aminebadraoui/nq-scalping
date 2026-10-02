@@ -168,3 +168,20 @@ test("payload: order_id attached and take_profit omitted for the runner leg", ()
   assert.ok(!("take_profit" in p));
   assert.equal(p.stop_loss, "10 ticks");
 });
+
+import { stackGuardDecision, __resetLatchForTest } from "../lib/crossTrade";
+
+test("stackGuardDecision: temporal barrier, then confirmed-flat, then hold", () => {
+  __resetLatchForTest();
+  // no latch: read decides
+  assert.equal(stackGuardDecision(false, 999_999, 0), "allow");
+  assert.equal(stackGuardDecision(false, 999_999, 9), "refuse_position_open");
+  // just placed: refuse regardless of the read (stale reads lie)
+  assert.equal(stackGuardDecision(true, 5_000, 0), "refuse_recent_entry");
+  assert.equal(stackGuardDecision(true, 30_000, 0), "refuse_recent_entry");
+  // after 60s: the read must confirm flat
+  assert.equal(stackGuardDecision(true, 61_000, 9), "refuse_position_open");
+  assert.equal(stackGuardDecision(true, 61_000, null), "refuse_recent_entry"); // unreadable
+  assert.equal(stackGuardDecision(true, 61_000, 0), "confirm_flat");
+  __resetLatchForTest();
+});
