@@ -151,3 +151,50 @@ test("no-data: null equity halts (never trade blind)", () => {
   const d = guardCheck(null, at(10 * 60));
   assert.equal(d.verdict, "no-data");
 });
+
+test("give-back protection: halts after giving back more than max(floor, pct × peak)", () => {
+  __resetGuardForTest();
+  const oldPct = process.env.GUARD_GIVEBACK_PCT;
+  const oldFloor = process.env.GUARD_GIVEBACK_FLOOR;
+  process.env.GUARD_GIVEBACK_PCT = "0.5";
+  process.env.GUARD_GIVEBACK_FLOOR = "250";
+  try {
+    // day baseline first, then climb to a $600 day profit
+    guardCheck({ equity: 50_000, realized: 0 }, new Date("2026-10-02T16:00:00-04:00"));
+    assert.equal(guardCheck({ equity: 50_600, realized: 600 }, new Date("2026-10-02T17:00:00-04:00")).verdict, "ok");
+    // give back $300 of the $600 peak → limit max(250, 300) = 300 → dayPnl 300 <= 600-300 → halt
+    const d = guardCheck({ equity: 50_300, realized: 300 }, new Date("2026-10-02T17:05:00-04:00"));
+    assert.equal(d.verdict, "halt-giveback");
+  } finally {
+    if (oldPct === undefined) delete process.env.GUARD_GIVEBACK_PCT;
+    else process.env.GUARD_GIVEBACK_PCT = oldPct;
+    if (oldFloor === undefined) delete process.env.GUARD_GIVEBACK_FLOOR;
+    else process.env.GUARD_GIVEBACK_FLOOR = oldFloor;
+    __resetGuardForTest();
+  }
+});
+
+test("give-back protection: the floor guards small peaks; pct=0 disables", () => {
+  __resetGuardForTest();
+  const oldPct = process.env.GUARD_GIVEBACK_PCT;
+  const oldFloor = process.env.GUARD_GIVEBACK_FLOOR;
+  try {
+    process.env.GUARD_GIVEBACK_PCT = "0.5";
+    process.env.GUARD_GIVEBACK_FLOOR = "250";
+    // small day: peak 200 <= floor 250 → no halt even at $0
+    guardCheck({ equity: 50_000, realized: 0 }, new Date("2026-10-02T16:00:00-04:00"));
+    assert.equal(guardCheck({ equity: 50_200, realized: 200 }, new Date("2026-10-02T17:00:00-04:00")).verdict, "ok");
+    assert.equal(guardCheck({ equity: 50_000, realized: 0 }, new Date("2026-10-02T17:05:00-04:00")).verdict, "ok");
+
+    __resetGuardForTest();
+    process.env.GUARD_GIVEBACK_PCT = "0"; // disabled
+    guardCheck({ equity: 50_600, realized: 600 }, new Date("2026-10-03T17:00:00-04:00"));
+    assert.equal(guardCheck({ equity: 50_000, realized: 0 }, new Date("2026-10-03T17:05:00-04:00")).verdict, "ok");
+  } finally {
+    if (oldPct === undefined) delete process.env.GUARD_GIVEBACK_PCT;
+    else process.env.GUARD_GIVEBACK_PCT = oldPct;
+    if (oldFloor === undefined) delete process.env.GUARD_GIVEBACK_FLOOR;
+    else process.env.GUARD_GIVEBACK_FLOOR = oldFloor;
+    __resetGuardForTest();
+  }
+});

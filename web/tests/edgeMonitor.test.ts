@@ -99,3 +99,12 @@ test("execWatch fillMatches: side, size and window must all match", () => {
     { ts: 100_200, action: "Sell", qty: 6 },
   ], 200_000));
 });
+
+import { resendDecision } from "../lib/execWatch";
+
+test("execWatch resendDecision: only failed sends may re-send", () => {
+  assert.equal(resendDecision(true, true), "resend");
+  assert.equal(resendDecision(true, false), "silent"); // failed send but book not clean — verify manually
+  assert.equal(resendDecision(false, true), "alert_only"); // send OK + no trace — NEVER re-send (double risk)
+  assert.equal(resendDecision(false, false), "silent");
+});

@@ -34,6 +34,7 @@ export type GuardDecision =
   | { verdict: "halt-target"; reason: string }
   | { verdict: "halt-consistency"; reason: string }
   | { verdict: "halt-news"; reason: string }
+  | { verdict: "halt-giveback"; reason: string }
   | { verdict: "no-data"; reason: string };
 
 export type GuardState = {
@@ -61,6 +62,8 @@ export type GuardState = {
   dayPnl: number;
   /** best single-day realized P&L observed (consistency audit) */
   bestDayPnl: number;
+  /** today's peak realized P&L (the give-back protection reference) */
+  dayPeak: number;
 };
 
 /* ── config (env overrides the Rapid EOD 50k defaults) ─────────────── */
@@ -109,6 +112,7 @@ function seed(): GuardState {
     dayStartRealized: 0,
     dayPnl: 0,
     bestDayPnl: 0,
+    dayPeak: 0,
   };
 }
 
@@ -195,6 +199,7 @@ export async function hydrateGuardFromDb(): Promise<void> {
       s.dayStartRealized = Number(db.dayStartRealized ?? 0);
     }
     s.bestDayPnl = Math.max(Number(db.bestDayPnl ?? 0), s.bestDayPnl);
+    s.dayPeak = Math.max(Number(db.dayPeak ?? 0), s.dayPeak);
     s.dayPnl = 0; // recomputed by guardCheck from dayStartRealized
   } catch {
     /* best-effort — the bootstrapped state still governs */
@@ -255,6 +260,7 @@ function maybeRolloverDay(state: GuardState, realized: number, now = new Date())
   state.dayKey = p.date;
   state.dayStartRealized = realized;
   state.dayPnl = 0;
+  state.dayPeak = 0; // the give-back reference belongs to the new day only
   save(); // the day reference must survive a restart (consistency counter)
 }
 
@@ -325,6 +331,25 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
       verdict: "halt-consistency",
       reason: `today's realized P&L $${s.dayPnl.toFixed(0)} ≥ consistency cap $${s.consistencyCap} — stop for the day`,
     };
+  }
+
+  // give-back protection: halt new entries once today's P&L has given back
+  // more than max(floor, pct × dayPeak) from the day's peak — the 648-session
+  // replay found pct 0.5 / floor $250 keeps 90% of total profit while cutting
+  // the worst day from −$742 to −$496 (see research/daily-giveback rules).
+  s.dayPeak = Math.max(s.dayPeak, s.dayPnl);
+  const gbPct = num(process.env.GUARD_GIVEBACK_PCT, 0.5);
+  const gbFloor = num(process.env.GUARD_GIVEBACK_FLOOR, 250);
+  if (gbPct > 0 && s.dayPeak > gbFloor) {
+    const givebackLimit = Math.max(gbFloor, gbPct * s.dayPeak);
+    if (s.dayPnl <= s.dayPeak - givebackLimit) {
+      return {
+        verdict: "halt-giveback",
+        reason:
+          `day P&L $${s.dayPnl.toFixed(0)} gave back $${(s.dayPeak - s.dayPnl).toFixed(0)} from peak $${s.dayPeak.toFixed(0)} ` +
+          `(limit $${givebackLimit.toFixed(0)}) — halt new entries for the day`,
+      };
+    }
   }
 
   if (s.stage === "funded" && isNews) {

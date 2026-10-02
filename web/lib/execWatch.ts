@@ -35,6 +35,11 @@ export type Expectation = {
   label: string;
   intent: OrderIntent;
   scaleOut: boolean;
+  /** true when the ORIGINAL place attempt returned not-ok. The verified
+   *  re-send applies ONLY here: a card whose send succeeded but shows no
+   *  fill is a data-lag problem, not a missing order — re-sending it
+   *  risks a double (the 14:21 stack that cost ~$180). */
+  sendFailed: boolean;
 };
 
 const CHECK_AFTER_MS = 90_000;
@@ -45,6 +50,7 @@ const MNQ = "MNQ";
 
 let pending = new Map<string, Expectation>();
 let alerted = new Set<string>();
+let failedKeys = new Set<string>();
 let fillCache: { at: number; fills: Array<{ ts: number; action: string; qty: number }> } | null = null;
 
 function enabled(): boolean {
@@ -158,9 +164,20 @@ export function priceDistancePts(e: { intent: OrderIntent }): number | null {
 }
 
 /** register a just-sent trade card (no-op when not live) */
-export function registerExpectation(e: Expectation) {
+export function registerExpectation(e: Omit<Expectation, "sendFailed">) {
   if (!enabled()) return;
-  pending.set(e.key, e);
+  pending.set(e.key, { ...e, sendFailed: failedKeys.has(e.key) });
+}
+
+/** pure decision helper (unit-tested): what to do when the 90s check
+ *  finds no fill for a card. Only a FAILED send may be re-sent, and
+ *  only when the broker verifies absent. */
+export function resendDecision(
+  sendFailed: boolean,
+  verifiedAbsent: boolean,
+): "resend" | "alert_only" | "silent" {
+  if (sendFailed) return verifiedAbsent ? "resend" : "silent";
+  return verifiedAbsent ? "alert_only" : "silent";
 }
 
 /** a place-attempt returned not-ok: alert immediately. With verified
@@ -169,6 +186,8 @@ export function registerExpectation(e: Expectation) {
 export function registerSendFailure(key: string, label: string, reason: string) {
   if (!enabled()) return;
   if (alerted.has(key)) return;
+  failedKeys.add(key);
+  if (pending.has(key)) pending.get(key)!.sendFailed = true;
   const willRetry = autoRetry() && pending.has(key);
   alerted.add(key);
   if (!willRetry) pending.delete(key);
@@ -220,13 +239,27 @@ export async function checkExpectations(): Promise<void> {
     }
     alerted.add(key);
     const v = await verifyAbsent();
-    if (!v.clean) {
+    void logExec({ key, label: e.label, attempt: "watch", outcome: v.clean ? "verified_absent" : "unresolved", reason: v.reason });
+    const decision = resendDecision(e.sendFailed, v.clean);
+    if (decision === "silent") {
+      // the order exists (working order / position) or the send failed
+      // but the book is not clean — nothing to do
       pending.delete(key);
-      void logExec({ key, label: e.label, attempt: "watch", outcome: "unresolved", reason: v.reason });
-      void alert(`⚠ <b>EXECUTION UNRESOLVED</b> — <code>${e.label}</code>\n${v.reason} — verify manually before acting`);
+      if (!v.clean) {
+        void alert(`⚠ <b>EXECUTION UNRESOLVED</b> — <code>${e.label}</code>\n${v.reason} — verify manually before acting`);
+      }
       continue;
     }
-    void logExec({ key, label: e.label, attempt: "watch", outcome: "verified_absent", reason: v.reason });
+    if (decision === "alert_only") {
+      // send succeeded but no fill is visible: a data-lag, NOT a missing
+      // order — re-sending could double the position. Alert, never re-send.
+      pending.delete(key);
+      void alert(
+        `⚠ <b>SEND OK BUT NO FILL VISIBLE</b> — <code>${e.label}</code>\nthe order was placed but no fill is showing and the book reads clean — verify manually, do NOT re-send`,
+      );
+      continue;
+    }
+    // decision === "resend": original send FAILED and the book verifies clean
     const dist = priceDistancePts(e);
     const risk = Math.abs(e.intent.entry - e.intent.stop);
     if (dist !== null && dist > 0.5 * risk) {
@@ -258,5 +291,6 @@ export async function checkExpectations(): Promise<void> {
 export function __resetExecWatchForTest() {
   pending = new Map();
   alerted = new Set();
+  failedKeys = new Set();
   fillCache = null;
 }
