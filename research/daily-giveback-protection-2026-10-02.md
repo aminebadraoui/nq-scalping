@@ -70,6 +70,38 @@ while removing the eval-failing tail. This is cheaper than the give-back halt
 has negative expected value anyway. `SIZE_TIERS` env overrides; `SIZE_TIERS=""`
 disables.
 
+## Integrated full-stack backtest (scripts/riskStackStudy.ts, 648 sessions)
+
+All four live families (momentum rr1.0 + expansion + RTH + open drive),
+globally sequenced one-position-at-a-time, ladder exits, LIVE sizing
+($170-budget momentum, $200-capped fixed-9 RTH/open), commissions, then
+the protection layers toggled, through the MFF account simulator:
+
+| Variant | Trades | Total | Median day | Worst day | >$900 days | Sim |
+|---|---|---|---|---|---|---|
+| fixed 1R, no protections | 16,841 | +$640k | +$963 | −$1,387 | 342 | PASS |
+| **ladder, no protections** | 15,745 | +$2.9M | +$4,160 | −$2,597 | 600 | **BREACH 2026-08-05** |
+| ladder + day tiers | 15,745 | +$1.34M | +$2,004 | −$1,702 | 599 | PASS |
+| ladder + give-back halt | 9,041 | +$1.70M | +$872 | −$1,128 | 322 | PASS |
+| **full live stack** | 11,846 | +$1.0M | +$1,627 | −$1,128 | 434 | **PASS** |
+
+Headline findings:
+
+1. **The raw ladder breaches the account** — without protections it hits the
+   trailing drawdown in Aug 2026 of the sim. The protection layers are what
+   make the ladder survivable: every protected variant passes.
+2. **Tiers are the cheapest protection** (ladder → +tiers keeps 46% of the raw
+   total while turning BREACH into PASS); the give-back halt costs more total
+   but produces the shallowest worst day (−$1,128) and the fewest big days.
+3. **The full stack passes with the best risk profile**: worst day −$1,128 vs
+   −$2,597 raw, and the eval completes.
+4. Caveats: totals are optimistic vs live (no news gaps, 0.5-pt execution cost,
+   every RTH signal taken, no execution misses) — read the RATIOS, not the
+   absolute dollars. And note the "$900 breach days" column is our own
+   conservative day-halt interpretation; MFF's actual rule is best-day ≤ 30%
+   of end-of-eval total profit, which the simulator enforces in its
+   consist ✓ flag.
+
 ## Implemented
 
 - `accountGuard`: `dayPeak` tracked + persisted to Neon; new `halt-giveback`
