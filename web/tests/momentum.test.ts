@@ -99,7 +99,9 @@ const TAPE: Bar[] = [
 ];
 
 test("production config fires the 18:16 long on the real failed-flush tape", () => {
-  const sigs = detectMomentum(bars(TAPE), MOM_PROD);
+  // the sequence fires with the historical 0.85×ATR size floor; prod moved
+  // to 1.0 after the 2026-10-02 quality-filter sweep (see the next test)
+  const sigs = detectMomentum(bars(TAPE), { ...MOM_PROD, minBreakRangeR: 0.85 });
   assert.equal(sigs.length, 1, "exactly one signal expected");
   const s = sigs[0];
   assert.equal(s.dir, "long");
@@ -112,8 +114,13 @@ test("production config fires the 18:16 long on the real failed-flush tape", () 
   assert.ok(s.risk >= 3, "risk floor");
 });
 
+test("the 18:16 bar is under the 1.0×ATR floor — prod skips it (quality-filter sweep)", () => {
+  const sigs = detectMomentum(bars(TAPE), MOM_PROD);
+  assert.equal(sigs.length, 0, "bar range ÷ ATR14 is below the 1.0 gate");
+});
+
 test("the 18:16 long is sized inside the Rapid EOD 50k rules", () => {
-  const s = detectMomentum(bars(TAPE), MOM_PROD)[0];
+  const s = detectMomentum(bars(TAPE), { ...MOM_PROD, minBreakRangeR: 0.85 })[0];
   // 3.5 pt stop × $2/MNQ = $7 per contract → $170 budget = 24 MNQ, $168 risk
   const size = momentumSize(s.risk);
   assert.equal(size.contracts, 24);
