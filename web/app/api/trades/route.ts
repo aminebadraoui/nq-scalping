@@ -8,9 +8,11 @@ export const dynamic = "force-dynamic";
  *  summary plus its signal↔fill rows — the dashboard's trade review panel.
  *  Also computes the strategy scoreboard: per family, how often it fires
  *  (cards recorded → fills) and how it performs live (expR, net) against
- *  its replay baseline + edge-monitor status. Data-only: no live feed,
- *  no execution state. */
-export async function GET() {
+ *  its replay baseline + edge-monitor status. The scoreboard accumulates
+ *  over a rolling window (?range=7|30|90|all, default 30d) — trades and
+ *  signal cards persist forever, so the same table covers day → week →
+ *  month → all-time. Data-only: no live feed, no execution state. */
+export async function GET(request: Request) {
   if (!dbEnabled()) {
     return Response.json({ ok: false, reason: "no DATABASE_URL" });
   }
@@ -29,12 +31,16 @@ export async function GET() {
     const a = analysis[0] as (typeof analysis)[number] | undefined;
 
     // ---- strategy scoreboard: frequency + live vs replay performance ----
+    // Accumulates over the selected rolling window (never reset by the
+    // reconcile runs — the trades/signals tables are the record).
+    const RANGE_DAYS: Record<string, number> = { "7": 7, "30": 30, "90": 90, all: 0 };
+    const rangeParam = new URL(request.url).searchParams.get("range") ?? "30";
+    const rangeDays = RANGE_DAYS[rangeParam] ?? 30;
+    const w0 = rangeDays > 0 ? Date.now() - rangeDays * 86_400_000 : 0;
     let scoreboard: unknown[] = [];
-    if (runs.length && Array.isArray(trades) && trades.length) {
-      const latest = runs[0];
-      const w0 = Number(latest.window_start);
-      const w1 = Number(latest.window_end);
-      const sigs = await db`select ts, verdict from signals where ts >= ${w0} and ts <= ${w1}`;
+    const rangeTrades = (await db`select * from trades where ts >= ${w0} order by ts asc`) as Array<Record<string, unknown>>;
+    if (rangeTrades.length) {
+      const sigs = await db`select ts, verdict from signals where ts >= ${w0}`;
       type Bucket = {
         signals: number;
         fills: number;
@@ -58,7 +64,7 @@ export async function GET() {
       // minimal rows for the edge monitor: family, result, contracts,
       // grossUsd, riskPts (from the signal stop distance)
       const enriched: Array<{ family: string; result: string; contracts: number; grossUsd: number; riskPts: number }> = [];
-      for (const t of trades as Array<Record<string, unknown>>) {
+      for (const t of rangeTrades) {
         const family = familyOf(String(t.verdict ?? ""));
         const b = ensure(family);
         if (String(t.status ?? "") !== "matched") continue;
@@ -76,7 +82,10 @@ export async function GET() {
           riskPts: Math.abs(Number(t.sig_entry ?? 0) - Number(t.sig_stop ?? 0)),
         });
       }
-      const statuses = edgeStatuses(enriched as unknown as Parameters<typeof edgeStatuses>[0]);
+      // edge over the WHOLE selected range (window ≈ unbounded), not just
+      // the last 30 trades — the expR column and the edge chip describe
+      // the same set of trades the table aggregates
+      const statuses = edgeStatuses(enriched as unknown as Parameters<typeof edgeStatuses>[0], { window: 10_000_000 });
       const statusByFamily = new Map(statuses.map((s) => [s.family, s]));
       scoreboard = [...buckets.entries()].map(([family, b]) => {
         const st = statusByFamily.get(family);
@@ -112,6 +121,7 @@ export async function GET() {
       runs,
       trades,
       scoreboard,
+      scoreRange: rangeDays > 0 ? `${rangeDays}d` : "all",
       analysis: a
         ? {
             ...a,

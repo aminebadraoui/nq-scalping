@@ -212,6 +212,7 @@ export default function JournalPage() {
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [scoreboard, setScoreboard] = useState<ScoreRow[]>([]);
   const [scoreSort, setScoreSort] = useState<"net" | "expR" | "freq">("net");
+  const [scoreRange, setScoreRange] = useState<"7" | "30" | "90" | "all">("30");
   const [insights, setInsights] = useState<Insight[]>([]);
   const [overrides, setOverrides] = useState<Override[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -219,7 +220,7 @@ export default function JournalPage() {
 
   const load = () => {
     Promise.all([
-      fetch("/api/trades").then((r) => r.json()),
+      fetch(`/api/trades?range=${scoreRange}`).then((r) => r.json()),
       fetch("/api/insights").then((r) => r.json()),
     ])
       .then(([t, i]) => {
@@ -240,7 +241,7 @@ export default function JournalPage() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, []);
+  }, [scoreRange]);
 
   const post = (body: Record<string, unknown>) => {
     fetch("/api/insights", {
@@ -412,24 +413,41 @@ export default function JournalPage() {
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Strategy scoreboard</h2>
-              <span className="flex gap-1">
-                {([
-                  ["net", "net $"],
-                  ["expR", "expR"],
-                  ["freq", "frequency"],
-                ] as const).map(([k, label]) => (
-                  <button
-                    key={k}
-                    onClick={() => setScoreSort(k)}
-                    className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${
-                      scoreSort === k
-                        ? "border-info/50 bg-info/10 text-info"
-                        : "border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
+              <span className="flex items-center gap-2">
+                <span className="flex gap-1">
+                  {(["7", "30", "90", "all"] as const).map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => setScoreRange(r)}
+                      className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${
+                        scoreRange === r
+                          ? "border-long/50 bg-long/10 text-long"
+                          : "border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                      }`}
+                    >
+                      {r === "all" ? "ALL" : `${r}D`}
+                    </button>
+                  ))}
+                </span>
+                <span className="flex gap-1">
+                  {([
+                    ["net", "net $"],
+                    ["expR", "expR"],
+                    ["freq", "frequency"],
+                  ] as const).map(([k, label]) => (
+                    <button
+                      key={k}
+                      onClick={() => setScoreSort(k)}
+                      className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${
+                        scoreSort === k
+                          ? "border-info/50 bg-info/10 text-info"
+                          : "border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </span>
               </span>
             </div>
             <div className="overflow-x-auto">
@@ -492,8 +510,9 @@ export default function JournalPage() {
               )}
             </div>
             <p className="mt-2 font-mono text-[9px] leading-snug text-zinc-600">
-              sort: net $ = account contribution · expR = live mean gross R/trade (replay baseline until a family has ≥8 fills) · frequency = fills, then cards ·
-              live n is small — treat ranks as provisional · skips = cards recorded but not filled (gates, retrace expiries, refusals) · edge = live expR vs the 648-session replay baseline
+              accumulates over the selected range (7D / 30D / 90D / ALL — never resets; trades and cards persist forever) ·
+              sort: net $ = account contribution · expR = mean gross R/trade (replay baseline until a family has ≥8 fills) · frequency = fills, then cards ·
+              live n is small — treat ranks as provisional · skips = cards recorded but not filled (gates, retrace expiries, refusals) · edge = range expR vs the 648-session replay baseline
             </p>
           </section>
 
