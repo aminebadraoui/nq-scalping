@@ -48,6 +48,8 @@ export type SignalHistoryEntry = {
   sent: boolean;
   /** Telegram outcome ("sent" on success, or the failure reason) */
   reason: string;
+  /** the detector's feature vector at signal time (strategy analysis input) */
+  features: Record<string, unknown> | null;
 };
 
 const MAX_MEMORY = 200;
@@ -82,9 +84,11 @@ create table if not exists signals (
   source  text not null default 'live',
   test    boolean not null default false,
   sent    boolean not null default false,
-  reason  text not null default ''
+  reason  text not null default '',
+  features jsonb
 );
 alter table signals add column if not exists size text not null default '';
+alter table signals add column if not exists features jsonb;
 create index if not exists signals_ts_idx on signals (ts desc);
 `;
 
@@ -110,16 +114,20 @@ async function persist(e: SignalHistoryEntry): Promise<void> {
   try {
     await getDb()`
       insert into signals
-        (key, ts, day, time_et, symbol, side, price, entry, stop, target, size, verdict, headline, source, test, sent, reason)
+        (key, ts, day, time_et, symbol, side, price, entry, stop, target, size, verdict, headline, source, test, sent, reason, features)
       values
-        (${e.id}, ${e.ts}, ${e.day}, ${e.timeET}, ${e.symbol}, ${e.side}, ${e.price}, ${e.entry}, ${e.stop}, ${e.target}, ${e.size}, ${e.verdict}, ${e.headline}, ${e.source}, ${e.test}, ${e.sent}, ${e.reason})
+        (${e.id}, ${e.ts}, ${e.day}, ${e.timeET}, ${e.symbol}, ${e.side}, ${e.price}, ${e.entry}, ${e.stop}, ${e.target}, ${e.size}, ${e.verdict}, ${e.headline}, ${e.source}, ${e.test}, ${e.sent}, ${e.reason}, ${e.features ? JSON.stringify(e.features) : null})
       on conflict (key) do nothing`;
   } catch {
     /* best-effort — the in-memory buffer still holds the entry */
   }
 }
 
-export type SignalHistoryInput = Omit<SignalHistoryEntry, "id" | "ts" | "size"> & { ts?: number; size?: string };
+export type SignalHistoryInput = Omit<SignalHistoryEntry, "id" | "ts" | "size" | "features"> & {
+  ts?: number;
+  size?: string;
+  features?: Record<string, unknown> | null;
+};
 
 /** Record a push. Adds to the in-memory buffer first (so it is visible even
  *  if the DB is down), then persists best-effort. Never throws. */
@@ -142,6 +150,7 @@ export async function recordSignal(input: SignalHistoryInput): Promise<SignalHis
     test: input.test,
     sent: input.sent,
     reason: input.reason,
+    features: input.features ?? null,
   };
   const mem = getMemory();
   mem.unshift(entry);
@@ -174,10 +183,19 @@ type DbRow = {
   test: boolean;
   sent: boolean;
   reason: string;
+  features: unknown;
 };
 
 function mapDbRow(r: DbRow): SignalHistoryEntry {
   const side = r.side === "long" || r.side === "short" ? r.side : "none";
+  let features: Record<string, unknown> | null = null;
+  if (r.features !== null && r.features !== undefined) {
+    try {
+      features = typeof r.features === "string" ? JSON.parse(r.features) : (r.features as Record<string, unknown>);
+    } catch {
+      features = null;
+    }
+  }
   return {
     id: r.key,
     ts: Number(r.ts),
@@ -196,6 +214,7 @@ function mapDbRow(r: DbRow): SignalHistoryEntry {
     test: !!r.test,
     sent: !!r.sent,
     reason: r.reason,
+    features,
   };
 }
 
@@ -210,7 +229,7 @@ export async function getSignalHistory(limit = 100): Promise<SignalHistoryEntry[
   if (await ensureTable()) {
     try {
       const rows = (await getDb()`
-        select key, ts, day, time_et, symbol, side, price, entry, stop, target, size, verdict, headline, source, test, sent, reason
+        select key, ts, day, time_et, symbol, side, price, entry, stop, target, size, verdict, headline, source, test, sent, reason, features
         from signals order by ts desc limit ${limit}`) as unknown as DbRow[];
       const seen = new Set(mem.map((m) => m.id));
       for (const r of rows) {

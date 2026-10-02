@@ -53,6 +53,44 @@
   warm-up, `/api/lab` 404s); lab + backtesting happen on the Mac against the
   R2 archive. The lab sample set is cached to disk keyed by the session
   inventory, so re-opens are instant after the first build.
+- **Trade reconciliation (2026-10-02)**: `web/scripts/reconcileTrades.ts` joins
+  the Neon `signals` rows with the CrossTrade Tradovate fill record into Neon
+  `trades` (one row per trade card: status matched/unexecuted, fill entry/exit,
+  gross/net P&L) + `reconcile_runs` (per-run summary, manual-fills bucket).
+  Runs nightly after ingest (scripts/nightly.sh) and is idempotent
+  (upsert on signal_key) — re-run any time to backfill. `GET /api/trades`
+  serves the latest run to the dashboard. Commission source: CrossTrade
+  durable fill history when captured, else CT_COMMISSION_PER_SIDE estimate
+  (default 0.95). Caveat: session fills reset ~17:00 ET and the durable
+  journal capture is periodic (90s debounce / 10-min interval / 5–6 pm ET
+  window) — verify Tradovate journal import is ON in CrossTrade or re-run the
+  script next morning to backfill.
+- **Win/loss analysis framework (2026-10-02)**: `web/lib/tradeStats.ts` (pure,
+  unit-tested) + `web/scripts/tradeAnalysis.ts` (nightly CLI) turn the
+  reconciled rows into a repeatable post-mortem: per-trade execution anatomy
+  (entry adverse drift, MFE/MAE from minute bars, target_reached, stop-run /
+  recovery detection, loss labels) persisted onto `trades`, and win/loss
+  aggregates by family (momentum flush vs expansion, RTH, open, sweep-reclaim),
+  hour bucket, side, and first-of-day persisted into `trade_analysis`
+  (JSONB). `/api/trades` serves the latest summary to the dashboard's
+  Trades panel. MFE/MAE use the minute bars in Neon — after nightly ingest
+  they are vendor-grade; intraday runs use VPS live-captured bars (slight
+  differences possible). Recovery window = 15 min post-exit.
+- **Self-improving system (2026-10-02)**: signals now persist the detector's
+  feature vector (`signals.features` → `trades.features`); the nightly miner
+  `web/scripts/strategyInsights.ts` (pure engine `web/lib/strategyInsights.ts`)
+  turns the trade record into `insights` (rule proposals with evidence,
+  observations, execution notes, AI narrative). Proposals become
+  `strategy_overrides` rows — approved from the dashboard (Insights panel →
+  `/api/insights`) or auto-applied when `SELF_IMPROVE=1` (only the strong
+  hour-veto / trend-filter proposals). The live feed applies overrides via
+  `web/lib/strategyOverrides.ts` (decideSignal) on every card — momentum
+  (flush/expansion), RTH and open families — cached ~5 min, no deploy needed.
+  Default is OFF: no overrides = current behavior. AI narrative: DeepSeek
+  chat completions are configured in `web/.env.local` (ANALYSIS_LLM_URL/KEY/
+  MODEL, gitignored) — each insights run stores an LLM-written strategy
+  review (`insights` kind=narrative, source=llm); remove the vars to fall
+  back to the deterministic narrative.
 - Row counts 2026-09-30: candles_1m 25,394 · footprint_ticks 987,524 ·
   events 9,098 · profile_sheets 77 · sessions 26.
 
@@ -109,6 +147,21 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
 # manual:
 cd web && DATABASE_URL=$(grep '^DATABASE_URL=' .env.local | cut -d= -f2-) \
   node --import ../scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events
+
+# manual trade reconciliation ("did that Telegram card trade, and how?"):
+cd web && node --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts \
+  [--since 2026-10-01T16:00:00Z]
+
+# manual win/loss analysis (framework report → stdout + trade_analysis table):
+cd web && node --import ../scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts \
+  [--since 2026-10-01T16:00:00Z]
+
+# manual insight mining (proposals + AI review → insights table):
+cd web && node --import ../scripts/ts-loader.mjs ./scripts/strategyInsights.ts \
+  [--since 2026-10-01T16:00:00Z]
+
+# self-improvement is OFF by default: approve proposals on the dashboard
+# (Insights panel) or set SELF_IMPROVE=1 to auto-apply the strong ones.
 
 # data hygiene:
 python3 scripts/repair_data.py            # audit the local JSON store

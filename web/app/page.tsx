@@ -7,6 +7,8 @@ import SweepReclaimPanel from "@/components/SweepReclaimPanel";
 import PriceActionPanel from "@/components/PriceActionPanel";
 import PropPanel from "@/components/PropPanel";
 import SignalHistory from "@/components/SignalHistory";
+import TradesPanel from "@/components/TradesPanel";
+import InsightsPanel from "@/components/InsightsPanel";
 import { blendLiveMinutes, type FPMinute } from "@/lib/footprint";
 import { useLive, type LiveMinute } from "@/lib/useLive";
 import { imbalanceFor, summarizeImb } from "@/lib/imbalance";
@@ -226,6 +228,8 @@ export default function DashboardPage() {
           <SweepReclaimPanel minutes={chartMinutes} cur={live?.cur} lastPrice={lastPrice} />
           <PropPanel />
           <SignalHistory />
+          <TradesPanel />
+          <InsightsPanel />
         </aside>
       </div>
     </main>

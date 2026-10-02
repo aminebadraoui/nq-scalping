@@ -75,6 +75,30 @@ log "ingest window: $SINCE .. $TO"
 INGEST_RC=$?
 log "ingest exit=$INGEST_RC"
 
+log "--- reconcile trades (CrossTrade fills ↔ signals) ---"
+# Joins the day's Telegram cards with the CrossTrade fill record into the
+# Neon `trades` + `reconcile_runs` tables ("did that card trade, and how?").
+# Idempotent (upsert on signal_key) — re-run any time to backfill a gap.
+/opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts 2>&1
+RECONCILE_RC=$?
+log "reconcile exit=$RECONCILE_RC"
+
+log "--- analyze trades (win/loss framework) ---"
+# Per-trade execution anatomy (drift, MFE/MAE, stop-runs) + win/loss
+# aggregates by strategy/hour/side → `trade_analysis` + enriched `trades`.
+# Runs after ingest so the bars are vendor-grade. Idempotent.
+/opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts 2>&1
+ANALYSIS_RC=$?
+log "tradeAnalysis exit=$ANALYSIS_RC"
+
+log "--- mine strategy insights (self-improvement) ---"
+# Pattern-mines the trade record into `insights` (proposals + AI review).
+# With SELF_IMPROVE=1 strong proposals auto-apply into `strategy_overrides`;
+# otherwise the dashboard approves. Idempotent (dedup by title).
+/opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./scripts/strategyInsights.ts 2>&1
+INSIGHTS_RC=$?
+log "strategyInsights exit=$INSIGHTS_RC"
+
 log "--- archive to R2 + free the disk ---"
 if grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
   if python3 "$ROOT/scripts/r2_sync.py" upload 2>&1; then
@@ -88,5 +112,9 @@ else
   log "no R2 credentials — keeping local files"
 fi
 
-log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC) ==="
-exit $INGEST_RC
+FINAL_RC=$INGEST_RC
+if [ "$RECONCILE_RC" -ne 0 ]; then FINAL_RC=$RECONCILE_RC; fi
+if [ "$ANALYSIS_RC" -ne 0 ]; then FINAL_RC=$ANALYSIS_RC; fi
+if [ "$INSIGHTS_RC" -ne 0 ]; then FINAL_RC=$INSIGHTS_RC; fi
+log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC reconcile=$RECONCILE_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC) ==="
+exit $FINAL_RC

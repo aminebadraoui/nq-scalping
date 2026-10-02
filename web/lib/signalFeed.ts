@@ -48,6 +48,7 @@ import { sendTelegram } from "./notify";
 import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
 import { STATS, headsUpWrLine } from "./strategyStats";
+import { getOverrides, decideSignal } from "./strategyOverrides";
 
 function refreshSeconds(): number {
   const n = Number(process.env.SIGNAL_REFRESH_SECONDS);
@@ -125,6 +126,24 @@ function distTxt(from: number, to: number): string {
   const pts = Math.abs(to - from);
   const ticks = Math.round(pts / 0.25);
   return `${to < from ? "−" : "+"}${pts.toFixed(2)} pts · ${ticks} ticks`;
+}
+
+/** capture the detector's feature vector at signal time — the input the
+ *  strategy analysis layer (lib/strategyInsights.ts) mines for improvement
+ *  patterns. Picks the known feature fields; extras layer on top. */
+function signalFeatures(s: Record<string, unknown>, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const keys = [
+    "kind", "flushFrac", "flushVol", "flushRange", "failDepth", "respFrac", "respVol", "respDelay", "respProof",
+    "breakFrac", "breakVol", "breakDelay", "refDist", "progressPts", "medVol", "distVwapPts", "cumDelta", "deltaFromFlush",
+    "atr14", "riskPts", "trailLowDist", "trailHighDist", "breakRangeR", "breakStack", "breakVwapPos", "flushRangeR",
+    "hourET", "extreme", "buyPct", "dir", "risk",
+  ];
+  const f: Record<string, unknown> = {};
+  for (const k of keys) {
+    const v = s[k];
+    if (v !== undefined && v !== null) f[k] = v;
+  }
+  return { ...f, ...extra };
 }
 
 function fmtPx(n: number, dp = 2): string {
@@ -341,6 +360,7 @@ class SignalFeed {
       test: false,
       sent: res.sent,
       reason: res.reason,
+      features: signalFeatures(setup as unknown as Record<string, unknown>, {}),
     });
   }
 
@@ -369,6 +389,28 @@ class SignalFeed {
       const key = `${s.d}|${s.dir}|${s.t}`;
       const aPlus = expKeys.has(key) && momSigs.some((x) => `${x.d}|${x.dir}|${x.t}` === key);
       if (this.momentumSent.has(key)) continue;
+      const et = cdtToET(s.t);
+      const firstToday = !this.cardedDays.has(s.d);
+
+      // ---- self-improvement gates (strategy_overrides) — the approved
+      //      insight loop filters the card BEFORE anything is sent ----
+      const family = s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
+      const ov = await getOverrides();
+      const dec = decideSignal(ov, {
+        families: [family, "momentum", "all"],
+        hourET: s.hourET,
+        side: s.dir,
+        breakFrac: s.breakFrac,
+        riskPts: s.risk,
+        breakRangeR: s.breakRangeR,
+        cumDelta: s.cumDelta,
+        firstOfDay: firstToday,
+      });
+      if (!dec.allow) {
+        console.log(`[overrides] momentum ${s.dir} ${et} SKIPPED — ${dec.reasons.join("; ")}`);
+        continue;
+      }
+
       this.momentumSent.add(key);
       if (this.momentumSent.size > 500) this.momentumSent = new Set([...this.momentumSent].slice(-250));
 
@@ -430,8 +472,6 @@ class SignalFeed {
         }).catch(() => {});
       }
 
-      const et = cdtToET(s.t);
-      const firstToday = !this.cardedDays.has(s.d);
       this.cardedDays.add(s.d);
       if (this.cardedDays.size > 20) this.cardedDays = new Set([...this.cardedDays].slice(-10));
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
@@ -473,6 +513,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family }),
       });
     }
   }
@@ -490,6 +531,21 @@ class SignalFeed {
       if (s.breakIdx !== fp.length - 1) continue;
       const key = `${s.d}|${s.dir}|${s.t}`;
       if (this.rthSent.has(key)) continue;
+      const ov = await getOverrides();
+      const dec = decideSignal(ov, {
+        families: ["rth", "all"],
+        hourET: s.hourET,
+        side: s.dir,
+        breakFrac: s.breakFrac,
+        riskPts: s.risk,
+        breakRangeR: null,
+        cumDelta: s.cumDelta,
+        firstOfDay: false,
+      });
+      if (!dec.allow) {
+        console.log(`[overrides] rth ${s.dir} SKIPPED — ${dec.reasons.join("; ")}`);
+        continue;
+      }
       this.rthSent.add(key);
       if (this.rthSent.size > 200) this.rthSent = new Set([...this.rthSent].slice(-100));
 
@@ -542,6 +598,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus }),
       });
     }
   }
@@ -566,6 +623,22 @@ class SignalFeed {
       if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
       const key = `${job.key}|${s.d}|${s.dir}|${s.t}`;
       if (this.openSent.has(key)) continue;
+      const family = job.key === "sniper" ? "open_sniper" : job.key === "pullback" ? "open_pullback" : "open_drive";
+      const ov = await getOverrides();
+      const dec = decideSignal(ov, {
+        families: [family, "all"],
+        hourET: parseInt(cdtToET(s.t).slice(0, 2), 10),
+        side: s.dir,
+        breakFrac: s.breakFrac,
+        riskPts: s.risk,
+        breakRangeR: null,
+        cumDelta: s.cumDelta,
+        firstOfDay: false,
+      });
+      if (!dec.allow) {
+        console.log(`[overrides] ${family} ${s.dir} SKIPPED — ${dec.reasons.join("; ")}`);
+        continue;
+      }
       this.openSent.add(key);
       if (this.openSent.size > 200) this.openSent = new Set([...this.openSent].slice(-100));
 
@@ -623,6 +696,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
+        features: signalFeatures(s as unknown as Record<string, unknown>, { kind: family }),
       });
     }
     }
