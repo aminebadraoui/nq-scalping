@@ -9,6 +9,7 @@ import {
   type Session,
 } from "@/lib/gcdata";
 import { getOptionsFeed } from "@/lib/optionsFeed";
+import { getLive } from "@/lib/live";
 import { crossTradeEnabled, mapInstrument } from "@/lib/crossTrade";
 import {
   FEED_MOMENTUM,
@@ -134,6 +135,28 @@ export async function GET(req: NextRequest) {
               sweepReclaim: FEED_SWEEP_RECLAIM,
               pullbackTicket: FEED_PULLBACK_TICKET,
             },
+            // live-feed volume parity: accumulated per-minute buy+sell vs
+            // the vendor's own day volume — the ratio shows whether the
+            // tick feed undercounts prints (the open-drive absolute floors
+            // starve silently if it does)
+            liveFeed: await (async () => {
+              try {
+                const st = getLive().state;
+                let acc = 0;
+                for (const m of st.minutes) acc += m.buy + m.sell;
+                const snapVol = Number(st.snapshot?.volume ?? 0);
+                return {
+                  connected: st.connected,
+                  minutes: st.minutes.length,
+                  lastMessageMs: st.lastMessage ?? 0,
+                  accumulatedVol: acc,
+                  snapshotVol: snapVol,
+                  ratio: snapVol > 0 ? +(acc / snapVol).toFixed(2) : null,
+                };
+              } catch {
+                return null;
+              }
+            })(),
           },
           now: new Date().toISOString(),
         });
