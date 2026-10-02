@@ -267,10 +267,36 @@ export default function JournalPage() {
                 )}
               </span>
             </div>
+            {(() => {
+              const byDay = new Map<string, { n: number; w: number; l: number; gross: number; net: number }>();
+              for (const t of trades) {
+                if (t.status !== "matched") continue;
+                const d = byDay.get(t.day) ?? { n: 0, w: 0, l: 0, gross: 0, net: 0 };
+                d.n++;
+                if (t.result === "win") d.w++;
+                if (t.result === "loss") d.l++;
+                d.gross += Number(t.gross_usd);
+                d.net += Number(t.net_usd);
+                byDay.set(t.day, d);
+              }
+              const days = [...byDay.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+              return (
+                <div className="mb-2 space-y-0.5">
+                  {days.slice(0, 3).map(([day, d]) => (
+                    <div key={day} className="flex items-center justify-between rounded border border-zinc-800/70 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500">
+                      <span>{day === days[0]?.[0] ? "TODAY" : day}</span>
+                      <span>
+                        {d.n} trades · {d.w}W/{d.l}L · gross {fmtUsd(d.gross)} · net {fmtUsd(d.net)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             {narrative && (
               <p className="mb-2 font-mono text-[10px] text-zinc-500">
-                dataset: {String((narrative.evidence as Record<string, unknown>).trades ?? "—")} trades · window since{" "}
-                {String((narrative.evidence as Record<string, unknown>).windowStart ?? "—").slice(0, 10)}
+                AI dataset: rolling 30 days ({String((narrative.evidence as Record<string, unknown>).windowStart ?? "—").slice(0, 10)} → now) ·{" "}
+                {String((narrative.evidence as Record<string, unknown>).trades ?? "—")} trades
               </p>
             )}
             {narrative ? (

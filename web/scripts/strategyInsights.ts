@@ -208,10 +208,12 @@ async function llmNarrative(rows: AnalyzedTrade[], insights: Insight[]): Promise
           "You are the AI strategy analyst for an automated NQ (MNQ) scalping system. " +
           "Strategies: momentum failed-flush breakout (momentum_flush), momentum huge-bar expansion (momentum_expansion), " +
           "RTH soft-continuation (rth), open drive/pullback/sniper, sweep-reclaim. " +
-          "Write a trading review from the data: a short verdict per strategy (what the numbers support vs what is noise, " +
-          "stating sample sizes explicitly), the ONE highest-leverage improvement per strategy, and one concrete next " +
-          "experiment for the system (a gate, filter or execution change). Mention stop-runs and adverse entry drift where " +
-          "relevant. Be skeptical of small samples. Concise markdown, no disclaimers.",
+          "Write a trading review from the data. IMPORTANT: the dataset is a ROLLING 30-DAY window ending now — " +
+          "always state the window explicitly as a date range and separate TODAY's session numbers from the rolling-window " +
+          "totals in every verdict, so a one-day P&L is never confused with the window total. Then: a short verdict per " +
+          "strategy (what the numbers support vs what is noise, stating sample sizes explicitly), the ONE highest-leverage " +
+          "improvement per strategy, and one concrete next experiment for the system (a gate, filter or execution change). " +
+          "Mention stop-runs and adverse entry drift where relevant. Be skeptical of small samples. Concise markdown, no disclaimers.",
       },
       {
         role: "user",
