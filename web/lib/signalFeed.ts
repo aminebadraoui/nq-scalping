@@ -246,6 +246,23 @@ class SignalFeed {
     ].join("|");
   }
 
+  /** announce cards? Live feeds always do; dry-run feeds (local dev) are
+   *  SILENT by default — they must opt in with TELEGRAM_ALLOW_DRYRUN=1,
+   *  so a stale local instance can never confuse the operator again. */
+  private announce(): boolean {
+    return process.env.EXECUTE_LIVE === "1" || process.env.TELEGRAM_ALLOW_DRYRUN === "1";
+  }
+
+  private async push(text: string): Promise<{ sent: boolean; reason: string }> {
+    if (!this.announce()) return { sent: false, reason: "announce disabled (dry-run feed)" };
+    return this.push(text);
+  }
+
+  private async record(input: Parameters<typeof recordSignal>[0]): Promise<void> {
+    if (!this.announce()) return;
+    await recordSignal(input);
+  }
+
   private async maybeSend(snap: SignalSnapshot): Promise<void> {
     if (!FEED_REVERSAL) return;
     // The card gate (STRATEGY.md "When a signal exists"): every directional
@@ -281,11 +298,11 @@ class SignalFeed {
       timeET: snap.timeET,
       source: snap.source,
     }, kind);
-    const res = await sendTelegram(text, { parseMode: "HTML" });
+    const res = await this.push(text);
     if (!res.sent) this.lastError = res.reason;
     // record the push so the dashboard has a history to consult (best-effort —
     // a persistence failure must never block the Telegram loop)
-    await recordSignal({
+    await this.record({
       timeET: snap.timeET,
       day: snap.day,
       symbol: snap.symbol,
@@ -361,9 +378,9 @@ class SignalFeed {
       },
       sizeStr,
     );
-    const res = await sendTelegram(text, { parseMode: "HTML" });
+    const res = await this.push(text);
     if (!res.sent) this.lastError = res.reason;
-    await recordSignal({
+    await this.record({
       timeET: setup.timeET,
       day: setup.day,
       symbol: symbol(),
@@ -557,9 +574,9 @@ class SignalFeed {
         `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${evidence}`,
         `<i>${STATS.momentum.stat}</i>`,
       ].join("\n");
-      const res = await sendTelegram(text, { parseMode: "HTML" });
+      const res = await this.push(text);
       if (!res.sent) this.lastError = res.reason;
-      await recordSignal({
+      await this.record({
         timeET: et,
         day: s.d,
         symbol: symbol(),
@@ -677,9 +694,9 @@ class SignalFeed {
         `${aPlus ? `A+ (${STATS.rth.aPlus}) · ` : ""}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
         `<i>${STATS.rth.stat} · 0.75R plan — journal separately</i>`,
       ].join("\n");
-      const res = await sendTelegram(text, { parseMode: "HTML" });
+      const res = await this.push(text);
       if (!res.sent) this.lastError = res.reason;
-      await recordSignal({
+      await this.record({
         timeET: et,
         day: s.d,
         symbol: symbol(),
@@ -810,9 +827,9 @@ class SignalFeed {
         evidence,
         `<i>${job.stat} · ${job.plan} · experimental — journal separately</i>`,
       ].join("\n");
-      const res = await sendTelegram(text, { parseMode: "HTML" });
+      const res = await this.push(text);
       if (!res.sent) this.lastError = res.reason;
-      await recordSignal({
+      await this.record({
         timeET: et,
         day: s.d,
         symbol: symbol(),
@@ -910,7 +927,7 @@ class SignalFeed {
       ...(watch.length ? [``, ...watch] : []),
       `<i>heads-up only · ${headsUpWrLine()}</i>`,
     ].join("\n");
-    const res = await sendTelegram(text, { parseMode: "HTML" });
+    const res = await this.push(text);
     if (!res.sent) this.lastError = res.reason;
 
     // arm the stage-2 pullback watch on the alert bar
@@ -956,7 +973,7 @@ class SignalFeed {
         `<code>${symbol()}  ${utcToET(lastMin.t, lastMin.du)} NY</code>`,
         `${ev.reason} — no pullback setup left to watch`,
       ].join("\n");
-      const res = await sendTelegram(text, { parseMode: "HTML" });
+      const res = await this.push(text);
       if (!res.sent) this.lastError = res.reason;
       return;
     }
@@ -973,7 +990,7 @@ class SignalFeed {
         `first aggressive ${ev.flipTo === "down" ? "sell" : "buy"} bar (${pct}% delta) after the unusual ${w.side} volume`,
         `<i>watching ${fmtPx(ev.pullExtreme)} for a sweep-reclaim</i>`,
       ].join("\n");
-      const res = await sendTelegram(text, { parseMode: "HTML" });
+      const res = await this.push(text);
       if (!res.sent) this.lastError = res.reason;
       return;
     }
@@ -994,7 +1011,7 @@ class SignalFeed {
       `<code>ENTRY ${fmtPx(ev.entry)} · STOP ${fmtPx(ev.stop)} · TARGET ${fmtPx(ev.target)}</code> · ${sizeStr}`,
       `<i>1R scalp — ${STATS.sweepReclaim.name.toLowerCase()} family (${STATS.sweepReclaim.stat})</i>`,
     ].join("\n");
-    const res = await sendTelegram(text, { parseMode: "HTML" });
+    const res = await this.push(text);
     if (!res.sent) this.lastError = res.reason;
   }
 
@@ -1037,8 +1054,8 @@ class SignalFeed {
       timeET: snap.timeET,
       source: snap.source,
     });
-    const res = await sendTelegram(text, { parseMode: "HTML" });
-    await recordSignal({
+    const res = await this.push(text);
+    await this.record({
       timeET: snap.timeET,
       day: snap.day,
       symbol: snap.symbol,
