@@ -94,6 +94,38 @@
 - Row counts 2026-09-30: candles_1m 25,394 · footprint_ticks 987,524 ·
   events 9,098 · profile_sheets 77 · sessions 26.
 
+## System hardening batch (2026-10-02) — the seven improvements
+
+1. **Absolute brackets**: the executor now places via the CrossTrade REST
+   endpoint (`placeCrossTradeOrderREST`) with the signal's structural
+   stop/target as ABSOLUTE prices — fixes the quote-anchored webhook
+   brackets (~$250-300 leak). Default ON; `CROSSTRADE_REST=0` returns to
+   the webhook. Client-side flat check (refuse, never flatten); 401/403
+   (plan/auth, pre-dispatch) falls back to the webhook once.
+2. **Execution-failure alarm** (`lib/execWatch.ts`): when EXECUTE_LIVE=1,
+   every trade card is watched — no matching CrossTrade fill within 90s
+   → Telegram alert (once per card, 10-min give-up).
+3. **Account guard parity** (`lib/crossGuard.ts`): the MFF Rapid EOD 50k
+   guard (floor/target/consistency) now feeds from the CrossTrade account
+   snapshot instead of the browser page; halts before every order, fail
+   closed on unreadable account; floor bootstraps from live equity when
+   the container state file is missing.
+4. **News blackout gate** (`lib/newsGate.ts`): static calendar (FOMC 2026
+   decision days confirmed from the Fed; NFP first-Friday rule; CPI/PPI
+   BLS schedule — refresh each December). No entries in the window
+   (FOMC ±10/20 min, BLS 8:30 ±5/10 min); gates all four card families.
+5. **Walk-forward validation**: insight rule proposals must ALSO hold on
+   the newest third of their bucket's trades or they are downgraded to
+   observations (auto-apply disabled when the test split is too small).
+   Default ON in the nightly miner (`INSIGHTS_WALK_FORWARD=0` to disable).
+6. **Scale-out re-validated on the rr1.0 gate** (648 sessions): momentum
+   ladder expR 0.47 vs 0.44 fixed-1R, PF 2.79, account sim PASS (median
+   day +$268, worst −$594). Scale-out is now ON by default
+   (`CROSSTRADE_SCALEOUT=0` returns to single bracketed orders).
+7. **Edge monitor** (`lib/edgeMonitor.ts`): rolling live expR per family
+   vs replay baselines → ok/watch/breach rows persisted as insights
+   (kind edge_monitor) each nightly run, surfaced on the journal.
+
 ## Trade execution (2026-10-01)
 
 - **CrossTrade webhook backend**: `web/lib/crossTrade.ts` places bracketed market

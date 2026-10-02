@@ -135,6 +135,13 @@ function hourLabel(bucketKey: string): string {
   }
 }
 
+export type MineOpts = {
+  /** validate rule proposals out-of-sample: the bucket must also lose on
+   *  the most recent third of its trades, or the proposal is downgraded
+   *  to an observation. Default in the CLI: ON. */
+  walkForward?: boolean;
+};
+
 const MIN_N_VETO = 6;
 const MIN_N_CONCENTRATE = 8;
 const MIN_N_GATE = 8;
@@ -142,9 +149,46 @@ const WR_VETO = 0.25;
 const WR_CONCENTRATE = 0.75;
 const DELTA_WR_GATE = 0.2;
 
-export function mineInsights(rows: AnalyzedTrade[]): Insight[] {
+export function mineInsights(rows: AnalyzedTrade[], opts: MineOpts = {}): Insight[] {
   const out: Insight[] = [];
   if (rows.length < 4) return out;
+
+  /** walk-forward check: the proposal must hold on the newest third of
+   *  the bucket's trades (test wr <= veto+10pp AND test net < 0), or it
+   *  is downgraded to an observation. */
+  const validate = (proposal: Insight, bucketRows: AnalyzedTrade[]): Insight => {
+    if (!opts.walkForward || proposal.kind !== "rule_proposal") return proposal;
+    const sorted = [...bucketRows].sort((a, b) => a.ts - b.ts);
+    const cut = Math.floor((sorted.length * 2) / 3);
+    const train = sorted.slice(0, cut);
+    const test = sorted.slice(cut);
+    if (test.length < 4) {
+      proposal.evidence.walkForward = {
+        trainN: train.length,
+        testN: test.length,
+        note: "insufficient out-of-sample data — proposal held, not auto-applied",
+      };
+      proposal.autoApply = false;
+      return proposal;
+    }
+    const bTest = bucket(test);
+    const holds = bTest.wr !== null && bTest.wr <= WR_VETO + 0.1 && bTest.netUsd < 0;
+    proposal.evidence.walkForward = {
+      trainN: train.length,
+      testN: test.length,
+      testWr: bTest.wr,
+      testNetUsd: bTest.netUsd,
+      holds,
+    };
+    if (!holds) {
+      proposal.kind = "observation";
+      proposal.severity = "info";
+      proposal.proposedAction = null;
+      proposal.autoApply = false;
+      proposal.finding += ` — FAILED walk-forward (test ${pct(bTest.wr)}, ${usd(bTest.netUsd)} net).`;
+    }
+    return proposal;
+  };
 
   const overall = bucket(rows);
   const byFamily = bucketStats(rows, (r) => r.family);
@@ -158,25 +202,31 @@ export function mineInsights(rows: AnalyzedTrade[]): Insight[] {
     const famBase = byFamily.get(family)!;
     if (famBase.n < MIN_N_VETO) continue;
     const famHours = bucketStats(famRows, (r) => r.hourBucket);
+    const famHoursRows = groupRows(famRows, (r) => r.hourBucket);
     for (const [hb, b] of famHours) {
       if (hb === "unknown") continue;
       if (b.n >= MIN_N_VETO && b.wr !== null && b.wr <= WR_VETO && b.netUsd < 0) {
         const vetoHours = hoursInBucket(hb);
-        out.push({
-          strategy: family,
-          kind: "rule_proposal",
-          severity: "warn",
-          title: `${family} loses in ${hourLabel(hb)}`,
-          finding: `${b.n} trades in ${hourLabel(hb)}: ${pct(b.wr)} win (${b.wins}W/${b.losses}L), ${usd(b.netUsd)} net, ${b.stopRuns} stop-runs — vs family baseline ${pct(famBase.wr)}.`,
-          evidence: { n: b.n, wr: b.wr, netUsd: b.netUsd, stopRuns: b.stopRuns, baselineWr: famBase.wr },
-          proposedAction: {
-            family,
-            gate: "hour_veto",
-            value: { hours: vetoHours, bucket: hb },
-            note: `skip ${family} signals in ${hourLabel(hb)}`,
-          },
-          autoApply: b.n >= 10 && b.wr !== null && b.wr <= 0.2,
-        });
+        out.push(
+          validate(
+            {
+              strategy: family,
+              kind: "rule_proposal",
+              severity: "warn",
+              title: `${family} loses in ${hourLabel(hb)}`,
+              finding: `${b.n} trades in ${hourLabel(hb)}: ${pct(b.wr)} win (${b.wins}W/${b.losses}L), ${usd(b.netUsd)} net, ${b.stopRuns} stop-runs — vs family baseline ${pct(famBase.wr)}.`,
+              evidence: { n: b.n, wr: b.wr, netUsd: b.netUsd, stopRuns: b.stopRuns, baselineWr: famBase.wr },
+              proposedAction: {
+                family,
+                gate: "hour_veto",
+                value: { hours: vetoHours, bucket: hb },
+                note: `skip ${family} signals in ${hourLabel(hb)}`,
+              },
+              autoApply: b.n >= 10 && b.wr !== null && b.wr <= 0.2,
+            },
+            famHoursRows.get(hb) ?? [],
+          ),
+        );
       } else if (b.n >= MIN_N_CONCENTRATE && b.wr !== null && b.wr >= WR_CONCENTRATE) {
         out.push({
           strategy: family,
@@ -212,25 +262,30 @@ export function mineInsights(rows: AnalyzedTrade[]): Insight[] {
       const evidence: Record<string, unknown> = { n: b.n, wr: b.wr, netUsd: b.netUsd };
       if (bWith.n > 0) evidence.withTrendWr = bWith.wr;
       if (bAgainst.n > 0) evidence.againstTrendWr = bAgainst.wr;
-      out.push({
-        strategy: "momentum_expansion",
-        kind: "rule_proposal",
-        severity: "warn",
-        title: "momentum expansion needs a session-trend filter",
-        finding: `${b.n} expansion trades: ${pct(b.wr)} win, ${usd(b.netUsd)} net${
-          bWith.n && bAgainst.n
-            ? ` — with-trend ${pct(bWith.wr)} vs against-trend ${pct(bAgainst.wr)}`
-            : ""
-        }. The huge-bar trigger keeps firing against one-sided session runs.`,
-        evidence,
-        proposedAction: {
-          family: "momentum_expansion",
-          gate: "trend_filter",
-          value: { required: true, on: "cumDelta" },
-          note: "only take expansion entries in the session cumulative-delta direction",
-        },
-        autoApply: b.wr !== null && b.wr <= 0.2,
-      });
+      out.push(
+        validate(
+          {
+            strategy: "momentum_expansion",
+            kind: "rule_proposal",
+            severity: "warn",
+            title: "momentum expansion needs a session-trend filter",
+            finding: `${b.n} expansion trades: ${pct(b.wr)} win, ${usd(b.netUsd)} net${
+              bWith.n && bAgainst.n
+                ? ` — with-trend ${pct(bWith.wr)} vs against-trend ${pct(bAgainst.wr)}`
+                : ""
+            }. The huge-bar trigger keeps firing against one-sided session runs.`,
+            evidence,
+            proposedAction: {
+              family: "momentum_expansion",
+              gate: "trend_filter",
+              value: { required: true, on: "cumDelta" },
+              note: "only take expansion entries in the session cumulative-delta direction",
+            },
+            autoApply: b.wr !== null && b.wr <= 0.2,
+          },
+          exp,
+        ),
+      );
     }
   }
 
@@ -283,23 +338,28 @@ export function mineInsights(rows: AnalyzedTrade[]): Insight[] {
       feat === "riskPts"
         ? `skip signals with risk above ${med.toFixed(1)} pts`
         : `require ${feat} >= ${med.toFixed(2)}`;
-    out.push({
-      strategy: "all",
-      kind: "rule_proposal",
-      severity: "info",
-      title: `${feat} splits outcomes (${sideLabel} ≥ ${feat === "breakFrac" ? (med * 100).toFixed(0) + "%" : med.toFixed(2)} wins)`,
-      finding: `${feat} ≥ median: ${pct(bStrong.wr)} win (${bStrong.n}) vs < median: ${pct(bWeak.wr)} (${bWeak.n}), ${usd(bWeak.netUsd)} net below.`,
-      evidence: {
-        feature: feat,
-        median: med,
-        lowN: bLow.n,
-        lowWr: bLow.wr,
-        highN: bHigh.n,
-        highWr: bHigh.wr,
-      },
-      proposedAction: { family: "momentum", gate, value, note },
-      autoApply: false,
-    });
+    out.push(
+      validate(
+        {
+          strategy: "all",
+          kind: "rule_proposal",
+          severity: "info",
+          title: `${feat} splits outcomes (${sideLabel} ≥ ${feat === "breakFrac" ? (med * 100).toFixed(0) + "%" : med.toFixed(2)} wins)`,
+          finding: `${feat} ≥ median: ${pct(bStrong.wr)} win (${bStrong.n}) vs < median: ${pct(bWeak.wr)} (${bWeak.n}), ${usd(bWeak.netUsd)} net below.`,
+          evidence: {
+            feature: feat,
+            median: med,
+            lowN: bLow.n,
+            lowWr: bLow.wr,
+            highN: bHigh.n,
+            highWr: bHigh.wr,
+          },
+          proposedAction: { family: "momentum", gate, value, note },
+          autoApply: false,
+        },
+        strongSide === high ? low : high,
+      ),
+    );
   }
 
   // ---- 5. execution: adverse entry drift per family

@@ -42,6 +42,7 @@
  * ------------------------------------------------------------------ */
 
 import type { OrderIntent } from "./executor";
+import { crossGuardGate } from "./crossGuard";
 
 export type CrossTradeConfig = {
   url: string;
@@ -259,6 +260,8 @@ export function classifyResponse(status: number, bodyText: string): { ok: boolea
 export async function placeCrossTradeOrder(
   intent: OrderIntent,
 ): Promise<{ ok: boolean; reason: string }> {
+  const guard = await crossGuardGate();
+  if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
   if (!live) {
@@ -336,6 +339,8 @@ export async function changeCrossTradeOrder(
 export async function placeCrossTradeScaleOut(
   intent: OrderIntent,
 ): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
+  const guard = await crossGuardGate();
+  if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
   const { bank, runner } = splitScaleOut(intent);
@@ -392,4 +397,114 @@ export async function placeCrossTradeScaleOut(
     runnerOrderId: runnerRes.ok ? runnerOrderId : undefined,
     runnerQty: runner.contracts,
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * REST absolute-bracket path — CROSSTRADE_REST=1 switches the executor
+ * to it. Fixes the webhook's quote-anchored brackets: the stop AND
+ * target are sent as ABSOLUTE prices at the signal's structural levels
+ * (the trade-review finding that quote-anchored stops cost ~$250-300).
+ *
+ * Flat check: the webhook's require_market_position=flat has no REST
+ * equivalent, so we refuse client-side when the account holds an MNQ
+ * position (read via the positions endpoint; fail closed on an
+ * unreadable reply). Exactly-once semantics match the webhook path:
+ * no automatic retry on ambiguous replies.
+ * ------------------------------------------------------------------ */
+
+/** place a bracketed market order with ABSOLUTE stop/target prices */
+export async function placeCrossTradeOrderREST(
+  intent: OrderIntent,
+): Promise<{ ok: boolean; reason: string }> {
+  const guard = await crossGuardGate();
+  if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
+  const cfg = loadConfig();
+  const live = process.env.EXECUTE_LIVE === "1";
+  if (!live) {
+    console.log(`[crossTrade] DRY-RUN(REST) ${describeIntent(intent)}`);
+    return { ok: true, reason: "dry-run (logged only)" };
+  }
+  const instrument = mapInstrument(intent.symbol, cfg.instrument);
+  if (!instrument) {
+    return { ok: false, reason: `crossTrade: cannot map symbol "${intent.symbol}"` };
+  }
+  const qty = Math.max(1, Math.min(30, Math.floor(intent.contracts)));
+
+  const key = cfg.key;
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
+  const account = cfg.account;
+
+  // ---- flat check (require_market_position=flat equivalent) ----
+  try {
+    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`, {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> | Array<{ data?: Array<Record<string, unknown>> }> };
+    if (!j.success) return { ok: false, reason: `crossTrade: flat check failed — ${JSON.stringify(j).slice(0, 160)}` };
+    const flat: unknown[] = [];
+    for (const row of (j.data ?? []) as Array<Record<string, unknown>>) {
+      const inner = Array.isArray(row.data) ? (row.data as Array<Record<string, unknown>>) : [row];
+      flat.push(...inner);
+    }
+    const held = flat.filter((p) => {
+      const r = p as Record<string, unknown>;
+      const qty = Number(r.netPos ?? r.qty ?? 0);
+      const ins = String(r.instrument ?? r.contractName ?? "");
+      return qty !== 0 && ins.includes("MNQ");
+    });
+    if (held.length > 0) {
+      return { ok: false, reason: "crossTrade: not flat — an MNQ position is open (refusing)" };
+    }
+  } catch (e) {
+    return { ok: false, reason: `crossTrade: cannot verify flat state (${String(e)}) — refusing` };
+  }
+
+  // ---- absolute bracket placement ----
+  const orderId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const payload = {
+    instrument,
+    action: intent.dir === "long" ? "buy" : "sell",
+    qty,
+    orderType: "market",
+    tif: "day",
+    takeProfit: intent.target.toFixed(2), // ABSOLUTE — the signal's structural target
+    stopLoss: intent.stop.toFixed(2), // ABSOLUTE — the signal's structural stop
+    orderId,
+  };
+  console.log(
+    `[crossTrade] LIVE(REST) ${intent.dir.toUpperCase()} ${qty} ${instrument} ` +
+      `entry ${intent.entry.toFixed(2)} · stop ${intent.stop.toFixed(2)} · target ${intent.target.toFixed(2)} · ${intent.timeET} NY`,
+  );
+  try {
+    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/orders/place`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const bodyText = await res.text();
+    let j: Record<string, unknown> | null = null;
+    try {
+      j = JSON.parse(bodyText);
+    } catch {
+      /* plain text */
+    }
+    // plan/auth rejections happen BEFORE dispatch — safe to fall back to
+    // the webhook path exactly once (nothing was placed)
+    if (res.status === 401 || res.status === 403) {
+      console.warn(`[crossTrade] REST unavailable (${res.status}) — falling back to the webhook path`);
+      return placeCrossTradeOrder(intent);
+    }
+    if (!res.ok) return { ok: false, reason: `REST rejected (${res.status}) ${bodyText.slice(0, 200)}` };
+    if (j && j.success === false) {
+      return { ok: false, reason: `REST rejected: ${String(j.error ?? bodyText).slice(0, 200)}` };
+    }
+    return { ok: true, reason: `REST placed ${orderId}` };
+  } catch (e) {
+    return {
+      ok: false,
+      reason: `REST UNKNOWN (network: ${String(e)}) — reconcile before acting; no automatic retry`,
+    };
+  }
 }

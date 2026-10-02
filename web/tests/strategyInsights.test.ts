@@ -120,3 +120,36 @@ test("deterministic narrative covers the dataset even with no proposals", () => 
   assert.ok(txt.includes("2 traded signals"));
   assert.ok(txt.includes("momentum_expansion"));
 });
+
+test("walk-forward: a veto proposal must also lose on the newest third", () => {
+  const mkRow = (i: number, win: boolean) =>
+    win
+      ? mk({ hourBucket: "globex_late", ts: T0 + i * MINUTE })
+      : loss({ hourBucket: "globex_late", ts: T0 + i * MINUTE });
+
+  // 3 wins / 9 losses overall (25%); newest third = 3 losses + 1 win → holds
+  const rows = [
+    mkRow(0, true), mkRow(1, true),
+    ...Array.from({ length: 6 }, (_, i) => mkRow(2 + i, false)),
+    ...Array.from({ length: 3 }, (_, i) => mkRow(8 + i, false)),
+    mkRow(11, true),
+  ];
+  const ins = mineInsights(rows, { walkForward: true });
+  const veto = ins.find((i) => i.proposedAction?.gate === "hour_veto");
+  assert.ok(veto, "expected the hour veto proposal");
+  assert.equal(veto!.kind, "rule_proposal");
+  assert.equal((veto!.evidence.walkForward as { holds?: boolean }).holds, true);
+
+  // newest third now WINS → the proposal is downgraded to an observation
+  const rows2 = [
+    ...Array.from({ length: 8 }, (_, i) => mkRow(i, false)),
+    ...Array.from({ length: 3 }, (_, i) => mkRow(8 + i, true)),
+    mkRow(11, false),
+  ];
+  const ins2 = mineInsights(rows2, { walkForward: true });
+  const downgraded = ins2.find((i) => i.title.includes("loses in"));
+  assert.ok(downgraded, "expected the downgraded insight");
+  assert.equal(downgraded!.kind, "observation");
+  assert.equal(downgraded!.proposedAction, null);
+  assert.match(downgraded!.finding, /FAILED walk-forward/);
+});

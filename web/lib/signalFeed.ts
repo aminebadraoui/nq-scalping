@@ -49,6 +49,8 @@ import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
 import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
+import { newsBlockedNow } from "./newsGate";
+import { registerExpectation, checkExpectations } from "./execWatch";
 
 function refreshSeconds(): number {
   const n = Number(process.env.SIGNAL_REFRESH_SECONDS);
@@ -306,6 +308,11 @@ class SignalFeed {
    *  per distinct reclaim bar. */
   private async checkReclaimSetup(): Promise<void> {
     if (!FEED_SWEEP_RECLAIM) return;
+    const nb = newsBlockedNow(Date.now());
+    if (nb) {
+      console.log(`[news] ${nb} blackout — skipping sweep-reclaim card`);
+      return;
+    }
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 3) return;
     const fp = liveMinutesToFootprint(live.minutes);
@@ -362,6 +369,13 @@ class SignalFeed {
       reason: res.reason,
       features: signalFeatures(setup as unknown as Record<string, unknown>, {}),
     });
+    registerExpectation({
+      key: `reclaim|${key}`,
+      ts: Date.now(),
+      side: setup.dir,
+      contracts,
+      label: `sweep-reclaim ${setup.dir}`,
+    });
   }
 
   /** Momentum — the one-sided run card, two triggers (lib/momentum.ts):
@@ -378,6 +392,11 @@ class SignalFeed {
     // no new polling — reuses this tick's completed minutes)
     if (crossTradeEnabled()) void runnerTracker.evaluate(fp).catch(() => {});
     if (!FEED_MOMENTUM) return;
+    const nb = newsBlockedNow(Date.now());
+    if (nb) {
+      console.log(`[news] ${nb} blackout — skipping momentum card`);
+      return;
+    }
     const momSigs = detectMomentum(fp, MOM_PROD);
     const expSigs = detectExpansionScalp(fp, EXP_PROD);
     // A+ = both triggers fire on the same bar (78.9% win / PF 3.23 — the
@@ -425,9 +444,11 @@ class SignalFeed {
           : momentumSize(s.risk, riskBudget);
 
       // emit the order intent to the executor (dry-run by default).
-      // CROSSTRADE_SCALEOUT=1 switches the momentum card to the backtested
-      // scale-out: bank 2/3 at 1R + runner 1/3 laddered via CHANGE orders.
-      const scaleOut = process.env.CROSSTRADE_SCALEOUT === "1" && crossTradeEnabled();
+      // Scale-out is ON by default (re-validated 2026-10-02 on the rr1.0
+      // gate: expR 0.47 vs 0.44 fixed-1R, account sim PASS): bank 2/3 at
+      // 1R + runner 1/3 laddered via CHANGE orders. CROSSTRADE_SCALEOUT=0
+      // returns the momentum card to a single bracketed order.
+      const scaleOut = process.env.CROSSTRADE_SCALEOUT !== "0" && crossTradeEnabled();
       if (scaleOut) {
         void placeCrossTradeScaleOut({
           symbol: symbol(),
@@ -515,6 +536,13 @@ class SignalFeed {
         reason: res.reason,
         features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family }),
       });
+      registerExpectation({
+        key: `mom|${key}`,
+        ts: Date.now(),
+        side: s.dir,
+        contracts: size.contracts,
+        label: `momentum ${s.dir}`,
+      });
     }
   }
 
@@ -524,6 +552,11 @@ class SignalFeed {
 
   private async checkRth(): Promise<void> {
     if (!FEED_RTH) return;
+    const nb = newsBlockedNow(Date.now());
+    if (nb) {
+      console.log(`[news] ${nb} blackout — skipping RTH card`);
+      return;
+    }
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
@@ -600,6 +633,13 @@ class SignalFeed {
         reason: res.reason,
         features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus }),
       });
+      registerExpectation({
+        key: `rth|${key}`,
+        ts: Date.now(),
+        side: s.dir,
+        contracts: size.contracts,
+        label: `rth ${s.dir}`,
+      });
     }
   }
 
@@ -610,6 +650,11 @@ class SignalFeed {
 
   private async checkOpen(): Promise<void> {
     if (!FEED_OPEN) return;
+    const nb = newsBlockedNow(Date.now());
+    if (nb) {
+      console.log(`[news] ${nb} blackout — skipping open card`);
+      return;
+    }
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 60) return;
     const fp = liveMinutesToFootprint(live.minutes);
@@ -697,6 +742,13 @@ class SignalFeed {
         sent: res.sent,
         reason: res.reason,
         features: signalFeatures(s as unknown as Record<string, unknown>, { kind: family }),
+      });
+      registerExpectation({
+        key: `open|${key}`,
+        ts: Date.now(),
+        side: s.dir,
+        contracts: size.contracts,
+        label: `${family} ${s.dir}`,
       });
     }
     }
@@ -868,6 +920,7 @@ class SignalFeed {
       await this.checkMomentum();
       await this.checkOpen();
       await this.checkRth();
+      void checkExpectations().catch(() => {});
     } catch (e) {
       this.lastError = String(e);
     } finally {

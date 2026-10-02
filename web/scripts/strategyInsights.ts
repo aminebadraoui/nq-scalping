@@ -31,6 +31,7 @@ import {
   type Insight,
 } from "../lib/strategyInsights";
 import { aggregateTrades } from "../lib/tradeStats";
+import { edgeStatuses } from "../lib/edgeMonitor";
 
 function loadEnvLocal() {
   const p = path.resolve(process.cwd(), ".env.local");
@@ -252,7 +253,7 @@ async function main() {
   const trades = await loadTrades();
   console.log(`[insights] ${trades.length} analyzed trades since ${since.toISOString()}`);
 
-  const insights = mineInsights(trades);
+  const insights = mineInsights(trades, { walkForward: process.env.INSIGHTS_WALK_FORWARD !== "0" });
   const known = await existingTitles();
 
   let stored = 0;
@@ -280,6 +281,19 @@ async function main() {
       await sql`update insights set status = 'applied' where id = ${Number(p.id)}`;
       console.log(`[insights] SELF-IMPROVE applied: ${String(p.title)}`);
     }
+  }
+
+  // ---- edge monitor (live expR vs replay baseline per family) ----
+  const edges = edgeStatuses(trades);
+  for (const e of edges) {
+    await sql`
+      insert into insights (strategy, kind, severity, title, finding, evidence, status, source)
+      values (${e.family}, 'edge_monitor',
+              ${e.status === "breach" ? "warn" : e.status === "watch" ? "warn" : "info"},
+              ${`edge monitor: ${e.family}`}, ${e.detail},
+              ${JSON.stringify({ n: e.n, meanExpR: e.meanExpR, baselineExpR: e.baselineExpR, status: e.status })},
+              ${e.status}, 'miner')`;
+    console.log(`  EDGE ${e.status.toUpperCase().padEnd(11)} ${e.family}: ${e.detail}`);
   }
 
   // ---- AI narrative ----

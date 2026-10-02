@@ -18,7 +18,7 @@
 import { existsSync } from "fs";
 import path from "path";
 import type { Browser, Page } from "playwright";
-import { crossTradeEnabled, placeCrossTradeOrder } from "./crossTrade";
+import { crossTradeEnabled, placeCrossTradeOrder, placeCrossTradeOrderREST } from "./crossTrade";
 
 /** Playwright is installed into <repo>/.playwright-browsers (gitignored), not
  *  the user's default cache — point the launcher at it so a headed launch never
@@ -400,10 +400,13 @@ async function placeOrderLiveInner(intent: OrderIntent): Promise<{ ok: boolean; 
 }
 
 export async function placeOrder(intent: OrderIntent): Promise<{ ok: boolean; reason: string }> {
-  // CrossTrade webhook backend takes priority when configured — one HTTP
-  // POST at signal time instead of the headed-browser path below.
+  // CrossTrade backend takes priority when configured. The REST path
+  // (ABSOLUTE stop/target at the signal's structural levels) is the
+  // default; CROSSTRADE_REST=0 falls back to the quote-anchored webhook.
   if (crossTradeEnabled()) {
-    return placeCrossTradeOrder(intent);
+    return process.env.CROSSTRADE_REST === "0"
+      ? placeCrossTradeOrder(intent)
+      : placeCrossTradeOrderREST(intent);
   }
   if (!executorEnabled()) return { ok: false, reason: "TRADOVATE_* not configured" };
 
