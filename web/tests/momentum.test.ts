@@ -395,3 +395,15 @@ test("RTH soft-continuation: 60% one-sided RTH bar fires, Globex bars don't", ()
   ]);
   assert.equal(detectSoftMomentum(m4, SOFT_PROD).length, 0);
 });
+
+/* feed-gap helper (lib/signalFeed) */
+import { feedMinutesGap } from "../lib/signalFeed";
+
+test("feedMinutesGap: adjacent, wrapped midnight, unparseable", () => {
+  assert.equal(feedMinutesGap("21:59", "22:00"), 1);
+  assert.equal(feedMinutesGap("21:59", "22:02"), 3);
+  assert.equal(feedMinutesGap("23:59", "00:00"), 1); // midnight wrap
+  assert.equal(feedMinutesGap("23:58", "00:00"), 2);
+  assert.equal(feedMinutesGap("9:5", "22:00"), null);
+  assert.equal(feedMinutesGap("", "22:00"), null);
+});

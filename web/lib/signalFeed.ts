@@ -54,8 +54,25 @@ import { registerExpectation, registerSendFailure, checkExpectations } from "./e
 import { logExec } from "./execLog";
 
 function refreshSeconds(): number {
+  // 15s default (was 30): the momentum/RTH triggers fire only on the
+  // just-completed minute bar, so a slower loop skips bars when a tick
+  // runs long — 15s halves the miss window.
   const n = Number(process.env.SIGNAL_REFRESH_SECONDS);
-  return Number.isFinite(n) && n >= 10 ? n : 30;
+  return Number.isFinite(n) && n >= 10 ? n : 15;
+}
+
+/** gap in minutes between two feed-clock "HH:mm" stamps (0 = adjacent;
+ *  null = unparseable). Midnight wraps forward. Pure, unit-tested. */
+export function feedMinutesGap(prev: string, last: string): number | null {
+  const toMin = (s: string) => {
+    const m = /^(\d{2}):(\d{2})$/.exec(s);
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  };
+  const a = toMin(prev);
+  const b = toMin(last);
+  if (a === null || b === null) return null;
+  return (b - a + 1440) % 1440;
 }
 
 function symbol(): string {
@@ -1015,6 +1032,33 @@ class SignalFeed {
     if (!res.sent) this.lastError = res.reason;
   }
 
+  /** feed-gap watch: completed minutes that never reached us while the
+   *  feed was connected = bars the detectors could not see (possible
+   *  missed signals). Alert once per gap. Session-boundary gaps are
+   *  ignored (du change or >10h). */
+  private gapAlerted = new Set<string>();
+
+  private feedGapCheck(): void {
+    const live = getLive().state;
+    if (!live.connected || live.minutes.length < 2) return;
+    const mins = live.minutes;
+    const prev = mins[mins.length - 2];
+    const last = mins[mins.length - 1];
+    if (prev.du !== last.du) return; // session/day boundary — expected
+    const gap = feedMinutesGap(prev.t, last.t);
+    if (gap === null || gap <= 1 || gap > 600) return; // adjacent or a maintenance break
+    const key = `${last.du ?? ""}|${prev.t}`;
+    if (this.gapAlerted.has(key)) return;
+    this.gapAlerted.add(key);
+    if (this.gapAlerted.size > 100) this.gapAlerted = new Set([...this.gapAlerted].slice(-50));
+    const text = [
+      `⚠ <b>FEED GAP — possible missed signal</b>`,
+      `<code>${symbol()}  ${last.t} UTC</code>`,
+      `${gap} minute(s) of completed bars never reached the feed while connected — the detectors could not see them`,
+    ].join("\n");
+    void this.push(text);
+  }
+
   async tick(): Promise<void> {
     if (this.ticking) return;
     this.ticking = true;
@@ -1032,6 +1076,7 @@ class SignalFeed {
       await this.checkMomentum();
       await this.checkOpen();
       await this.checkRth();
+      this.feedGapCheck();
       void checkExpectations().catch(() => {});
     } catch (e) {
       this.lastError = String(e);
