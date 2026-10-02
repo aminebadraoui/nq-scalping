@@ -22,7 +22,7 @@
 import { getLive } from "./live";
 import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
-import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD } from "./momentum";
+import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, midOf, type MomentumSignal } from "./momentum";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
 import { detectSoftMomentum, SOFT_PROD } from "./softMomentum";
 import { momentumSize, cappedContracts, daySizeMultiplier, parseSizeTiers, DEFAULT_SIZE_TIERS } from "./propRules";
@@ -38,7 +38,7 @@ import { detectOneSidedReclaim } from "./reclaimSetup";
 import { contractsForRisk, RAPID_EOD_50K } from "./propRules";
 import { rvol, isUnusualVolume } from "./volumeProfile";
 import { utcToET, cdtToET } from "./times";
-import { placeOrder } from "./executor";
+import { placeOrder, type OrderIntent } from "./executor";
 import { crossTradeEnabled, placeCrossTradeScaleOut } from "./crossTrade";
 import { runnerTracker } from "./runnerTracker";
 import { cardGateOpen } from "./signals";
@@ -143,6 +143,73 @@ const MIN_LIVE_MINUTES = 5;
 /** stage-2 pullback watch lifetime after an unusual-volume bar (data: dominance breaks within ~1–3 min, p90) */
 const UV_WATCH_MS = 6 * 60 * 1000;
 
+/* ------------------------------------------------------------------ *
+ * Expansion retrace entry — the 2026-10-02 trade review's fix for the
+ * huge-bar expansion family, validated on 649 sessions (entryQuality
+ * study: 44% → 68% WR, −$299K → +$58K, PF 0.57 → 1.29, train+test).
+ *
+ * No market order at the signal bar's close (pure chase risk). Instead:
+ * rest a limit `EXP_RETRACE_PTS` (1 pt) behind the close for up to
+ * `EXP_RETRACE_BARS` (5) minutes; if the tape comes back to us, fill
+ * there — brackets rebuilt from the fill, risk anchored to the signal's
+ * structural stop distance. If the retrace never trades, the signal is
+ * skipped (and journaled as such for the insight loop). EXP_RETRACE=0
+ * returns expansion to the old immediate market entry.
+ * ------------------------------------------------------------------ */
+const EXP_RETRACE_PTS = 1.0;
+const EXP_RETRACE_BARS = 5;
+const expRetraceEnabled = (): boolean => feedFlag("EXP_RETRACE", true);
+
+export type RetraceDecision =
+  | { status: "fill"; fill: number; barIdx: number }
+  | { status: "expired" }
+  | { status: "wait" };
+
+/**
+ * Resolve a pending retrace limit against the bars completed since the
+ * signal bar. Pure + no lookahead: only bars AFTER the signal are read,
+ * the first touch fills, a gap through the level fills at the bar open
+ * (better than the limit). Untraded after `windowBars` bars = expired.
+ */
+export function resolveRetrace(
+  bars: Array<{ o: number; high: number; low: number }>,
+  dir: "long" | "short",
+  level: number,
+  windowBars: number,
+): RetraceDecision {
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    const touched = dir === "long" ? b.low <= level : b.high >= level;
+    if (!touched) continue;
+    const open = b.o > 0 ? b.o : (b.high + b.low) / 2;
+    const fill = dir === "long" ? Math.min(open, level) : Math.max(open, level);
+    return { status: "fill", fill, barIdx: i };
+  }
+  return bars.length >= windowBars ? { status: "expired" } : { status: "wait" };
+}
+
+/** expansion retrace armed by the momentum card, resolved every tick */
+type PendingRetrace = {
+  key: string;
+  day: string;
+  dir: "long" | "short";
+  level: number;
+  armedIdx: number;
+  maxIdx: number;
+  sEntry: number;
+  sStop: number;
+  sTarget: number;
+  risk: number;
+  fixed: number;
+  riskBudget: number;
+  scaleOut: boolean;
+  t: string;
+  aPlus: boolean;
+  firstToday: boolean;
+  et: string;
+  features: Record<string, unknown>;
+};
+
 function distTxt(from: number, to: number): string {
   const pts = Math.abs(to - from);
   const ticks = Math.round(pts / 0.25);
@@ -197,6 +264,8 @@ class SignalFeed {
   private cardedDays = new Set<string>();
   /** stage-2 watch armed by the latest unusual-volume alert (one at a time) */
   private pullbackWatch: UVWatch | null = null;
+  /** expansion retrace limit armed by the momentum card (one at a time) */
+  private expRetracePending: PendingRetrace | null = null;
 
   lastSnapshot: SignalSnapshot | null = null;
   lastError: string | null = null;
@@ -532,73 +601,84 @@ class SignalFeed {
       // 1R + runner 1/3 laddered via CHANGE orders. CROSSTRADE_SCALEOUT=0
       // returns the momentum card to a single bracketed order.
       const scaleOut = process.env.CROSSTRADE_SCALEOUT !== "0" && crossTradeEnabled();
-      if (scaleOut) {
-        void placeCrossTradeScaleOut({
-          symbol: symbol(),
-          dir: s.dir,
-          contracts: size.contracts,
-          entry: s.entry,
-          stop: s.stop,
-          target: s.target,
-          timeET: cdtToET(s.t),
-        })
-          .then((res) => {
-            if (res.runnerOrderId) {
-              runnerTracker.register({
-                id: res.runnerOrderId.replace(/-run$/, ""),
-                bankOrderId: res.bankOrderId ?? null,
-                runnerOrderId: res.runnerOrderId,
-                dir: s.dir === "long" ? 1 : -1,
-                entry: s.entry,
-                stop0: s.stop,
-                risk: Math.abs(s.entry - s.stop),
-                contracts: size.contracts,
-                runnerQty: res.runnerQty ?? 0,
-                lockedRungs: 0,
-                entryTimeET: cdtToET(s.t),
-                createdAt: new Date().toISOString(),
-              });
-            }
-            void logExec({
-              key: `mom|${key}`,
-              label: `momentum ${s.dir} ${et} (scale-out)`,
-              attempt: "initial",
-              outcome: res.ok ? "ok" : "failed",
-              reason: res.reason,
-            });
-            if (!res.ok) {
-              this.lastError = `scale-out: ${res.reason}`;
-              registerSendFailure(key, `momentum ${s.dir} ${et} (scale-out)`, res.reason);
-            }
-          })
-          .catch((e) => {
-            this.lastError = `scale-out: ${String(e)}`;
-          });
-      } else {
-        void placeOrder({
-          symbol: symbol(),
-          dir: s.dir,
-          contracts: size.contracts,
-          entry: s.entry,
-          stop: s.stop,
-          target: s.target,
-          timeET: cdtToET(s.t),
-        })
-          .then((res) => {
-            void logExec({
-              key: `mom|${key}`,
-              label: `momentum ${s.dir} ${et}`,
-              attempt: "initial",
-              outcome: res.ok ? "ok" : "failed",
-              reason: res.reason,
-            });
-            if (!res.ok) registerSendFailure(key, `momentum ${s.dir} ${et}`, res.reason);
-          })
-          .catch(() => {});
-      }
-
+      const intent: OrderIntent = {
+        symbol: symbol(),
+        dir: s.dir,
+        contracts: size.contracts,
+        entry: s.entry,
+        stop: s.stop,
+        target: s.target,
+        timeET: et,
+      };
       this.cardedDays.add(s.d);
       if (this.cardedDays.size > 20) this.cardedDays = new Set([...this.cardedDays].slice(-10));
+
+      // ---- expansion retrace: arm the resting limit instead of chasing ----
+      if (s.kind === "expansion" && expRetraceEnabled()) {
+        const dirSign = s.dir === "long" ? 1 : -1;
+        const level = s.entry - dirSign * EXP_RETRACE_PTS;
+        const armedIdx = fp.length - 1;
+        this.expRetracePending = {
+          key,
+          day: s.d,
+          dir: s.dir,
+          level,
+          armedIdx,
+          maxIdx: armedIdx + EXP_RETRACE_BARS,
+          sEntry: s.entry,
+          sStop: s.stop,
+          sTarget: s.target,
+          risk: s.risk,
+          fixed,
+          riskBudget,
+          scaleOut,
+          t: s.t,
+          aPlus,
+          firstToday,
+          et,
+          features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true }),
+        };
+        const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+        const armText = [
+          `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace — resting limit · ${et} NY</b>`,
+          ``,
+          `<code>LIMIT   ${fmtPx(level)}   (signal close ${fmtPx(s.entry)} ∓ 1 pt)</code>`,
+          `<code>STOP    fill ∓ ${s.risk.toFixed(2)} pts · TARGET fill ± ${s.risk.toFixed(2)} pts (1R)</code>`,
+          scaleOut
+            ? `<code>BANK 2/3 @ +1R · RUN 1/3 ladder (BE @1R · +1R @2R · +2R @3R…)</code>`
+            : `<code>TARGET  +1R from the fill</code>`,
+          `<code>SIZE    ~${sizeStrArm} at fill</code>`,
+          ``,
+          `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}no market order — waits up to ${EXP_RETRACE_BARS} min for the retrace, skipped if untraded`,
+          `<i>${STATS.momentum.stat}</i>`,
+        ].join("\n");
+        const res = await this.push(armText);
+        if (!res.sent) this.lastError = res.reason;
+        console.log(`[expRetrace] armed ${s.dir} limit ${fmtPx(level)} · ${et} NY · expires after ${EXP_RETRACE_BARS} bars`);
+        continue;
+      }
+
+      // emit the order intent to the executor (dry-run by default) — the
+      // same fire-and-forget mechanics as before, factored into one helper
+      void this.placeMomentumOrder(key, intent, scaleOut, et).then((res) => {
+        if (scaleOut && res.runnerOrderId) {
+          runnerTracker.register({
+            id: res.runnerOrderId.replace(/-run$/, ""),
+            bankOrderId: res.bankOrderId ?? null,
+            runnerOrderId: res.runnerOrderId,
+            dir: s.dir === "long" ? 1 : -1,
+            entry: s.entry,
+            stop0: s.stop,
+            risk: Math.abs(s.entry - s.stop),
+            contracts: size.contracts,
+            runnerQty: res.runnerQty ?? 0,
+            lockedRungs: 0,
+            entryTimeET: et,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      });
+
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
       const evidence =
         s.kind === "expansion"
@@ -656,6 +736,232 @@ class SignalFeed {
         scaleOut,
       });
     }
+  }
+
+  /** Place a momentum/expansion entry through the executor (scale-out pair
+   *  or single bracketed order), fire-and-forget with exec-log + re-send
+   *  registration. Shared by the immediate path and the retrace fill. */
+  private async placeMomentumOrder(
+    key: string,
+    intent: OrderIntent,
+    scaleOut: boolean,
+    et: string,
+    suffix = "",
+  ): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
+    if (scaleOut) {
+      try {
+        const res = await placeCrossTradeScaleOut(intent);
+        void logExec({
+          key: `mom|${key}`,
+          label: `momentum ${intent.dir} ${et} (scale-out${suffix})`,
+          attempt: "initial",
+          outcome: res.ok ? "ok" : "failed",
+          reason: res.reason,
+        });
+        if (!res.ok) {
+          this.lastError = `scale-out: ${res.reason}`;
+          registerSendFailure(key, `momentum ${intent.dir} ${et} (scale-out${suffix})`, res.reason);
+        }
+        return res;
+      } catch (e) {
+        this.lastError = `scale-out: ${String(e)}`;
+        return { ok: false, reason: String(e) };
+      }
+    }
+    try {
+      const res = await placeOrder(intent);
+      void logExec({
+        key: `mom|${key}`,
+        label: `momentum ${intent.dir} ${et}${suffix}`,
+        attempt: "initial",
+        outcome: res.ok ? "ok" : "failed",
+        reason: res.reason,
+      });
+      if (!res.ok) registerSendFailure(key, `momentum ${intent.dir} ${et}${suffix}`, res.reason);
+      return res;
+    } catch (e) {
+      return { ok: false, reason: String(e) };
+    }
+  }
+
+  /** Resolve the armed expansion retrace: fill it when the tape comes back
+   *  to the limit within the window (brackets rebuilt from the fill), or
+   *  skip the signal when it never trades. Runs every tick. */
+  private async checkExpRetrace(): Promise<void> {
+    const p = this.expRetracePending;
+    if (!p) return;
+    const live = getLive().state;
+    if (!live.connected || !live.minutes.length) return;
+    const fp = liveMinutesToFootprint(live.minutes);
+    if (fp.length <= p.armedIdx + 1) return;
+
+    // session rolled under the pending retrace — void it
+    if ((fp[fp.length - 1].d ?? "") !== p.day) {
+      this.expRetracePending = null;
+      void this.push(
+        [
+          `🎯 <b>${STATS.momentum.name} · ${p.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace VOID</b>`,
+          `<code>${symbol()}  ${fp[fp.length - 1].t} UTC</code>`,
+          `session rolled before the retrace traded — skipped`,
+        ].join("\n"),
+      );
+      return;
+    }
+
+    const bars = fp.slice(p.armedIdx + 1, Math.min(fp.length, p.maxIdx + 1));
+    const res = resolveRetrace(bars, p.dir, p.level, EXP_RETRACE_BARS);
+    if (res.status === "wait") return;
+    this.expRetracePending = null; // consume exactly once
+
+    if (res.status === "expired") {
+      const text = [
+        `🎯 <b>${STATS.momentum.name} · ${p.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace EXPIRED</b>`,
+        `<code>${symbol()}  limit ${fmtPx(p.level)} · ${p.et} NY</code>`,
+        `price never came back ${EXP_RETRACE_PTS.toFixed(1)} pt within ${EXP_RETRACE_BARS} bars — signal skipped`,
+      ].join("\n");
+      const pushRes = await this.push(text);
+      if (!pushRes.sent) this.lastError = pushRes.reason;
+      await this.record({
+        timeET: p.et,
+        day: p.day,
+        symbol: symbol(),
+        side: p.dir,
+        price: p.sEntry,
+        entry: p.level.toFixed(2),
+        stop: p.sStop.toFixed(2),
+        target: p.sTarget.toFixed(2),
+        size: "—",
+        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        headline: `NQ momentum ${p.dir}`,
+        source: "live",
+        test: false,
+        sent: false,
+        reason: `expansion retrace not filled within ${EXP_RETRACE_BARS} bars — skipped`,
+        features: { ...p.features, retrace: "expired" },
+      });
+      console.log(`[expRetrace] expired ${p.dir} limit ${fmtPx(p.level)} · ${p.et} NY`);
+      return;
+    }
+
+    // ---- filled: rebuild the bracket from the actual fill price ----
+    const touchBar = fp[p.armedIdx + 1 + res.barIdx];
+    const et = cdtToET(touchBar.t);
+    const dirSign = p.dir === "long" ? 1 : -1;
+    const risk = Math.abs(p.sEntry - p.sStop);
+    const entry = res.fill;
+    const stop = entry - dirSign * risk;
+    const target = entry + dirSign * risk;
+
+    // no new entries during a news blackout — expire the fill instead
+    const nb = newsBlockedNow(Date.now());
+    if (nb) {
+      const text = [
+        `🎯 <b>${STATS.momentum.name} · ${p.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace SKIPPED</b>`,
+        `<code>${symbol()}  ${fmtPx(entry)} · ${et} NY</code>`,
+        `${nb} blackout at fill time — entry cancelled`,
+      ].join("\n");
+      const pushRes = await this.push(text);
+      if (!pushRes.sent) this.lastError = pushRes.reason;
+      await this.record({
+        timeET: et,
+        day: p.day,
+        symbol: symbol(),
+        side: p.dir,
+        price: entry,
+        entry: entry.toFixed(2),
+        stop: stop.toFixed(2),
+        target: target.toFixed(2),
+        size: "—",
+        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        headline: `NQ momentum ${p.dir}`,
+        source: "live",
+        test: false,
+        sent: false,
+        reason: `news blackout at fill — ${nb}`,
+        features: { ...p.features, retrace: "news-blocked" },
+      });
+      return;
+    }
+
+    // size at fill time (day tier may have moved since the arm)
+    const base =
+      p.fixed > 0
+        ? { contracts: Math.min(30, p.fixed), dollarRisk: Math.min(30, p.fixed) * risk * 2, capped: false }
+        : momentumSize(risk, p.riskBudget);
+    const size = await this.applyDayTier(base, risk);
+    const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+    const drift = (entry - p.sEntry) * dirSign;
+
+    const intent: OrderIntent = {
+      symbol: symbol(),
+      dir: p.dir,
+      contracts: size.contracts,
+      entry,
+      stop,
+      target,
+      timeET: et,
+    };
+
+    const text = [
+      `⚡ <b>${STATS.momentum.name} · ${p.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(entry)} · ${et} NY — retrace filled ${drift >= 0 ? "+" : "−"}${Math.abs(drift).toFixed(2)} pts</b>`,
+      ``,
+      `<code>ENTRY   ${fmtPx(entry)}   (limit ${fmtPx(p.level)})</code>`,
+      `<code>STOP    ${fmtPx(stop)}   ${distTxt(entry, stop)}</code>`,
+      p.scaleOut
+        ? `<code>BANK 2/3 @ +1R · RUN 1/3 ladder (BE @1R · +1R @2R · +2R @3R…)</code>`
+        : `<code>TARGET  ${fmtPx(target)}   ${distTxt(entry, target)}</code>`,
+      `<code>SIZE    ${sizeStr}</code>`,
+      ``,
+      `${p.aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${p.firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}huge bar ${fmtPx(p.sEntry)} pulled back to the limit`,
+      `<i>${STATS.momentum.stat}</i>`,
+    ].join("\n");
+    const pushRes = await this.push(text);
+    if (!pushRes.sent) this.lastError = pushRes.reason;
+    await this.record({
+      timeET: et,
+      day: p.day,
+      symbol: symbol(),
+      side: p.dir,
+      price: entry,
+      entry: entry.toFixed(2),
+      stop: stop.toFixed(2),
+      target: target.toFixed(2),
+      size: sizeStr,
+      verdict: "momentum (huge-bar expansion · retrace)",
+      headline: `NQ momentum ${p.dir}`,
+      source: "live",
+      test: false,
+      sent: pushRes.sent,
+      reason: pushRes.reason,
+      features: { ...p.features, retrace: "filled", drift },
+    });
+    registerExpectation({
+      key: `mom|${p.key}`,
+      ts: Date.now(),
+      label: `momentum ${p.dir} (retrace)`,
+      intent,
+      scaleOut: p.scaleOut,
+    });
+    console.log(`[expRetrace] filled ${p.dir} @ ${fmtPx(entry)} (drift ${drift >= 0 ? "+" : ""}${drift.toFixed(2)}) · ${et} NY`);
+
+    void this.placeMomentumOrder(p.key, intent, p.scaleOut, et, " (retrace)").then((res) => {
+      if (p.scaleOut && res.runnerOrderId) {
+        runnerTracker.register({
+          id: res.runnerOrderId.replace(/-run$/, ""),
+          bankOrderId: res.bankOrderId ?? null,
+          runnerOrderId: res.runnerOrderId,
+          dir: dirSign,
+          entry,
+          stop0: stop,
+          risk,
+          contracts: size.contracts,
+          runnerQty: res.runnerQty ?? 0,
+          lockedRungs: 0,
+          entryTimeET: et,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    });
   }
 
   /** RTH soft-continuation (lib/softMomentum.ts) — EXPERIMENTAL, off by
@@ -1100,6 +1406,7 @@ class SignalFeed {
       await this.checkReclaimSetup();
       await this.checkUnusualVolume();
       await this.checkPullbackWatch();
+      await this.checkExpRetrace();
       await this.checkMomentum();
       await this.checkOpen();
       await this.checkRth();

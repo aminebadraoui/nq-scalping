@@ -132,6 +132,18 @@
    vs replay baselines → ok/watch/breach rows persisted as insights
    (kind edge_monitor) each nightly run, surfaced on the journal.
 
+## Expansion retrace entry (2026-10-02)
+
+- **Expansion no longer chases**: `lib/signalFeed.ts` arms a resting limit
+  1 pt behind the huge-bar close for up to 5 minutes instead of market
+  ordering at the close; brackets rebuild from the fill (risk anchored to
+  the signal's structural stop distance). Untraded retraces are skipped and
+  journaled (`retrace: expired`) so the insight loop can count rejected
+  signals; a news blackout at fill cancels the entry; fill-time sizing
+  re-runs the day tier. Validated on 649 sessions (`entryQualityStudy.ts`:
+  expansion 44% → 68% WR, −$299K → +$58K, PF 0.57 → 1.29, train + test).
+  `EXP_RETRACE=0` restores the old immediate market entry.
+
 ## Risk caps + persistent guard (2026-10-02)
 
 - **Per-family dollar risk caps**: RTH and the open family keep their
