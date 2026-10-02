@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-/* Three surfaces: the working dashboard, the theory lab, and the research. */
+/* Four surfaces: the working dashboard, the trade journal (the
+ * self-improving loop), the theory lab, and the research. */
 const links = [
   { href: "/", label: "Dashboard", note: "live working surface" },
+  { href: "/journal", label: "Journal", note: "trades, win/loss analysis, AI review + gates" },
   { href: "/lab", label: "Lab", note: "test entry theories against the collected sessions" },
   { href: "/docs", label: "Docs", note: "the research" },
 ];
