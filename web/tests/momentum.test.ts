@@ -407,3 +407,17 @@ test("feedMinutesGap: adjacent, wrapped midnight, unparseable", () => {
   assert.equal(feedMinutesGap("9:5", "22:00"), null);
   assert.equal(feedMinutesGap("", "22:00"), null);
 });
+
+/* REGRESSION GUARD: the announce helper must call sendTelegram, never
+ * itself (a find/replace once clobbered it into infinite recursion,
+ * which silenced Telegram while orders kept executing). */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+test("signalFeed push helper calls sendTelegram, not itself", () => {
+  const src = readFileSync(path.join(process.cwd(), "lib/signalFeed.ts"), "utf8");
+  const m = src.match(/private async push\(text: string\)[\s\S]*?\n  \}/);
+  assert.ok(m, "push helper not found");
+  assert.ok(m![0].includes("sendTelegram"), "push helper must call sendTelegram");
+  assert.ok(!m![0].includes("this.push(text)"), "push helper must not recurse");
+});

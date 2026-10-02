@@ -272,7 +272,7 @@ class SignalFeed {
 
   private async push(text: string): Promise<{ sent: boolean; reason: string }> {
     if (!this.announce()) return { sent: false, reason: "announce disabled (dry-run feed)" };
-    return this.push(text);
+    return sendTelegram(text, { parseMode: "HTML" });
   }
 
   private async record(input: Parameters<typeof recordSignal>[0]): Promise<void> {
