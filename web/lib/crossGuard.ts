@@ -16,7 +16,7 @@
 
 import { existsSync } from "fs";
 import path from "path";
-import { guardCheck, guardState, type GuardDecision } from "./accountGuard";
+import { guardCheck, guardState, hydrateGuardFromDb, type GuardDecision } from "./accountGuard";
 
 type Snapshot = { equity: number; realized: number };
 
@@ -80,5 +80,6 @@ export async function crossGuardGate(): Promise<GuardDecision> {
   const snap = await fetchSnapshot();
   if (!snap) return { verdict: "no-data", reason: "crossGuard: account snapshot unreadable — halting" };
   bootstrap(snap);
+  await hydrateGuardFromDb(); // restore the persisted floor/day counter (redeploy-safe)
   return guardCheck(snap);
 }

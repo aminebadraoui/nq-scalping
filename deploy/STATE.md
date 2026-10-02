@@ -132,6 +132,20 @@
    vs replay baselines → ok/watch/breach rows persisted as insights
    (kind edge_monitor) each nightly run, surfaced on the journal.
 
+## Risk caps + persistent guard (2026-10-02)
+
+- **Per-family dollar risk caps**: RTH and the open family keep their
+  fixed-9 sizing but now resize DOWN on wide stops — `cappedContracts`
+  (lib/propRules.ts) with `RTH_RISK_CAP` / `OPEN_RISK_CAP` (default $200
+  each). Open drive's 35-pt stop now risks ~$140 (2 contracts) instead
+  of $630 (9); RTH's 12.5-pt stop risks $200 (8) instead of $225.
+  `FIXED_CONTRACTS` still acts as the max count; cap=0 disables.
+- **Guard state persists to Neon** (`guard_state` table): the MFF
+  floor/high-water AND the $900 consistency day-counter survive VPS
+  redeploys — `hydrateGuardFromDb()` restores them before the first
+  gate check; the day rollover and EOD commit persist. The local
+  `.executor-guard.json` remains as the offline fallback.
+
 ## Trade execution (2026-10-01)
 
 - **CrossTrade webhook backend**: `web/lib/crossTrade.ts` places bracketed market

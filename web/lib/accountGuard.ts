@@ -24,6 +24,7 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
 import { RAPID_EOD_50K } from "./propRules";
+import { dbEnabled, getDb } from "./gcdb";
 
 export type GuardStage = "eval" | "funded";
 
@@ -138,6 +139,66 @@ function save() {
   } catch {
     /* best-effort — the in-memory state still governs */
   }
+  void persistGuardToDb(mem());
+}
+
+/* ── Neon persistence — the guard state survives container redeploys ── */
+const GUARD_DB_SQL = `
+create table if not exists guard_state (
+  id int primary key default 1,
+  state jsonb not null,
+  updated_at timestamptz not null default now()
+);
+`;
+
+/** best-effort upsert of the guard state (fire-and-forget) */
+export async function persistGuardToDb(state: GuardState): Promise<void> {
+  if (!dbEnabled()) return;
+  try {
+    await getDb().unsafe(GUARD_DB_SQL);
+    await getDb()`
+      insert into guard_state (id, state, updated_at)
+      values (1, ${JSON.stringify(state)}, now())
+      on conflict (id) do update set state = excluded.state, updated_at = now()`;
+  } catch {
+    /* best-effort — the file + memory still govern */
+  }
+}
+
+/** restore the persisted state after a restart (called by crossGuard
+ *  before the first gate check). Floor/high-water take the MAX of the
+ *  persisted and the freshly bootstrapped values; the day reference is
+ *  restored only when it still matches (preserves the $900 counter). */
+export async function hydrateGuardFromDb(): Promise<void> {
+  if (!dbEnabled()) return;
+  try {
+    await getDb().unsafe(GUARD_DB_SQL);
+    const rows = (await getDb()`select state from guard_state where id = 1`) as unknown as Array<{
+      state: unknown;
+    }>;
+    if (!rows.length) return;
+    const raw = rows[0].state;
+    const db = (typeof raw === "string" ? JSON.parse(raw) : raw) as Partial<GuardState>;
+    const s = mem();
+    if (db.stage) s.stage = db.stage;
+    if (db.startBalance) s.startBalance = db.startBalance;
+    if (db.maxLoss) s.maxLoss = db.maxLoss;
+    if (db.profitTarget) s.profitTarget = db.profitTarget;
+    if (db.consistencyCap) s.consistencyCap = db.consistencyCap;
+    if (db.lockAt) s.lockAt = db.lockAt;
+    s.highWater = Math.max(Number(db.highWater ?? 0), s.highWater);
+    s.floor = Math.max(Number(db.floor ?? 0), s.floor);
+    if (db.locked !== undefined) s.locked = db.locked;
+    if (db.lastCommitDay) s.lastCommitDay = db.lastCommitDay;
+    if (db.dayKey) {
+      s.dayKey = db.dayKey;
+      s.dayStartRealized = Number(db.dayStartRealized ?? 0);
+    }
+    s.bestDayPnl = Math.max(Number(db.bestDayPnl ?? 0), s.bestDayPnl);
+    s.dayPnl = 0; // recomputed by guardCheck from dayStartRealized
+  } catch {
+    /* best-effort — the bootstrapped state still governs */
+  }
 }
 
 /* ── EOD clock helpers (America/New_York) ───────────────────────────── */
@@ -194,6 +255,7 @@ function maybeRolloverDay(state: GuardState, realized: number, now = new Date())
   state.dayKey = p.date;
   state.dayStartRealized = realized;
   state.dayPnl = 0;
+  save(); // the day reference must survive a restart (consistency counter)
 }
 
 /** Commit the end-of-day close once per New York trading day: at/after the

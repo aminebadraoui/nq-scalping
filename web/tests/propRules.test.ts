@@ -1,3 +1,4 @@
+import { cappedContracts } from "../lib/propRules";
 /* Unit tests grounding sizing in the MyFundedFutures Rapid EOD 50k rules.
  *
  * Rule source (fetched 2026-09-30):
@@ -81,4 +82,13 @@ test("estimateEval respects the 4 minimum trading days", () => {
   const est = estimateEval(RAPID_EOD_50K, 170);
   assert.ok(est.contracts > 0);
   assert.ok(est.daysToPass >= RAPID_EOD_50K.minDays, `daysToPass ${est.daysToPass}`);
+});
+
+test("cappedContracts: dollar ceiling resizes fixed counts on wide stops", () => {
+  assert.equal(cappedContracts(9, 5, 200), 9); // $90 risk — under the cap
+  assert.equal(cappedContracts(9, 12.5, 200), 8); // $250 raw → 8 = $200
+  assert.equal(cappedContracts(9, 35, 200), 2); // $630 raw → 2 = $140
+  assert.equal(cappedContracts(9, 35, 0), 9); // cap off
+  assert.equal(cappedContracts(9, 200, 200), 1); // floor at 1 contract
+  assert.equal(cappedContracts(3, 12.5, 200), 3); // never raises above fixed
 });

@@ -25,7 +25,7 @@ import { optionsSnapshot } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD } from "./momentum";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
 import { detectSoftMomentum, SOFT_PROD } from "./softMomentum";
-import { momentumSize } from "./propRules";
+import { momentumSize, cappedContracts } from "./propRules";
 import {
   loadCollectedContext,
   computeSignal,
@@ -632,12 +632,16 @@ class SignalFeed {
       if (this.rthSent.size > 200) this.rthSent = new Set([...this.rthSent].slice(-100));
 
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+      const cap = Number(process.env.RTH_RISK_CAP ?? "200");
       const fixed = fixedContracts(9);
-      const size =
-        fixed > 0
-          ? { contracts: fixed, dollarRisk: fixed * s.risk * 2, capped: false }
-          : momentumSize(s.risk, riskBudget);
-      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
+      const contracts =
+        fixed > 0 ? cappedContracts(fixed, s.risk, cap) : momentumSize(s.risk, riskBudget).contracts;
+      const size = {
+        contracts,
+        dollarRisk: contracts * s.risk * 2,
+        capped: fixed > 0 && cap > 0 && fixed > contracts,
+      };
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}`;
 
       const et = cdtToET(s.t);
       void placeOrder({
@@ -756,12 +760,16 @@ class SignalFeed {
       if (this.openSent.size > 200) this.openSent = new Set([...this.openSent].slice(-100));
 
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+      const cap = Number(process.env.OPEN_RISK_CAP ?? "200");
       const fixed = fixedContracts(9);
-      const size =
-        fixed > 0
-          ? { contracts: fixed, dollarRisk: fixed * s.risk * 2, capped: false }
-          : momentumSize(s.risk, riskBudget);
-      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
+      const contracts =
+        fixed > 0 ? cappedContracts(fixed, s.risk, cap) : momentumSize(s.risk, riskBudget).contracts;
+      const size = {
+        contracts,
+        dollarRisk: contracts * s.risk * 2,
+        capped: fixed > 0 && cap > 0 && fixed > contracts,
+      };
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}`;
 
       const et = cdtToET(s.t);
       void placeOrder({

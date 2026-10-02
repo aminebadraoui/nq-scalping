@@ -93,9 +93,26 @@ export type EvalEstimate = {
   daysToPass: number;
   /** funded-stage expected income at the 90% split */
   weeklyIncome: number;
-  /** risk at the 30-micro cap, median R */
+/** risk at the 30-micro cap, median R */
   maxContractRisk: number;
 };
+
+  /**
+ * Fixed-contract sizing with a hard DOLLAR risk ceiling: contracts =
+ * min(fixed, floor(cap ÷ (riskPts × pointValue))), floored at 1.
+ * Used by the RTH + open families, whose structural stops vary wildly
+ * (3–35 pts), so a fixed contract count alone lets dollar risk swing
+ * from ~$50 to ~$600. cap <= 0 = no ceiling (raw fixed count).
+ */
+export function cappedContracts(
+  fixed: number,
+  riskPts: number,
+  dollarCap: number,
+  pointValue: number = 2,
+): number {
+  if (!(dollarCap > 0) || !(riskPts > 0)) return Math.max(1, fixed);
+  return Math.max(1, Math.min(Math.max(1, fixed), Math.floor(dollarCap / (riskPts * pointValue))));
+}
 
 export function estimateEval(rules: PropRules, riskPerTrade: number): EvalEstimate {
   const dailyProfit = STRATEGY.expectancyR * STRATEGY.setupsPerDay * riskPerTrade;
