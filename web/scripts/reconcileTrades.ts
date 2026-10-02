@@ -30,6 +30,14 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import postgres from "postgres";
+import {
+  entryCandidates,
+  assignEntries,
+  childExitFills,
+  fallbackExitFills,
+  type OrderRow,
+  type FillRow,
+} from "../lib/reconcile";
 
 /* ---- env ------------------------------------------------------------ */
 function loadEnvLocal() {
@@ -119,7 +127,7 @@ async function fetchFills(): Promise<RawFill[]> {
       for (const f of d.data ?? []) {
         const ts = Date.parse(String(f.timestamp ?? ""));
         if (!Number.isFinite(ts) || ts < windowStartMs || ts >= windowEndMs) continue;
-        const key = `${f.fillId ?? f.executionId ?? ""}|${f.orderId ?? ""}|${String(f.timestamp)}|${f.qty}|${f.price}|${f.action}`;
+        const key = `${f.fillId ?? f.executionId ?? ""}|${f.orderId ?? ""}|${ts}|${f.qty}|${f.price}|${f.action}`;
         map[key] = {
           ts,
           action: String(f.action) === "Buy" ? "Buy" : "Sell",
@@ -148,7 +156,7 @@ async function fetchFills(): Promise<RawFill[]> {
       for (const f of env.data ?? []) {
         const ts = Date.parse(String(f.timestamp ?? ""));
         if (!Number.isFinite(ts) || ts < windowStartMs || ts >= windowEndMs) continue;
-        const key = `${f.id ?? ""}|${f.orderId ?? ""}|${String(f.timestamp)}|${f.qty}|${f.price}|${f.action}`;
+        const key = `${f.id ?? ""}|${f.orderId ?? ""}|${ts}|${f.qty}|${f.price}|${f.action}`;
         if (map[key]) continue; // history row (with fees) wins
         map[key] = {
           ts,
@@ -234,6 +242,32 @@ create table if not exists reconcile_runs (
 );
 `;
 
+async function fetchOrders(): Promise<OrderRow[]> {
+  try {
+    const d = (await ctGet("https://app.crosstrade.io/v1/api/tv/orders?activeOnly=false")) as {
+      success?: boolean;
+      data?: Array<{ data?: Array<Record<string, unknown>> }>;
+    };
+    const out: OrderRow[] = [];
+    for (const env of d.data ?? []) {
+      for (const o of env.data ?? []) {
+        const ts = Date.parse(String(o.timestamp ?? ""));
+        if (!Number.isFinite(ts)) continue;
+        out.push({
+          id: String(o.id),
+          ts,
+          action: String(o.action) === "Buy" ? "Buy" : "Sell",
+          parentId: o.parentId !== null && o.parentId !== undefined ? String(o.parentId) : null,
+        });
+      }
+    }
+    return out.sort((a, b) => a.ts - b.ts);
+  } catch (e) {
+    console.warn(`[reconcile] orders unavailable: ${String(e)}`);
+    return [];
+  }
+}
+
 async function fetchSignals(): Promise<SignalRow[]> {
   const rows = await sql`
     select key, ts, day, time_et, side, entry, stop, target, size, verdict, headline, features
@@ -293,64 +327,65 @@ type TradeRow = {
   sides: number;
 };
 
-function pair(fills: RawFill[], signals: SignalRow[]): { trades: TradeRow[]; manual: RawFill[] } {
-  const used = new Array(fills.length).fill(false);
+function pair(
+  fills: RawFill[],
+  signals: SignalRow[],
+  orders: OrderRow[],
+): { trades: TradeRow[]; manual: RawFill[]; usedOrderIds: Set<string> } {
+  // order-level matching: entries are top-level orders, exits are their
+  // CHILD orders' fills — a fill can never be stolen across trades.
+  const fillRows: FillRow[] = fills.map((f) => ({
+    ts: f.ts,
+    action: f.action,
+    qty: f.qty,
+    price: f.price,
+    orderId: f.orderId,
+    instrument: f.instrument,
+    commission: f.commission,
+    fees: f.fees,
+  }));
+  const candidates = entryCandidates(orders, fillRows);
+  const assignment = assignEntries(signals, candidates, ENTRY_BEFORE_MS, ENTRY_AFTER_MS);
+  const usedIds = new Set<string>([...assignment.values()].flat().map((c) => c.order.id));
   const trades: TradeRow[] = [];
-  let cursor = 0;
+
+  const nextEntryTsAfter = (t: number): number | null => {
+    let best: number | null = null;
+    for (const c of candidates) {
+      if (usedIds.has(c.order.id) || c.order.ts <= t) continue;
+      if (best === null || c.order.ts < best) best = c.order.ts;
+    }
+    return best;
+  };
 
   for (const sig of signals) {
-    while (cursor < fills.length && fills[cursor].ts < sig.ts - ENTRY_BEFORE_MS) cursor++;
-    const want: RawFill["action"] = sig.side === "long" ? "Buy" : "Sell";
-    const exitSide: RawFill["action"] = sig.side === "long" ? "Sell" : "Buy";
-
-    // ---- entry: consume same-side MNQ fills inside the window ----
-    let i = cursor;
-    let entryQty = 0;
-    let entryCost = 0;
-    let entryAt = 0;
-    const entryIdx: number[] = [];
-    const entryFills: RawFill[] = [];
-    while (i < fills.length && fills[i].ts <= sig.ts + ENTRY_AFTER_MS) {
-      const f = fills[i];
-      if (!used[i] && f.instrument === MNQ && f.action === want) {
-        used[i] = true;
-        entryIdx.push(i);
-        entryFills.push(f);
-        entryQty += f.qty;
-        entryCost += f.qty * f.price;
-        entryAt = f.ts;
-        if (entryQty >= sig.contracts) break;
-      }
-      i++;
-    }
-
-    if (entryQty < sig.contracts) {
+    const picked = assignment.get(sig.key) ?? [];
+    if (!picked.length) {
       trades.push({ sig, status: "unexecuted", grossPts: 0, grossUsd: 0, commissions: 0, result: "", sides: 0 });
       continue;
     }
 
-    // ---- exit: consume opposite-side MNQ fills until closed ----
-    // Scan until the position is flat again. Trades CAN overlap (a signal
-    // fires while the previous position is still open — e.g. the Playwright
-    // era), so the exit scan may not stop at the next signal's timestamp;
-    // the `used` flags keep later entries from stealing consumed fills.
-    let j = Math.max(...entryIdx) + 1;
-    let exitQty = 0;
-    let exitCost = 0;
-    const exitFills: RawFill[] = [];
-    while (j < fills.length && exitQty < sig.contracts) {
-      const f = fills[j];
-      if (!used[j] && f.instrument === MNQ && f.action === exitSide) {
-        used[j] = true;
-        exitFills.push(f);
-        exitQty += f.qty;
-        exitCost += f.qty * f.price;
-      }
-      j++;
-    }
-
+    const entryFills = picked.flatMap((c) => c.fills);
+    const entryQty = entryFills.reduce((s, f) => s + f.qty, 0);
+    const entryCost = entryFills.reduce((s, f) => s + f.qty * f.price, 0);
+    const entryAt = Math.max(...entryFills.map((f) => f.ts));
     const fillEntry = entryCost / entryQty;
+
+    let exitFills = childExitFills(picked, orders, fillRows);
+    if (exitFills.length === 0) {
+      // manual cover / missing children: bounded chronological fallback
+      exitFills = fallbackExitFills(
+        picked,
+        fillRows.filter((f) => !usedIds.has(f.orderId)),
+        nextEntryTsAfter(entryAt),
+        sig.contracts,
+        "MNQ",
+      );
+    }
+    const exitQty = exitFills.reduce((s, f) => s + f.qty, 0);
+    const exitCost = exitFills.reduce((s, f) => s + f.qty * f.price, 0);
     const exitAvg = exitQty > 0 ? exitCost / exitQty : 0;
+
     const dir = sig.side === "long" ? 1 : -1;
     const grossPts = exitQty > 0 ? (exitAvg - fillEntry) * dir * Math.min(entryQty, sig.contracts) : 0;
     const grossUsd = grossPts * 2; // MNQ $2/pt
@@ -375,39 +410,44 @@ function pair(fills: RawFill[], signals: SignalRow[]): { trades: TradeRow[]; man
     });
   }
 
-  const manual = fills.filter((_, i) => !used[i]);
-  return { trades, manual };
+  // manual = fills whose order is neither a matched entry nor its child
+  const childIds = new Set(
+    orders.filter((o) => o.parentId !== null && usedIds.has(o.parentId)).map((o) => o.id),
+  );
+  const manual = fills.filter((f) => !usedIds.has(f.orderId) && !childIds.has(f.orderId));
+  return { trades, manual, usedOrderIds: usedIds };
 }
 
-/** FIFO realized P&L over arbitrary fills (used for the manual bucket). */
-function fifoGrossUsd(fills: RawFill[]): number {
-  const longLots: Array<[number, number]> = [];
-  const shortLots: Array<[number, number]> = [];
+/** order-level net P&L for the manual bucket: pair each unassigned
+ *  top-level order with its child exits (fallback: bounded scan), so
+ *  leaked legs can never feed a naive FIFO garbage. */
+function manualNetUsd(orders: OrderRow[], fills: RawFill[], excludedOrderIds: Set<string>): number {
+  const fillRows: FillRow[] = fills.map((f) => ({
+    ts: f.ts,
+    action: f.action,
+    qty: f.qty,
+    price: f.price,
+    orderId: f.orderId,
+    instrument: f.instrument,
+    commission: f.commission,
+    fees: f.fees,
+  }));
+  const candidates = entryCandidates(orders, fillRows).filter((c) => !excludedOrderIds.has(c.order.id));
   let usd = 0;
-  const pointValue = (ins: string) => (ins === "MESZ6" ? 5 : 2);
-  for (const f of fills) {
-    const pv = pointValue(f.instrument);
-    if (f.action === "Buy") {
-      let rem = f.qty;
-      while (rem > 0 && shortLots.length) {
-        const [q0, p0] = shortLots.pop()!;
-        const use = Math.min(rem, q0);
-        usd += (p0 - f.price) * use * pv;
-        if (use < q0) shortLots.push([q0 - use, p0]);
-        rem -= use;
-      }
-      if (rem > 0) longLots.push([rem, f.price]);
-    } else {
-      let rem = f.qty;
-      while (rem > 0 && longLots.length) {
-        const [q0, p0] = longLots.pop()!;
-        const use = Math.min(rem, q0);
-        usd += (f.price - p0) * use * pv;
-        if (use < q0) longLots.push([q0 - use, p0]);
-        rem -= use;
-      }
-      if (rem > 0) shortLots.push([rem, f.price]);
+  for (const c of candidates) {
+    const entryQty = c.fills.reduce((s, f) => s + f.qty, 0);
+    if (entryQty <= 0) continue;
+    const entryAvg = c.fills.reduce((s, f) => s + f.qty * f.price, 0) / entryQty;
+    const dir = c.order.action === "Buy" ? 1 : -1;
+    const pv = c.fills[0].instrument === "MESZ6" ? 5 : 2;
+    let exits = childExitFills([c], orders, fillRows);
+    if (!exits.length) {
+      exits = fallbackExitFills([c], fillRows, null, entryQty, c.fills[0].instrument.startsWith("MNQ") ? "MNQ" : "MES");
     }
+    const exitQty = exits.reduce((s, f) => s + f.qty, 0);
+    if (exitQty <= 0) continue;
+    const exitAvg = exits.reduce((s, f) => s + f.qty * f.price, 0) / exitQty;
+    usd += (exitAvg - entryAvg) * dir * Math.min(entryQty, exitQty) * pv;
   }
   return usd;
 }
@@ -416,7 +456,7 @@ function fifoGrossUsd(fills: RawFill[]): number {
 async function main() {
   await sql.unsafe(TABLE_SQL);
 
-  const [fills, signals] = await Promise.all([fetchFills(), fetchSignals()]);
+  const [fills, signals, orders] = await Promise.all([fetchFills(), fetchSignals(), fetchOrders()]);
   console.log(`[reconcile] fills=${fills.length} signals=${signals.length}`);
   if (!fills.length) {
     console.warn(
@@ -424,10 +464,14 @@ async function main() {
     );
   }
 
-  const { trades, manual } = pair(fills, signals);
+  const { trades, manual, usedOrderIds: usedIds } = pair(fills, signals, orders);
   const matched = trades.filter((t) => t.status === "matched");
   const unexecuted = trades.filter((t) => t.status === "unexecuted");
-  const manualGross = fifoGrossUsd(manual);
+  const excluded = new Set<string>([
+    ...usedIds,
+    ...orders.filter((o) => o.parentId !== null && usedIds.has(o.parentId)).map((o) => o.id),
+  ]);
+  const manualGross = manualNetUsd(orders, fills, excluded);
 
   // snapshot for the run row (best effort)
   let accountNet: number | null = null;
