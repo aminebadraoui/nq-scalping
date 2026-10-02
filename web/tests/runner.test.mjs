@@ -1,0 +1,114 @@
+/* Unit tests for the runner ladder engine (web/lib/runner.ts).
+ * Run as part of `npm test` (node:test over web/tests/*.test.mjs).
+ *
+ * Fixture convention: minutes[0] is the ENTRY bar (its values are unused by
+ * the engine — scoring starts at entryIdx+1); every row after it is a
+ * post-entry minute. */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { scoreRunner } from "../lib/runner.ts";
+
+const bars = (rows) => [[100, 100], ...rows].map(([high, low]) => ({ high, low }));
+const LONG = { entry: 100, stop0: 98, dir: 1, entryIdx: 0 }; // risk 2
+
+test("runner: BE stop after 1R rung", () => {
+  const t = scoreRunner(
+    bars([
+      [101, 99], // no rung
+      [102.5, 101], // rung 1 → stop 100
+      [100.5, 99.5], // low ≤ 100 → BE out
+    ]),
+    LONG.entry, LONG.stop0, LONG.dir, LONG.entryIdx,
+  );
+  assert.equal(t.hit, "stop");
+  assert.equal(t.exit, 100);
+  assert.equal(t.exitR, 0);
+  assert.equal(t.pnl, -0.5);
+  assert.equal(t.rungs, 1);
+  assert.ok(t.beTouched);
+  assert.ok(!t.ambiguous);
+});
+
+test("runner: locks 1R after 2R rung", () => {
+  const t = scoreRunner(
+    bars([
+      [104, 101], // rung 2 → stop 102
+      [102.5, 101.5], // low ≤ 102 → out at +1R
+    ]),
+    LONG.entry, LONG.stop0, LONG.dir, LONG.entryIdx,
+  );
+  assert.equal(t.exit, 102);
+  assert.equal(t.exitR, 1);
+  assert.equal(t.pnl, 2 - 0.5);
+  assert.equal(t.rungs, 2);
+});
+
+test("runner: locks 2R after 3R rung", () => {
+  const t = scoreRunner(
+    bars([
+      [106, 103], // rung 3 → stop 104
+      [105, 103.5], // low ≤ 104 → out at +2R
+    ]),
+    LONG.entry, LONG.stop0, LONG.dir, LONG.entryIdx,
+  );
+  assert.equal(t.exit, 104);
+  assert.equal(t.exitR, 2);
+  assert.equal(t.pnl, 4 - 0.5);
+});
+
+test("runner: initial stop untouched when no rung reached", () => {
+  const t = scoreRunner(
+    bars([
+      [99.5, 97.9], // low ≤ 98 → full stop
+    ]),
+    LONG.entry, LONG.stop0, LONG.dir, LONG.entryIdx,
+  );
+  assert.equal(t.exit, 98);
+  assert.equal(t.pnl, -2 - 0.5);
+  assert.ok(!t.beTouched);
+  assert.equal(t.rungs, 0);
+});
+
+test("runner: pessimistic same-bar on the entry+1 bar", () => {
+  const t = scoreRunner(
+    bars([[102.5, 97.5]]), // 1R AND initial stop in one bar → stop first
+    LONG.entry, LONG.stop0, LONG.dir, LONG.entryIdx,
+  );
+  assert.equal(t.hit, "stop");
+  assert.equal(t.exit, 98);
+  assert.ok(t.ambiguous);
+});
+
+test("runner: time exit at final close when never stopped", () => {
+  const rows = Array.from({ length: 60 }, () => [100.5, 99.5]).map(([high, low]) => ({ high, low }));
+  const t = scoreRunner(rows, LONG.entry, LONG.stop0, LONG.dir, LONG.entryIdx);
+  assert.equal(t.hit, "time");
+  assert.equal(t.heldBars, 59); // 60 rows total, one is the entry bar
+  assert.equal(t.exit, 100);
+  assert.equal(t.pnl, -0.5);
+});
+
+test("runner: short mirror — BE after 1R down", () => {
+  const t = scoreRunner(
+    bars([
+      [99, 97.5], // rung 1 → stop 100
+      [100.5, 99.5], // high ≥ 100 → BE out
+    ]),
+    100, 102, -1, 0,
+  );
+  assert.equal(t.exit, 100);
+  assert.equal(t.exitR, 0);
+  assert.equal(t.pnl, -0.5);
+});
+
+test("runner: maxBars cap near end of session", () => {
+  const rows = [
+    [100, 100],
+    [101, 99],
+    [101, 99],
+    [101, 99],
+  ];
+  const t = scoreRunner(rows, 100, 98, 1, 0, { maxBars: 60 });
+  assert.equal(t.hit, "time");
+  assert.equal(t.heldBars, 3); // end = minutes.length - 1
+});
