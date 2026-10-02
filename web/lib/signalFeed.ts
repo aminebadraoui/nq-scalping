@@ -39,6 +39,8 @@ import { contractsForRisk, RAPID_EOD_50K } from "./propRules";
 import { rvol, isUnusualVolume } from "./volumeProfile";
 import { utcToET, cdtToET } from "./times";
 import { placeOrder } from "./executor";
+import { crossTradeEnabled, placeCrossTradeScaleOut } from "./crossTrade";
+import { runnerTracker } from "./runnerTracker";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
 import { uvWatchCheck, type UVWatch } from "./unusualVolume";
@@ -349,10 +351,13 @@ class SignalFeed {
    *  1R target); same-bar double-fires are deduped to one card. Fires only
    *  when the trigger bar is the just-completed minute. */
   private async checkMomentum(): Promise<void> {
-    if (!FEED_MOMENTUM) return;
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
+    // ladder management for open scale-out runners (CrossTrade backend only,
+    // no new polling — reuses this tick's completed minutes)
+    if (crossTradeEnabled()) void runnerTracker.evaluate(fp).catch(() => {});
+    if (!FEED_MOMENTUM) return;
     const momSigs = detectMomentum(fp, MOM_PROD);
     const expSigs = detectExpansionScalp(fp, EXP_PROD);
     // A+ = both triggers fire on the same bar (78.9% win / PF 3.23 — the
@@ -377,16 +382,53 @@ class SignalFeed {
           ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * s.risk * 2, capped: false }
           : momentumSize(s.risk, riskBudget);
 
-      // emit the order intent to the executor (dry-run by default)
-      void placeOrder({
-        symbol: symbol(),
-        dir: s.dir,
-        contracts: size.contracts,
-        entry: s.entry,
-        stop: s.stop,
-        target: s.target,
-        timeET: cdtToET(s.t),
-      }).catch(() => {});
+      // emit the order intent to the executor (dry-run by default).
+      // CROSSTRADE_SCALEOUT=1 switches the momentum card to the backtested
+      // scale-out: bank 2/3 at 1R + runner 1/3 laddered via CHANGE orders.
+      const scaleOut = process.env.CROSSTRADE_SCALEOUT === "1" && crossTradeEnabled();
+      if (scaleOut) {
+        void placeCrossTradeScaleOut({
+          symbol: symbol(),
+          dir: s.dir,
+          contracts: size.contracts,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          timeET: cdtToET(s.t),
+        })
+          .then((res) => {
+            if (res.runnerOrderId) {
+              runnerTracker.register({
+                id: res.runnerOrderId.replace(/-run$/, ""),
+                bankOrderId: res.bankOrderId ?? null,
+                runnerOrderId: res.runnerOrderId,
+                dir: s.dir === "long" ? 1 : -1,
+                entry: s.entry,
+                stop0: s.stop,
+                risk: Math.abs(s.entry - s.stop),
+                contracts: size.contracts,
+                runnerQty: res.runnerQty ?? 0,
+                lockedRungs: 0,
+                entryTimeET: cdtToET(s.t),
+                createdAt: new Date().toISOString(),
+              });
+            }
+            if (!res.ok) this.lastError = `scale-out: ${res.reason}`;
+          })
+          .catch((e) => {
+            this.lastError = `scale-out: ${String(e)}`;
+          });
+      } else {
+        void placeOrder({
+          symbol: symbol(),
+          dir: s.dir,
+          contracts: size.contracts,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          timeET: cdtToET(s.t),
+        }).catch(() => {});
+      }
 
       const et = cdtToET(s.t);
       const firstToday = !this.cardedDays.has(s.d);
@@ -405,7 +447,9 @@ class SignalFeed {
         ``,
         `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
         `<code>STOP    ${fmtPx(s.stop)}   ${distTxt(s.entry, s.stop)}</code>`,
-        `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
+        scaleOut
+          ? `<code>BANK 2/3 @ +1R · RUN 1/3 ladder (BE @1R · +1R @2R · +2R @3R…)</code>`
+          : `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
         `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${evidence}`,
@@ -797,6 +841,8 @@ class SignalFeed {
     // boot the live + options feeds (idempotent) so the loop has data to read
     getLive();
     getOptionsFeed();
+    // re-attach to any runners left open by a previous process
+    void runnerTracker.load();
     this.tick();
     this.timer = setInterval(() => this.tick(), refreshSeconds() * 1000);
   }

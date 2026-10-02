@@ -8,6 +8,8 @@ import assert from "node:assert";
 import {
   mapInstrument,
   buildCrossTradePayload,
+  buildChangePayload,
+  splitScaleOut,
   classifyResponse,
   MNQ_TICK,
   type CrossTradeConfig,
@@ -133,4 +135,36 @@ test("classifyResponse: non-2xx is a rejection regardless of body", () => {
   assert.equal(classifyResponse(400, "bad").ok, false);
   assert.equal(classifyResponse(500, "").ok, false);
   assert.equal(classifyResponse(401, '{"error":"x"}').ok, false);
+});
+
+test("change: buildChangePayload formats absolute stop + trail ticks, requires a field", () => {
+  const stop = buildChangePayload(CFG, { orderId: "abc-run", stopPrice: 21847.5 });
+  assert.equal(stop.command, "change");
+  assert.equal(stop.destination, "tradovate");
+  assert.equal(stop.order_id, "abc-run");
+  assert.equal(stop.stop_price, "21847.50");
+  const trail = buildChangePayload(CFG, { orderId: "abc-run", trailOffsetTicks: 10 });
+  assert.equal(trail.trail_offset, "10 ticks");
+  assert.ok(!("stop_price" in trail));
+  assert.throws(() => buildChangePayload(CFG, { orderId: "x" }));
+  assert.throws(() => buildChangePayload(CFG, { orderId: "x", stopPrice: Number.NaN }));
+});
+
+test("scaleout: splitScaleOut banks 2/3 and floors tiny sizes", () => {
+  const s9 = splitScaleOut(intent({ contracts: 9 }));
+  assert.equal(s9.bank.contracts, 6);
+  assert.equal(s9.runner.contracts, 3);
+  const s2 = splitScaleOut(intent({ contracts: 2 }));
+  assert.equal(s2.bank.contracts, 1);
+  assert.equal(s2.runner.contracts, 1);
+  const s1 = splitScaleOut(intent({ contracts: 1 }));
+  assert.equal(s1.bank.contracts, 1);
+  assert.equal(s1.runner.contracts, 0); // single-leg fallback
+});
+
+test("payload: order_id attached and take_profit omitted for the runner leg", () => {
+  const p = buildCrossTradePayload(intent(), CFG, { orderId: "abc-run", withTarget: false });
+  assert.equal(p.order_id, "abc-run");
+  assert.ok(!("take_profit" in p));
+  assert.equal(p.stop_loss, "10 ticks");
 });

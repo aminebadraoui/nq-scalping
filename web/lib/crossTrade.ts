@@ -62,8 +62,24 @@ export type CrossTradePayload = {
   tif: "day";
   destination: "tradovate";
   stop_loss: string;
-  take_profit: string;
+  take_profit?: string; // omitted on runner legs — no fixed target
+  order_id?: string; // ours, so a later CHANGE can address this order (7-day window)
   require_market_position?: string;
+};
+
+/** CHANGE command payload — the stop-loss update path. On Tradovate it can
+ *  modify stop_price, qty, order_type, tif, expire_time, max_show and
+ *  trail_offset; CrossTrade restores every field Tradovate requires on a
+ *  partial modify from the live order version. */
+export type CrossTradeChange = {
+  key: string;
+  command: "change";
+  account: string;
+  destination: "tradovate";
+  order_id: string;
+  stop_price?: string; // absolute price, US decimal format
+  qty?: number;
+  trail_offset?: string; // trailing distance in ticks (Tradovate path)
 };
 
 /** MNQ tick size in points (index) — the feed prices are index points. */
@@ -96,19 +112,24 @@ function ticksFromPoints(points: number): number {
  * Build the flat JSON webhook payload for a bracketed market entry.
  * Pure — no env, no I/O — so it is unit-testable. Throws on inputs
  * that would produce an invalid order instead of guessing.
+ *
+ * opts.orderId attaches our order id (required to CHANGE the stop later);
+ * opts.withTarget=false omits take_profit — the runner leg of a scale-out
+ * has an open target and only its stop is managed.
  */
-export function buildCrossTradePayload(intent: OrderIntent, cfg: CrossTradeConfig): CrossTradePayload {
+export function buildCrossTradePayload(
+  intent: OrderIntent,
+  cfg: CrossTradeConfig,
+  opts: { orderId?: string; withTarget?: boolean } = {},
+): CrossTradePayload {
   const instrument = mapInstrument(intent.symbol, cfg.instrument);
   if (!instrument) {
     throw new Error(`crossTrade: cannot map symbol "${intent.symbol}" to a Tradovate instrument`);
   }
   const qty = Math.max(1, Math.min(30, Math.floor(intent.contracts)));
   const stopTicks = ticksFromPoints(Math.abs(intent.entry - intent.stop));
-  const targetTicks = ticksFromPoints(Math.abs(intent.target - intent.entry));
-  if (!Number.isFinite(stopTicks) || !Number.isFinite(targetTicks) || stopTicks < 1 || targetTicks < 1) {
-    throw new Error(
-      `crossTrade: invalid bracket — entry ${intent.entry} stop ${intent.stop} target ${intent.target}`,
-    );
+  if (!Number.isFinite(stopTicks) || stopTicks < 1) {
+    throw new Error(`crossTrade: invalid stop — entry ${intent.entry} stop ${intent.stop}`);
   }
   const payload: CrossTradePayload = {
     key: cfg.key,
@@ -121,10 +142,57 @@ export function buildCrossTradePayload(intent: OrderIntent, cfg: CrossTradeConfi
     tif: "day",
     destination: "tradovate",
     stop_loss: `${stopTicks} ticks`,
-    take_profit: `${targetTicks} ticks`,
   };
+  if (opts.withTarget ?? true) {
+    const targetTicks = ticksFromPoints(Math.abs(intent.target - intent.entry));
+    if (!Number.isFinite(targetTicks) || targetTicks < 1) {
+      throw new Error(`crossTrade: invalid target — entry ${intent.entry} target ${intent.target}`);
+    }
+    payload.take_profit = `${targetTicks} ticks`;
+  }
+  if (opts.orderId) payload.order_id = opts.orderId;
   if (cfg.requireFlat) payload.require_market_position = "flat";
   return payload;
+}
+
+/** Build the CHANGE payload that moves an already-placed order's stop.
+ *  Pure + unit-testable; price values are absolute US decimals. */
+export function buildChangePayload(
+  cfg: CrossTradeConfig,
+  change: { orderId: string; stopPrice?: number; qty?: number; trailOffsetTicks?: number },
+): CrossTradeChange {
+  if (!change.stopPrice && !change.qty && !change.trailOffsetTicks) {
+    throw new Error("crossTrade: CHANGE needs at least one of stopPrice, qty, trailOffsetTicks");
+  }
+  const payload: CrossTradeChange = {
+    key: cfg.key,
+    command: "change",
+    account: cfg.account,
+    destination: "tradovate",
+    order_id: change.orderId,
+  };
+  if (change.stopPrice !== undefined) {
+    if (!Number.isFinite(change.stopPrice)) throw new Error("crossTrade: CHANGE stop_price is not finite");
+    payload.stop_price = change.stopPrice.toFixed(2);
+  }
+  if (change.qty !== undefined) payload.qty = change.qty;
+  if (change.trailOffsetTicks !== undefined) payload.trail_offset = `${Math.max(1, Math.round(change.trailOffsetTicks))} ticks`;
+  return payload;
+}
+
+/**
+ * Split one intent into the scale-out's two legs: the bank leg (2/3 of the
+ * contracts, fixed 1R target from the intent) and the runner leg (the rest,
+ * open target — only its stop is managed). Pure; floors at 1 contract.
+ */
+export function splitScaleOut(intent: OrderIntent): { bank: OrderIntent; runner: OrderIntent } {
+  const total = Math.max(1, Math.floor(intent.contracts));
+  const bankQty = Math.max(1, Math.floor((total * 2) / 3));
+  const runnerQty = Math.max(0, total - bankQty);
+  return {
+    bank: { ...intent, contracts: bankQty },
+    runner: { ...intent, contracts: runnerQty }, // 0 → single-leg order only
+  };
 }
 
 export function crossTradeEnabled(): boolean {
@@ -222,4 +290,106 @@ export async function placeCrossTradeOrder(
       reason: `UNKNOWN (network: ${String(e)}) — check CrossTrade Alert History before acting; no automatic retry`,
     };
   }
+}
+
+/** Send a CHANGE (stop update) for an order we placed with our own order_id.
+ *  Same dry-run gate and no-retry/UNKNOWN semantics as placement. */
+export async function changeCrossTradeOrder(
+  change: { orderId: string; stopPrice?: number; qty?: number; trailOffsetTicks?: number },
+): Promise<{ ok: boolean; reason: string }> {
+  const cfg = loadConfig();
+  const live = process.env.EXECUTE_LIVE === "1";
+  const what = `order ${change.orderId} → stop ${change.stopPrice?.toFixed(2) ?? "—"} qty ${change.qty ?? "—"} trail ${change.trailOffsetTicks ?? "—"}`;
+  if (!live) {
+    console.log(`[crossTrade] DRY-RUN CHANGE ${what}`);
+    return { ok: true, reason: "dry-run (logged only)" };
+  }
+  let payload: CrossTradeChange;
+  try {
+    payload = buildChangePayload(cfg, change);
+  } catch (e) {
+    return { ok: false, reason: String(e) };
+  }
+  console.log(`[crossTrade] LIVE CHANGE ${what} @ ${cfg.account}`);
+  try {
+    const res = await fetch(cfg.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
+    });
+    return classifyResponse(res.status, await res.text());
+  } catch (e) {
+    return {
+      ok: false,
+      reason: `UNKNOWN (network: ${String(e)}) — check CrossTrade Alert History before acting; no automatic retry`,
+    };
+  }
+}
+
+/**
+ * Place the scale-out pair: bank leg (2/3, fixed 1R target) + runner leg
+ * (1/3, open target, stop managed later via CHANGE). Both carry our own
+ * order_id (`<id>-bank` / `<id>-run`). Returns the ids so the caller can
+ * register the runner with the ladder tracker.
+ */
+export async function placeCrossTradeScaleOut(
+  intent: OrderIntent,
+): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
+  const cfg = loadConfig();
+  const live = process.env.EXECUTE_LIVE === "1";
+  const { bank, runner } = splitScaleOut(intent);
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const bankOrderId = `${id}-bank`;
+  const runnerOrderId = `${id}-run`;
+
+  if (runner.contracts < 1) {
+    // too small to split — fall back to a single bracketed order
+    return placeCrossTradeOrder(bank);
+  }
+  if (!live) {
+    console.log(
+      `[crossTrade] DRY-RUN SCALE-OUT ${intent.dir.toUpperCase()} ${intent.contracts} ${intent.symbol} ` +
+        `→ bank ${bank.contracts} (1R) + runner ${runner.contracts} (ladder) · ${intent.timeET} NY`,
+    );
+    return { ok: true, reason: "dry-run (logged only)", bankOrderId, runnerOrderId, runnerQty: runner.contracts };
+  }
+
+  let bankPayload: CrossTradePayload;
+  let runnerPayload: CrossTradePayload;
+  try {
+    bankPayload = buildCrossTradePayload(bank, cfg, { orderId: bankOrderId, withTarget: true });
+    runnerPayload = buildCrossTradePayload(runner, cfg, { orderId: runnerOrderId, withTarget: false });
+  } catch (e) {
+    return { ok: false, reason: String(e) };
+  }
+
+  const post = async (label: string, payload: CrossTradePayload) => {
+    console.log(`[crossTrade] LIVE SCALE-OUT ${label} → ${payload.instrument} @ ${cfg.account}`);
+    try {
+      const res = await fetch(cfg.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(15_000),
+      });
+      return classifyResponse(res.status, await res.text());
+    } catch (e) {
+      return {
+        ok: false,
+        reason: `UNKNOWN (network: ${String(e)}) — check CrossTrade Alert History before acting; no automatic retry`,
+      };
+    }
+  };
+
+  const bankRes = await post(`bank ${bankOrderId}`, bankPayload);
+  const runnerRes = await post(`runner ${runnerOrderId}`, runnerPayload);
+  const ok = bankRes.ok && runnerRes.ok;
+  return {
+    ok,
+    reason: `bank: ${bankRes.reason} · runner: ${runnerRes.reason}`,
+    bankOrderId: bankRes.ok ? bankOrderId : undefined,
+    runnerOrderId: runnerRes.ok ? runnerOrderId : undefined,
+    runnerQty: runner.contracts,
+  };
 }
