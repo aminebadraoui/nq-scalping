@@ -27,6 +27,7 @@ import { sendTelegram } from "./notify";
 import { placeOrder, type OrderIntent } from "./executor";
 import { placeCrossTradeScaleOut } from "./crossTrade";
 import { getLive } from "./live";
+import { logExec } from "./execLog";
 
 export type Expectation = {
   key: string;
@@ -221,13 +222,16 @@ export async function checkExpectations(): Promise<void> {
     const v = await verifyAbsent();
     if (!v.clean) {
       pending.delete(key);
+      void logExec({ key, label: e.label, attempt: "watch", outcome: "unresolved", reason: v.reason });
       void alert(`⚠ <b>EXECUTION UNRESOLVED</b> — <code>${e.label}</code>\n${v.reason} — verify manually before acting`);
       continue;
     }
+    void logExec({ key, label: e.label, attempt: "watch", outcome: "verified_absent", reason: v.reason });
     const dist = priceDistancePts(e);
     const risk = Math.abs(e.intent.entry - e.intent.stop);
     if (dist !== null && dist > 0.5 * risk) {
       pending.delete(key);
+      void logExec({ key, label: e.label, attempt: "watch", outcome: "skipped_stale", reason: `price moved ${dist.toFixed(1)} pts (risk ${risk.toFixed(1)})` });
       void alert(
         `⚠ <b>RE-SEND SKIPPED — stale entry</b> — <code>${e.label}</code>\nprice moved ${dist.toFixed(1)} pts from the signal (risk ${risk.toFixed(1)}) — not re-entering`,
       );
@@ -235,6 +239,13 @@ export async function checkExpectations(): Promise<void> {
     }
     const res = e.scaleOut ? await placeCrossTradeScaleOut(e.intent) : await placeOrder(e.intent);
     pending.delete(key);
+    void logExec({
+      key,
+      label: e.label,
+      attempt: "resend",
+      outcome: res.ok ? "resend_ok" : "resend_failed",
+      reason: res.reason,
+    });
     if (res.ok) {
       void alert(`🔁 <b>AUTO RE-SENT</b> — <code>${e.label}</code> verified absent, re-sent once: ${res.reason}`);
     } else {

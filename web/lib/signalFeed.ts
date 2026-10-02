@@ -51,6 +51,7 @@ import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations } from "./execWatch";
+import { logExec } from "./execLog";
 
 function refreshSeconds(): number {
   const n = Number(process.env.SIGNAL_REFRESH_SECONDS);
@@ -339,6 +340,13 @@ class SignalFeed {
       timeET: setup.timeET,
     })
       .then((res) => {
+        void logExec({
+          key: `reclaim|${key}`,
+          label: `sweep-reclaim ${setup.dir} ${setup.timeET}`,
+          attempt: "initial",
+          outcome: res.ok ? "ok" : "failed",
+          reason: res.reason,
+        });
         if (!res.ok) registerSendFailure(key, `sweep-reclaim ${setup.dir} ${setup.timeET}`, res.reason);
       })
       .catch(() => {});
@@ -488,6 +496,13 @@ class SignalFeed {
                 createdAt: new Date().toISOString(),
               });
             }
+            void logExec({
+              key: `mom|${key}`,
+              label: `momentum ${s.dir} ${et} (scale-out)`,
+              attempt: "initial",
+              outcome: res.ok ? "ok" : "failed",
+              reason: res.reason,
+            });
             if (!res.ok) {
               this.lastError = `scale-out: ${res.reason}`;
               registerSendFailure(key, `momentum ${s.dir} ${et} (scale-out)`, res.reason);
@@ -507,6 +522,13 @@ class SignalFeed {
           timeET: cdtToET(s.t),
         })
           .then((res) => {
+            void logExec({
+              key: `mom|${key}`,
+              label: `momentum ${s.dir} ${et}`,
+              attempt: "initial",
+              outcome: res.ok ? "ok" : "failed",
+              reason: res.reason,
+            });
             if (!res.ok) registerSendFailure(key, `momentum ${s.dir} ${et}`, res.reason);
           })
           .catch(() => {});
@@ -628,6 +650,13 @@ class SignalFeed {
         timeET: et,
       })
         .then((res) => {
+          void logExec({
+            key: `rth|${key}`,
+            label: `rth ${s.dir} ${et}`,
+            attempt: "initial",
+            outcome: res.ok ? "ok" : "failed",
+            reason: res.reason,
+          });
           if (!res.ok) registerSendFailure(key, `rth ${s.dir} ${et}`, res.reason);
         })
         .catch(() => {});
@@ -745,6 +774,13 @@ class SignalFeed {
         timeET: et,
       })
         .then((res) => {
+          void logExec({
+            key: `open|${key}`,
+            label: `${family} ${s.dir} ${et}`,
+            attempt: "initial",
+            outcome: res.ok ? "ok" : "failed",
+            reason: res.reason,
+          });
           if (!res.ok) registerSendFailure(key, `${family} ${s.dir} ${et}`, res.reason);
         })
         .catch(() => {});
