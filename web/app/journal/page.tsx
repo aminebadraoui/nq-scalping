@@ -76,6 +76,21 @@ type RunRow = {
   notes: string;
 };
 
+type ScoreRow = {
+  family: string;
+  signals: number;
+  fills: number;
+  skips: number;
+  days: number;
+  wins: number;
+  losses: number;
+  netUsd: number;
+  liveExpR: number | null;
+  baselineExpR: number;
+  status: "ok" | "watch" | "breach" | "insufficient";
+  detail: string;
+};
+
 type Insight = {
   id: string;
   run_at: string;
@@ -136,6 +151,20 @@ const STATUS_STYLE: Record<string, string> = {
   superseded: "border-zinc-700 bg-zinc-800/40 text-zinc-500",
 };
 
+const EDGE_STYLE: Record<string, string> = {
+  ok: "border-long/50 bg-long/10 text-long",
+  watch: "border-warn/50 bg-warn/10 text-warn",
+  breach: "border-short/50 bg-short/10 text-short",
+  insufficient: "border-zinc-700 bg-zinc-800/40 text-zinc-500",
+};
+
+const EDGE_LABEL: Record<string, string> = {
+  ok: "OK",
+  watch: "WATCH",
+  breach: "BREACH",
+  insufficient: "collecting",
+};
+
 const RESULT_STYLE: Record<string, string> = {
   win: "text-long",
   loss: "text-short",
@@ -181,6 +210,8 @@ export default function JournalPage() {
   const [run, setRun] = useState<RunRow | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [trades, setTrades] = useState<TradeRow[]>([]);
+  const [scoreboard, setScoreboard] = useState<ScoreRow[]>([]);
+  const [scoreSort, setScoreSort] = useState<"net" | "expR" | "freq">("net");
   const [insights, setInsights] = useState<Insight[]>([]);
   const [overrides, setOverrides] = useState<Override[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -195,6 +226,7 @@ export default function JournalPage() {
         setRun(t.runs?.[0] ?? null);
         setAnalysis(t.analysis ?? null);
         setTrades(t.trades ?? []);
+        setScoreboard(t.scoreboard ?? []);
         setInsights(i.insights ?? []);
         setOverrides(i.overrides ?? []);
         setLoaded(true);
@@ -375,8 +407,96 @@ export default function JournalPage() {
           </section>
         </div>
 
-        {/* right column: stats + trades */}
+        {/* right column: scoreboard + stats + trades */}
         <div className="space-y-5 xl:col-span-3">
+          <section className="rounded-md border border-zinc-800 bg-panel p-4">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Strategy scoreboard</h2>
+              <span className="flex gap-1">
+                {([
+                  ["net", "net $"],
+                  ["expR", "expR"],
+                  ["freq", "frequency"],
+                ] as const).map(([k, label]) => (
+                  <button
+                    key={k}
+                    onClick={() => setScoreSort(k)}
+                    className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${
+                      scoreSort === k
+                        ? "border-info/50 bg-info/10 text-info"
+                        : "border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse font-mono text-[10px]">
+                <thead>
+                  <tr className="text-left text-zinc-500">
+                    <th className="border-b border-zinc-800 py-1 pr-2 font-normal">#</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">strategy</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="cards recorded in the window">cards</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="signals that filled">fills</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="fills per trading day">/day</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="recorded but not filled">skips</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">W/L</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">net</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="live expectancy per R (mean gross R/trade)">live expR</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="replay baseline from the 648-session archive">replay expR</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">edge</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const expRKey = (s: ScoreRow) => s.liveExpR ?? s.baselineExpR;
+                    const sorted = [...scoreboard].sort((a, b) =>
+                      scoreSort === "freq"
+                        ? b.fills - a.fills || b.signals - a.signals
+                        : scoreSort === "expR"
+                          ? expRKey(b) - expRKey(a)
+                          : b.netUsd - a.netUsd,
+                    );
+                    return sorted.map((s, i) => (
+                      <tr key={s.family} className={i === 0 ? "font-bold text-zinc-100" : "text-zinc-400"}>
+                        <td className="py-1 pr-2 text-zinc-600">{i + 1}</td>
+                        <td className="px-2 py-1 whitespace-nowrap">{FAMILY_LABEL[s.family] ?? s.family}</td>
+                        <td className="px-2 py-1 text-right">{s.signals}</td>
+                        <td className="px-2 py-1 text-right">{s.fills}</td>
+                        <td className="px-2 py-1 text-right">{s.days > 0 ? (s.fills / s.days).toFixed(1) : "—"}</td>
+                        <td className="px-2 py-1 text-right text-zinc-500">{s.skips > 0 ? s.skips : "—"}</td>
+                        <td className="px-2 py-1 text-right whitespace-nowrap">{s.wins}/{s.losses}</td>
+                        <td className={`px-2 py-1 text-right ${s.netUsd >= 0 ? "text-long" : "text-short"}`}>{fmtUsd(s.netUsd)}</td>
+                        <td className="px-2 py-1 text-right">
+                          {s.liveExpR === null ? (
+                            <span className="text-zinc-600">—</span>
+                          ) : (
+                            <span className={s.liveExpR >= 0 ? "text-long" : "text-short"}>{s.liveExpR >= 0 ? "+" : ""}{s.liveExpR.toFixed(2)}</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1 text-right text-zinc-500">{s.baselineExpR.toFixed(2)}</td>
+                        <td className="px-2 py-1">
+                          <span className={`inline-block rounded border px-1 py-0.5 text-[8px] uppercase ${EDGE_STYLE[s.status] ?? EDGE_STYLE.insufficient}`} title={s.detail}>
+                            {EDGE_LABEL[s.status] ?? EDGE_LABEL.insufficient}
+                          </span>
+                        </td>
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
+              {loaded && scoreboard.length === 0 && (
+                <p className="py-2 font-mono text-xs text-zinc-600">no reconciled trades yet — the scoreboard fills with the next reconcile run</p>
+              )}
+            </div>
+            <p className="mt-2 font-mono text-[9px] leading-snug text-zinc-600">
+              sort: net $ = account contribution · expR = live mean gross R/trade (replay baseline until a family has ≥8 fills) · frequency = fills, then cards ·
+              live n is small — treat ranks as provisional · skips = cards recorded but not filled (gates, retrace expiries, refusals) · edge = live expR vs the 648-session replay baseline
+            </p>
+          </section>
+
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
             <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Win / loss analysis</h2>
             <div className="overflow-x-auto">
