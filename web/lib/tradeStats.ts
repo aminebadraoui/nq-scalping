@@ -65,6 +65,7 @@ export function familyOf(verdict: string): string {
   if (v.includes("open pullback")) return "open_pullback";
   if (v.includes("open sniper")) return "open_sniper";
   if (v.includes("sweep-reclaim")) return "sweep_reclaim";
+  if (v.includes("reversal")) return "reversal"; // the paused LVN reversal card
   return "other";
 }
 

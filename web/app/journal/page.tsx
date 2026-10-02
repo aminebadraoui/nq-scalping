@@ -125,6 +125,7 @@ const FAMILY_LABEL: Record<string, string> = {
   open_pullback: "OPEN PULL",
   open_sniper: "SNIPER",
   sweep_reclaim: "SWEEP-RECLAIM",
+  reversal: "REVERSAL",
   other: "OTHER",
 };
 

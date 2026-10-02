@@ -47,6 +47,7 @@ test("familyOf maps verdicts to analysis families", () => {
   assert.equal(familyOf("rth soft-continuation (experimental)"), "rth");
   assert.equal(familyOf("open drive (experimental)"), "open_drive");
   assert.equal(familyOf("sweep-reclaim (one-sided)"), "sweep_reclaim");
+  assert.equal(familyOf("LONG REVERSAL MECHANISM — 3/3 required + 2 support"), "reversal");
   assert.equal(familyOf("something else"), "other");
 });
 

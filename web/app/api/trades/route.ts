@@ -107,6 +107,26 @@ export async function GET(request: Request) {
           detail: st?.detail ?? "",
         };
       });
+      // families with no recorded data still appear (zero-filled) so the
+      // whole strategy catalog is visible — a family that never fires in
+      // the range is itself a finding
+      for (const fam of Object.keys(REPLAY_EXPR_BASELINES)) {
+        if (fam === "other" || buckets.has(fam)) continue;
+        scoreboard.push({
+          family: fam,
+          signals: 0,
+          fills: 0,
+          skips: 0,
+          days: 0,
+          wins: 0,
+          losses: 0,
+          netUsd: 0,
+          liveExpR: null,
+          baselineExpR: REPLAY_EXPR_BASELINES[fam],
+          status: "insufficient",
+          detail: "no cards recorded in this range",
+        });
+      }
       // default order: net account contribution; the client re-sorts by
       // expR or frequency on demand
       scoreboard.sort(

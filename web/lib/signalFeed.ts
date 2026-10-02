@@ -266,6 +266,8 @@ class SignalFeed {
   private pullbackWatch: UVWatch | null = null;
   /** expansion retrace limit armed by the momentum card (one at a time) */
   private expRetracePending: PendingRetrace | null = null;
+  /** open-window diagnostic minutes already logged (once per bar) */
+  private openDiagLogged = new Set<string>();
 
   lastSnapshot: SignalSnapshot | null = null;
   lastError: string | null = null;
@@ -1222,6 +1224,38 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 60) return;
     const fp = liveMinutesToFootprint(live.minutes);
+
+    // ---- open-window diagnostic: the archive says the drive fires ~87% of
+    //      days, but the live record has zero open cards — log the scan's
+    //      inputs once per minute inside the window so the cause (missing
+    //      9:30 bar, weak cumD, low one-sidedness, or feed volume units)
+    //      is visible in the VPS logs ----
+    {
+      const last = fp[fp.length - 1];
+      const hET = (Number(last.t.slice(0, 2)) + 1) % 24;
+      if (hET >= 9 && hET <= 10) {
+        const diagKey = `${last.d}|${last.t}`;
+        if (!this.openDiagLogged.has(diagKey)) {
+          this.openDiagLogged.add(diagKey);
+          if (this.openDiagLogged.size > 90) this.openDiagLogged = new Set([...this.openDiagLogged].slice(-45));
+          let i0 = -1;
+          for (let i = 0; i < fp.length; i++) {
+            const t = fp[i].t;
+            if ((Number(t.slice(0, 2)) + 1) % 24 === 9 && Number(t.slice(3, 5)) >= 30) {
+              i0 = i;
+              break;
+            }
+          }
+          let cumS = 0;
+          if (i0 >= 0) for (let k = i0; k < fp.length; k++) cumS += fp[k].buy - fp[k].sell;
+          const vol = last.buy + last.sell;
+          const frac = vol > 0 ? last.buy / vol : 0;
+          console.log(
+            `[openDrive] diag ${last.d} ${last.t} CDT · bars=${fp.length} i0=${i0} cumS=${cumS} lastVol=${vol} lastFrac=${frac.toFixed(2)} · open drive open`,
+          );
+        }
+      }
+    }
     const jobs = [
       { key: "open", title: STATS.openDrive.name, sigs: FEED_OPEN_DRIVE ? detectOpenDrive(fp, OPEN_PROD) : [], plan: "fixed TP/SL plan", resting: false, stat: STATS.openDrive.stat },
       { key: "pullback", title: STATS.openPullback.name, sigs: FEED_OPEN_PULLBACK ? detectOpenDrive(fp, PULLBACK_PROD) : [], plan: "1R plan", resting: false, stat: STATS.openPullback.stat },
