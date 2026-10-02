@@ -179,17 +179,21 @@ def contiguous(ts: list[str]) -> bool:
 
 
 def eth_usable(candles: list) -> bool:
-    """Mirror of web/lib/lab.ts sessionUsable: contiguous, correct session
-    window (17:00..17:15 feed-clock open, 15:59 close), >= 1360 minutes."""
+    """Mirror of web/lib/lab.ts sessionUsable (the canonical rule, also used
+    by backfill.py): correct session window (17:00..17:15 feed-clock open,
+    15:59 close), >= 1360 minutes, and a max gap of <= 5 minutes — a couple
+    of dropped minutes (usually at the open) does not fabricate structure.
+    NOTE: was previously strict gap-1 contiguity, which wrongly flagged
+    healed 1368-1379-minute sessions as unusable (2026-10-01)."""
     if not candles or len(candles) < 1360:
         return False
-    ts = [c["t"] for c in candles]
-    if not contiguous(ts):
-        return False
-    s = sorted(ts)
-    first = int(s[0][11:13]) * 60 + int(s[0][14:16])
-    last = int(s[-1][11:13]) * 60 + int(s[-1][14:16])
-    return 1020 <= first <= 1035 and last == 959
+    ts = sorted(c["t"] for c in candles)
+    base = int(ts[0][8:10])
+    mins = [int(t[11:13]) * 60 + int(t[14:16]) + (int(t[8:10]) - base) * 1440 for t in ts]
+    first = mins[0] % 1440
+    last = mins[-1] % 1440
+    maxgap = max((mins[i + 1] - mins[i]) for i in range(len(mins) - 1)) if len(mins) > 1 else 0
+    return 1020 <= first <= 1035 and last == 959 and maxgap <= 5
 
 
 def manifest_entry(path: str, key: str):

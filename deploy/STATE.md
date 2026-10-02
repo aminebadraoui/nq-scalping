@@ -70,6 +70,14 @@
 - Feed defaults trade momentum + RTH + open-drive at normal sizing
   (`FIXED_CONTRACTS` unset, `$170` risk budget, 30-micro cap). The sweep-reclaim
   and pullback cards remain off (`FEED_*` defaults in lib/signalFeed.ts).
+- **Scale-out + ladder (2026-10-01)**: `CROSSTRADE_SCALEOUT=1` switches the
+  momentum card to the backtested scale-out — `placeCrossTradeScaleOut`
+  places a bank leg (2/3, fixed 1R bracket) and a runner leg (1/3, open
+  target), each with our own `order_id`. `lib/runnerTracker.ts` mirrors the
+  ladder engine on the feed's 30s tick and moves the runner's stop via
+  CrossTrade CHANGE (BE at +1R, +1R at +2R, …), snapshotted to
+  `.runner-state.json` so restarts re-attach. Dry-run unless EXECUTE_LIVE=1;
+  timeouts report UNKNOWN and never auto-retry.
 - Orders carry exchange-side brackets (stop/target computed by CrossTrade from
   the live quote), `require_market_position=flat`, and CrossTrade flags them
   `isAutomated` for Tradovate compliance. No auto-retry on network timeout —
