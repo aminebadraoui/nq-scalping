@@ -6,7 +6,7 @@
  * post-entry minute. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scoreRunner } from "../lib/runner.ts";
+import { scoreRunner, scoreScaleOut } from "../lib/runner.ts";
 
 const bars = (rows) => [[100, 100], ...rows].map(([high, low]) => ({ high, low }));
 const LONG = { entry: 100, stop0: 98, dir: 1, entryIdx: 0 }; // risk 2
@@ -111,4 +111,79 @@ test("runner: maxBars cap near end of session", () => {
   const t = scoreRunner(rows, 100, 98, 1, 0, { maxBars: 60 });
   assert.equal(t.hit, "time");
   assert.equal(t.heldBars, 3); // end = minutes.length - 1
+});
+
+/* ---------------- scale-out (bank 2 units at 1R, run 1 unit) ---------------- */
+
+test("scaleout: full loss before the bank rung", () => {
+  const t = scoreScaleOut(bars([[99.5, 97.9]]), 100, 98, 1, 0);
+  assert.ok(t.fullLoss);
+  assert.ok(!t.banked);
+  assert.equal(t.totalR, -3);
+  assert.equal(t.pnl, -3 * 2 - 0.5);
+});
+
+test("scaleout: bank + runner stopped at BE in the same bar (pessimistic)", () => {
+  const t = scoreScaleOut(bars([[102.5, 99]]), 100, 98, 1, 0); // 1R and BE touch in one bar
+  assert.ok(t.banked);
+  assert.equal(t.runnerExitR, 0);
+  assert.equal(t.totalR, 2);
+  assert.equal(t.pnl, 4 - 0.5);
+});
+
+test("scaleout: bank then runner locks +1R (total 3R)", () => {
+  const t = scoreScaleOut(
+    bars([
+      [102.5, 101], // bank at 1R, no BE touch (low 101 > 100)
+      [104.5, 102.2], // rung 2 → runner stop 102
+      [102.5, 101.5], // low ≤ 102 → runner out at +1R
+    ]),
+    100, 98, 1, 0,
+  );
+  assert.equal(t.totalR, 3);
+  assert.equal(t.runnerExitR, 1);
+  assert.equal(t.pnl, 6 - 0.5);
+});
+
+test("scaleout: bank then runner locks +2R (total 4R)", () => {
+  const t = scoreScaleOut(
+    bars([
+      [102.5, 101], // bank
+      [106, 103], // rung 3 → runner stop 104
+      [105, 103.5], // low ≤ 104 → runner out at +2R
+    ]),
+    100, 98, 1, 0,
+  );
+  assert.equal(t.totalR, 4);
+  assert.equal(t.runnerExitR, 2);
+  assert.equal(t.pnl, 8 - 0.5);
+});
+
+test("scaleout: pessimistic same-bar — 1R and initial stop in one bar", () => {
+  const t = scoreScaleOut(bars([[102.5, 97.5]]), 100, 98, 1, 0);
+  assert.ok(t.fullLoss);
+  assert.equal(t.totalR, -3);
+  assert.ok(t.ambiguous);
+});
+
+test("scaleout: time exit without ever banking", () => {
+  const rows = Array.from({ length: 60 }, () => [100.5, 99.5]).map(([high, low]) => ({ high, low }));
+  const t = scoreScaleOut(rows, 100, 98, 1, 0);
+  assert.equal(t.hit, "time");
+  assert.ok(!t.banked);
+  assert.equal(t.totalR, 3 * 0);
+  assert.equal(t.pnl, -0.5);
+});
+
+test("scaleout: short mirror — bank + runner BE", () => {
+  const t = scoreScaleOut(
+    bars([
+      [99.5, 97.5], // bank at 1R down, no BE touch (high 99.5 < 100)
+      [100.5, 99.5], // high ≥ 100 → runner out at BE
+    ]),
+    100, 102, -1, 0,
+  );
+  assert.ok(t.banked);
+  assert.equal(t.runnerExitR, 0);
+  assert.equal(t.totalR, 2);
 });

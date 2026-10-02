@@ -17,7 +17,8 @@
 
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
-import { scoreRunner, type RunnerTrade } from "../lib/runner";
+import { scoreRunner, scoreScaleOut, type RunnerTrade, type ScaleOutTrade } from "../lib/runner";
+import { closeOf } from "../lib/momentum";
 import {
   detectMomentum,
   detectExpansionScalp,
@@ -38,20 +39,26 @@ type FamilyDef = {
   name: string;
   detect: (m: MomMinute[]) => MomentumSignal[];
   fixedSize: boolean;
+  targetR: number; // fixed-target R (open drive: 15 pts on a 35-pt stop)
 };
 
 const FAMILIES: FamilyDef[] = [
-  { name: "momentum", detect: (m) => [...detectMomentum(m, MOM_PROD), ...detectExpansionScalp(m, EXP_PROD)], fixedSize: true },
-  { name: "expansion", detect: (m) => detectExpansionScalp(m, EXP_PROD), fixedSize: true },
-  { name: "rth", detect: (m) => detectSoftMomentum(m, SOFT_PROD), fixedSize: true },
-  { name: "open", detect: (m) => detectOpenDrive(m, OPEN_PROD), fixedSize: false },
+  { name: "momentum", detect: (m) => [...detectMomentum(m, MOM_PROD), ...detectExpansionScalp(m, EXP_PROD)], fixedSize: true, targetR: 1 },
+  { name: "expansion", detect: (m) => detectExpansionScalp(m, EXP_PROD), fixedSize: true, targetR: 1 },
+  { name: "rth", detect: (m) => detectSoftMomentum(m, SOFT_PROD), fixedSize: true, targetR: 0.75 },
+  { name: "open", detect: (m) => detectOpenDrive(m, OPEN_PROD), fixedSize: false, targetR: 15 / 35 },
 ];
 
 function parseArgs(argv: string[]) {
-  const o: { family: string; max?: number; offline: boolean; maxBars: number } = {
+  const o: {
+    family: string; max?: number; offline: boolean; maxBars: number;
+    exit: "ladder" | "scaleout" | "fixed"; maxTradesPerDay?: number; dailyGoal?: number; dailyStop?: number;
+    targetR?: number; contracts?: number;
+  } = {
     family: "all",
     offline: false,
     maxBars: 60,
+    exit: "ladder",
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -59,12 +66,97 @@ function parseArgs(argv: string[]) {
     else if (a === "--max") o.max = Number(argv[++i]);
     else if (a === "--offline") o.offline = true;
     else if (a === "--maxBars") o.maxBars = Number(argv[++i]);
+    else if (a === "--exit") o.exit = argv[++i] as "ladder" | "scaleout" | "fixed";
+    else if (a === "--targetR") o.targetR = Number(argv[++i]);
+    else if (a === "--contracts") o.contracts = Number(argv[++i]);
+    else if (a === "--maxTradesPerDay") o.maxTradesPerDay = Number(argv[++i]);
+    else if (a === "--dailyGoal") o.dailyGoal = Number(argv[++i]);
+    else if (a === "--dailyStop") o.dailyStop = Number(argv[++i]);
   }
   return o;
 }
 
-function sequentialize(minutes: MomMinute[], signals: MomentumSignal[], maxBars: number): RunnerTrade[] {
-  const out: RunnerTrade[] = [];
+type FixedTrade = {
+  pnl: number; risk: number; hit: "stop" | "target" | "time";
+  heldBars: number; mfeR: number; maeR: number; ambiguous: boolean;
+  exitR: number;
+};
+
+function scoreFixed(
+  minutes: { high: number; low: number }[],
+  entry: number,
+  stop0: number,
+  dir: 1 | -1,
+  entryIdx: number,
+  targetR: number,
+  maxBars: number,
+  cost = 0.5,
+): FixedTrade | null {
+  const risk = Math.abs(entry - stop0);
+  if (!(risk > 0)) return null;
+  const target = entry + dir * targetR * risk;
+  const start = entryIdx + 1;
+  const end = Math.min(minutes.length - 1, entryIdx + maxBars);
+  if (start > end) return null;
+  let exit = stop0;
+  let hit: FixedTrade["hit"] = "stop";
+  let heldBars = 0;
+  let mfe = 0;
+  let mae = 0;
+  let ambiguous = false;
+  for (let j = start; j <= end; j++) {
+    const b = minutes[j];
+    const fav = dir > 0 ? b.high - entry : entry - b.low;
+    const adv = dir > 0 ? entry - b.low : b.high - entry;
+    mfe = Math.max(mfe, fav / risk);
+    mae = Math.max(mae, adv / risk);
+    const stopHit = dir > 0 ? b.low <= stop0 : b.high >= stop0;
+    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
+    if (j === start && stopHit && tgtHit) ambiguous = true;
+    if (stopHit) {
+      exit = stop0;
+      hit = "stop";
+      heldBars = j - entryIdx;
+      break;
+    }
+    if (tgtHit) {
+      exit = target;
+      hit = "target";
+      heldBars = j - entryIdx;
+      break;
+    }
+  }
+  if (hit === "stop" && heldBars === end - entryIdx) {
+    // never stopped — time exit at the final close
+    const stopHitLast = dir > 0 ? minutes[end].low <= stop0 : minutes[end].high >= stop0;
+    if (!stopHitLast) {
+      hit = "time";
+      exit = (minutes[end].high + minutes[end].low) / 2;
+    }
+  }
+  const exitR = ((exit - entry) * dir) / risk;
+  return {
+    pnl: (exit - entry) * dir - cost,
+    risk,
+    hit,
+    heldBars,
+    mfeR: mfe,
+    maeR: mae,
+    ambiguous,
+    exitR: exitR === 0 ? 0 : exitR,
+  };
+}
+
+type Outcome = RunnerTrade | ScaleOutTrade | FixedTrade;
+
+function sequentialize(
+  minutes: MomMinute[],
+  signals: MomentumSignal[],
+  maxBars: number,
+  exit: "ladder" | "scaleout" | "fixed",
+  targetR: number,
+): Outcome[] {
+  const out: Outcome[] = [];
   let openUntil = -1;
   // detectors return separate lists — merge in strict time order so the
   // one-trade-at-a-time rule matches what a live trader actually faces
@@ -72,7 +164,12 @@ function sequentialize(minutes: MomMinute[], signals: MomentumSignal[], maxBars:
   for (const s of ordered) {
     if (s.entryIdx <= openUntil) continue; // the live trader cannot be in two trades
     const dir = s.dir === "long" ? 1 : -1;
-    const t = scoreRunner(minutes, s.entry, s.stop, dir, s.entryIdx, { maxBars });
+    const t =
+      exit === "fixed"
+        ? scoreFixed(minutes, s.entry, s.stop, dir, s.entryIdx, targetR, maxBars)
+        : exit === "scaleout"
+          ? scoreScaleOut(minutes, s.entry, s.stop, dir, s.entryIdx, { maxBars })
+          : scoreRunner(minutes, s.entry, s.stop, dir, s.entryIdx, { maxBars });
     if (!t) continue;
     out.push(t);
     openUntil = s.entryIdx + t.heldBars;
@@ -82,30 +179,35 @@ function sequentialize(minutes: MomMinute[], signals: MomentumSignal[], maxBars:
 
 type FamStats = {
   name: string;
-  trades: RunnerTrade[];
   n: number;
   wr: number;
   pf: number;
   avgPts: number;
   expR: number;
-  avgExitR: number;
-  fullLossPct: number;
-  bePct: number;
-  partialPct: number;
-  ge1RPct: number;
-  ge2RPct: number;
-  ge3RPct: number;
   timePct: number;
   ambPct: number;
   mfeR: number;
   maeR: number;
-  maxFavorR: number;
   avgHeld: number;
   netPts: number;
   sessions: number;
+  // ladder columns
+  avgExitR: number;
+  fullLossPct: number;
+  bePct: number;
+  ge1RPct: number;
+  ge2RPct: number;
+  ge3RPct: number;
+  // scale-out columns
+  avgTotalR: number;
+  bankedPct: number;
+  bankBePct: number;
+  totGe3RPct: number;
+  totGe4RPct: number;
+  totGe5RPct: number;
 };
 
-function famStats(name: string, trades: { t: RunnerTrade; date: string }[]): FamStats {
+function famStats(name: string, trades: { t: Outcome; date: string }[], exit: "ladder" | "scaleout" | "fixed"): FamStats {
   const rs = trades.map((x) => x.t);
   const n = rs.length;
   const wins = rs.filter((t) => t.pnl > 0);
@@ -113,44 +215,55 @@ function famStats(name: string, trades: { t: RunnerTrade; date: string }[]): Fam
   const gw = wins.reduce((a, t) => a + t.pnl, 0);
   const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
   const net = rs.reduce((a, t) => a + t.pnl, 0);
-  const pct = (f: (t: RunnerTrade) => boolean) => (n ? (rs.filter(f).length / n) * 100 : 0);
+  const pct = (f: (t: Outcome) => boolean) => (n ? (rs.filter(f).length / n) * 100 : 0);
+  const isLadder = exit !== "scaleout"; // fixed targets share the ladder's per-unit exitR semantics
+  const ladder = (t: Outcome) => t as RunnerTrade;
+  const scale = (t: Outcome) => t as ScaleOutTrade;
   return {
     name,
-    trades: rs,
     n,
     wr: n ? (wins.length / n) * 100 : 0,
     pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
     avgPts: n ? net / n : 0,
     expR: n ? rs.reduce((a, t) => a + t.pnl / t.risk, 0) / n : 0,
-    avgExitR: n ? rs.reduce((a, t) => a + t.exitR, 0) / n : 0,
-    fullLossPct: pct((t) => t.exitR <= -0.999),
-    bePct: pct((t) => t.exitR === 0),
-    partialPct: pct((t) => t.exitR > 0 && t.exitR < 1),
-    ge1RPct: pct((t) => t.exitR >= 1),
-    ge2RPct: pct((t) => t.exitR >= 2),
-    ge3RPct: pct((t) => t.exitR >= 3),
     timePct: pct((t) => t.hit === "time"),
     ambPct: pct((t) => t.ambiguous),
     mfeR: n ? rs.reduce((a, t) => a + t.mfeR, 0) / n : 0,
     maeR: n ? rs.reduce((a, t) => a + t.maeR, 0) / n : 0,
-    maxFavorR: n ? rs.reduce((a, t) => a + t.maxFavorR, 0) / n : 0,
     avgHeld: n ? rs.reduce((a, t) => a + t.heldBars, 0) / n : 0,
     netPts: net,
     sessions: new Set(trades.map((x) => x.date)).size,
+    avgExitR: isLadder ? (n ? rs.reduce((a, t) => a + ladder(t).exitR, 0) / n : 0) : 0,
+    fullLossPct: pct((t) => (isLadder ? ladder(t).exitR <= -0.999 : scale(t).fullLoss)),
+    bePct: pct((t) => (isLadder ? ladder(t).exitR === 0 : scale(t).banked && scale(t).runnerExitR === 0)),
+    ge1RPct: pct((t) => (isLadder ? ladder(t).exitR >= 1 : scale(t).totalR >= 2)),
+    ge2RPct: pct((t) => (isLadder ? ladder(t).exitR >= 2 : scale(t).totalR >= 3)),
+    ge3RPct: pct((t) => (isLadder ? ladder(t).exitR >= 3 : scale(t).totalR >= 4)),
+    avgTotalR: isLadder ? 0 : (n ? rs.reduce((a, t) => a + scale(t).totalR, 0) / n : 0),
+    bankedPct: pct((t) => scale(t).banked),
+    bankBePct: pct((t) => scale(t).banked && scale(t).runnerExitR === 0),
+    totGe3RPct: pct((t) => scale(t).totalR >= 3),
+    totGe4RPct: pct((t) => scale(t).totalR >= 4),
+    totGe5RPct: pct((t) => scale(t).totalR >= 5),
   };
 }
 
-function fmtFam(s: FamStats): string {
+function fmtFam(s: FamStats, exit: "ladder" | "scaleout" | "fixed"): string {
   const pf = Number.isFinite(s.pf) ? s.pf.toFixed(2) : "inf";
-  return (
+  const core =
     `${s.name.padEnd(10)} n=${String(s.n).padStart(5)} wr=${s.wr.toFixed(1).padStart(5)}% pf=${pf.padStart(5)} ` +
-    `avgPts=${s.avgPts.toFixed(2).padStart(6)} expR=${s.expR.toFixed(2).padStart(5)} avgExitR=${s.avgExitR.toFixed(2).padStart(5)} ` +
-    `loss=${s.fullLossPct.toFixed(0).padStart(3)}% be=${s.bePct.toFixed(0).padStart(3)}% part=${s.partialPct.toFixed(0).padStart(3)}% ` +
-    `ge1R=${s.ge1RPct.toFixed(0).padStart(3)}% ge2R=${s.ge2RPct.toFixed(0).padStart(3)}% ge3R=${s.ge3RPct.toFixed(0).padStart(3)}% ` +
+    `avgPts=${s.avgPts.toFixed(2).padStart(6)} expR=${s.expR.toFixed(2).padStart(5)} `;
+  const exitCols =
+    exit === "scaleout"
+      ? `avgTotR=${s.avgTotalR.toFixed(2).padStart(5)} loss=${s.fullLossPct.toFixed(0).padStart(3)}% ` +
+        `bank+BE=${s.bankBePct.toFixed(0).padStart(3)}% tot≥3R=${s.totGe3RPct.toFixed(0).padStart(3)}% tot≥4R=${s.totGe4RPct.toFixed(0).padStart(3)}% tot≥5R=${s.totGe5RPct.toFixed(0).padStart(3)}% `
+      : `avgExitR=${s.avgExitR.toFixed(2).padStart(5)} loss=${s.fullLossPct.toFixed(0).padStart(3)}% be=${s.bePct.toFixed(0).padStart(3)}% ` +
+        `ge1R=${s.ge1RPct.toFixed(0).padStart(3)}% ge2R=${s.ge2RPct.toFixed(0).padStart(3)}% ge3R=${s.ge3RPct.toFixed(0).padStart(3)}% `;
+  const tail =
     `time=${s.timePct.toFixed(0).padStart(3)}% amb=${s.ambPct.toFixed(0).padStart(2)}% ` +
     `mfeR=${s.mfeR.toFixed(2)} maeR=${s.maeR.toFixed(2)} held=${s.avgHeld.toFixed(0).padStart(2)}m ` +
-    `net=${s.netPts.toFixed(0).padStart(6)}pts sess=${s.sessions}`
-  );
+    `net=${s.netPts.toFixed(0).padStart(6)}pts sess=${s.sessions}`;
+  return core + exitCols + tail;
 }
 
 async function main() {
@@ -162,10 +275,10 @@ async function main() {
   }
   if (o.max) dates = dates.slice(0, o.max);
   const families = FAMILIES.filter((f) => o.family === "all" || f.name === o.family);
-  console.log(`runner ladder study · ${dates.length} sessions · families: ${families.map((f) => f.name).join(", ")} · maxBars ${o.maxBars}`);
+  console.log(`runner ${o.exit} study · ${dates.length} sessions · families: ${families.map((f) => f.name).join(", ")} · maxBars ${o.maxBars}`);
   const t0 = Date.now();
 
-  const perFamily: { def: FamilyDef; trades: { t: RunnerTrade; date: string }[] }[] = families.map((def) => ({
+  const perFamily: { def: FamilyDef; trades: { t: Outcome; date: string }[] }[] = families.map((def) => ({
     def,
     trades: [],
   }));
@@ -182,7 +295,7 @@ async function main() {
       loaded++;
       for (const fam of perFamily) {
         const signals = fam.def.detect(minutes);
-        const scored = sequentialize(minutes, signals, o.maxBars);
+        const scored = sequentialize(minutes, signals, o.maxBars, o.exit, o.targetR ?? fam.def.targetR);
         for (const t of scored) fam.trades.push({ t, date });
       }
     }
@@ -191,10 +304,10 @@ async function main() {
   }
 
   console.log(`\n${((Date.now() - t0) / 1000).toFixed(0)}s · ${loaded} sessions loaded\n`);
-  console.log("POINT-LEVEL (ladder exit, 0.5 pt cost, pessimistic same-bar, sequential)");
+  console.log(`POINT-LEVEL (${o.exit} exit, 0.5 pt cost, pessimistic same-bar, sequential${o.exit === "scaleout" ? " — bank 2/3 at 1R, run 1/3" : ""})`);
   for (const fam of perFamily) {
-    const s = famStats(fam.def.name, fam.trades);
-    console.log("  " + fmtFam(s));
+    const s = famStats(fam.def.name, fam.trades, o.exit);
+    console.log("  " + fmtFam(s, o.exit));
   }
 
   console.log("\nMFF RAPID EOD 50k (sizing: 9 MNQ fixed · open drive $170-budget)");
@@ -204,9 +317,36 @@ async function main() {
       console.log(`  ${fam.def.name.padEnd(10)} no trades`);
       continue;
     }
-    const sized = fam.def.fixedSize
-      ? raw.map((x) => ({ ...x, contracts: FIXED_MICROS, pnl: Math.round(x.pnlPts * POINT_VALUE * FIXED_MICROS * 100) / 100 }))
+    const micros = fam.def.fixedSize ? (o.contracts ?? FIXED_MICROS) : null;
+    const sizedAll = fam.def.fixedSize && micros
+      ? raw.map((x) => ({ ...x, contracts: micros, pnl: Math.round(x.pnlPts * POINT_VALUE * micros * 100) / 100 }))
       : dollarize(raw);
+    // daily guardrails (the live plan): max N trades/day, stop trading once
+    // the day's goal is banked or the day's loss floor is touched
+    const sized: typeof sizedAll = [];
+    if (o.maxTradesPerDay || o.dailyGoal || o.dailyStop) {
+      let day = "";
+      let dayTrades = 0;
+      let dayPnl = 0;
+      for (const x of sizedAll) {
+        if (x.date !== day) {
+          day = x.date;
+          dayTrades = 0;
+          dayPnl = 0;
+        }
+        if (o.maxTradesPerDay && dayTrades >= o.maxTradesPerDay) continue;
+        if (o.dailyGoal && dayPnl >= o.dailyGoal) continue;
+        if (o.dailyStop && dayPnl <= -o.dailyStop) continue;
+        sized.push(x);
+        dayTrades++;
+        dayPnl += x.pnl;
+      }
+      console.log(
+        `              guards: maxTrades/day=${o.maxTradesPerDay ?? "∞"} · goal $${o.dailyGoal ?? "∞"} · stop $${o.dailyStop ?? "∞"} → ${sized.length} of ${sizedAll.length} trades kept`,
+      );
+    } else {
+      sized.push(...sizedAll);
+    }
     const dayPnl = new Map<string, number>();
     for (const x of sized) dayPnl.set(x.date, (dayPnl.get(x.date) ?? 0) + x.pnl);
     const days = [...dayPnl.values()];

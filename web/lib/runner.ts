@@ -122,3 +122,126 @@ export function scoreRunner(
     ambiguous,
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Scale-out variant: bank `bankR` on `bankUnits` of the position at
+ * the first rung, then ladder the remaining `runnerUnits` (stop → BE
+ * at the bank, then +1R per extra rung, exactly like scoreRunner).
+ * Default 2 units banked at 1R + 1 unit running.
+ * ------------------------------------------------------------------ */
+
+export type ScaleOutTrade = {
+  dir: 1 | -1;
+  entryIdx: number;
+  entry: number;
+  stop0: number;
+  risk: number;
+  pnl: number; // points, cost included (house 0.5 pt trade-level cost)
+  totalR: number; // sum of R across all units (e.g. 2 banked at 1R + runner 2R = 4)
+  hit: "stop" | "time";
+  heldBars: number;
+  mfeR: number;
+  maeR: number;
+  fullLoss: boolean; // stopped out before the bank rung
+  banked: boolean; // did the bank rung get hit
+  runnerExitR: number; // the running unit's exit in R (0 = BE)
+  ambiguous: boolean;
+};
+
+export function scoreScaleOut(
+  minutes: { high: number; low: number }[],
+  entry: number,
+  stop0: number,
+  dir: 1 | -1,
+  entryIdx: number,
+  opts: { bankR?: number; bankUnits?: number; runnerUnits?: number; maxBars?: number; cost?: number } = {},
+): ScaleOutTrade | null {
+  const bankR = opts.bankR ?? 1;
+  const bankUnits = opts.bankUnits ?? 2;
+  const runnerUnits = opts.runnerUnits ?? 1;
+  const units = bankUnits + runnerUnits;
+  const maxBars = opts.maxBars ?? 60;
+  const cost = opts.cost ?? 0.5;
+  const risk = Math.abs(entry - stop0);
+  if (!(risk > 0)) return null;
+
+  let stop = stop0;
+  let banked = false;
+  let runnerExitR = -1; // full-loss default: the runner also took −1R
+  let stopped = false;
+  let heldBars = 0;
+  let mfe = 0;
+  let mae = 0;
+  let ambiguous = false;
+
+  const start = entryIdx + 1;
+  const end = Math.min(minutes.length - 1, entryIdx + maxBars);
+  if (start > end) return null;
+
+  for (let j = start; j <= end; j++) {
+    const b = minutes[j];
+    const fav = dir > 0 ? b.high - entry : entry - b.low;
+    const adv = dir > 0 ? entry - b.low : b.high - entry;
+    mfe = Math.max(mfe, fav / risk);
+    mae = Math.max(mae, adv / risk);
+    const rung = fav > 0 ? Math.floor(fav / risk) : 0;
+
+    // 1) pessimistic: the current stop is judged first
+    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
+    if (stopHit) {
+      stopped = true;
+      runnerExitR = banked ? ((stop - entry) * dir) / risk : -1;
+      heldBars = j - entryIdx;
+      if (j === start && rung >= bankR) ambiguous = true;
+      break;
+    }
+
+    // 2) bank the first rung, move the runner to breakeven
+    if (!banked && rung >= bankR) {
+      banked = true;
+      stop = entry;
+      // pessimistic: if the same bar also traded back through BE, the
+      // runner is out at breakeven before the bar closes
+      if (dir > 0 ? b.low <= entry : b.high >= entry) {
+        runnerExitR = 0;
+        stopped = true;
+        heldBars = j - entryIdx;
+        break;
+      }
+    }
+
+    // 3) trail the runner: at rung n the stop sits at (n−1)R
+    if (banked && rung >= bankR + 1) {
+      const newStop = entry + dir * (rung - 1) * risk;
+      if (dir > 0 ? newStop > stop : newStop < stop) stop = newStop;
+    }
+    heldBars = j - entryIdx;
+  }
+
+  // never stopped → time exit at the final bar's close
+  if (!stopped) {
+    const close = (minutes[end].high + minutes[end].low) / 2;
+    runnerExitR = ((close - entry) * dir) / risk;
+    heldBars = end - entryIdx;
+  }
+
+  const totalR = banked ? bankR * bankUnits + runnerUnits * runnerExitR : units * runnerExitR;
+  const pnl = totalR * risk - cost;
+  return {
+    dir,
+    entryIdx,
+    entry,
+    stop0,
+    risk,
+    pnl,
+    totalR,
+    hit: stopped ? "stop" : "time",
+    heldBars,
+    mfeR: mfe,
+    maeR: mae,
+    fullLoss: !banked && stopped,
+    banked,
+    runnerExitR: runnerExitR === 0 ? 0 : runnerExitR,
+    ambiguous,
+  };
+}
