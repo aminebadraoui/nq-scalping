@@ -30,6 +30,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import postgres from "postgres";
+import { sessionDayOf } from "../lib/times";
 import {
   entryCandidates,
   assignEntries,
@@ -498,13 +499,14 @@ async function main() {
          sig_entry, sig_stop, sig_target, status, fill_entry, fill_entry_at,
          exit_avg, exit_fills, gross_pts, gross_usd, commissions, net_usd, result, features, matched_at)
       values
-        (${s.key}, ${s.day}, ${s.timeET}, ${s.ts}, ${s.side}, ${s.contracts}, ${s.verdict}, ${s.headline},
+        (${s.key}, ${sessionDayOf(s.ts)}, ${s.timeET}, ${s.ts}, ${s.side}, ${s.contracts}, ${s.verdict}, ${s.headline},
          ${s.entry}, ${s.stop}, ${s.target}, ${t.status},
          ${t.fillEntry ?? null}, ${t.fillEntryAt ? new Date(t.fillEntryAt) : null},
          ${t.exitAvg ?? null}, ${t.exitFills ? JSON.stringify(t.exitFills) : null},
          ${t.grossPts.toFixed(2)}, ${t.grossUsd.toFixed(2)}, ${t.commissions.toFixed(2)},
          ${(t.grossUsd - t.commissions).toFixed(2)}, ${t.result}, ${s.features ? JSON.stringify(s.features) : null}, now())
       on conflict (signal_key) do update set
+        day = excluded.day,
         status = excluded.status,
         fill_entry = excluded.fill_entry,
         fill_entry_at = excluded.fill_entry_at,

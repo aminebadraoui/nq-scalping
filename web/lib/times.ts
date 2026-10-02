@@ -150,3 +150,27 @@ export function utcToEpoch(hhmm: string, dateISO?: string): number {
     Date.parse(`${day}T${String(h).padStart(2, "0")}:${String(m ?? 0).padStart(2, "0")}:00Z`) / 1000,
   );
 }
+
+/**
+ * The trading-day key for an epoch-ms instant: a day = the Globex open
+ * (18:00 ET) through the following RTH close (17:00 ET next calendar
+ * day), labeled by the Globex session date. Before 18:00 ET the instant
+ * belongs to YESTERDAY's session — a 01:00 card and the previous
+ * evening's 22:00 card are the same trading day.
+ */
+export function sessionDayOf(tsMs: number): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(new Date(tsMs));
+  const p = Object.fromEntries(parts.map((x) => [x.type, x.value])) as Record<string, string>;
+  const date = `${p.year}-${p.month}-${p.day}`;
+  if (Number(p.hour) >= 18) return date;
+  const prev = new Date(tsMs - 24 * 3_600_000);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(prev);
+}

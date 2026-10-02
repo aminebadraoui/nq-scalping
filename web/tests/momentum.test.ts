@@ -517,3 +517,19 @@ test("requireTrailProgress vetoes breakouts inside overhead congestion", () => {
     "the 108 spike is outside the 6-bar window — fires",
   );
 });
+
+/* session day helper (lib/times) */
+import { sessionDayOf } from "../lib/times";
+
+test("sessionDayOf: a day = Globex 18:00 → next-day RTH close", () => {
+  // 22:00 ET Oct 1 = 02:00Z Oct 2 → session 2026-10-01
+  assert.equal(sessionDayOf(Date.parse("2026-10-02T02:00:00Z")), "2026-10-01");
+  // 01:00 ET Oct 2 = 05:00Z Oct 2 → still the Oct 1 session
+  assert.equal(sessionDayOf(Date.parse("2026-10-02T05:00:00Z")), "2026-10-01");
+  // 09:30 ET Oct 2 = 13:30Z Oct 2 → RTH of the Oct 1 session
+  assert.equal(sessionDayOf(Date.parse("2026-10-02T13:30:00Z")), "2026-10-01");
+  // 16:59 ET Oct 2 = 20:59Z Oct 2 → still Oct 1 session
+  assert.equal(sessionDayOf(Date.parse("2026-10-02T20:59:00Z")), "2026-10-01");
+  // 18:00 ET Oct 2 = 22:00Z Oct 2 → new session 2026-10-02
+  assert.equal(sessionDayOf(Date.parse("2026-10-02T22:00:00Z")), "2026-10-02");
+});
