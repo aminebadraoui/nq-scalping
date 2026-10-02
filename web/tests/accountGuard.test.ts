@@ -6,7 +6,7 @@
  * reading cannot reveal the day's P&L. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { guardCheck, __resetGuardForTest, guardState } from "../lib/accountGuard";
+import { guardCheck, __resetGuardForTest, guardState , tradingDayKey } from "../lib/accountGuard";
 
 function setStage(stage: "eval" | "funded") {
   process.env.MFF_STAGE = stage;
@@ -197,4 +197,29 @@ test("give-back protection: the floor guards small peaks; pct=0 disables", () =>
     else process.env.GUARD_GIVEBACK_FLOOR = oldFloor;
     __resetGuardForTest();
   }
+});
+
+test("trading day rolls at the Globex open (18:00 ET), not midnight", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  // 22:00 ET Oct 2: session day key = 2026-10-02 (tonight's session)
+  guardCheck(snap(50_000), new Date("2026-10-03T02:00:00Z")); // 22:00 ET Oct 2
+  guardCheck(snap(50_500), new Date("2026-10-03T02:30:00Z"));
+  assert.equal(guardState().dayPnl, 500);
+  // 01:00 ET Oct 3 (after midnight, BEFORE 18:00): SAME trading day — no reset
+  guardCheck(snap(50_600), new Date("2026-10-03T05:00:00Z")); // 01:00 ET Oct 3
+  assert.equal(guardState().dayPnl, 600, "pre-Globex hours belong to yesterday's session");
+  // 18:30 ET Oct 3: the Globex open rolls the day
+  guardCheck(snap(50_600), new Date("2026-10-03T22:30:00Z")); // 18:30 ET Oct 3
+  assert.equal(guardState().dayPnl, 0, "day resets at the Globex open");
+  __resetGuardForTest();
+});
+
+test("tradingDayKey: before 18:00 belongs to yesterday's session", () => {
+  // 01:00 ET Oct 3 = 05:00Z Oct 3 → session key 2026-10-02
+  assert.equal(tradingDayKey(new Date("2026-10-03T05:00:00Z")), "2026-10-02");
+  // 22:00 ET Oct 2 = 02:00Z Oct 3 → session key 2026-10-02
+  assert.equal(tradingDayKey(new Date("2026-10-03T02:00:00Z")), "2026-10-02");
+  // 18:30 ET Oct 2 = 22:30Z Oct 2 → session key 2026-10-02
+  assert.equal(tradingDayKey(new Date("2026-10-02T22:30:00Z")), "2026-10-02");
 });

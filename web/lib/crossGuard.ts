@@ -16,8 +16,7 @@
 
 import { existsSync } from "fs";
 import path from "path";
-import { guardCheck, guardState, hydrateGuardFromDb, type GuardDecision } from "./accountGuard";
-import { etDayAndClock } from "./newsGate";
+import { guardCheck, guardState, hydrateGuardFromDb, tradingDayKey, type GuardDecision } from "./accountGuard";
 
 type Snapshot = { equity: number; realized: number };
 
@@ -92,7 +91,6 @@ export async function crossGuardDayPnl(): Promise<number> {
   const snap = await fetchSnapshot();
   if (!snap) return 0; // sizing fails open — the gate still protects the order
   const s = guardState();
-  const today = etDayAndClock(Date.now()).day;
-  if (s.dayKey !== today) return 0;
+  if (s.dayKey !== tradingDayKey()) return 0;
   return snap.realized - s.dayStartRealized;
 }

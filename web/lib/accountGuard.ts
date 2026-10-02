@@ -207,6 +207,16 @@ export async function hydrateGuardFromDb(): Promise<void> {
 }
 
 /* ── EOD clock helpers (America/New_York) ───────────────────────────── */
+/** the trading-day key: sessions start at the Globex open (18:00 ET).
+ *  Before 18:00 the day belongs to YESTERDAY's session date — a 01:00
+ *  card and a 22:00 card are the SAME trading day. */
+export function tradingDayKey(now = new Date()): string {
+  const p = nyParts(now);
+  if (p.minute >= 18 * 60) return p.date;
+  const prev = new Date(now.getTime() - 24 * 3_600_000);
+  return nyParts(prev).date;
+}
+
 function nyParts(now = new Date()) {
   const p = Object.fromEntries(
     new Intl.DateTimeFormat("en-US", {
@@ -252,12 +262,12 @@ function inNewsWindow(now = new Date()): boolean {
  *  the current realized balance (the account is flat at the session boundary,
  *  so realized is the day-open baseline). */
 function maybeRolloverDay(state: GuardState, realized: number, now = new Date()) {
-  const p = nyParts(now);
-  if (state.dayKey === p.date) return;
+  const dayKey = tradingDayKey(now);
+  if (state.dayKey === dayKey) return;
   if (state.dayKey !== "" && state.dayPnl > state.bestDayPnl) {
     state.bestDayPnl = state.dayPnl;
   }
-  state.dayKey = p.date;
+  state.dayKey = dayKey;
   state.dayStartRealized = realized;
   state.dayPnl = 0;
   state.dayPeak = 0; // the give-back reference belongs to the new day only
