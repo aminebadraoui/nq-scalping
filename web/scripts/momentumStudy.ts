@@ -256,6 +256,14 @@ const SWEEP_VARIANTS: { name: string; overrides: Partial<MomConfig> }[] = [
   { name: "prod+t1.5", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, targetR: 1.5 } },
   { name: "prod+t2", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, targetR: 2 } },
   { name: "prod+core", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 0.85, hourFilter: "globexCore" } },
+  // efficiency-density + diagonal-imbalance gates (footprint-native size filters)
+  { name: "prod+rr1.0+eff1.5", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0, minBreakEffR: 1.5 } },
+  { name: "prod+rr1.0+eff2", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0, minBreakEffR: 2 } },
+  { name: "prod+rr1.0+diag1", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0, minBreakDiag: 1 } },
+  { name: "prod+rr1.0+diag2", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0, minBreakDiag: 2 } },
+  { name: "prod+rr1.0+eff1.5+diag1", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakRangeR: 1.0, minBreakEffR: 1.5, minBreakDiag: 1 } },
+  { name: "prod+eff1.5", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakEffR: 1.5 } },
+  { name: "prod+diag1", overrides: { stopMode: "breakout", breakFrac: 0.75, minRiskPts: 3, breakWindow: 10, needResponse: false, minBreakDiag: 1 } },
 ];
 
 const EXPANSION_VARIANTS: { name: string; overrides: Partial<ExpansionConfig> }[] = [

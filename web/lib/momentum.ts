@@ -20,6 +20,8 @@
  * Pure function of the minute array + config: unit-testable, replayable.
  * ------------------------------------------------------------------ */
 
+import { imbalanceFor } from "./imbalance";
+
 export type MomMinute = {
   t: string;
   d: string;
@@ -99,6 +101,14 @@ export type MomConfig = {
    *  0 = off). The feature study: big one-sided bars continue, small bars
    *  don't. */
   minBreakRangeR: number;
+  /** breakout bar density: volume-per-point ÷ its trailing median (the
+   *  study's effRel — a wide bar on thin prints fails this even when the
+   *  ATR gate passes). 0 = off. */
+  minBreakEffR?: number;
+  /** breakout bar order-flow conviction: minimum diagonal-imbalance
+   *  levels (3:1 buy lifting the level below's sell, or the short
+   *  mirror) on the trade side. 0 = off. */
+  minBreakDiag?: number;
   /** require a dominant cluster stack on the breakout bar, matching the
    *  trade direction (buy stack for longs). Feature study: big bar + buy
    *  stack → 77% next-bar up. */
@@ -168,13 +178,12 @@ export const MOM_DEFAULTS: MomConfig = {
   failLocalBars: 20,
 };
 
-/** The production momentum config — frozen after the 568-session sweeps
- *  (see MOMENTUM_SIGNAL.md): merged mode (the breakout bar is its own
- *  response evidence — covers flush → immediate breakout), 75% one-sided
- *  breakout through the reference, ≥3 pt risk floor, breakout bar range
- *  ≥ 0.85× ATR14 (candle-size gate), breakout within 10 bars of the failed
- *  flush. Replay: ~1,820 trades, ~76% win, PF ~2.75, positive every full
- *  year, ~3.2 signals per session. */
+/** The production momentum config — see MOMENTUM_SIGNAL.md.
+ *  Quality-filter sweep 2026-10-02 (648 sessions, Globex-filtered): the
+ *  ATR size gate at 1.0 beats 0.85 on WR (75.6 vs 75.2), PF (2.71 vs 2.65)
+ *  AND total net (+4482 vs +4475) at nearly the same trade count — the
+ *  footprint gates (stack/churn/POC/quiet/diag/eff) all trade total net
+ *  for per-trade quality (see research/quality-filter-sweep-2026-10-02.md). */
 export const MOM_PROD: MomConfig = {
   ...MOM_DEFAULTS,
   needResponse: false,
@@ -185,7 +194,7 @@ export const MOM_PROD: MomConfig = {
   minRiskPts: 3,
   targetR: 1,
   hourFilter: "globex",
-  minBreakRangeR: 0.85,
+  minBreakRangeR: 1.0,
 };
 
 export type MomentumSignal = {
@@ -224,6 +233,10 @@ export type MomentumSignal = {
   deltaFromFlush: number;
   atr14: number;
   riskPts: number;
+  /** breakout bar efficiency density (volume-per-point ÷ trailing median) */
+  breakEffR?: number;
+  /** breakout bar diagonal-imbalance levels on the trade side */
+  breakDiag?: number;
   /** flush vs the trailing 20-bar low/high — the local context of the probe */
   trailLowDist: number;
   trailHighDist: number;
@@ -295,6 +308,19 @@ function barStack(levels: { price: number; buy: number; sell: number }[]): "buy"
   return "none";
 }
 
+/** diagonal-imbalance levels on one side (the study's dBuy/dSell) —
+ *  aggressive lifting/hitting rows: >=10 lots and >=3x the level beyond. */
+function diagCount(levels: MomMinute["levels"], side: "buy" | "sell"): number {
+  const sorted = [...levels].sort((a, b) => b.price - a.price);
+  const fp = imbalanceFor(sorted.map((l) => ({ price: l.price, buy: l.buy, sell: l.sell })));
+  let n = 0;
+  for (const l of fp) {
+    if (side === "buy" && l.dBuy) n++;
+    if (side === "sell" && l.dSell) n++;
+  }
+  return n;
+}
+
 /** volume-weighted price position inside the bar's range (0..1) */
 function barVwapPos(levels: { price: number; buy: number; sell: number }[], range: number, low: number): number {
   if (!(range > 0.25)) return 0.5;
@@ -360,6 +386,16 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     const from = Math.max(0, i - cfg.medWindow);
     const arr: number[] = [];
     for (let k = from; k < i; k++) arr.push(minutes[k].buy + minutes[k].sell);
+    return med(arr);
+  };
+  /** trailing median of volume-per-point (the study's efficiency baseline) */
+  const effMedAt = (i: number): number => {
+    const from = Math.max(0, i - 60);
+    const arr: number[] = [];
+    for (let k = from; k < i; k++) {
+      const m = minutes[k];
+      arr.push((m.buy + m.sell) / Math.max(0.5, m.high - m.low));
+    }
     return med(arr);
   };
   const atrAt = (i: number): number => {
@@ -537,6 +573,10 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     const breakRangeR = bkRange / Math.max(0.25, atrAt(k));
     const breakStack = barStack(bk.levels);
     if (cfg.minBreakRangeR > 0 && breakRangeR < cfg.minBreakRangeR) return null;
+    const bkEffR = (bk.buy + bk.sell) / Math.max(0.5, bkRange) / Math.max(0.25, effMedAt(k));
+    const bkDiag = diagCount(bk.levels, dir === "long" ? "buy" : "sell");
+    if ((cfg.minBreakEffR ?? 0) > 0 && bkEffR < (cfg.minBreakEffR ?? 0)) return null;
+    if ((cfg.minBreakDiag ?? 0) > 0 && bkDiag < (cfg.minBreakDiag ?? 0)) return null;
     if (cfg.requireBreakStack && breakStack !== (dir === "long" ? "buy" : "sell")) return null;
     if (cfg.churnVeto) {
       let domBuy = 0;
@@ -598,6 +638,8 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
       trailLowDist: w.trailLowDist,
       trailHighDist: w.trailHighDist,
       breakRangeR,
+      breakEffR: bkEffR,
+      breakDiag: bkDiag,
       breakStack,
       breakVwapPos: barVwapPos(bk.levels, bkRange, bk.low),
       flushRangeR: flushBar.high - flushBar.low === 0 ? 0 : (flushBar.high - flushBar.low) / Math.max(0.25, atrAt(w.flushIdx)),
