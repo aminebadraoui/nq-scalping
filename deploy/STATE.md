@@ -134,6 +134,15 @@
 
 ## Expansion retrace entry (2026-10-02)
 
+- **Full decision-set capture** (self-improvement data contract): every
+  detector candidate is now recorded in `signals`, not just the traded
+  subset — overrides-vetoed and news-blackout candidates land as
+  `sent=false` rows with their features + veto reason + the active
+  override snapshot (`gates`), and expansion retrace expiries/voids too.
+  `scripts/strategyInsights.ts` counts them per family and feeds the
+  count into the AI review, so the miner can judge selectivity and
+  rejection cost instead of learning from a survivorship-biased sample.
+
 - **Expansion no longer chases**: `lib/signalFeed.ts` arms a resting limit
   1 pt behind the huge-bar close for up to 5 minutes instead of market
   ordering at the close; brackets rebuild from the fill (risk anchored to
@@ -176,11 +185,13 @@
 
 ## Trade execution (2026-10-01)
 
-- **CrossTrade webhook backend**: `web/lib/crossTrade.ts` places bracketed market
-  orders on the MFF Tradovate account (eval, `MFFUEVREOD706880006`) via the
-  CrossTrade cloud webhook — no Tradovate API key, no browser, no VPS. Wired
-  inside `placeOrder()` (lib/executor.ts): when `CROSSTRADE_*` is set it takes
-  priority over the Playwright path, which remains the fallback.
+- **CrossTrade is the ONLY execution backend**: `web/lib/crossTrade.ts` places
+  bracketed market orders on the MFF Tradovate account (eval,
+  `MFFUEVREOD706880006`) via the CrossTrade cloud REST API / webhook — no
+  Tradovate API key, no browser, no VPS. The former Playwright browser path
+  was removed (2026-10): `placeOrder()` (lib/executor.ts) now routes
+  exclusively to CrossTrade — REST absolute brackets by default,
+  `CROSSTRADE_REST=0` falls back to the quote-anchored webhook.
 - **The VPS is the single live executor**: `EXECUTE_LIVE=1` lives ONLY in the
   Coolify app env. Local `web/.env.local` keeps `EXECUTE_LIVE=0` so the Mac
   never double-executes. Coolify env: `CROSSTRADE_URL`, `CROSSTRADE_KEY`,
@@ -196,13 +207,15 @@
   CrossTrade CHANGE (BE at +1R, +1R at +2R, …), snapshotted to
   `.runner-state.json` so restarts re-attach. Dry-run unless EXECUTE_LIVE=1;
   timeouts report UNKNOWN and never auto-retry.
-- Orders carry exchange-side brackets (stop/target computed by CrossTrade from
+- Orders carry exchange-side brackets (REST: absolute stop/target at the
+  signal's structural levels; webhook fallback: computed by CrossTrade from
   the live quote), `require_market_position=flat`, and CrossTrade flags them
   `isAutomated` for Tradovate compliance. No auto-retry on network timeout —
   verify Alert History instead (exactly-once is not guaranteed).
-- Account-guard parity is NOT yet wired for the CrossTrade path (the MFF floor/
-  consistency guard reads the browser page). Sizing embeds the loss math
-  (10×$170 < $2,000 MLL), but the guard is a known follow-up.
+- **Account guard wired for CrossTrade**: `crossGuardGate()`
+  (lib/crossGuard.ts) feeds the CrossTrade account snapshot
+  (netLiq/realizedPnl) into the same MFF floor/consistency guard
+  (lib/accountGuard.ts) before every order — fail-closed when unreadable.
 
 ## Auto-deploy
 

@@ -371,6 +371,51 @@ class SignalFeed {
     await recordSignal(input);
   }
 
+  /** record a signal the feed vetoed (news blackout / overrides / retrace
+   *  expiry / session rollover) — the self-improvement loop needs the FULL
+   *  decision set (candidates + their features + the veto reason), not just
+   *  the subset that traded, or the miner learns from a biased sample and
+   *  rejection counts stay invisible. */
+  private async recordSkip(input: {
+    timeET: string;
+    day: string;
+    side: "long" | "short";
+    price: number;
+    entry: number;
+    stop: number;
+    target: number;
+    verdict: string;
+    headline: string;
+    reason: string;
+    features?: Record<string, unknown> | null;
+  }): Promise<void> {
+    await this.record({
+      timeET: input.timeET,
+      day: input.day,
+      symbol: symbol(),
+      side: input.side,
+      price: input.price,
+      entry: input.entry.toFixed(2),
+      stop: input.stop.toFixed(2),
+      target: input.target.toFixed(2),
+      size: "—",
+      verdict: input.verdict,
+      headline: input.headline,
+      source: "live",
+      test: false,
+      sent: false,
+      reason: input.reason,
+      features: input.features ?? null,
+    });
+  }
+
+  /** active override snapshot stamped into every recorded decision, so
+   *  later analysis can attribute outcomes to the gates that were live
+   *  at decision time */
+  private gateSnapshot(ov: Array<{ family: string; gate: string }>): string[] {
+    return ov.map((o) => `${o.family}.${o.gate}`);
+  }
+
   private async maybeSend(snap: SignalSnapshot): Promise<void> {
     if (!FEED_REVERSAL) return;
     // The card gate (STRATEGY.md "When a signal exists"): every directional
@@ -543,16 +588,36 @@ class SignalFeed {
     if (crossTradeEnabled()) void runnerTracker.evaluate(fp).catch(() => {});
     if (!FEED_MOMENTUM) return;
     const nb = newsBlockedNow(Date.now());
-    if (nb) {
-      console.log(`[news] ${nb} blackout — skipping momentum card`);
-      return;
-    }
     const momSigs = detectMomentum(fp, MOM_PROD);
     const expSigs = detectExpansionScalp(fp, EXP_PROD);
     // A+ = both triggers fire on the same bar (78.9% win / PF 3.23 — the
     // highest-conviction Globex signal). The momentum signal wins the dedupe.
     const expKeys = new Set(expSigs.map((x) => `${x.d}|${x.dir}|${x.t}`));
     const sigs = [...momSigs, ...expSigs];
+
+    // news blackout: no card, no order — but every just-fired candidate is
+    // recorded as a skip so the insight loop can count what the gate ate
+    if (nb) {
+      for (const s of sigs) {
+        if (s.breakIdx !== fp.length - 1) continue;
+        const fam = s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
+        await this.recordSkip({
+          timeET: cdtToET(s.t),
+          day: s.d,
+          side: s.dir,
+          price: s.entry,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
+          headline: `NQ momentum ${s.dir}`,
+          reason: `news blackout — ${nb}`,
+          features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb }),
+        });
+      }
+      console.log(`[news] ${nb} blackout — skipping momentum card (${sigs.filter((s) => s.breakIdx === fp.length - 1).length} candidates recorded)`);
+      return;
+    }
     for (const s of sigs) {
       if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
       const key = `${s.d}|${s.dir}|${s.t}`;
@@ -577,6 +642,25 @@ class SignalFeed {
       });
       if (!dec.allow) {
         console.log(`[overrides] momentum ${s.dir} ${et} SKIPPED — ${dec.reasons.join("; ")}`);
+        await this.recordSkip({
+          timeET: et,
+          day: s.d,
+          side: s.dir,
+          price: s.entry,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
+          headline: `NQ momentum ${s.dir}`,
+          reason: `overrides: ${dec.reasons.join("; ")}`,
+          features: signalFeatures(s as unknown as Record<string, unknown>, {
+            aPlus,
+            firstToday,
+            family,
+            rejectedBy: dec.reasons,
+            gates: this.gateSnapshot(ov),
+          }),
+        });
         continue;
       }
 
@@ -636,7 +720,7 @@ class SignalFeed {
           aPlus,
           firstToday,
           et,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true, gates: this.gateSnapshot(ov) }),
         };
         const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
         const armText = [
@@ -718,7 +802,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, gates: this.gateSnapshot(ov) }),
       });
       registerExpectation({
         key: `mom|${key}`,
@@ -795,7 +879,8 @@ class SignalFeed {
     const fp = liveMinutesToFootprint(live.minutes);
     if (fp.length <= p.armedIdx + 1) return;
 
-    // session rolled under the pending retrace — void it
+    // session rolled under the pending retrace — void it (recorded so the
+    // insight loop can count the candidate)
     if ((fp[fp.length - 1].d ?? "") !== p.day) {
       this.expRetracePending = null;
       void this.push(
@@ -805,6 +890,19 @@ class SignalFeed {
           `session rolled before the retrace traded — skipped`,
         ].join("\n"),
       );
+      await this.recordSkip({
+        timeET: p.et,
+        day: p.day,
+        side: p.dir,
+        price: p.sEntry,
+        entry: p.level,
+        stop: p.sStop,
+        target: p.sTarget,
+        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        headline: `NQ momentum ${p.dir}`,
+        reason: "session rolled before the retrace traded — skipped",
+        features: { ...p.features, retrace: "void" },
+      });
       return;
     }
 
@@ -971,15 +1069,28 @@ class SignalFeed {
   private async checkRth(): Promise<void> {
     if (!FEED_RTH) return;
     const nb = newsBlockedNow(Date.now());
-    if (nb) {
-      console.log(`[news] ${nb} blackout — skipping RTH card`);
-      return;
-    }
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
+    if (nb) console.log(`[news] ${nb} blackout — skipping RTH cards (candidates recorded)`);
     for (const s of detectSoftMomentum(fp, SOFT_PROD)) {
       if (s.breakIdx !== fp.length - 1) continue;
+      if (nb) {
+        await this.recordSkip({
+          timeET: cdtToET(s.t),
+          day: s.d,
+          side: s.dir,
+          price: s.entry,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          verdict: "rth soft-continuation (experimental)",
+          headline: `NQ RTH ${s.dir}`,
+          reason: `news blackout — ${nb}`,
+          features: signalFeatures(s as unknown as Record<string, unknown>, { family: "rth", newsBlocked: nb }),
+        });
+        continue;
+      }
       const key = `${s.d}|${s.dir}|${s.t}`;
       if (this.rthSent.has(key)) continue;
       const ov = await getOverrides();
@@ -995,6 +1106,23 @@ class SignalFeed {
       });
       if (!dec.allow) {
         console.log(`[overrides] rth ${s.dir} SKIPPED — ${dec.reasons.join("; ")}`);
+        await this.recordSkip({
+          timeET: cdtToET(s.t),
+          day: s.d,
+          side: s.dir,
+          price: s.entry,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          verdict: "rth soft-continuation (experimental)",
+          headline: `NQ RTH ${s.dir}`,
+          reason: `overrides: ${dec.reasons.join("; ")}`,
+          features: signalFeatures(s as unknown as Record<string, unknown>, {
+            family: "rth",
+            rejectedBy: dec.reasons,
+            gates: this.gateSnapshot(ov),
+          }),
+        });
         continue;
       }
       this.rthSent.add(key);
@@ -1063,7 +1191,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, gates: this.gateSnapshot(ov) }),
       });
       registerExpectation({
         key: `rth|${key}`,
@@ -1091,10 +1219,6 @@ class SignalFeed {
   private async checkOpen(): Promise<void> {
     if (!FEED_OPEN) return;
     const nb = newsBlockedNow(Date.now());
-    if (nb) {
-      console.log(`[news] ${nb} blackout — skipping open card`);
-      return;
-    }
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 60) return;
     const fp = liveMinutesToFootprint(live.minutes);
@@ -1103,12 +1227,31 @@ class SignalFeed {
       { key: "pullback", title: STATS.openPullback.name, sigs: FEED_OPEN_PULLBACK ? detectOpenDrive(fp, PULLBACK_PROD) : [], plan: "1R plan", resting: false, stat: STATS.openPullback.stat },
       { key: "sniper", title: STATS.openSniper.name, sigs: FEED_OPEN_SNIPER ? detectOpenDrive(fp, SNIPER_PROD) : [], plan: "resting limit · flush-high target", resting: true, stat: STATS.openSniper.stat },
     ];
+    if (nb) console.log(`[news] ${nb} blackout — skipping open cards (candidates recorded)`);
     for (const job of jobs) {
     for (const s of job.sigs) {
       if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
+      const family = job.key === "sniper" ? "open_sniper" : job.key === "pullback" ? "open_pullback" : "open_drive";
+      const verdict = job.key === "sniper" ? "open sniper (experimental)" : job.key === "pullback" ? "open pullback (experimental)" : "open drive (experimental)";
+      const headline = `NQ ${job.key === "sniper" ? "open sniper" : job.key === "pullback" ? "open pullback" : "open drive"} ${s.dir}`;
+      if (nb) {
+        await this.recordSkip({
+          timeET: cdtToET(s.t),
+          day: s.d,
+          side: s.dir,
+          price: s.entry,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          verdict,
+          headline,
+          reason: `news blackout — ${nb}`,
+          features: signalFeatures(s as unknown as Record<string, unknown>, { kind: family, newsBlocked: nb }),
+        });
+        continue;
+      }
       const key = `${job.key}|${s.d}|${s.dir}|${s.t}`;
       if (this.openSent.has(key)) continue;
-      const family = job.key === "sniper" ? "open_sniper" : job.key === "pullback" ? "open_pullback" : "open_drive";
       const ov = await getOverrides();
       const dec = decideSignal(ov, {
         families: [family, "all"],
@@ -1122,6 +1265,23 @@ class SignalFeed {
       });
       if (!dec.allow) {
         console.log(`[overrides] ${family} ${s.dir} SKIPPED — ${dec.reasons.join("; ")}`);
+        await this.recordSkip({
+          timeET: cdtToET(s.t),
+          day: s.d,
+          side: s.dir,
+          price: s.entry,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          verdict,
+          headline,
+          reason: `overrides: ${dec.reasons.join("; ")}`,
+          features: signalFeatures(s as unknown as Record<string, unknown>, {
+            kind: family,
+            rejectedBy: dec.reasons,
+            gates: this.gateSnapshot(ov),
+          }),
+        });
         continue;
       }
       this.openSent.add(key);
@@ -1195,7 +1355,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { kind: family }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { kind: family, gates: this.gateSnapshot(ov) }),
       });
       registerExpectation({
         key: `open|${key}`,

@@ -30,7 +30,7 @@ import {
   type AnalyzedTrade,
   type Insight,
 } from "../lib/strategyInsights";
-import { aggregateTrades } from "../lib/tradeStats";
+import { aggregateTrades, familyOf } from "../lib/tradeStats";
 import { edgeStatuses } from "../lib/edgeMonitor";
 
 function loadEnvLocal() {
@@ -178,7 +178,12 @@ async function existingTitles(): Promise<Set<string>> {
   return new Set(rows.map((r) => String(r.title)));
 }
 
-async function llmNarrative(rows: AnalyzedTrade[], insights: Insight[]): Promise<string | null> {
+async function llmNarrative(
+  rows: AnalyzedTrade[],
+  insights: Insight[],
+  rejected: Array<{ family: string; n: number }>,
+  rejectedTotal: number,
+): Promise<string | null> {
   const url = process.env.ANALYSIS_LLM_URL;
   const key = process.env.ANALYSIS_LLM_KEY;
   if (!url || !key) return null;
@@ -213,7 +218,9 @@ async function llmNarrative(rows: AnalyzedTrade[], insights: Insight[]): Promise
           "totals in every verdict, so a one-day P&L is never confused with the window total. Then: a short verdict per " +
           "strategy (what the numbers support vs what is noise, stating sample sizes explicitly), the ONE highest-leverage " +
           "improvement per strategy, and one concrete next experiment for the system (a gate, filter or execution change). " +
-          "Mention stop-runs and adverse entry drift where relevant. Be skeptical of small samples. Concise markdown, no disclaimers.",
+          "Mention stop-runs and adverse entry drift where relevant. rejectedSignals lists detector candidates vetoed by the " +
+          "news gate or applied strategy overrides (and expansion retraces that never filled) — count them when judging " +
+          "how selective the system is. Be skeptical of small samples. Concise markdown, no disclaimers.",
       },
       {
         role: "user",
@@ -225,6 +232,7 @@ async function llmNarrative(rows: AnalyzedTrade[], insights: Insight[]): Promise
           byHour: hourRows,
           bySide: sideRows,
           findings: insights.map((i) => ({ severity: i.severity, kind: i.kind, title: i.title, finding: i.finding })),
+          rejectedSignals: { total: rejectedTotal, byFamily: rejected },
           trades: tradeLines,
         }),
       },
@@ -254,6 +262,26 @@ async function main() {
   await sql.unsafe(SCHEMA_SQL);
   const trades = await loadTrades();
   console.log(`[insights] ${trades.length} analyzed trades since ${since.toISOString()}`);
+
+  // ---- the full decision set: candidates the gates vetoed (news blackout,
+  //      applied overrides, expansion retraces that never filled) ----
+  const rejections = await sql`
+    select verdict, count(*)::int as n
+    from signals
+    where sent = false and ts >= ${since.getTime()}
+    group by verdict`;
+  const rejectedByFamily = new Map<string, number>();
+  for (const r of rejections as unknown as Array<{ verdict: string; n: number }>) {
+    const f = familyOf(String(r.verdict ?? ""));
+    rejectedByFamily.set(f, (rejectedByFamily.get(f) ?? 0) + Number(r.n));
+  }
+  const rejected = [...rejectedByFamily.entries()]
+    .map(([family, n]) => ({ family, n }))
+    .sort((a, b) => b.n - a.n);
+  const rejectedTotal = rejected.reduce((s, r) => s + r.n, 0);
+  if (rejectedTotal > 0) {
+    console.log(`[insights] ${rejectedTotal} vetoed candidates: ${rejected.map((r) => `${r.family}=${r.n}`).join(", ")}`);
+  }
 
   const insights = mineInsights(trades, { walkForward: process.env.INSIGHTS_WALK_FORWARD !== "0" });
   const known = await existingTitles();
@@ -299,12 +327,19 @@ async function main() {
   }
 
   // ---- AI narrative ----
-  const narrative = (await llmNarrative(trades, insights)) ?? renderDeterministicNarrative(trades, insights);
+  const narrative =
+    (await llmNarrative(trades, insights, rejected, rejectedTotal)) ??
+    renderDeterministicNarrative(trades, insights);
+  const rejectionLine =
+    rejectedTotal > 0
+      ? `\n\nVetoed candidates this window: ${rejectedTotal} (${rejected.map((r) => `${r.family}=${r.n}`).join(", ")}) — news blackout, applied overrides, or unfilled expansion retraces.`
+      : "";
   await sql`
     insert into insights (strategy, kind, severity, title, finding, evidence, status, source)
-    values ('all', 'narrative', 'info', 'AI strategy review', ${narrative}, ${JSON.stringify({
+    values ('all', 'narrative', 'info', 'AI strategy review', ${narrative + rejectionLine}, ${JSON.stringify({
       trades: trades.length,
       windowStart: since.toISOString(),
+      rejectedTotal,
     })}, 'proposed', ${process.env.ANALYSIS_LLM_KEY ? 'llm' : 'deterministic'})`;
 
   console.log(`[insights] stored ${stored} new findings + 1 narrative`);
