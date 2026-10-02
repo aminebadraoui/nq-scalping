@@ -73,6 +73,23 @@ export function registerExpectation(e: Expectation) {
   pending.set(e.key, e);
 }
 
+/** a place-attempt returned not-ok (UNKNOWN network, guard halt, REST
+ *  rejection, not-flat): alert immediately with the reason — no need to
+ *  wait for the 90s fill check. No-op when not live. */
+export function registerSendFailure(key: string, label: string, reason: string) {
+  if (!enabled()) return;
+  if (alerted.has(key)) return;
+  alerted.add(key);
+  pending.delete(key);
+  const text = [
+    `🚨 <b>EXECUTION FAILED — no order sent</b>`,
+    `<code>${label}</code>`,
+    `${reason}`,
+    `<i>no automatic retry (exactly-once policy) — verify account state before acting</i>`,
+  ].join("\n");
+  void sendTelegram(text, { parseMode: "HTML" }).catch(() => {});
+}
+
 /** called from the feed tick: alert on unfilled cards */
 export async function checkExpectations(): Promise<void> {
   if (!enabled() || pending.size === 0) return;

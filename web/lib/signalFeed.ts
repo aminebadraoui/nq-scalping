@@ -50,7 +50,7 @@ import { recordSignal } from "./signalHistory";
 import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
 import { newsBlockedNow } from "./newsGate";
-import { registerExpectation, checkExpectations } from "./execWatch";
+import { registerExpectation, registerSendFailure, checkExpectations } from "./execWatch";
 
 function refreshSeconds(): number {
   const n = Number(process.env.SIGNAL_REFRESH_SECONDS);
@@ -337,7 +337,11 @@ class SignalFeed {
       stop: setup.stop,
       target: setup.target,
       timeET: setup.timeET,
-    }).catch(() => {});
+    })
+      .then((res) => {
+        if (!res.ok) registerSendFailure(key, `sweep-reclaim ${setup.dir} ${setup.timeET}`, res.reason);
+      })
+      .catch(() => {});
 
     const text = formatReclaimSetupHtml(
       setup,
@@ -476,7 +480,10 @@ class SignalFeed {
                 createdAt: new Date().toISOString(),
               });
             }
-            if (!res.ok) this.lastError = `scale-out: ${res.reason}`;
+            if (!res.ok) {
+              this.lastError = `scale-out: ${res.reason}`;
+              registerSendFailure(key, `momentum ${s.dir} ${et} (scale-out)`, res.reason);
+            }
           })
           .catch((e) => {
             this.lastError = `scale-out: ${String(e)}`;
@@ -490,7 +497,11 @@ class SignalFeed {
           stop: s.stop,
           target: s.target,
           timeET: cdtToET(s.t),
-        }).catch(() => {});
+        })
+          .then((res) => {
+            if (!res.ok) registerSendFailure(key, `momentum ${s.dir} ${et}`, res.reason);
+          })
+          .catch(() => {});
       }
 
       this.cardedDays.add(s.d);
@@ -590,6 +601,7 @@ class SignalFeed {
           : momentumSize(s.risk, riskBudget);
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
 
+      const et = cdtToET(s.t);
       void placeOrder({
         symbol: symbol(),
         dir: s.dir,
@@ -597,10 +609,13 @@ class SignalFeed {
         entry: s.entry,
         stop: s.stop,
         target: s.target,
-        timeET: cdtToET(s.t),
-      }).catch(() => {});
+        timeET: et,
+      })
+        .then((res) => {
+          if (!res.ok) registerSendFailure(key, `rth ${s.dir} ${et}`, res.reason);
+        })
+        .catch(() => {});
 
-      const et = cdtToET(s.t);
       const aPlus = s.breakFrac >= 0.65 || s.breakFrac <= 0.35;
       const text = [
         `🟦 <b>${STATS.rth.name} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
@@ -695,6 +710,7 @@ class SignalFeed {
           : momentumSize(s.risk, riskBudget);
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}`;
 
+      const et = cdtToET(s.t);
       void placeOrder({
         symbol: symbol(),
         dir: s.dir,
@@ -702,10 +718,13 @@ class SignalFeed {
         entry: s.entry,
         stop: s.stop,
         target: s.target,
-        timeET: cdtToET(s.t),
-      }).catch(() => {});
+        timeET: et,
+      })
+        .then((res) => {
+          if (!res.ok) registerSendFailure(key, `${family} ${s.dir} ${et}`, res.reason);
+        })
+        .catch(() => {});
 
-      const et = cdtToET(s.t);
       const evidence =
         job.key === "sniper"
           ? `flush ${s.flushVol} ct held the opening ${s.dir === "long" ? "low" : "high"} · rest the limit`
