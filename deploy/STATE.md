@@ -102,9 +102,15 @@
    brackets (~$250-300 leak). Default ON; `CROSSTRADE_REST=0` returns to
    the webhook. Client-side flat check (refuse, never flatten); 401/403
    (plan/auth, pre-dispatch) falls back to the webhook once.
-2. **Execution-failure alarm** (`lib/execWatch.ts`): when EXECUTE_LIVE=1,
-   every trade card is watched — no matching CrossTrade fill within 90s
-   → Telegram alert (once per card, 10-min give-up).
+2. **Execution-failure alarm + verified re-send** (`lib/execWatch.ts`):
+   when EXECUTE_LIVE=1 every trade card is watched — send failures alert
+   immediately with the reason; no matching fill within 90s triggers a
+   VERIFIED re-send (default ON, `AUTO_RETRY_VERIFIED=0` to disable):
+   the watcher re-reads the broker (no MNQ working order AND no MNQ
+   position) before re-sending the original intent once — a broker
+   check, never a blind retry. Stale-entry guard: skipped if price moved
+   more than half the risk from the signal. Verification failures never
+   re-send (fail closed).
 3. **Account guard parity** (`lib/crossGuard.ts`): the MFF Rapid EOD 50k
    guard (floor/target/consistency) now feeds from the CrossTrade account
    snapshot instead of the browser page; halts before every order, fail

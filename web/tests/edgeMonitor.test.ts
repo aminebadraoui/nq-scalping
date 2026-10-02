@@ -82,3 +82,20 @@ test("only the most recent window of trades is judged", () => {
   assert.equal(s.status, "breach");
   assert.equal(s.n, 30); // the rolling window covers only the recent trades
 });
+
+/* execWatch pure pieces (same test file, framework family) */
+import { fillMatches } from "../lib/execWatch";
+
+test("execWatch fillMatches: side, size and window must all match", () => {
+  const e = { ts: 100_000, intent: { dir: "short" as const, contracts: 9 } };
+  const fills = [
+    { ts: 100_500, action: "Buy", qty: 9 }, // wrong side
+    { ts: 150_000, action: "Sell", qty: 9 }, // right side, right size, right window
+    { ts: 100_200, action: "Sell", qty: 3 }, // too small
+  ];
+  assert.ok(fillMatches(e, fills, 200_000));
+  assert.ok(!fillMatches(e, fills.filter((f) => f.action !== "Sell"), 200_000));
+  assert.ok(!fillMatches({ ...e, intent: { dir: "short", contracts: 9 } }, [
+    { ts: 100_200, action: "Sell", qty: 6 },
+  ], 200_000));
+});

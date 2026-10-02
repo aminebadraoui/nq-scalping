@@ -376,9 +376,17 @@ class SignalFeed {
     registerExpectation({
       key: `reclaim|${key}`,
       ts: Date.now(),
-      side: setup.dir,
-      contracts,
       label: `sweep-reclaim ${setup.dir}`,
+      intent: {
+        symbol: symbol(),
+        dir: setup.dir,
+        contracts,
+        entry: setup.entry,
+        stop: setup.stop,
+        target: setup.target,
+        timeET: setup.timeET,
+      },
+      scaleOut: false,
     });
   }
 
@@ -550,9 +558,17 @@ class SignalFeed {
       registerExpectation({
         key: `mom|${key}`,
         ts: Date.now(),
-        side: s.dir,
-        contracts: size.contracts,
         label: `momentum ${s.dir}`,
+        intent: {
+          symbol: symbol(),
+          dir: s.dir,
+          contracts: size.contracts,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          timeET: et,
+        },
+        scaleOut,
       });
     }
   }
@@ -651,9 +667,17 @@ class SignalFeed {
       registerExpectation({
         key: `rth|${key}`,
         ts: Date.now(),
-        side: s.dir,
-        contracts: size.contracts,
         label: `rth ${s.dir}`,
+        intent: {
+          symbol: symbol(),
+          dir: s.dir,
+          contracts: size.contracts,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          timeET: et,
+        },
+        scaleOut: false,
       });
     }
   }
@@ -765,9 +789,17 @@ class SignalFeed {
       registerExpectation({
         key: `open|${key}`,
         ts: Date.now(),
-        side: s.dir,
-        contracts: size.contracts,
         label: `${family} ${s.dir}`,
+        intent: {
+          symbol: symbol(),
+          dir: s.dir,
+          contracts: size.contracts,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          timeET: et,
+        },
+        scaleOut: false,
       });
     }
     }
