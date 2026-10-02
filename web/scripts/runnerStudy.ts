@@ -40,20 +40,21 @@ type FamilyDef = {
   detect: (m: MomMinute[]) => MomentumSignal[];
   fixedSize: boolean;
   targetR: number; // fixed-target R (open drive: 15 pts on a 35-pt stop)
+  closeAtRthClose: boolean; // RTH strategies must never hold past 16:00 ET
 };
 
 const FAMILIES: FamilyDef[] = [
-  { name: "momentum", detect: (m) => [...detectMomentum(m, MOM_PROD), ...detectExpansionScalp(m, EXP_PROD)], fixedSize: true, targetR: 1 },
-  { name: "expansion", detect: (m) => detectExpansionScalp(m, EXP_PROD), fixedSize: true, targetR: 1 },
-  { name: "rth", detect: (m) => detectSoftMomentum(m, SOFT_PROD), fixedSize: true, targetR: 0.75 },
-  { name: "open", detect: (m) => detectOpenDrive(m, OPEN_PROD), fixedSize: false, targetR: 15 / 35 },
+  { name: "momentum", closeAtRthClose: false, detect: (m) => [...detectMomentum(m, MOM_PROD), ...detectExpansionScalp(m, EXP_PROD)], fixedSize: true, targetR: 1 },
+  { name: "expansion", closeAtRthClose: false, detect: (m) => detectExpansionScalp(m, EXP_PROD), fixedSize: true, targetR: 1 },
+  { name: "rth", closeAtRthClose: true, detect: (m) => detectSoftMomentum(m, SOFT_PROD), fixedSize: true, targetR: 0.75 },
+  { name: "open", closeAtRthClose: false, detect: (m) => detectOpenDrive(m, OPEN_PROD), fixedSize: false, targetR: 15 / 35 },
 ];
 
 function parseArgs(argv: string[]) {
   const o: {
     family: string; max?: number; offline: boolean; maxBars: number;
     exit: "ladder" | "scaleout" | "fixed"; maxTradesPerDay?: number; dailyGoal?: number; dailyStop?: number;
-    targetR?: number; contracts?: number;
+    targetR?: number; contracts?: number; cost?: number;
   } = {
     family: "all",
     offline: false,
@@ -69,6 +70,7 @@ function parseArgs(argv: string[]) {
     else if (a === "--exit") o.exit = argv[++i] as "ladder" | "scaleout" | "fixed";
     else if (a === "--targetR") o.targetR = Number(argv[++i]);
     else if (a === "--contracts") o.contracts = Number(argv[++i]);
+    else if (a === "--cost") o.cost = Number(argv[++i]);
     else if (a === "--maxTradesPerDay") o.maxTradesPerDay = Number(argv[++i]);
     else if (a === "--dailyGoal") o.dailyGoal = Number(argv[++i]);
     else if (a === "--dailyStop") o.dailyStop = Number(argv[++i]);
@@ -152,9 +154,10 @@ type Outcome = RunnerTrade | ScaleOutTrade | FixedTrade;
 function sequentialize(
   minutes: MomMinute[],
   signals: MomentumSignal[],
-  maxBars: number,
+  maxBars: number | ((entryIdx: number) => number),
   exit: "ladder" | "scaleout" | "fixed",
   targetR: number,
+  cost: number,
 ): Outcome[] {
   const out: Outcome[] = [];
   let openUntil = -1;
@@ -163,13 +166,15 @@ function sequentialize(
   const ordered = [...signals].sort((a, b) => a.entryIdx - b.entryIdx);
   for (const s of ordered) {
     if (s.entryIdx <= openUntil) continue; // the live trader cannot be in two trades
+    const mb = typeof maxBars === "function" ? maxBars(s.entryIdx) : maxBars;
+    if (mb < 1) continue; // e.g. entry at the RTH close itself — no window left
     const dir = s.dir === "long" ? 1 : -1;
     const t =
       exit === "fixed"
-        ? scoreFixed(minutes, s.entry, s.stop, dir, s.entryIdx, targetR, maxBars)
+        ? scoreFixed(minutes, s.entry, s.stop, dir, s.entryIdx, targetR, mb, cost)
         : exit === "scaleout"
-          ? scoreScaleOut(minutes, s.entry, s.stop, dir, s.entryIdx, { maxBars })
-          : scoreRunner(minutes, s.entry, s.stop, dir, s.entryIdx, { maxBars });
+          ? scoreScaleOut(minutes, s.entry, s.stop, dir, s.entryIdx, { maxBars: mb, cost })
+          : scoreRunner(minutes, s.entry, s.stop, dir, s.entryIdx, { maxBars: mb, cost });
     if (!t) continue;
     out.push(t);
     openUntil = s.entryIdx + t.heldBars;
@@ -293,9 +298,16 @@ async function main() {
     for (const { date, minutes } of sessions) {
       if (!minutes) continue;
       loaded++;
+      // 16:00 ET close bar (feed clock "15:00") — RTH strategies must not
+      // hold past it, so their lookahead window is clamped there
+      const rthCloseIdx = minutes.findIndex((m) => m.t === "15:00");
       for (const fam of perFamily) {
         const signals = fam.def.detect(minutes);
-        const scored = sequentialize(minutes, signals, o.maxBars, o.exit, o.targetR ?? fam.def.targetR);
+        const effMaxBars: number | ((idx: number) => number) =
+          fam.def.closeAtRthClose && rthCloseIdx !== -1
+            ? (idx) => Math.min(o.maxBars, rthCloseIdx - idx) // never past 16:00 ET
+            : o.maxBars;
+        const scored = sequentialize(minutes, signals, effMaxBars, o.exit, o.targetR ?? fam.def.targetR, o.cost ?? 0.5);
         for (const t of scored) fam.trades.push({ t, date });
       }
     }

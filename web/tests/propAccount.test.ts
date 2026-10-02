@@ -154,3 +154,22 @@ export function evalPassingDays(): { date: string; pnl: number }[] {
   return [750, 750, 750, 750].map((pnl, i) => ({ date: `2026-09-0${i + 1}`, pnl }));
 }
 export type { AccountSimResult };
+
+// Consistency gate must hold AT THE PASS DAY (MFF evaluates it when the
+// target is reached), not merely at the end of the run.
+test("eval pass requires 30% consistency at the pass day", () => {
+  const trades = [
+    { date: "2024-01-01", pnl: 2400 }, // 80% of the profit — would fail 30% rule
+    { date: "2024-01-02", pnl: 200 },
+    { date: "2024-01-03", pnl: 200 },
+    { date: "2024-01-04", pnl: 200 },
+    { date: "2024-01-05", pnl: 400 }, // now 3400 total, best 2400 = 70% — still fails
+    { date: "2024-01-06", pnl: 600 }, // 4000 total, best 2400 = 60% — fails
+    { date: "2024-01-07", pnl: 1000 }, // 5000 total, best 2400 = 48% — fails
+    { date: "2024-01-08", pnl: 3000 }, // 8000 total, best 3000 = 37.5% — fails
+    { date: "2024-01-09", pnl: 2000 }, // 10000 total, best 3000 = 30% — PASSES
+  ];
+  const sim = simulateAccount(trades, "eval");
+  assert.equal(sim.passDay, "2024-01-09", "pass only when consistency holds at that day");
+  assert.equal(sim.breachDay, null);
+});

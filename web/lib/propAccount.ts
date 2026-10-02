@@ -116,8 +116,11 @@ export function simulateAccount(
       breachDay = date;
       breachEquity = equity;
     }
-    // eval pass: target reached with the trading-day minimum already met
-    if (stage === "eval" && !passDay && !breachDay && equity >= rules.profitTarget && tradingDays >= rules.minDays) {
+    // eval pass: target reached, minimum days met, AND the 30% consistency
+    // gate holds AT THIS MOMENT (best day so far ≤ 30% of profit so far) —
+    // MFF evaluates the gate on the day the target is reached, not at the end
+    const consistencyAtPass = bestDay <= rules.consistency * (equity - startEquity);
+    if (stage === "eval" && !passDay && !breachDay && equity >= rules.profitTarget && tradingDays >= rules.minDays && consistencyAtPass) {
       passDay = date;
       passEquity = equity;
     }
