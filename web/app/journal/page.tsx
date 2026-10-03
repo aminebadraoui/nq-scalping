@@ -106,6 +106,32 @@ type Insight = {
   source: string;
 };
 
+type Headline = {
+  netUsd: number;
+  grossUsd: number;
+  commissions: number;
+  matched: number;
+  wins: number;
+  losses: number;
+  flats: number;
+  winRate: number | null;
+  expectancy: number | null;
+  bestDayNet: number | null;
+  worstDayNet: number | null;
+};
+
+type DayRow = {
+  day: string;
+  n: number;
+  wins: number;
+  losses: number;
+  grossUsd: number;
+  netUsd: number;
+  commissions: number;
+};
+
+type EquityPoint = { at: string; net: number; realized: number | null };
+
 type Override = {
   id: string;
   created_at: string;
@@ -207,6 +233,55 @@ function Narrative({ text }: { text: string }) {
   );
 }
 
+function GlanceCard({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone: "long" | "short" | "none" }) {
+  const color = tone === "long" ? "text-long" : tone === "short" ? "text-short" : "text-zinc-50";
+  return (
+    <div className="rounded-md border border-zinc-800 bg-panel px-3 py-2.5">
+      <p className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">{label}</p>
+      <p className={`font-mono text-xl font-bold ${color}`}>{value}</p>
+      {sub && <p className="font-mono text-[9px] text-zinc-600">{sub}</p>}
+    </div>
+  );
+}
+
+function EquityCurve({ points }: { points: EquityPoint[] }) {
+  const W = 600;
+  const H = 150;
+  const PAD = 6;
+  const vals = points.map((p) => p.net);
+  const lo = Math.min(...vals);
+  const hi = Math.max(...vals);
+  const span = hi - lo || 1;
+  const step = (W - PAD * 2) / Math.max(1, points.length - 1);
+  const xy = points.map((p, i) => {
+    const x = PAD + i * step;
+    const y = H - PAD - ((p.net - lo) / span) * (H - PAD * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const first = points[0].net;
+  const last = points[points.length - 1].net;
+  const delta = last - first;
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-[150px] w-full" preserveAspectRatio="none">
+        <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} className="stroke-zinc-800" strokeWidth="1" />
+        <polyline points={xy.join(" ")} fill="none" strokeWidth="1.5" className={delta >= 0 ? "stroke-long" : "stroke-short"} />
+        {points.map((p, i) => (
+          <circle key={p.at} cx={PAD + i * step} cy={H - PAD - ((p.net - lo) / span) * (H - PAD * 2)} r="1.6" className={p.net >= 0 ? "fill-long" : "fill-short"} />
+        ))}
+      </svg>
+      <div className="mt-1 flex justify-between font-mono text-[9px] text-zinc-500">
+        <span>start {fmtUsd(first)}</span>
+        <span className={delta >= 0 ? "text-long" : "text-short"}>
+          {delta >= 0 ? "+" : ""}
+          {fmtUsd(delta)}
+        </span>
+        <span>now {fmtUsd(last)}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function JournalPage() {
   const [run, setRun] = useState<RunRow | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -214,6 +289,9 @@ export default function JournalPage() {
   const [scoreboard, setScoreboard] = useState<ScoreRow[]>([]);
   const [scoreSort, setScoreSort] = useState<"net" | "expR" | "freq">("net");
   const [scoreRange, setScoreRange] = useState<"7" | "30" | "90" | "all">("30");
+  const [headline, setHeadline] = useState<Headline | null>(null);
+  const [dayRows, setDayRows] = useState<DayRow[]>([]);
+  const [equity, setEquity] = useState<EquityPoint[]>([]);
   const [insights, setInsights] = useState<Insight[]>([]);
   const [overrides, setOverrides] = useState<Override[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -229,6 +307,9 @@ export default function JournalPage() {
         setAnalysis(t.analysis ?? null);
         setTrades(t.trades ?? []);
         setScoreboard(t.scoreboard ?? []);
+        setHeadline(t.headline ?? null);
+        setDayRows(t.days ?? []);
+        setEquity(t.equity ?? []);
         setInsights(i.insights ?? []);
         setOverrides(i.overrides ?? []);
         setLoaded(true);
@@ -262,6 +343,7 @@ export default function JournalPage() {
   const nonNarrative = insights.filter((i) => i.kind !== "narrative");
   const activeOverrides = overrides.filter((o) => o.active);
   const newestFirst = [...trades].reverse();
+  const maxAbsDay = Math.max(1, ...dayRows.map((d) => Math.abs(d.netUsd)));
 
   return (
     <main className="mx-auto w-full max-w-[1800px] px-4 py-6">
@@ -280,6 +362,104 @@ export default function JournalPage() {
           </span>
           <span className="rounded border border-zinc-800 px-2 py-1">{activeOverrides.length} active gates</span>
         </div>
+      </div>
+
+      {/* headline — the glance layer */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        {(["7", "30", "90", "all"] as const).map((r) => (
+          <button
+            key={r}
+            onClick={() => setScoreRange(r)}
+            className={`rounded border px-2 py-0.5 font-mono text-[10px] ${
+              scoreRange === r
+                ? "border-info/60 bg-info/10 text-info"
+                : "border-zinc-800 text-zinc-500 hover:text-zinc-200"
+            }`}
+          >
+            {r === "all" ? "ALL" : `${r}D`}
+          </button>
+        ))}
+        <span className="ml-auto font-mono text-[10px] text-zinc-600">
+          {scoreRange === "all" ? "all time" : `rolling ${scoreRange} days`} · bot strategies only
+        </span>
+      </div>
+      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+        <GlanceCard
+          label="NET P&L"
+          value={fmtUsd(headline?.netUsd ?? null)}
+          tone={(headline?.netUsd ?? 0) >= 0 ? "long" : "short"}
+          sub={`gross ${fmtUsd(headline?.grossUsd ?? null)}`}
+        />
+        <GlanceCard
+          label="WIN RATE"
+          value={headline?.winRate != null ? `${(headline.winRate * 100).toFixed(0)}%` : "—"}
+          tone={headline?.winRate != null && headline.winRate >= 0.5 ? "long" : "none"}
+          sub={`${headline?.wins ?? 0}W / ${headline?.losses ?? 0}L / ${headline?.flats ?? 0}F`}
+        />
+        <GlanceCard
+          label="EXPECTANCY"
+          value={headline?.expectancy != null ? fmtUsd(headline.expectancy) : "—"}
+          tone={(headline?.expectancy ?? 0) >= 0 ? "long" : "short"}
+          sub="net per trade"
+        />
+        <GlanceCard
+          label="TRADES"
+          value={String(headline?.matched ?? 0)}
+          tone="none"
+          sub={`fees ${fmtUsd(headline ? -headline.commissions : null)}`}
+        />
+        <GlanceCard label="BEST DAY" value={fmtUsd(headline?.bestDayNet ?? null)} tone="long" sub="bot net" />
+        <GlanceCard label="WORST DAY" value={fmtUsd(headline?.worstDayNet ?? null)} tone="short" sub="bot net" />
+      </div>
+
+      {/* equity curve + per-day breakdown */}
+      <div className="mb-5 grid grid-cols-1 gap-5 xl:grid-cols-5">
+        <section className="rounded-md border border-zinc-800 bg-panel p-4 xl:col-span-3">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Account equity</h2>
+            <span className="font-mono text-[10px] text-zinc-600">
+              {equity.length
+                ? `${equity[0].at.slice(0, 10)} → ${equity[equity.length - 1].at.slice(0, 10)} · netLiq snapshot per reconcile run`
+                : "no snapshots yet — reconcile runs nightly"}
+            </span>
+          </div>
+          {equity.length >= 2 ? (
+            <EquityCurve points={equity} />
+          ) : (
+            <p className="py-10 text-center font-mono text-xs text-zinc-600">
+              {equity.length === 1 ? "one snapshot — the curve starts with the next reconcile" : "no equity data in this range"}
+            </p>
+          )}
+        </section>
+        <section className="rounded-md border border-zinc-800 bg-panel p-4 xl:col-span-2">
+          <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Per-day P&L</h2>
+          {dayRows.length ? (
+            <div className="max-h-[260px] space-y-1 overflow-y-auto pr-1">
+              {dayRows.map((d) => (
+                <div key={d.day} className="flex items-center gap-2 rounded border border-zinc-800/70 px-2 py-1 font-mono text-[10px]">
+                  <span className="w-[76px] shrink-0 text-zinc-400">{d.day.slice(5)}</span>
+                  <span className="w-[74px] shrink-0 text-zinc-500">
+                    {d.n} t · {d.wins}W/{d.losses}L
+                  </span>
+                  <span className={`w-[64px] shrink-0 text-right ${d.netUsd >= 0 ? "text-long" : "text-short"}`}>
+                    {fmtUsd(d.netUsd)}
+                  </span>
+                  <span className="relative h-2 flex-1 overflow-hidden rounded bg-zinc-800/60">
+                    <span
+                      className={`absolute inset-y-0 ${d.netUsd >= 0 ? "bg-long/50" : "bg-short/50"}`}
+                      style={{
+                        left: d.netUsd >= 0 ? "50%" : `${50 - Math.min(50, (Math.abs(d.netUsd) / maxAbsDay) * 50)}%`,
+                        width: `${Math.min(50, (Math.abs(d.netUsd) / maxAbsDay) * 50)}%`,
+                      }}
+                    />
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="py-8 text-center font-mono text-xs text-zinc-600">no matched trades in this range</p>
+          )}
+        </section>
       </div>
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-5">

@@ -19,26 +19,83 @@ export async function GET(request: Request) {
   const db = getDb();
   try {
     const runs = await db`select * from reconcile_runs order by run_at desc limit 5`;
-    let trades: unknown = [];
-    if (runs.length) {
-      const latest = runs[0];
-      trades = await db`
-        select * from trades
-        where ts >= ${Number(latest.window_start)} and ts <= ${Number(latest.window_end)}
-        order by ts asc`;
+    const RANGE_DAYS: Record<string, number> = { "7": 7, "30": 30, "90": 90, all: 0 };
+    const rangeParam = new URL(request.url).searchParams.get("range") ?? "30";
+    const rangeDays = RANGE_DAYS[rangeParam] ?? 30;
+    const w0 = rangeDays > 0 ? Date.now() - rangeDays * 86_400_000 : 0;
+
+    // trade rows for the selected range (was: latest run's window only —
+    // the day view and the trades list must agree with the scoreboard)
+    const rangeTrades = (await db`select * from trades where ts >= ${w0} order by ts desc limit 1000`) as Array<Record<string, unknown>>;
+    const trades = [...rangeTrades].reverse();
+
+    // ---- headline + per-day aggregation (matched trades only) ----
+    type DayAgg = { day: string; n: number; wins: number; losses: number; grossUsd: number; netUsd: number; commissions: number };
+    const byDay = new Map<string, DayAgg>();
+    let headline = {
+      netUsd: 0,
+      grossUsd: 0,
+      commissions: 0,
+      matched: 0,
+      wins: 0,
+      losses: 0,
+      flats: 0,
+      winRate: null as number | null,
+      expectancy: null as number | null,
+      bestDayNet: null as number | null,
+      worstDayNet: null as number | null,
+    };
+    for (const t of rangeTrades) {
+      if (String(t.status ?? "") !== "matched") continue;
+      headline.matched++;
+      const r = String(t.result ?? "");
+      if (r === "win") headline.wins++;
+      else if (r === "loss") headline.losses++;
+      else if (r === "flat") headline.flats++;
+      headline.grossUsd += Number(t.gross_usd ?? 0);
+      headline.commissions += Number(t.commissions ?? 0);
+      headline.netUsd += Number(t.net_usd ?? 0);
+      const d = t.day ? String(t.day) : "—";
+      const agg = byDay.get(d) ?? { day: d, n: 0, wins: 0, losses: 0, grossUsd: 0, netUsd: 0, commissions: 0 };
+      agg.n++;
+      if (r === "win") agg.wins++;
+      if (r === "loss") agg.losses++;
+      agg.grossUsd += Number(t.gross_usd ?? 0);
+      agg.netUsd += Number(t.net_usd ?? 0);
+      agg.commissions += Number(t.commissions ?? 0);
+      byDay.set(d, agg);
     }
+    if (headline.matched > 0) {
+      headline.winRate = headline.wins / headline.matched;
+      headline.expectancy = headline.netUsd / headline.matched;
+    }
+    const dayList = [...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1));
+    if (dayList.length) {
+      const nets = dayList.map((d) => d.netUsd);
+      headline.bestDayNet = Math.max(...nets);
+      headline.worstDayNet = Math.min(...nets);
+    }
+
+    // ---- account equity curve (one snapshot per reconcile run) ----
+    const eqRuns = (await db`
+      select run_at, account_net, account_realized from reconcile_runs
+      where run_at >= ${new Date(w0).toISOString()}
+      order by run_at asc`) as Array<Record<string, unknown>>;
+    const equity = eqRuns
+      .filter((r) => r.account_net !== null && r.account_net !== undefined)
+      .map((r) => ({
+        at: String(r.run_at),
+        net: Number(r.account_net),
+        realized: r.account_realized === null || r.account_realized === undefined ? null : Number(r.account_realized),
+      }));
+
     const analysis = await db`select * from trade_analysis order by run_at desc limit 1`;
     const a = analysis[0] as (typeof analysis)[number] | undefined;
 
     // ---- strategy scoreboard: frequency + live vs replay performance ----
     // Accumulates over the selected rolling window (never reset by the
     // reconcile runs — the trades/signals tables are the record).
-    const RANGE_DAYS: Record<string, number> = { "7": 7, "30": 30, "90": 90, all: 0 };
-    const rangeParam = new URL(request.url).searchParams.get("range") ?? "30";
-    const rangeDays = RANGE_DAYS[rangeParam] ?? 30;
-    const w0 = rangeDays > 0 ? Date.now() - rangeDays * 86_400_000 : 0;
     let scoreboard: unknown[] = [];
-    const rangeTrades = (await db`select * from trades where ts >= ${w0} order by ts asc`) as Array<Record<string, unknown>>;
     if (rangeTrades.length) {
       const sigs = await db`select ts, verdict from signals where ts >= ${w0}`;
       type Bucket = {
@@ -140,6 +197,9 @@ export async function GET(request: Request) {
       ok: true,
       runs,
       trades,
+      headline,
+      days: dayList,
+      equity,
       scoreboard,
       scoreRange: rangeDays > 0 ? `${rangeDays}d` : "all",
       analysis: a
