@@ -67,13 +67,21 @@ function loadCandles(date: string, session: string): Candle[] {
 }
 
 function loadOhlc(date: string): Map<string, { o: number; h: number; l: number; c: number; v: number }> {
-  const f = path.join(OHLC, `${date}.json`);
-  if (!existsSync(f)) return new Map();
-  try {
-    return new Map(JSON.parse(readFileSync(f, "utf8")).bars.map((b: { t: string }) => [b.t.slice(11, 16), b]));
-  } catch {
-    return new Map();
+  // RTH twin (390 min) + ETH twin (1380 min, the full 18:00→16:59 NY day).
+  // ETH is loaded last so it wins on the overlapping minutes (same values).
+  const out = new Map<string, { o: number; h: number; l: number; c: number; v: number }>();
+  for (const name of [`${date}.json`, `${date}_ETH.json`]) {
+    const f = path.join(OHLC, name);
+    if (!existsSync(f)) continue;
+    try {
+      for (const b of JSON.parse(readFileSync(f, "utf8")).bars as { t: string }[]) {
+        out.set(b.t.slice(11, 16), b);
+      }
+    } catch {
+      /* partial/corrupt twin — keep what the other file gave us */
+    }
   }
+  return out;
 }
 
 /** postgres chokes on more than 65534 parameters in one statement — the ETH

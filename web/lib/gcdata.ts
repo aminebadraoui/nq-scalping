@@ -160,16 +160,24 @@ export async function loadOhlc(date: string): Promise<Map<string, OHLCBar>> {
       out.set(String(b.t).slice(11, 16), { o: b.o, h: b.h, l: b.l, c: b.c, v: b.v });
     }
   };
-  const remote = await remoteJSON(`data/ohlc/${date}.json`);
-  if (remote) {
-    parse(remote as Parameters<typeof parse>[0]);
-    return out;
-  }
-  try {
-    const raw = await fs.readFile(path.join(OHLC_DIR, `${date}.json`), "utf8");
-    parse(JSON.parse(raw));
-  } catch {
-    /* no OHLC file for this date — callers fall back to mid-price bars */
+  // ETH twin first: it covers the full 18:00→16:59 NY day (1380 min);
+  // the RTH twin is the legacy 390-min fallback.
+  const loadRemote = async (name: string) => {
+    const j = await remoteJSON(`data/ohlc/${name}`);
+    if (!j) return false;
+    parse(j as Parameters<typeof parse>[0]);
+    return true;
+  };
+  if (await loadRemote(`${date}_ETH.json`)) return out;
+  if (await loadRemote(`${date}.json`)) return out;
+  for (const name of [`${date}_ETH.json`, `${date}.json`]) {
+    try {
+      const raw = await fs.readFile(path.join(OHLC_DIR, name), "utf8");
+      parse(JSON.parse(raw));
+      if (out.size > 0) break;
+    } catch {
+      /* no OHLC file for this date — callers fall back to mid-price bars */
+    }
   }
   return out;
 }

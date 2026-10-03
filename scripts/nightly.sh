@@ -49,8 +49,8 @@ log "--- footprint backfill (ETH + RTH) ---"
 BACKFILL_RC=$?
 log "backfill exit=$BACKFILL_RC"
 
-log "--- OHLC bars (real open/close for the candles) ---"
-"$PY" collect_ohlc.py --windows 4 2>&1
+log "--- OHLC bars (real open/close for the candles, RTH + ETH twins) ---"
+"$PY" collect_ohlc.py --windows 4 --sessions RTH ETH 2>&1
 OHLC_RC=$?
 log "ohlc exit=$OHLC_RC"
 

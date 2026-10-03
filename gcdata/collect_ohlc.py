@@ -19,8 +19,12 @@ Usage
 -----
     python collect_ohlc.py --windows 20          # backfill ~60 trading days
     python collect_ohlc.py --windows 3 --dry-run # inspect only
+    python collect_ohlc.py --sessions RTH        # RTH-only (legacy)
 
-Writes gcdata/data/ohlc/<YYYY-MM-DD>.json  (one file per trading date).
+Writes gcdata/data/ohlc/<YYYY-MM-DD>.json (RTH, 390 bars) and
+gcdata/data/ohlc/<YYYY-MM-DD>_ETH.json (ETH, 1380 bars — the full
+18:00→16:59 NY day, so the dashboard's full-day chart gets real candles
+overnight too; RTH-only files remain for backward compatibility).
 """
 
 from __future__ import annotations
@@ -79,7 +83,7 @@ def cognito_token() -> str:
     ]["IdToken"]
 
 
-def fetch_windows(windows: int, interval: str = "1m") -> dict[str, list[dict]]:
+def fetch_windows(windows: int, interval: str = "1m", session: str = "RTH") -> dict[str, list[dict]]:
     """Return {date: [bar, ...]} covering `windows` x 3 trading days, newest first."""
     import websocket  # type: ignore
 
@@ -100,7 +104,7 @@ def fetch_windows(windows: int, interval: str = "1m") -> dict[str, list[dict]]:
         "msg_type": "OHLCV/V2",
         "symbol": f"{exchange}:{segment}:{symbol}",
         "interval": interval,
-        "session": "RTH",
+        "session": session,
         "hint": "max=true",
         "idxs": [0],
     }
@@ -162,36 +166,31 @@ def fetch_windows(windows: int, interval: str = "1m") -> dict[str, list[dict]]:
     return out
 
 
-def main() -> int:
-    load_env()
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--windows", type=int, default=4, help="3 trading days per window")
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
-
-    data = fetch_windows(args.windows)
+def collect_session(session: str, windows: int, dry: bool) -> dict[str, list[dict]]:
+    """One session walk: fresh socket starts at "most recent", pages back a
+    window per request. RTH → data/ohlc/<date>.json, ETH → <date>_ETH.json."""
+    data = fetch_windows(windows, session=session)
     if not data:
-        print("no bars returned")
-        return 1
+        print(f"[{session}] no bars returned")
+        return {}
 
     total = sum(len(v) for v in data.values())
-    print(f"collected {total} bars across {len(data)} dates")
-    if args.dry_run:
+    print(f"[{session}] collected {total} bars across {len(data)} dates")
+    if dry:
         for d in sorted(data):
             b = data[d]
             print(f"  {d}: {len(b)} bars  first {b[0]}  last {b[-1]}")
-        return 0
+        return data
 
     OHLC_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = "_ETH" if session == "ETH" else ""
     merged_dates = 0
     for date, bars in sorted(data.items()):
-        path = OHLC_DIR / f"{date}.json"
+        path = OHLC_DIR / f"{date}{suffix}.json"
         merged = {b["t"]: b for b in bars}
         if path.exists():
-            # MERGE with what is on disk. The old code kept whichever set was
-            # larger, so a partial file (the feed does not always serve a full
-            # RTH day for older dates) stayed partial forever even though the
-            # missing minutes were available in a later walk.
+            # MERGE with what is on disk (see below — the feed does not always
+            # serve a full session for older dates in one walk).
             try:
                 for b in json.loads(path.read_text()).get("bars", []):
                     merged.setdefault(b["t"], b)
@@ -202,9 +201,25 @@ def main() -> int:
             before = len(json.loads(path.read_text()).get("bars", []))
             if len(out) > before:
                 merged_dates += 1
-        path.write_text(json.dumps({"date": date, "session": "RTH", "bars": out}))
-    print(f"wrote {len(list(OHLC_DIR.glob('*.json')))} files to {OHLC_DIR} ({merged_dates} repaired/merged)")
-    return 0
+        path.write_text(json.dumps({"date": date, "session": session, "bars": out}))
+    print(f"[{session}] wrote {len(data)} files to {OHLC_DIR} ({merged_dates} repaired/merged)")
+    return data
+
+
+def main() -> int:
+    load_env()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--windows", type=int, default=4, help="3 trading days per window")
+    ap.add_argument("--sessions", nargs="+", default=["RTH", "ETH"],
+                    help="sessions to collect: RTH (390 min) and/or ETH (1380 min)")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    ok = False
+    for s in args.sessions:
+        if collect_session(s, args.windows, args.dry_run):
+            ok = True
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
