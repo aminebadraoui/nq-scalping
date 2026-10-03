@@ -19,6 +19,8 @@ type TradeRow = {
   verdict: string;
   status: "matched" | "unexecuted" | "partial";
   sig_entry: number | null;
+  sig_stop: number | null;
+  sig_target: number | null;
   fill_entry: number | null;
   exit_avg: number | null;
   gross_usd: number;
@@ -154,6 +156,8 @@ const FAMILY_LABEL: Record<string, string> = {
   reversal: "REVERSAL",
   other: "OTHER",
 };
+// the ONE naming scheme — every surface shows the same strategy names
+const familyName = (f: string) => FAMILY_LABEL[f] ?? f;
 
 const HOUR_LABEL: Record<string, string> = {
   globex_early: "18–21",
@@ -208,6 +212,11 @@ const fmtPts = (n: number | null) => {
   return `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(1)}`;
 };
 const fmtPx = (n: number | null) => (n === null || !Number.isFinite(n) ? "—" : n.toFixed(2));
+/** points + ticks: MNQ tick = 0.25 pt → 4 ticks per point */
+const ptsTicks = (pts: number | null) => {
+  if (pts === null || !Number.isFinite(pts)) return "—";
+  return `${pts.toFixed(1)}p (${Math.round(pts * 4)}t)`;
+};
 const pct = (n: number | null) => (n === null ? "—" : `${(n * 100).toFixed(0)}%`);
 const pf = (n: number | null) => (n === null ? "—" : n === Infinity ? "∞" : n.toFixed(2));
 
@@ -531,7 +540,7 @@ export default function JournalPage() {
                 {activeOverrides.map((o) => (
                   <div key={o.id} className="flex items-center justify-between gap-2 rounded border border-long/40 bg-long/5 px-2 py-1.5">
                     <span className="break-all font-mono text-[10px] text-long">
-                      {o.family}.{o.gate} = {JSON.stringify(o.value)} · {o.note}
+                      {familyName(o.family)}.{o.gate} = {JSON.stringify(o.value)} · {o.note}
                     </span>
                     <button
                       onClick={() => post({ action: "disable", overrideId: Number(o.id) })}
@@ -561,7 +570,7 @@ export default function JournalPage() {
                   {i.status === "proposed" && i.proposedAction && (
                     <div className="mt-1 flex items-center justify-between gap-2">
                       <span className="break-words font-mono text-[9px] text-info">
-                        → {i.proposedAction.family}.{i.proposedAction.gate}: {i.proposedAction.note}
+                        → {familyName(i.proposedAction.family)}.{i.proposedAction.gate}: {i.proposedAction.note}
                         {i.auto_apply ? " (auto when SELF_IMPROVE=1)" : ""}
                       </span>
                       <span className="flex shrink-0 gap-1">
@@ -641,7 +650,8 @@ export default function JournalPage() {
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="signals that filled">fills</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="fills per trading day">/day</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="recorded but not filled">skips</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">W/L</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal text-long" title="wins">W</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal text-short" title="losses">L</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">net</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="live expectancy per R (mean gross R/trade)">live expR</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="replay baseline from the 648-session archive">replay expR</th>
@@ -658,16 +668,21 @@ export default function JournalPage() {
                           ? expRKey(b) - expRKey(a)
                           : b.netUsd - a.netUsd,
                     );
-                    return sorted.map((s, i) => (
-                      <tr key={s.family} className={i === 0 ? "font-bold text-zinc-100" : "text-zinc-400"}>
+                    return sorted.map((s, i) => {
+                      const idle = s.fills === 0;
+                      return (
+                      <tr key={s.family} className={i === 0 ? "font-bold text-zinc-100" : idle ? "text-zinc-600" : "text-zinc-400"}>
                         <td className="py-1 pr-2 text-zinc-600">{i + 1}</td>
-                        <td className="px-2 py-1 whitespace-nowrap">{FAMILY_LABEL[s.family] ?? s.family}</td>
+                        <td className="px-2 py-1 whitespace-nowrap">{familyName(s.family)}</td>
                         <td className="px-2 py-1 text-right">{s.signals}</td>
                         <td className="px-2 py-1 text-right">{s.fills}</td>
                         <td className="px-2 py-1 text-right">{s.days > 0 ? (s.fills / s.days).toFixed(1) : "—"}</td>
                         <td className="px-2 py-1 text-right text-zinc-500">{s.skips > 0 ? s.skips : "—"}</td>
-                        <td className="px-2 py-1 text-right whitespace-nowrap">{s.wins}/{s.losses}</td>
-                        <td className={`px-2 py-1 text-right ${s.netUsd >= 0 ? "text-long" : "text-short"}`}>{fmtUsd(s.netUsd)}</td>
+                        <td className="px-2 py-1 text-right text-long">{s.fills > 0 ? s.wins : "—"}</td>
+                        <td className="px-2 py-1 text-right text-short">{s.fills > 0 ? s.losses : "—"}</td>
+                        <td className={`px-2 py-1 text-right ${s.fills === 0 ? "text-zinc-700" : s.netUsd >= 0 ? "text-long" : "text-short"}`}>
+                          {s.fills > 0 ? fmtUsd(s.netUsd) : "—"}
+                        </td>
                         <td className="px-2 py-1 text-right">
                           {s.liveExpR === null ? (
                             <span className="text-zinc-600">—</span>
@@ -682,7 +697,8 @@ export default function JournalPage() {
                           </span>
                         </td>
                       </tr>
-                    ));
+                      );
+                    });
                   })()}
                 </tbody>
               </table>
@@ -720,8 +736,8 @@ export default function JournalPage() {
                 <tbody>
                   {stats.filter((s) => s.n > 0).map((s) => (
                     <tr key={`${s.group}|${s.label}`} className={s.group === "overall" ? "font-bold text-zinc-100" : "text-zinc-400"}>
-                      <td className="py-1 pr-2">
-                        {s.group === "overall" ? "ALL" : `${s.group}: ${s.label}`}
+                      <td className="py-1 pr-2 whitespace-nowrap">
+                        {s.group === "overall" ? "ALL" : s.group === "family" ? familyName(s.label) : `${s.group}: ${s.label}`}
                       </td>
                       <td className="px-2 py-1 text-right">{s.n}</td>
                       <td className="px-2 py-1 text-right">{s.wins}/{s.losses}</td>
@@ -768,8 +784,10 @@ export default function JournalPage() {
                     <th className="border-b border-zinc-800 py-1 pr-2 font-normal">time</th>
                     <th className="border-b border-zinc-800 px-2 py-1 font-normal">dir</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">family</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">strategy</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">signal</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="stop distance from the signal (points / ticks, 1 pt = 4 ticks)">risk</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="target distance from the signal (points / ticks)">target</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">fill → exit</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">drift</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">MFE/MAE</th>
@@ -789,8 +807,14 @@ export default function JournalPage() {
                         {t.side.toUpperCase().slice(0, 1)}
                       </td>
                       <td className="px-2 py-1 text-right">{t.contracts}</td>
-                      <td className="px-2 py-1 whitespace-nowrap">{FAMILY_LABEL[t.family] ?? t.family}</td>
+                      <td className="px-2 py-1 whitespace-nowrap">{familyName(t.family)}</td>
                       <td className="px-2 py-1 text-right">{fmtPx(Number(t.sig_entry))}</td>
+                      <td className="px-2 py-1 text-right whitespace-nowrap">
+                        {t.sig_entry !== null && t.sig_stop !== null ? ptsTicks(Math.abs(Number(t.sig_entry) - Number(t.sig_stop))) : "—"}
+                      </td>
+                      <td className="px-2 py-1 text-right whitespace-nowrap">
+                        {t.sig_entry !== null && t.sig_target !== null ? ptsTicks(Math.abs(Number(t.sig_target) - Number(t.sig_entry))) : "—"}
+                      </td>
                       <td className="px-2 py-1 text-right whitespace-nowrap">
                         {t.status === "matched" ? `${fmtPx(Number(t.fill_entry))} → ${fmtPx(Number(t.exit_avg))}` : "—"}
                       </td>
