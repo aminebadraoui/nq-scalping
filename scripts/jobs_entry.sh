@@ -14,7 +14,9 @@ mkdir -p /app/gcdata/data /app/cache
 
 if [ "${RUN_ONCE:-0}" = "1" ]; then
   echo "[jobs] RUN_ONCE=1 — running the nightly pipeline now"
-  exec /bin/bash /app/scripts/nightly.sh "$@"
+  /bin/bash /app/scripts/nightly.sh "$@"
+  echo "[jobs] pipeline finished (rc=$?) — sleeping forever (verification mode)"
+  exec tail -f /dev/null
 fi
 
 SCHEDULE="${CRON_SCHEDULE:-45 17 * * 1-5}"
