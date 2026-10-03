@@ -574,7 +574,17 @@ export default function JournalPage() {
       </div>
       {headline && manualTotal !== null && (
         <p className="mb-5 -mt-3 font-mono text-[10px] text-zinc-500">
-          reconciliation: bot net {fmtUsd(headline.netUsd)} + manual {fmtUsd(manualTotal)} = {fmtUsd(headline.netUsd + manualTotal)} — compare with the account ledger's Δ acct below
+          reconciliation: bot net {fmtUsd(headline.netUsd)} + manual {fmtUsd(manualTotal)} = {fmtUsd(headline.netUsd + manualTotal)}
+          {account ? (
+            <>
+              {" "}· account P&L {fmtUsd(account.pnl)}{" "}
+              {Math.abs(account.pnl - (headline.netUsd + manualTotal)) > 1 && (
+                <span className="text-warn">
+                  — gap {fmtUsd(account.pnl - (headline.netUsd + manualTotal))} = trading before the journal&apos;s data begins + manual fees (not in the fill export)
+                </span>
+              )}
+            </>
+          ) : null}
         </p>
       )}
 
