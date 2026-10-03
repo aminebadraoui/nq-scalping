@@ -156,7 +156,8 @@ export async function GET(req: NextRequest) {
                   snapshotVol: snapVol,
                   ratio: snapVol > 0 ? +(acc / snapVol).toFixed(2) : null,
                 };
-              } catch {
+              } catch (e) {
+                console.error("[health] liveFeed error:", e);
                 return null;
               }
             })(),
@@ -166,7 +167,8 @@ export async function GET(req: NextRequest) {
               try {
                 const { marketStatus } = await import("@/lib/marketHours");
                 return marketStatus(Date.now());
-              } catch {
+              } catch (e) {
+                console.error("[health] market error:", e);
                 return null;
               }
             })(),
