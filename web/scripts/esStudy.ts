@@ -15,7 +15,7 @@
  * CIs on every bucket. ES features are computed through the entry bar only
  * (see lib/esJoin.ts) — no lookahead by construction.
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/esStudy.ts [--max N] [--split 2026-01-01] [--dump out.json]
  * ------------------------------------------------------------------ */
 

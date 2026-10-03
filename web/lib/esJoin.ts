@@ -13,7 +13,7 @@
  *
  * ES is a CONTEXT layer, never a trigger: the features here tier and gate
  * the footprint-native NQ signals — flush agreement, breakdown veto, delta
- * divergence, relative strength. See ES_DATA.md + DATA_DIMENSIONS_RESEARCH.md
+ * divergence, relative strength. See ES_DATA.md + docs/data/DATA_DIMENSIONS_RESEARCH.md
  * §4.2.
  * ------------------------------------------------------------------ */
 
@@ -292,7 +292,7 @@ export function breakdownVeto(ctx: EsContext, entryIdx: number, dir: "long" | "s
 /** BROAD CONFIRM (the measured flip of the veto): ES printed a fresh session
  *  extreme in the 5 bars before entry — broad-tape confirmation of the move.
  *  629 trades, 85.2% WR / PF 4.84, train 84.3 / test 87.4
- *  (research/es-features-study-2026-10-02.md §2). Same computation as
+ *  (docs/research/es-features-study-2026-10-02.md §2). Same computation as
  *  breakdownVeto; named for how the live feed uses it. */
 export const esFreshExtreme = breakdownVeto;
 

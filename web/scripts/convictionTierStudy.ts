@@ -19,7 +19,7 @@
  * Sizing: tier1 = the production $170 budget; tier2 = 170 × mult.
  * contracts = min(30, floor(budget ÷ (riskPts × $2))).
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/convictionTierStudy.ts [--max N] [--split 2026-01-01] [--offline]
  * ------------------------------------------------------------------ */
 

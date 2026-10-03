@@ -18,7 +18,7 @@ quality knob for the worst sub-cell — not a veto.
 Data: live audit `web/scripts/htfTrendLive.ts`; replay `web/scripts/htfRegimeStudy.ts`
 (649-session R2 archive, lookahead-free, sequential one-trade-at-a-time, first-touch
 scoring, 0.5 pt cost, 60-bar time exit, train/test split 2026-01-01, MFF Rapid EOD
-50k sim). External evidence: `research/htf-trend-filter-research.md`.
+50k sim). External evidence: `htf-trend-filter-research.md`.
 
 ---
 
@@ -119,7 +119,7 @@ Same replay, shorts skipped pre-scoring (lane freed for the next signal — hone
 $15k–$150k of income into "quality" that is barely measurable per-trade. The only
 variant with a better test profile (noShortVwapBelow) still throws away $147k.
 This is the same verdict as the earlier session-trend veto study
-(`research/context-veto-stoprun-2026-10-02.md`: cumDelta/VWAP gates rejected for
+(`context-veto-stoprun-2026-10-02.md`: cumDelta/VWAP gates rejected for
 expansion) — the huge-bar continuation edge does not care about the regime it fires
 in, because it is *momentum continuation*, not a discretionary fade. A 79% cell in a
 bull tape is not the same trade as the discretionary counter-trend fade the
@@ -148,7 +148,7 @@ for psychological smoothing, not because the account needs it.
 
 ## 5. Why the literature expects this pattern (external research)
 
-Full citations in `research/htf-trend-filter-research.md`. The condensed logic:
+Full citations in `htf-trend-filter-research.md`. The condensed logic:
 
 - **Trend alignment is the default edge.** Time-series momentum is positive in
   essentially every futures market for 100+ years (Moskowitz–Ooi–Pedersen 2012;
@@ -213,7 +213,7 @@ Full citations in `research/htf-trend-filter-research.md`. The condensed logic:
 7. **Keep journaling.** The live journal (31 trades) is still inside the model's
    noise band; the 80.6% cell produces 3–5 loss streaks routinely. The
    `htfTrendLive.ts` audit is re-runnable after any night
-   (`node --import ../scripts/ts-loader.mjs ./scripts/htfTrendLive.ts`).
+   (`node --import scripts/ts-loader.mjs ./scripts/htfTrendLive.ts`).
 
 ## 7. Method notes and caveats
 
@@ -236,5 +236,5 @@ Full citations in `research/htf-trend-filter-research.md`. The condensed logic:
   + R2 archive).
 - `web/scripts/htfRegimeStudy.ts` — full regime + veto + sizing study
   (`--include-rth`, `--dump`, `--max`, `--split` supported).
-- `research/htf-trend-filter-research.md` — external literature review (subagent
+- `htf-trend-filter-research.md` — external literature review (subagent
   research, all claims cited).

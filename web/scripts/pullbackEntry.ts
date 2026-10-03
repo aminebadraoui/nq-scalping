@@ -14,7 +14,7 @@
  *   TARGET     1R (also measured fixed TP10/SL15)
  *
  * Scored first-touch over 60 bars, 0.5 pt cost in the expectancy line.
- * GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ * GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *   scripts/pullbackEntry.ts [--open]  (--open = 9:30-10:30 window only)
  * ------------------------------------------------------------------ */
 

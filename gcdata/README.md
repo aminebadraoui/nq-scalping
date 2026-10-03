@@ -1,7 +1,7 @@
 # gcdata — GoCharting NQ data pipeline (personal use)
 
 Extracts NQ footprint data from the GoCharting web terminal's realtime socket and
-computes the six volume profiles from `../NQ_ALERT_SYSTEM_DESIGN.md` (P0–P5) plus
+computes the six volume profiles from `docs/strategy/NQ_ALERT_SYSTEM_DESIGN.md` (P0–P5) plus
 LVN zones and a naked-POC check.
 
 ## How it works

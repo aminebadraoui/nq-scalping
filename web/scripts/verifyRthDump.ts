@@ -3,7 +3,7 @@
  * Re-computes stats + the MFF account sim from the raw trade list so
  * agent claims are never taken on faith.
  *
- *   node --import ../scripts/ts-loader.mjs scripts/verifyRthDump.ts \
+ *   node --import scripts/ts-loader.mjs scripts/verifyRthDump.ts \
  *     /tmp/rth_gate_trades.json [--min 300]
  * ------------------------------------------------------------------ */
 

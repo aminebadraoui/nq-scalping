@@ -1,4 +1,4 @@
-/* Unit tests for the runner ladder engine (web/lib/runner.ts).
+/* Unit tests for the runner ladder engine (../lib/runner.ts).
  * Run as part of `npm test` (node:test over web/tests/*.test.mjs).
  *
  * Fixture convention: minutes[0] is the ENTRY bar (its values are unused by

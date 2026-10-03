@@ -8,7 +8,7 @@
  *   · median bars/time to the TP touch
  *   · median adverse excursion before the TP (the drawdown to tolerate)
  *
- * GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ * GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *   scripts/openExcursion.ts
  * ------------------------------------------------------------------ */
 

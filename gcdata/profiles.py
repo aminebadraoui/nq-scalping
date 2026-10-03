@@ -3,7 +3,7 @@
 Numbering = RECENCY: P0 is the most recent profile, P5 the oldest.
 
 
-Profiles (see NQ_ALERT_SYSTEM_DESIGN.md section 3):
+Profiles (see docs/strategy/NQ_ALERT_SYSTEM_DESIGN.md section 3):
   P0 developing RTH (live, from 9:30) | P1 fixed opening range 9:30-10:00
   P2 full session ETH+RTH (18:00 ET -> now) | P3 overnight 18:00 ET -> 9:30 ET
   P4 prior-day RTH | P5 multi-day composite RTH (oldest)

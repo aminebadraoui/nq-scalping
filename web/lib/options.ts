@@ -31,7 +31,7 @@
  *   - QQQ is a proxy for NQ (≈ NDX/40). Levels are mapped to NQ points by
  *     the live NQ/QQQ ratio, which is recomputed on every refresh.
  *   - CBOE's endpoint is undocumented and delayed ~15 min — be gentle,
- *     one fetch a day (EOD OI) is plenty. See OPTIONS_SIGNAL.md.
+ *     one fetch a day (EOD OI) is plenty. See docs/strategy/OPTIONS_SIGNAL.md.
  * ------------------------------------------------------------------ */
 
 export type OptionRow = {

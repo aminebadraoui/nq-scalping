@@ -5,7 +5,7 @@
 Pulcini: "if I see the stop-iceberg event with confirmation of my guess, NOW
 I would trade bigger… rarely three times." Scaling on **independent evidence**,
 not on P&L state. The P&L-state versions were already measured and rejected
-here (`research/sizing-dynamics-2026-10-02.md`: win-scaling = leverage in
+here (`sizing-dynamics-2026-10-02.md`: win-scaling = leverage in
 disguise, loss-shrinking buys ~0). Conviction scaling is a different mechanism:
 the trade is sized up because MORE confirmations fired.
 

@@ -9,7 +9,7 @@
  *     delta and a one-sided bar → join the real move.
  *
  * Scored first-touch style: TP 10/SL 30 and TP 15/SL 35 over the next
- * 60 minutes. GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ * 60 minutes. GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  * scripts/openResolution.ts
  * ------------------------------------------------------------------ */
 

@@ -18,8 +18,8 @@ Known vendor quirks this script handles:
      nightly collect_ohlc re-collects recent dates after the close.
 
 Usage:
-  scripts/repair_data.py            # audit only, prints the report
-  scripts/repair_data.py --repair   # audit + apply fixes (backs up rewrites)
+  repair_data.py            # audit only, prints the report
+  repair_data.py --repair   # audit + apply fixes (backs up rewrites)
 """
 import argparse
 import collections

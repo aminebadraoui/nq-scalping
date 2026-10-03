@@ -19,7 +19,7 @@
  * Sequential one-position-at-a-time across both families, first-touch,
  * 0.5pt cost, $0.95/side commissions, 60-bar exit.
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/sizingCapStudy.ts [--offline]
  * ------------------------------------------------------------------ */
 

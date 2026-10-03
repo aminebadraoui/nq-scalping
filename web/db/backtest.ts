@@ -4,7 +4,7 @@
  *   BT_SESSION=RTH|ETH   session window (default RTH)
  *   BT_MAX=<n>           cap the number of sessions (smoke test)
  *
- * Run:  node --import ../scripts/ts-loader.mjs ./db/backtest.ts
+ * Run:  node --import scripts/ts-loader.mjs ./db/backtest.ts
  */
 import { writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";

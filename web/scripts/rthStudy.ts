@@ -11,7 +11,7 @@
  *   C3 RTH pullback — the validated pullback pattern (trend + shrinking
  *      counter + reclaim) restricted to 10:00-16:00.
  *
- * GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs scripts/rthStudy.ts
+ * GC_REMOTE_URL=... node --import scripts/ts-loader.mjs scripts/rthStudy.ts
  * ------------------------------------------------------------------ */
 
 import { loadSessionMinutes, archiveDates } from "../lib/archive";

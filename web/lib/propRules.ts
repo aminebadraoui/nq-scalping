@@ -34,7 +34,7 @@ export const RAPID_EOD_50K: PropRules = {
   /** the plan's own 30-micro limit. The operational protection against
    *  tiny/huge stops is the STOP BAND (minRiskPts 4 / maxRiskPts 15 on the
    *  detectors) — with stops in [4,15] pts, $170 budget ⇒ 5–21 contracts,
-   *  so this cap never binds. See research/sizing-cap-2026-10-02.md. */
+   *  so this cap never binds. See docs/research/sizing-cap-2026-10-02.md. */
   maxMicro: 30,
   pointValue: 2,
   buffer: 2100,

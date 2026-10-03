@@ -40,8 +40,8 @@ short is the mirror.
    The breakout bar is its own confirmation — no separate response bar is
    required (merged mode), so flush → immediate breakout sequences fire too.
    **Candle-size gate**: the breakout bar's range must be **≥1.0× ATR14**
-   (updated 2026-10-02: 1.0 beats 0.85 — `research/quality-filter-sweep-2026-10-02.md`;
-   the original size×delta evidence is `FOOTPRINT_CANDLE_RESEARCH.md`).
+   (updated 2026-10-02: 1.0 beats 0.85 — `docs/research/quality-filter-sweep-2026-10-02.md`;
+   the original size×delta evidence is `docs/research/FOOTPRINT_CANDLE_RESEARCH.md`).
 
 Fires at the breakout bar's close. **Stop**: breakout bar's low − 0.5 pt.
 **Target**: 1R. **Risk floor**: setups with risk < 3 pts are skipped (noise;
@@ -51,7 +51,7 @@ per sequence; ≥5-bar gap between signals.
 
 ## Trigger 2 — the huge-bar expansion scalp
 
-From the footprint × candle-size research (`FOOTPRINT_CANDLE_RESEARCH.md`):
+From the footprint × candle-size research (`docs/research/FOOTPRINT_CANDLE_RESEARCH.md`):
 a bar with range **≥1.6× ATR14** and **≥75% one-sided delta** plus a
 direction-matching cluster stack continues next bar 77-86% of the time.
 Fire at its close, stop under its low, 1R target (risk 3–15 pts).

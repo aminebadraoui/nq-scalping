@@ -16,7 +16,7 @@
  *   full         ladder + caps + tiers + giveback    (THE LIVE STACK)
  *
  * Run from web/:
- *   node --import ../scripts/ts-loader.mjs scripts/riskStackStudy.ts --offline
+ *   node --import scripts/ts-loader.mjs scripts/riskStackStudy.ts --offline
  * ------------------------------------------------------------------ */
 
 import { loadSessionMinutes, archiveDates } from "../lib/archive";

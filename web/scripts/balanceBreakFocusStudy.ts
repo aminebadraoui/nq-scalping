@@ -10,7 +10,7 @@
  *   A: both | long-only | short-only  ×  {1R, 1.5R}
  *   B: both | long-only | short-only  ×  {edge, 1R}
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/balanceBreakFocusStudy.ts [--max N] [--split 2026-01-01] [--offline]
  * ------------------------------------------------------------------ */
 

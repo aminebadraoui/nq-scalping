@@ -80,15 +80,18 @@ web/                 the dashboard + signal engine (Next.js 16, React 19, TS)
   db/                Neon schema + ingest + backtest/study helpers + local executor
   scripts/           study CLIs — 4 wired into nightly.sh (reconcileTrades,
                      tradeAnalysis, strategyInsights, riskStackStudy), the rest
-                     are ad-hoc research tools matching the research/ notes
+                     are ad-hoc research tools matching the docs/research/ notes
   tests/             361 regression tests (351 pass / 10 skipped, offline ~2.5s)
 gcdata/              Python collectors (GoCharting footprint/OHLC/DOM), protobuf
                      schemas, contract calendar, ES twin; venv + .env (gitignored)
 scripts/             ops: nightly.sh (the pipeline), r2_sync.py, es_r2_sync.py,
                      repair_data.py, backfill_contracts.sh, es_finish.sh
 deploy/              STATE.md (canonical ops record) · setup.sh
+docs/strategy/       signal design docs (momentum, RTH, open, reversal, boxes)
+docs/research/       empirical studies + trade reviews (the measured results)
+docs/data/           data-source audits + macro/PIT methodology
 docs/launchd/        the two launchd job definitions (collect + domprobe)
-research/ + *.md     the research corpus — see DOCS.md for the classified index
+PLAYBOOK.md          the canonical strategy reference · DOCS.md the corpus index
 ```
 
 ## Run it locally
@@ -114,4 +117,4 @@ Nightly pipeline: `scripts/nightly.sh` (launchd `com.scalping.collect`, Mon–Fr
 - Commits are conventional (`feat:`, `fix:`, `diag:`, `docs:`, `chore:`);
   every push to `main` auto-deploys.
 - Empirical claims in the playbook are re-measurable: each study has a
-  matching `web/scripts/*.ts` CLI and usually a `research/*.md` note.
+  matching `web/scripts/*.ts` CLI and usually a `docs/research/*.md` note.

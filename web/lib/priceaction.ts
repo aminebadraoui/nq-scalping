@@ -30,7 +30,7 @@
  * premium" idea is a repackaging of two older, better-documented ideas
  * — auction-market value area (Dalton) and range mean-reversion — plus
  * the ICT dealing-range language. It is NOT an independently validated
- * edge on its own. See PRICE_ACTION_SIGNAL.md.
+ * edge on its own. See docs/strategy/PRICE_ACTION_SIGNAL.md.
  * ------------------------------------------------------------------ */
 
 export type TF = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";

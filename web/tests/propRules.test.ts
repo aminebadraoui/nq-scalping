@@ -24,7 +24,7 @@ test("Rapid EOD 50k constants match the official plan rules", () => {
   assert.equal(RAPID_EOD_50K.minDays, 4, "4 minimum trading days");
   // the plan allows 30 micro; the operational protection is the STOP BAND
   // (minRiskPts 4 / maxRiskPts 15) — with stops in [4,15] pts, $170 budget
-  // ⇒ 5–21 contracts, so this cap never binds (research/sizing-cap-2026-10-02.md)
+  // ⇒ 5–21 contracts, so this cap never binds (docs/research/sizing-cap-2026-10-02.md)
   assert.equal(RAPID_EOD_50K.maxMicro, 30, "30 micro / 3 mini contract cap");
   assert.equal(RAPID_EOD_50K.pointValue, 2, "MNQ $2 per point");
   assert.equal(RAPID_EOD_50K.buffer, 2100, "first-payout buffer $2,100");

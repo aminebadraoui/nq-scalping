@@ -6,7 +6,7 @@
 >
 > **Current sources of truth:**
 > - **`STRATEGY.md`** — the implemented strategy (LVN reversal, footprint filters, 7-pt stop, POC target, sizing).
-> - **`FOOTPRINT_REVERSAL_RESEARCH.md`** — the 683-session lookahead-free backtest behind those choices.
+> - **`docs/research/FOOTPRINT_REVERSAL_RESEARCH.md`** — the 683-session lookahead-free backtest behind those choices.
 > - **`web/README.md`** — how the tool is built and how Telegram signals fire.
 > - **the live `/docs` page** (`/docs#playbook`) — the playbook as implemented in the dashboard.
 

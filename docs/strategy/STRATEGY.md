@@ -13,7 +13,7 @@ code, covered by tests, and (where it matters) measured by the backtest.
 
 - Live tool: **https://nq-dashboard.31.97.138.30.sslip.io**
 - Long-form version of this page: **`/docs#playbook`**
-- The research behind the numbers: `FOOTPRINT_REVERSAL_RESEARCH.md`
+- The research behind the numbers: `docs/research/FOOTPRINT_REVERSAL_RESEARCH.md`
 - How the tool is built / deployed: `web/README.md`, `DEPLOY.md`
 
 ---
@@ -88,7 +88,7 @@ round-trip cost, pessimistic same-bar ordering:
 | Net | +27,424 pts (~5.4 pts/trade, ~40 pts/day) |
 | Per-year | 2024: 36% win · 2025: 40% win · 2026 (out-of-sample): 34% win — positive every full year |
 
-The four things the backtest changed (each is in `FOOTPRINT_REVERSAL_RESEARCH.md`):
+The four things the backtest changed (each is in `docs/research/FOOTPRINT_REVERSAL_RESEARCH.md`):
 
 1. **Location = "in an LVN"**, not only "at the edge" — the zone counts fully.
 2. **`present ≥ 4`** is the sweet spot: 6/6 never fires, 5/6 is PF ~1.7, 4/6 is

@@ -145,7 +145,7 @@ export type MomConfig = {
    *  entry ∓ riskFloorPts (the 1R target follows). 0 = off. The
    *  3–4 pt stops are the weak zone (PF 1.87 vs 2.75) whose stop-runs the
    *  widen removes — measured strictly better than skip or structural
-   *  (research/sizing-cap-2026-10-02.md). */
+   *  (docs/research/sizing-cap-2026-10-02.md). */
   riskFloorPts: number;
 };
 
@@ -196,17 +196,17 @@ export const MOM_DEFAULTS: MomConfig = {
   riskFloorPts: 0,
 };
 
-/** The production momentum config — see MOMENTUM_SIGNAL.md.
+/** The production momentum config — see docs/strategy/MOMENTUM_SIGNAL.md.
  *  Quality-filter sweep 2026-10-02 (648 sessions, Globex-filtered): the
  *  ATR size gate at 1.0 beats 0.85 on WR (75.6 vs 75.2), PF (2.71 vs 2.65)
  *  AND total net (+4482 vs +4475) at nearly the same trade count — the
  *  footprint gates (stack/churn/POC/quiet/diag/eff) all trade total net
- *  for per-trade quality (see research/quality-filter-sweep-2026-10-02.md).
+ *  for per-trade quality (see docs/research/quality-filter-sweep-2026-10-02.md).
  *  Stop floor 3.5 pts (sizing-cap study 2026-10-02): structural stops
  *  tighter than 3.5 pts widen to entry ∓ 3.5 (target follows at 1R) — the
  *  floor sweep peaks at 3.5 (+1.9% total vs structural, −5% worst day);
  *  floors past ~4 hurt the tail. Stops under minRiskPts (3) still never
- *  trade. Big stops stay (research/sizing-cap-2026-10-02.md). */
+ *  trade. Big stops stay (docs/research/sizing-cap-2026-10-02.md). */
 export const MOM_PROD: MomConfig = {
   ...MOM_DEFAULTS,
   needResponse: false,
@@ -578,7 +578,7 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     let risk = Math.abs(entry - stop);
     // the hard floor first: stops below minRiskPts never trade (measured —
     // widening them to the floor instead costs 39% of total and produces
-    // −$2.7k days, see research/sizing-cap-2026-10-02.md). Only the
+    // −$2.7k days, see docs/research/sizing-cap-2026-10-02.md). Only the
     // minRiskPts..riskFloorPts zone gets widened.
     if (!(risk > 0) || risk < cfg.minRiskPts) return null;
     if (cfg.riskFloorPts > 0 && risk < cfg.riskFloorPts) {

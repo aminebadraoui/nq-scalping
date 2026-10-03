@@ -12,7 +12,7 @@
  *   hourFilter     {globex, none}
  *   targetR        {1.0, 1.5}
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/sweepReclaimV2Study.ts [--max N] [--split 2026-01-01] [--offline]
  * ------------------------------------------------------------------ */
 

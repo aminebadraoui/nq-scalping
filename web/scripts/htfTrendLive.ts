@@ -14,7 +14,7 @@
  * short with its regime flags.
  *
  * Run from web/:
- *   node --import ../scripts/ts-loader.mjs ./scripts/htfTrendLive.ts
+ *   node --import scripts/ts-loader.mjs ./scripts/htfTrendLive.ts
  * ------------------------------------------------------------------ */
 
 import { readFileSync } from "node:fs";

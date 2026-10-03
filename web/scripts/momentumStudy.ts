@@ -1,7 +1,7 @@
 /* ------------------------------------------------------------------ *
  * Momentum study — replay the momentum detector over the R2 archive.
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/momentumStudy.ts [--max N] [--split 2026-01-01] \
  *     [--cfg flushFrac=0.3,breakFrac=0.6] [--sweep] [--dump out.json] \
  *     [--offline] [--warm [--warm-concurrency 16]]

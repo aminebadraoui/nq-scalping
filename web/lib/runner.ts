@@ -15,7 +15,7 @@
  * initial stop AND the first rung are both touched is flagged
  * `ambiguous`. Costs are 0.5 pt round-trip.
  *
- * Pure + client-safe, unit-tested (web/tests/runner.test.mjs).
+ * Pure + client-safe, unit-tested (../tests/runner.test.mjs).
  * ------------------------------------------------------------------ */
 
 export type RunnerTrade = {

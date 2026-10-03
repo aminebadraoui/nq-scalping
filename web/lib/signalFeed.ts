@@ -457,7 +457,7 @@ class SignalFeed {
 
   private async maybeSend(snap: SignalSnapshot): Promise<void> {
     if (!FEED_REVERSAL) return;
-    // The card gate (STRATEGY.md "When a signal exists"): every directional
+    // The card gate (docs/strategy/STRATEGY.md "When a signal exists"): every directional
     // box aligned AND all three required ingredients present — location
     // "yes" = at/inside an LVN, and "no reclaim, no trade" — AND at least
     // one confirmation (present >= 4 of 6). Backtest optimum: 4/6 hits
@@ -466,7 +466,7 @@ class SignalFeed {
     const gate = cardGateOpen(snap.signal, snap.mech);
     if (!gate.ok) return;
 
-    // Footprint signature filters (see FOOTPRINT_REVERSAL_RESEARCH.md):
+    // Footprint signature filters (see docs/research/FOOTPRINT_REVERSAL_RESEARCH.md):
     // 1) a footprint stack forming AGAINST the trade is near-breakeven — skip it.
     // 2) the entry bar's delta must print in the trade direction.
     const lastStack = snap.analysis?.imbalance?.lastStack;

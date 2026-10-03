@@ -34,13 +34,13 @@ dedupe to one card; the day's first card is marked `1st today`.
    low through the reference low). No separate response bar required
    (merged mode).
 4. **Candle-size gate** — breakout bar range ≥ 1.0 × ATR14 (adopted
-   2026-10-02 over 0.85 per `research/quality-filter-sweep-2026-10-02.md`).
+   2026-10-02 over 0.85 per `docs/research/quality-filter-sweep-2026-10-02.md`).
 
 Risk 3.5–30 pts (stops tighter than 3.5 widen to the floor). Validation (flush trigger): 1,828 trades, 76.1% WR, PF 2.76.
 
 **ES cross-asset chips (journal-only labels, never gates)** — the live card
 prints up to three chips from the ES twin feed (`web/lib/esJoin.ts`, measured
-in `research/es-features-study-2026-10-02.md` over all 649 sessions):
+in `docs/research/es-features-study-2026-10-02.md` over all 649 sessions):
 
 - `ES CONFIRM 85%` — ES printed a fresh session extreme in the 5 bars before
   entry (n=629: 85.2% WR / PF 4.84, train 84.3 / test 87.4).
@@ -171,11 +171,11 @@ The stop-width × target × contracts grid over every live strategy
 (2026-10-02 confirmation: a dedicated stop-pad sweep over 648 sessions —
 pads 0.25→1.5 and a 00–02 ET night pad — degrades WR/PF monotonically and
 worsens the worst-day tail; stop-runs are 5% of stops with no hour
-clustering. `research/context-veto-stoprun-2026-10-02.md`. Sizing dynamics:
+clustering. `docs/research/context-veto-stoprun-2026-10-02.md`. Sizing dynamics:
 the tiered shrink-on-green scheme is the measured risk-adjusted optimum —
 loss-shrinking buys ~0, win-scaling is leverage in disguise, and the
 "never risk more than the day's P&L" ceiling breaches the funded trailing
-MLL invisibly. `research/sizing-dynamics-2026-10-02.md`.)
+MLL invisibly. `docs/research/sizing-dynamics-2026-10-02.md`.)
 
 Daily goals (P = probability of the day reaching the goal, 2000 sampled days,
 real sequences through the account sim):
@@ -195,12 +195,12 @@ real sequences through the account sim):
   tighter than 3.5 pts widen to entry ∓ 3.5 (the widen floor — the sweep peaks
   at 3.5; floors past ~4 hurt the tail). Stops under 3 pts never trade. The
   weak zone's stops get run; widening keeps the trade and beats both skipping
-  and trading it structural (`research/sizing-cap-2026-10-02.md`).
+  and trading it structural (`docs/research/sizing-cap-2026-10-02.md`).
   - Wall-aware stops (`WALL_STOP=1`, default OFF): widen the stop beyond a
     near dealer wall (Pulcini's rule). Shipped with tests, but the POC-proxy
     backtest rejected the placement rule for now (widen = generic stop-
     widening: more winners, smaller edge) — re-test when historical gamma
-    walls exist. `research/wall-aware-stop-proxy-2026-10-03.md`.
+    walls exist. `docs/research/wall-aware-stop-proxy-2026-10-03.md`.
 - Momentum + RTH cards size **9 contracts** by default (median day +$347;
   worst real day −$619; 0% annual breach); `FIXED_CONTRACTS` env overrides.
 - The open family keeps the $170-budget sizing (2 MNQ on the drive's 35-pt
@@ -214,7 +214,7 @@ real sequences through the account sim):
 
 ## ARCHIVED / OFF
 
-- **LVN reversal** — `STRATEGY.md` (the original playbook; `FEED_REVERSAL=0`).
+- **LVN reversal** — `docs/strategy/STRATEGY.md` (the original playbook; `FEED_REVERSAL=0`).
 - **Sweep-reclaim** — session-extreme fade; `FEED_SWEEP_RECLAIM=0` (it fired
   shorts into one-sided runs — retired).
 - **Pullback-exhausted ticket** — `FEED_PULLBACK_TICKET=0`.

@@ -4,7 +4,7 @@ Second instrument, same pipeline: 1-minute ES futures footprint data collected
 from the same undocumented GoCharting socket as the NQ archive, one file per
 (date, session), mirroring the NQ store date-for-date. Purpose: cross-asset
 microstructure features for the NQ scalping backtests — NQ−ES delta divergence,
-relative strength, RVOL ratio, lead-lag — per `DATA_DIMENSIONS_RESEARCH.md` §4.2.
+relative strength, RVOL ratio, lead-lag — per `docs/data/DATA_DIMENSIONS_RESEARCH.md` §4.2.
 
 ## Collection (`backfill_es.py`)
 
@@ -83,7 +83,7 @@ shape is identical to NQ:
 // ${GC_REMOTE_URL}/data/es/<date>_<session>.json  (see manifest-es.json)
 ```
 
-First planned joins (from `DATA_DIMENSIONS_RESEARCH.md` §4.2): NQ−ES delta
+First planned joins (from `docs/data/DATA_DIMENSIONS_RESEARCH.md` §4.2): NQ−ES delta
 divergence at the flush, NQ−ES spread z-score, relative RVOL, and lead-lag at
 the breakout — each a split dimension over the existing momentum/RTH replays.
 

@@ -12,7 +12,7 @@
  *   failOneSided {0, 0.55, 0.65}      — puke proof on the failure bar
  *   targetMode   {1R, edge}           — 1R vs the opposite balance edge
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/balanceBreakStudy.ts [--max N] [--split 2026-01-01] [--offline]
  * ------------------------------------------------------------------ */
 

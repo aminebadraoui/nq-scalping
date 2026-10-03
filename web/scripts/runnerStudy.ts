@@ -1,6 +1,6 @@
 /* ------------------------------------------------------------------ *
  * Runner study — every production strategy re-scored with the ladder
- * exit (web/lib/runner.ts): open target, stop → BE at +1R, → +1R at
+ * exit (../lib/runner.ts): open target, stop → BE at +1R, → +1R at
  * +2R, → +2R at +3R, …, 60-minute time exit.
  *
  * Grounded in MyFundedFutures Rapid EOD 50k: per-family trades are
@@ -10,7 +10,7 @@
  * $2,100 buffer / $500 payouts) — eval and funded — plus the day-P&L
  * distribution (median, worst, P(day ≥ $500), P(day ≥ $900)).
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/runnerStudy.ts [--family momentum|expansion|rth|open|all] \
  *     [--max N] [--offline] [--maxBars 60]
  * ------------------------------------------------------------------ */

@@ -107,7 +107,7 @@ research knob; the open stays silent by design.
 
 **Breakout-bar size gate: `minBreakRangeR = 0.85` → 1.0 (2026-10-02)** — the breakout bar's
 range must be ≥0.85× ATR14 as researched here; the live gate later moved to
-1.0 (strictly better on WR/PF/net — `research/quality-filter-sweep-2026-10-02.md`).
+1.0 (strictly better on WR/PF/net — `quality-filter-sweep-2026-10-02.md`).
 The gate removes small-range breakout bars
 (candle-size noise) while keeping tonight's documented 18:16 example
 (6.0 pts on a 7.0-pt ATR = 0.86).

@@ -143,7 +143,7 @@ const STRATEGIES: Strategy[] = [
 ];
 
 const RETIRED = [
-  { name: "LVN reversal", note: "the original fade playbook — STRATEGY.md; FEED_REVERSAL=0" },
+  { name: "LVN reversal", note: "the original fade playbook — docs/strategy/STRATEGY.md; FEED_REVERSAL=0" },
   { name: "Sweep-reclaim", note: "session-extreme fades — retired because it fired shorts into one-sided runs; FEED_SWEEP_RECLAIM=0" },
   { name: "Pullback-exhausted ticket", note: "the trade ticket inside the unusual-volume watch — FEED_PULLBACK_TICKET=0" },
   { name: "Open daily rule + strict drive", note: "superseded config modes in lib/openDrive.ts (79% hit every day / 92% hit ~1 day in 8)" },

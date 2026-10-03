@@ -97,7 +97,7 @@ function fmtN(n: number, dp = 2) {
   return n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
 }
 
-/** The printed sizing line (STRATEGY.md "The trade, in four lines"):
+/** The printed sizing line (docs/strategy/STRATEGY.md "The trade, in four lines"):
  *  contracts = risk ÷ (stop distance in pts × $20) — $20 = NQ point value.
  *  Single source of truth: the Telegram card, the checklist panel and the
  *  signal history all render this exact line. */

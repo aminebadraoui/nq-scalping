@@ -1,7 +1,7 @@
 /* ---------------------------------------------------------------------------
  * Strategy study: does the playbook survive contact with our own data?
  *
- *   node --import ../scripts/ts-loader.mjs ./db/study.ts
+ *   node --import scripts/ts-loader.mjs ./db/study.ts
  *
  * Uses the SAME engine as the dashboard (lib/gcdata.ts) so the signals are
  * exactly the ones the checklist shows. For every reclaim (the trigger) we walk

@@ -37,7 +37,7 @@
 | **Open drive** (`OPEN_PROD`) | ✅ **LIVE** (`FEED_OPEN=1` + `FEED_OPEN_DRIVE=1`) | 9:30–9:59 opening-range break backed by cum-delta ≥300 and ≥55% one-sided bar; fixed TP +15 / SL −35. | 493 trades · 96% hit TP10/SL30; scaling it breaches the account |
 | **Open pullback / sniper** | ❌ off (`FEED_OPEN_PULLBACK=0`, `FEED_OPEN_SNIPER=0`) | 9:30–10:30 pullback exhaustion; 9:36 resting-limit sniper. | 69.8% / 55.8% WR |
 | **Unusual-volume alert** | ✅ **LIVE**, alert only (`FEED_UNUSUAL_VOLUME=1`) | Volume ≥2× hourly norm + ≥70% one-sided = "go look", not a trade; arms the failed-flush watch. | — |
-| **LVN reversal** | ❌ off (`FEED_REVERSAL=0`, retired) | Fade failed break at an LVN back to POC. | was PF 2.16 (see `STRATEGY.md`) |
+| **LVN reversal** | ❌ off (`FEED_REVERSAL=0`, retired) | Fade failed break at an LVN back to POC. | was PF 2.16 (see `docs/strategy/STRATEGY.md`) |
 | **Sweep-reclaim / pullback ticket** | ❌ off (`FEED_SWEEP_RECLAIM=0`, `FEED_PULLBACK_TICKET=0`) | Session-extreme fade; pullback-exhausted 1R. | fired shorts into one-sided runs — retired |
 | **Context boxes** | live | Options/GEX regime (CHOP vs TREND), price-action discount/premium across 6 TF, news stand-aside veto (hardcoded 8:30/10:00/14:00 ±5 min). | GEX gate is a **hypothesis** — never backtested (no historical options data) |
 
@@ -121,7 +121,7 @@ already enforces:
 
 New data never votes long/short; the footprint is the only trigger. It acts
 through the five roles below — the same architecture as the existing context
-box (`OPTIONS_SIGNAL.md` §5: context boxes gate, directional boxes vote).
+box (`docs/strategy/OPTIONS_SIGNAL.md` §5: context boxes gate, directional boxes vote).
 Under the Rapid EOD 50k rules the first two roles are the highest value:
 they avoid bad trades and protect the $2,000 trailing floor.
 
@@ -280,7 +280,7 @@ of all.
 - **Order-flow stats** (unique: we keep trade *counts* per level):
   - **Trade-size asymmetry** — avg buy-trade size vs sell-trade size per bar
     (big prints lifting vs retail hitting) — the absorption proxy from
-    `NQ_ALERT_SYSTEM_DESIGN.md` §141, now as a sweep feature;
+    `docs/strategy/NQ_ALERT_SYSTEM_DESIGN.md` §141, now as a sweep feature;
   - **Price-impact proxy** (Kyle's lambda): |Δprice| ÷ volume per minute;
   - **CVD statistics**: slope, autocorrelation (hot-hand / trend persistence
     of delta), sign-flip rate;
@@ -314,7 +314,7 @@ of all.
 Today: live GEX regime + walls from CBOE's free QQQ chain (undocumented,
 ~15 min delayed, OI EOD, one fetch per 5 min in production) — **but the
 regime gate is a documented hypothesis with no historical validation**
-(`OPTIONS_SIGNAL.md` §5 caveat). Closing that requires historical chains:
+(`docs/strategy/OPTIONS_SIGNAL.md` §5 caveat). Closing that requires historical chains:
 
 ### 6.1 Historical chains + Greeks (paid — the real enabler)
 
@@ -474,7 +474,7 @@ Phases 0–2 are free and reversible; Phase 3 is the single optional purchase
 - VIX daily OHLC mirror — https://github.com/datasets/finance-vix
 - TradingHours — https://www.tradinghours.com
 - In-repo: `MACRO_DATA_RESEARCH.md`, `research/` (us/global/PIT deep-dives),
-  `OPTIONS_SIGNAL.md`, `gcdata/README.md`, `web/db/refine.ts`,
+  `docs/strategy/OPTIONS_SIGNAL.md`, `gcdata/README.md`, `web/db/refine.ts`,
   `web/lib/lab.ts`, `web/lib/backtest.ts`, `web/scripts/momentumStudy.ts`.
 
 *Educational research only — not financial advice.*

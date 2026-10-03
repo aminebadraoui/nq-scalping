@@ -346,7 +346,7 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
   // give-back protection: halt new entries once today's P&L has given back
   // more than max(floor, pct × dayPeak) from the day's peak — the 648-session
   // replay found pct 0.5 / floor $250 keeps 90% of total profit while cutting
-  // the worst day from −$742 to −$496 (see research/daily-giveback rules).
+  // the worst day from −$742 to −$496 (see docs/research/daily-giveback-protection-2026-10-02.md).
   s.dayPeak = Math.max(s.dayPeak, s.dayPnl);
   const gbPct = num(process.env.GUARD_GIVEBACK_PCT, 0.5);
   const gbFloor = num(process.env.GUARD_GIVEBACK_FLOOR, 250);

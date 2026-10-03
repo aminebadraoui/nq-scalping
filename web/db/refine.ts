@@ -1,7 +1,7 @@
 /* ---------------------------------------------------------------------------
  * Refinement sweep — analysis only, writes nothing, app code untouched.
  *
- *   node --import ../scripts/ts-loader.mjs ./db/refine.ts
+ *   node --import scripts/ts-loader.mjs ./db/refine.ts
  *
  * Question: which entry conditions available AT THE ENTRY BAR raise the win rate
  * of the reclaim trigger, and which are noise?

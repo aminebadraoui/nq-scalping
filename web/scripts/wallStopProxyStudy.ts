@@ -18,7 +18,7 @@
  * pessimistic same-bar stop-first, 0.5 pt round-trip cost, 60-bar time
  * exit, train/test split 2026-01-01.
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/wallStopProxyStudy.ts [--max N] [--split 2026-01-01] [--offline]
  * ------------------------------------------------------------------ */
 

@@ -1,7 +1,7 @@
 /* ---------------------------------------------------------------------------
  * Neon ingestion: gcdata/data/*.json + gcdata/data/ohlc/*.json  →  Postgres.
  *
- *   node --import ./scripts/ts-loader.mjs ./db/ingest.ts [flags]
+ *   node --import scripts/ts-loader.mjs ./db/ingest.ts [flags]
  *
  *   --all              backfill every collected dataset (default: today's)
  *   --since DATE       ingest datasets from DATE onward

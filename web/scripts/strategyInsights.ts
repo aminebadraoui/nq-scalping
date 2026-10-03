@@ -17,8 +17,8 @@
  * stored instead — and the agent can be asked to do the deep-dive.
  *
  * Run from web/ (nightly.sh after tradeAnalysis, or manually):
- *   node --import ../scripts/ts-loader.mjs ./scripts/strategyInsights.ts
- *   node --import ../scripts/ts-loader.mjs ./scripts/strategyInsights.ts --since 2026-10-01T16:00:00Z
+ *   node --import scripts/ts-loader.mjs ./scripts/strategyInsights.ts
+ *   node --import scripts/ts-loader.mjs ./scripts/strategyInsights.ts --since 2026-10-01T16:00:00Z
  * ------------------------------------------------------------------ */
 
 import { readFileSync } from "node:fs";

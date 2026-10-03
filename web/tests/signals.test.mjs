@@ -47,7 +47,7 @@ test("three boxes: two long, one short is still a conflict", () => {
   assert.match(s.verdict, /CONFLICT/);
 });
 
-/* ---- the card gate (STRATEGY.md "When a signal exists") ---- */
+/* ---- the card gate (docs/strategy/STRATEGY.md "When a signal exists") ---- */
 
 const ing = (key, role, state) => ({ key, n: key.charAt(0), name: key, role, state, short: "", value: "", why: "" });
 

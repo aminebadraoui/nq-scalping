@@ -13,7 +13,7 @@
  * and print bucket tables + the interaction matrices that matter
  * (size × delta, efficiency × delta, position × delta, size × stack).
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/footprintCandleStudy.ts [--max N]
  * ------------------------------------------------------------------ */
 

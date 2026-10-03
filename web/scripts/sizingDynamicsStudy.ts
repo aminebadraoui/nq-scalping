@@ -26,7 +26,7 @@
  *                   ceiling — Option B verbatim
  *   tiers+lossHalve Option A + the drawdown leg of Option B
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/sizingDynamicsStudy.ts [--offline] [--max N]
  * ------------------------------------------------------------------ */
 

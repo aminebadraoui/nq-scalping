@@ -8,8 +8,8 @@
  * then prints the report.
  *
  * Run from web/ (nightly.sh after reconcile, or manually):
- *   node --import ../scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts
- *   node --import ../scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts --since 2026-10-01T16:00:00Z
+ *   node --import scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts
+ *   node --import scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts --since 2026-10-01T16:00:00Z
  *
  * Idempotent: per-trade features are recomputed in place; `trade_analysis`
  * rows append (the dashboard reads the newest).

@@ -249,18 +249,18 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
 
 # manual:
 cd web && DATABASE_URL=$(grep '^DATABASE_URL=' .env.local | cut -d= -f2-) \
-  node --import ../scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events
+  node --import scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events
 
 # manual trade reconciliation ("did that Telegram card trade, and how?"):
-cd web && node --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts \
+cd web && node --import scripts/ts-loader.mjs ./scripts/reconcileTrades.ts \
   [--since 2026-10-01T16:00:00Z]
 
 # manual win/loss analysis (framework report → stdout + trade_analysis table):
-cd web && node --import ../scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts \
+cd web && node --import scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts \
   [--since 2026-10-01T16:00:00Z]
 
 # manual insight mining (proposals + AI review → insights table):
-cd web && node --import ../scripts/ts-loader.mjs ./scripts/strategyInsights.ts \
+cd web && node --import scripts/ts-loader.mjs ./scripts/strategyInsights.ts \
   [--since 2026-10-01T16:00:00Z]
 
 # self-improvement is OFF by default: approve proposals on the dashboard
@@ -302,6 +302,6 @@ dates that have a vendor OHLC twin (recent `collect_ohlc` window).
 ## Credentials policy (unchanged)
 
 - Nothing secret is committed: Coolify/Neon tokens live in the gitignored skill
-  `.agents/skills/coolify-deploy/SKILL.md`; `DATABASE_URL` in `web/.env.local`;
+  `../.agents/skills/coolify-deploy/SKILL.md`; `DATABASE_URL` in `web/.env.local`;
   GoCharting + Telegram creds in `gcdata/.env`.
 - If anything secret ever lands in git again: rotate AND rewrite history.

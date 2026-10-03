@@ -18,8 +18,8 @@
  *   - CrossTrade account snapshot     (realized P&L for the run row)
  *
  * Run from web/ (manual or nightly.sh after ingest):
- *   node --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts
- *   node --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts --since 2026-10-01T16:00:00Z
+ *   node --import scripts/ts-loader.mjs ./scripts/reconcileTrades.ts
+ *   node --import scripts/ts-loader.mjs ./scripts/reconcileTrades.ts --since 2026-10-01T16:00:00Z
  *
  * Env (falls back to web/.env.local): DATABASE_URL, CROSSTRADE_KEY,
  * CROSSTRADE_ACCOUNT. CT_COMMISSION_PER_SIDE overrides the per-side

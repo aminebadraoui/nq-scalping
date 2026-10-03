@@ -6,7 +6,7 @@
  * open interest as it builds through the day) stay current, instead of
  * being a once-a-day snapshot.
  *
- * Honest bounds (OPTIONS_SIGNAL.md §8):
+ * Honest bounds (docs/strategy/OPTIONS_SIGNAL.md §8):
  *   - CBOE is delayed ~15 min and the endpoint is UNDOCUMENTED. Polling
  *     faster than the delay buys nothing for price and only raises the
  *     ban risk, so the default is 5 minutes. Override with

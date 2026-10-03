@@ -1,5 +1,5 @@
 /* The Python engine (gcdata/profiles.py) and the TypeScript engine
- * (web/lib/gcdata.ts) must produce IDENTICAL level sheets — they are two
+ * (../lib/gcdata.ts) must produce IDENTICAL level sheets — they are two
  * implementations of the same definition, and the 2026 audit found them
  * disagreeing (banker's rounding + a missing LVN width filter). */
 import { test } from "node:test";

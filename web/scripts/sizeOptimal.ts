@@ -13,7 +13,7 @@
  * Also runs the one-trade-per-day discipline (first card only,
  * PF 3.15) as a second scenario.
  *
- * GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ * GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *   scripts/sizeOptimal.ts   (needs /tmp/mom_rr085.json + /tmp/mom_exp_seq2.json,
  *                             or run momentumStudy --sweep first)
  * ------------------------------------------------------------------ */

@@ -143,7 +143,7 @@ export function composeSignals(boxes: BoxVerdict[]): Signal {
 }
 
 /* ------------------------------------------------------------------ *
- * The card gate — STRATEGY.md "When a signal exists", gates 1–3.
+ * The card gate — docs/strategy/STRATEGY.md "When a signal exists", gates 1–3.
  *
  * A trade card exists only when, at the same minute:
  *   · every directional box agrees (ALIGNED LONG / SHORT)   — gate 2

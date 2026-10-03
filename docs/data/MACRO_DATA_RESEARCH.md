@@ -17,7 +17,7 @@
 | `web/lib/signalEngine.ts` `newsWindow()` | Live veto = hardcoded times **8:30 / 10:00 / 14:00 ET ± 5 min** | Not a real calendar: fires on any day at those times (CPI days, NFP days, but also irrelevant Wednesdays at 14:00, misses 8:30 claims on Thursdays…), and knows nothing about *which* release |
 | `web/lib/backtest.ts` line 315 | `newsWin: false` — the backtest **does not replay the news veto at all** | Live rules and backtest rules disagree; the veto's P&L effect is unmeasured |
 | `web/lib/accountGuard.ts` `inNewsWindow()` | Funded-stage block from `MFF_T1_NEWS` env: comma-separated `"YYYY-MM-DD HH:mm"` ET, ±3 min | Manually maintained list; not a data product |
-| `web/lib/options.ts` / `OPTIONS_SIGNAL.md` | CBOE QQQ gamma read mapped to NQ points (context box) | Already a market-implied "macro" context — good precedent to extend |
+| `web/lib/options.ts` / `docs/strategy/OPTIONS_SIGNAL.md` | CBOE QQQ gamma read mapped to NQ points (context box) | Already a market-implied "macro" context — good precedent to extend |
 | `gcdata/*` | GoCharting footprint archive (Dec 2023 → now, RTH+ETH) | Pure micro data; zero macro fields |
 
 **Conclusion:** the macro layer has two jobs here — (a) make the release-window
@@ -111,13 +111,13 @@ point-in-time, and they fix the live/backtest disagreement found in §1.
 For each joined series, assert: bar at `T-1min` before a release does not see the
 value; bar at `T` does; daily series appear only on the next RTH open after their
 close; vintage join uses `vintage_date`, never `date`. Mirror the existing
-"replayed bar-by-bar, no lookahead" discipline from `FOOTPRINT_REVERSAL_RESEARCH.md`.
+"replayed bar-by-bar, no lookahead" discipline from `docs/research/FOOTPRINT_REVERSAL_RESEARCH.md`.
 
 ---
 
 ## 4. Source catalog — US (research findings)
 
-Full audit with URLs and API parameters: `research/us-macro-data-sources-pit.md`.
+Full audit with URLs and API parameters: `us-macro-data-sources-pit.md`.
 
 | Source | Key series for NQ | Freq / lag | History | PIT? | Access | Cost / limits |
 |---|---|---|---|---|---|---|
@@ -169,7 +169,7 @@ Companion additions in `DATA_DIMENSIONS_RESEARCH.md` §3: earnings calendar (FMP
 
 ## 5. Source catalog — global + market-implied (research findings)
 
-Full audit with verified endpoints: `research/global-macro-data-sources.md`.
+Full audit with verified endpoints: `global-macro-data-sources.md`.
 
 ### 5.1 The vintage verdict (the decisive filter)
 
@@ -231,7 +231,7 @@ Companion additions in `DATA_DIMENSIONS_RESEARCH.md` §4: free intraday cross-as
 
 ## 6. Point-in-time methodology, release calendars & surprises (research findings)
 
-Full report with citations: `research/macro_context_layer_report.md`.
+Full report with citations: `macro_context_layer_report.md`.
 
 ### 6.1 PIT standard practice
 
@@ -289,7 +289,7 @@ Three tables: `macro_series_vintage` (immutable ALFRED dump), `release_calendar`
 `macro_daily_features` (one row per feature-state change keyed by `as_of_ts`).
 Join 1-min bars with DuckDB `ASOF JOIN bars b ON b.ts >= f.as_of_ts` (or
 `pd.merge_asof(direction='backward')`); event features via next/last-event
-subqueries. Full SQL in `research/macro_context_layer_report.md` §6.
+subqueries. Full SQL in `macro_context_layer_report.md` §6.
 
 **Validation battery** (run after every calendar/vintage update): availability
 audit (`as_of_ts ≤ ts`), surprise zeroing pre-release, revision-drift check

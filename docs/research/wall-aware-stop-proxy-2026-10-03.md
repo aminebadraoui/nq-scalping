@@ -65,7 +65,7 @@ improvement).
 
 **REJECT automatic widening.** With the trailing-POC magnet, the rule behaves
 exactly like the generic stop-widening the pad sweep already rejected
-(`research/context-veto-stoprun-2026-10-02.md`): more winners, smaller edge,
+(`context-veto-stoprun-2026-10-02.md`): more winners, smaller edge,
 worse tail per dollar. The anatomy explains why: the magnet isn't a stop
 magnet on this tape.
 

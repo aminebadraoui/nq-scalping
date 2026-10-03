@@ -1,6 +1,6 @@
 # Real Reversal vs Fakeout — Deep Research for Scalpers
 
-**Status:** v1.0 — complete synthesis (primary sources + 3 parallel research threads merged; full strategy annex in `scalping-reversal-strategies-report.md`)
+**Status:** v1.0 — complete synthesis (primary sources + 3 parallel research threads merged; full strategy annex in `docs/strategy/scalping-reversal-strategies-report.md`)
 **Scope:** intraday scalping (tick–15m), futures / forex / crypto
 
 ---
@@ -169,6 +169,6 @@ The failed-breakout reversal is one of the oldest documented edges in trading: *
 - Bulkowski — [Failure Rate Study](https://thepatternsite.com/FailureRates.html) · Academic ORB study — [arXiv via RePEc](https://d.repec.org/n?u=RePEc:arx:papers:2605.04004&r=mst)
 - SuperTrader — [Win Rate vs Risk-Reward](https://supertrader.me/blog/win-rate-vs-risk-reward/) · TradesViz — [Time Stop](https://www.tradesviz.com/glossary/time-stop/)
 - Classic setups: Turtle Soup (Linda Raschke), Trader Vic 2B (Sperandeo), Wyckoff spring/upthrust ([The Chartist — Springs](https://www.thechartist.com.au/pattern-recognition-springs/), [FBS — Trader Vic's 2B](https://fbs.eu/de/analytics/articles/trader-vic%25e2%2580%2599s-2b-muster-28637))
-- Full strategy annex (per-setup playbooks with rules): [`scalping-reversal-strategies-report.md`](scalping-reversal-strategies-report.md) in this workspace
+- Full strategy annex (per-setup playbooks with rules): [`docs/strategy/scalping-reversal-strategies-report.md`](docs/strategy/scalping-reversal-strategies-report.md) in this workspace
 
 *Educational research only — not financial advice. All backtests cited are third-party and fee models vary by market.*

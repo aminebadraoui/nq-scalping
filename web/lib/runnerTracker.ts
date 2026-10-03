@@ -1,6 +1,6 @@
 /* ------------------------------------------------------------------ *
  * Runner ladder tracker — the LIVE counterpart of the ladder engine
- * in web/lib/runner.ts (scoreRunner). For every open runner leg of a
+ * in runner.ts (scoreRunner). For every open runner leg of a
  * scale-out, it watches the feed's completed minutes and moves the
  * stop up the ladder via CrossTrade CHANGE orders:
  *

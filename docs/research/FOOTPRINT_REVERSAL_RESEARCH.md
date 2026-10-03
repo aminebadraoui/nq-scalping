@@ -9,11 +9,11 @@ stop/target ordering is resolved conservatively (stop first).*
 
 **Status: historical reference.** The reversal card was retired 2026-09-30
 (`FEED_REVERSAL=0`; the live trade signal is the momentum card — see
-`MOMENTUM_SIGNAL.md` / `PLAYBOOK.md`). This file remains the empirical archive
+`docs/strategy/MOMENTUM_SIGNAL.md` / `PLAYBOOK.md`). This file remains the empirical archive
 for the reversal family. The signature filters (aligned stack + entry-bar
 delta), the 7-pt scalp stop, the POC target and the SIZE line are all wired into
 `web/lib/signalFeed.ts`, `web/lib/mechanism.ts` and `web/lib/signalText.ts`.
-The canonical playbook is `STRATEGY.md`.
+The canonical playbook is `docs/strategy/STRATEGY.md`.
 
 ---
 

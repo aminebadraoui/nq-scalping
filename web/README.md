@@ -69,7 +69,7 @@ executor (`db/local_executor.ts`) idles.
    stack on the trade's side, the entry bar's delta confirming. ENTRY / STOP
    (7-pt scalp stop) / TARGET (nearest POC) / SIZE (`risk ÷ (7 × $20)`) plus
    the full 6-point reasoning. Backtested lookahead-free over 683 sessions:
-   ~7.5 signals/day, 37% win, PF 2.16 (`FOOTPRINT_REVERSAL_RESEARCH.md`).
+   ~7.5 signals/day, 37% win, PF 2.16 (`docs/research/FOOTPRINT_REVERSAL_RESEARCH.md`).
 2. **Sweep-reclaim card** (`FEED_SWEEP_RECLAIM=1`) — a failed break of the
    session extreme reclaimed one-sidedly (≥65% on the entry side,
    session-median volume): a 1R ticket with stop 0.5 pt beyond the swept

@@ -27,7 +27,7 @@
  * within 10 bars — the live "recovered" tag.
  *
  * Run from web/:
- *   node --import ../scripts/ts-loader.mjs scripts/entryQualityStudy.ts --offline
+ *   node --import scripts/ts-loader.mjs scripts/entryQualityStudy.ts --offline
  * ------------------------------------------------------------------ */
 
 import { loadSessionMinutes, archiveDates } from "../lib/archive";

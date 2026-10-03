@@ -19,7 +19,7 @@
  * the MFF Rapid EOD 50k account sim.
  *
  * Run from web/:
- *   node --import ../scripts/ts-loader.mjs ./scripts/htfRegimeStudy.ts \
+ *   node --import scripts/ts-loader.mjs ./scripts/htfRegimeStudy.ts \
  *        [--max N] [--split 2026-01-01] [--include-rth] [--dump out.json]
  * ------------------------------------------------------------------ */
 

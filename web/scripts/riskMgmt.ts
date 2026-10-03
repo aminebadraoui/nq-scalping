@@ -10,7 +10,7 @@
  * dollar math: P(win ≥ $200), P(day ≥ $500 / ≥ $900), breach risk via
  * the MFF account simulator on daily sequences.
  *
- * GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ * GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *   scripts/riskMgmt.ts [--dump out.json]
  * ------------------------------------------------------------------ */
 

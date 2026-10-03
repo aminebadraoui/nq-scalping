@@ -17,7 +17,7 @@
  * Phase 2 sweeps stopPad {0.5, 0.75, 1.0, 1.5} plus an hour-conditional
  * pad (stopPadNight: 00:00–02:00 ET only) and prints the account sim.
  *
- *   GC_REMOTE_URL=... node --import ../scripts/ts-loader.mjs \
+ *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/stopRunStudy.ts [--max N] [--split 2026-01-01] [--offline]
  * ------------------------------------------------------------------ */
 
