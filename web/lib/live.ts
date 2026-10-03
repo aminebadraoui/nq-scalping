@@ -4,6 +4,7 @@ import { decodeFootprintForDateResponse, splitFrame, type BootCandle } from "./f
 import { persistLiveMinute } from "./liveStore";
 import { marketOpenAt } from "./marketHours";
 import { sessionDayOf } from "./times";
+import { esFrontMonth } from "./esJoin";
 
 /* ------------------------------------------------------------------ */
 /* Live GoCharting feed (server-side singleton)                        */
@@ -59,6 +60,14 @@ export type LiveState = {
   ticks: Tick[];
   minutes: LiveMinute[];
   cur: LiveMinute | null;
+  /** ES twin feed — the cross-asset context layer (BROAD CONFIRM / delta /
+   *  RS-stretch chips). Same UTC minute keying as the NQ buffer; no ticks,
+   *  no levels — the context only reads high/low/buy/sell per minute. */
+  es: {
+    lastTradeMs: number;
+    minutes: LiveMinute[];
+    cur: LiveMinute | null;
+  };
 };
 
 const TICK = 0.25;
@@ -232,6 +241,7 @@ class LiveFeed {
   private listeners = new Set<(s: LiveState) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastLtp = 0;
+  private lastEsLtp = 0;
   private retryMs = 10_000;
   private bootstrapped = false;
   private bootstrapAttemptAt = 0;
@@ -254,6 +264,7 @@ class LiveFeed {
     ticks: [],
     minutes: [],
     cur: null,
+    es: { lastTradeMs: 0, minutes: [], cur: null },
   };
 
   constructor() {
@@ -317,6 +328,35 @@ class LiveFeed {
     if (this.state.minutes.length > MAX_MINUTES) this.state.minutes = this.state.minutes.slice(-MAX_MINUTES);
   }
 
+  /** ES twin of seedFromFootprint: seed the in-progress session's ES minutes
+   *  so the cross-asset context has the whole session, not just the bars
+   *  since this process started. No persist, no levels. */
+  private seedEsFromFootprint(candles: BootCandle[]) {
+    const nowKey = new Date().toISOString().slice(0, 16);
+    const buf = this.state.es;
+    const have = new Set(buf.minutes.map((m) => `${m.du ?? ""}|${m.t}`));
+    const cur = buf.cur;
+    if (cur && /^\d{2}:\d{2}$/.test(cur.t)) have.add(`${cur.du ?? ""}|${cur.t}`);
+    let added = 0;
+    for (const c of candles) {
+      const ms = Date.parse(c.t);
+      if (!Number.isFinite(ms)) continue;
+      const iso = new Date(ms).toISOString();
+      const du = iso.slice(0, 10);
+      const hhmm = iso.slice(11, 16);
+      const key = `${du}|${hhmm}`;
+      if (key >= nowKey) continue; // developing minute — live ticks own it
+      if (have.has(key)) continue;
+      if (!(c.high > 0) || !(c.low > 0)) continue;
+      have.add(key);
+      buf.minutes.push({ t: hhmm, du, o: 0, h: c.high / 100, l: c.low / 100, c: 0, vol: c.buy + c.sell, buy: c.buy, sell: c.sell, live: true });
+      added++;
+    }
+    if (!added) return;
+    buf.minutes.sort((a, b) => `${a.du ?? ""}|${a.t}`.localeCompare(`${b.du ?? ""}|${b.t}`));
+    if (buf.minutes.length > MAX_MINUTES) buf.minutes = buf.minutes.slice(-MAX_MINUTES);
+  }
+
   /** One-time recovery of the current session so far (idempotent, throttled). */
   private async bootstrap() {
     if (this.bootstrapped || !globexOpen()) return;
@@ -330,19 +370,41 @@ class LiveFeed {
         this.bootstrapped = true;
         this.emit();
       }
+      // ES twin: fetch the same window under the ES front month and seed the
+      // cross-asset buffer (best-effort — the NQ seed is what gates the flag)
+      void fetchFootprintBars([nyDate(0), nyDate(1)], { ...this.env, GOCHARTING_SYMBOL: this.esSymbol() })
+        .then((esCandles) => {
+          if (esCandles.length) {
+            this.seedEsFromFootprint(esCandles);
+            this.emit();
+          }
+        })
+        .catch(() => {});
     } catch {
       /* retry on a later tick */
     }
   }
 
+  /** ES front-month symbol: GOCHARTING_ES_SYMBOL env override, else the
+   *  H/M/U/Z 3rd-Friday calendar (esFrontMonth). */
+  private esSymbol(): string {
+    return process.env.GOCHARTING_ES_SYMBOL || esFrontMonth();
+  }
+
+  private nqSymbol(): string {
+    return this.env.GOCHARTING_SYMBOL || "NQZ26";
+  }
+
   /** (re)assert the channel subscriptions — the server can silently drop a
    *  subscription while the socket stays up (observed: snapshots kept flowing
-   *  but the trade channel went quiet, so live bars froze). */
+   *  but the trade channel went quiet, so live bars froze). Both NQ and its
+   *  ES twin are subscribed; trades are routed by payload key. */
   private subscribeChannels() {
     try {
-      const sym = `${this.env.GOCHARTING_EXCHANGE || "CME"}:${this.env.GOCHARTING_SEGMENT || "FUTURE"}:${this.env.GOCHARTING_SYMBOL || "NQZ26"}`;
-      this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "trade", payload: [sym] }));
-      this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "watchlist", payload: [sym] }));
+      const base = `${this.env.GOCHARTING_EXCHANGE || "CME"}:${this.env.GOCHARTING_SEGMENT || "FUTURE"}`;
+      const syms = [`${base}:${this.nqSymbol()}`, `${base}:${this.esSymbol()}`];
+      this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "trade", payload: syms }));
+      this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "watchlist", payload: syms }));
     } catch {
       /* ignore */
     }
@@ -353,22 +415,23 @@ class LiveFeed {
     return `${String(d.getUTCFullYear()).padStart(4, "0")}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
   }
 
-  private applyTick(t: Tick) {
+  /** minute-building core shared by the NQ and ES buffers: roll the current
+   *  minute when the UTC key advances, accumulate h/l/c/vol/buy/sell and the
+   *  per-price cluster. Returns true when a minute rolled. Persisting + tick
+   *  bookkeeping live in the wrappers. */
+  private applyTickTo(t: Tick, buf: { minutes: LiveMinute[]; cur: LiveMinute | null }): boolean {
     const key = this.minuteKey(t.ms);
     const hhmm = key.slice(11, 16);
-    let cur = this.state.cur;
+    let cur = buf.cur;
+    let rolled = false;
     if (!cur || cur.t !== hhmm) {
-      if (cur) {
-        this.state.minutes.push(cur);
-        // the minute just closed — persist it to Neon so live data survives a
-        // restart instead of living only in this RAM buffer (best-effort)
-        if (/^\d{2}:\d{2}$/.test(cur.t)) void persistLiveMinute(cur).catch(() => {});
-      }
-      if (this.state.minutes.length > MAX_MINUTES) this.state.minutes = this.state.minutes.slice(-MAX_MINUTES);
+      if (cur) buf.minutes.push(cur);
+      rolled = true;
+      if (buf.minutes.length > MAX_MINUTES) buf.minutes = buf.minutes.slice(-MAX_MINUTES);
       // levels are only meaningful for the recent window — drop the rest
-      for (let i = 0; i < this.state.minutes.length - 30; i++) delete this.state.minutes[i].levels;
+      for (let i = 0; i < buf.minutes.length - 30; i++) delete buf.minutes[i].levels;
       cur = { t: hhmm, du: key.slice(0, 10), o: t.ltp, h: t.ltp, l: t.ltp, c: t.ltp, vol: 0, buy: 0, sell: 0, live: true };
-      this.state.cur = cur;
+      buf.cur = cur;
     }
     cur.h = Math.max(cur.h, t.ltp);
     cur.l = Math.min(cur.l, t.ltp);
@@ -383,8 +446,56 @@ class LiveFeed {
     const cell = lv[pxKey] ?? [0, 0];
     cell[t.side === 1 ? 0 : 1] += t.size;
     lv[pxKey] = cell;
+    return rolled;
+  }
+
+  private applyTick(t: Tick) {
+    const rolled = this.applyTickTo(t, this.state);
+    if (rolled) {
+      // the minute just closed — persist it to Neon so live data survives a
+      // restart instead of living only in this RAM buffer (best-effort)
+      const prev = this.state.minutes[this.state.minutes.length - 1];
+      if (prev && /^\d{2}:\d{2}$/.test(prev.t)) void persistLiveMinute(prev).catch(() => {});
+    }
     this.state.ticks.push(t);
     if (this.state.ticks.length > 2000) this.state.ticks = this.state.ticks.slice(-2000);
+  }
+
+  /** ES twin tick — same minute building, none of the NQ bookkeeping. */
+  private applyEsTick(t: Tick) {
+    this.applyTickTo(t, this.state.es);
+    this.state.es.lastTradeMs = Date.now();
+  }
+
+  /** key ends with ":<symbol>" — matches the vendor's "CME:FUTURE:ESZ26"
+   *  subscription keys (also tolerates a bare symbol). */
+  private keyIs(key: unknown, sym: string): boolean {
+    if (typeof key !== "string") return false;
+    const k = key.toUpperCase();
+    return k === sym.toUpperCase() || k.endsWith(`:${sym.toUpperCase()}`);
+  }
+
+  /** parse one symbol's trade prints and feed them to the right buffer */
+  private applyTradeItems(items: any[], isEs: boolean) {
+    for (const d of items) {
+      const ltp = Number(d.ltp ?? d.price ?? d.last_price ?? d.last);
+      if (!Number.isFinite(ltp) || ltp <= 0) continue;
+      // the trade channel carries the print size as `l_sz` (confirmed from the
+      // 2026-09-28 session capture) — sizing every tick as 1 contract by
+      // default would silently corrupt live volume and delta
+      const size = Number(d.l_sz ?? d.quantity ?? d.qty ?? d.size ?? d.volume ?? d.last_qty ?? d.vol ?? 1);
+      let side: 1 | -1;
+      if (typeof d.side === "number") side = d.side >= 0 ? 1 : -1;
+      else if (typeof d.side === "string") side = d.side.toLowerCase().startsWith("b") ? 1 : -1;
+      else if (typeof d.aggressor_side === "string") side = d.aggressor_side.toLowerCase().startsWith("b") ? 1 : -1;
+      else if (typeof d.buy !== "undefined") side = d.buy ? 1 : -1;
+      else side = ltp >= (isEs ? this.lastEsLtp : this.lastLtp) ? 1 : -1;
+      if (isEs) this.lastEsLtp = ltp;
+      else this.lastLtp = ltp;
+      const tick: Tick = { ms: Date.parse(d.date ?? d.date_str ?? d.time ?? "") || Date.now(), ltp, size, side };
+      if (isEs) this.applyEsTick(tick);
+      else this.applyTick(tick);
+    }
   }
 
   private handleText(msg: string) {
@@ -400,7 +511,16 @@ class LiveFeed {
     }
     this.state.lastMessage = Date.now();
     if (j.channel === "snapshot" && j.payload) {
-      const p = Object.values(j.payload)[0] as any;
+      // with the ES twin subscribed the snapshot map carries both symbols —
+      // pick the NQ entry, never ES
+      let p: any = null;
+      for (const [k, v] of Object.entries(j.payload as Record<string, unknown>)) {
+        if (this.keyIs(k, this.nqSymbol())) {
+          p = v;
+          break;
+        }
+      }
+      if (!p) p = Object.values(j.payload)[0] as any;
       if (p) {
         this.state.snapshot = {
           date: p.date,
@@ -428,23 +548,12 @@ class LiveFeed {
       }
     } else if (j.channel === "trade" && j.payload) {
       this.state.lastTradeMs = Date.now();
-      const p = Object.values(j.payload)[0] as any;
-      const items = Array.isArray(p) ? p : p?.items ?? p?.data ?? [];
-      for (const d of items) {
-        const ltp = Number(d.ltp ?? d.price ?? d.last_price ?? d.last);
-        if (!Number.isFinite(ltp) || ltp <= 0) continue;
-        // the trade channel carries the print size as `l_sz` (confirmed from the
-        // 2026-09-28 session capture) — sizing every tick as 1 contract by
-        // default would silently corrupt live volume and delta
-        const size = Number(d.l_sz ?? d.quantity ?? d.qty ?? d.size ?? d.volume ?? d.last_qty ?? d.vol ?? 1);
-        let side: 1 | -1;
-        if (typeof d.side === "number") side = d.side >= 0 ? 1 : -1;
-        else if (typeof d.side === "string") side = d.side.toLowerCase().startsWith("b") ? 1 : -1;
-        else if (typeof d.aggressor_side === "string") side = d.aggressor_side.toLowerCase().startsWith("b") ? 1 : -1;
-        else if (typeof d.buy !== "undefined") side = d.buy ? 1 : -1;
-        else side = ltp >= this.lastLtp ? 1 : -1;
-        this.lastLtp = ltp;
-        this.applyTick({ ms: Date.parse(d.date ?? d.date_str ?? d.time ?? "") || Date.now(), ltp, size, side });
+      // route each subscribed symbol's prints to its own buffer
+      for (const [k, v] of Object.entries(j.payload as Record<string, unknown>)) {
+        const p = v as any;
+        const items = Array.isArray(p) ? p : p?.items ?? p?.data ?? [];
+        if (!items.length) continue;
+        this.applyTradeItems(items, this.keyIs(k, this.esSymbol()));
       }
       this.emit();
     } else if (j.channel === "watchlist" || j.channel === "positions" || j.channel === "chain") {
@@ -534,6 +643,8 @@ class LiveFeed {
         this.state.minutes = [];
         this.state.cur = null;
         this.state.ticks = [];
+        this.state.es.minutes = [];
+        this.state.es.cur = null;
         this.bootstrapped = false;
         this.lastSessionDay = sessionDay;
         try {

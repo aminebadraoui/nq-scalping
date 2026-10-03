@@ -22,7 +22,11 @@
 import { getLive } from "./live";
 import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
+import type { FootprintMinute } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, midOf, type MomentumSignal } from "./momentum";
+import { buildEsContext, esCardChips, type EsContext, type EsMinute } from "./esJoin";
+import { readOptionsFromSnapshot, wallsFromRead } from "./options";
+import { applyWallStop } from "./wallStop";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
 import { detectSoftMomentum, SOFT_PROD } from "./softMomentum";
 import { momentumSize, cappedContracts, daySizeMultiplier, parseSizeTiers, DEFAULT_SIZE_TIERS } from "./propRules";
@@ -37,7 +41,7 @@ import {
 import { detectOneSidedReclaim } from "./reclaimSetup";
 import { contractsForRisk, RAPID_EOD_50K } from "./propRules";
 import { rvol, isUnusualVolume } from "./volumeProfile";
-import { utcToET, cdtToET } from "./times";
+import { utcToET, cdtToET, utcToFeedStamp } from "./times";
 import { placeOrder, type OrderIntent } from "./executor";
 import { crossTradeEnabled, placeCrossTradeScaleOut } from "./crossTrade";
 import { runnerTracker } from "./runnerTracker";
@@ -47,12 +51,14 @@ import { uvWatchCheck, type UVWatch } from "./unusualVolume";
 import { sendTelegram } from "./notify";
 import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
+import { domContextForSignal } from "./dom";
 import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
 import { crossGuardDayPnl } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations } from "./execWatch";
 import { logExec } from "./execLog";
+import { signalWindowOpen } from "./marketHours";
 
 function refreshSeconds(): number {
   // 15s default (was 30): the momentum/RTH triggers fire only on the
@@ -286,6 +292,27 @@ class SignalFeed {
     return c;
   }
 
+  /** cross-asset context from the live ES twin buffer, aligned to the NQ
+   *  feed-clock minutes (the same utcToFeedStamp conversion the footprint
+   *  uses). Null while the ES twin has fewer than 30 usable bars. */
+  private esContext(fp: FootprintMinute[]): EsContext | null {
+    const es = getLive().state.es;
+    const mins = es.cur ? [...es.minutes, es.cur] : es.minutes;
+    if (mins.length < 30) return null;
+    const esArr: EsMinute[] = [];
+    for (const m of mins) {
+      if (!/^\d{2}:\d{2}$/.test(m.t)) continue;
+      const stamp = utcToFeedStamp(m.t, m.du);
+      if (!stamp.hhmm) continue;
+      esArr.push({ t: stamp.hhmm, d: stamp.day, high: m.h, low: m.l, buy: m.buy, sell: m.sell, total: m.vol, mid: (m.h + m.l) / 2 });
+    }
+    if (esArr.length < 30) return null;
+    return buildEsContext(
+      fp.map((x) => ({ t: x.t, d: x.d, high: x.high, low: x.low })),
+      esArr,
+    );
+  }
+
   /** build the current signal — from LIVE data only, or null when closed/stale */
   async buildSnapshot(): Promise<SignalSnapshot | null> {
     const ctx = await this.ctx();
@@ -370,7 +397,17 @@ class SignalFeed {
 
   private async record(input: Parameters<typeof recordSignal>[0]): Promise<void> {
     if (!this.announce()) return;
-    await recordSignal(input);
+    // stamp the LIVE DOM picture (iceberg candidates vs entry/stop/target)
+    // into the signal's feature vector — observational only, best-effort,
+    // and it can never change the signal itself
+    let features = input.features ?? null;
+    try {
+      const dom = domContextForSignal({ entry: input.entry, stop: input.stop, target: input.target });
+      features = { ...(features ?? {}), dom };
+    } catch {
+      /* evidence is optional */
+    }
+    await recordSignal({ ...input, features });
   }
 
   /** record a signal the feed vetoed (news blackout / overrides / retrace
@@ -585,6 +622,10 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
+    // cross-asset context for the measured ES chips (null while the twin
+    // buffer is too young — chips simply don't print)
+    const esCtx = this.esContext(fp);
+    const nqMid = fp.map((m) => (m.high + m.low) / 2);
     // ladder management for open scale-out runners (CrossTrade backend only,
     // no new polling — reuses this tick's completed minutes)
     if (crossTradeEnabled()) void runnerTracker.evaluate(fp).catch(() => {});
@@ -603,6 +644,7 @@ class SignalFeed {
       for (const s of sigs) {
         if (s.breakIdx !== fp.length - 1) continue;
         const fam = s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
+        const es = esCardChips(esCtx, nqMid, s, true);
         await this.recordSkip({
           timeET: cdtToET(s.t),
           day: s.d,
@@ -614,7 +656,7 @@ class SignalFeed {
           verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
           headline: `NQ momentum ${s.dir}`,
           reason: `news blackout — ${nb}`,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features }),
         });
       }
       console.log(`[news] ${nb} blackout — skipping momentum card (${sigs.filter((s) => s.breakIdx === fp.length - 1).length} candidates recorded)`);
@@ -627,6 +669,8 @@ class SignalFeed {
       if (this.momentumSent.has(key)) continue;
       const et = cdtToET(s.t);
       const firstToday = !this.cardedDays.has(s.d);
+      const es = esCardChips(esCtx, nqMid, s, true);
+      const chipLine = es.labels.length ? `${es.labels.join(" · ")} · ` : "";
 
       // ---- self-improvement gates (strategy_overrides) — the approved
       //      insight loop filters the card BEFORE anything is sent ----
@@ -661,6 +705,7 @@ class SignalFeed {
             family,
             rejectedBy: dec.reasons,
             gates: this.gateSnapshot(ov),
+            ...es.features,
           }),
         });
         continue;
@@ -668,6 +713,26 @@ class SignalFeed {
 
       this.momentumSent.add(key);
       if (this.momentumSent.size > 500) this.momentumSent = new Set([...this.momentumSent].slice(-250));
+
+      // wall-aware stop (Pulcini rule, WALL_STOP=1): widen the stop to the
+      // far side of a near dealer wall instead of dying at the magnet.
+      // Applied BEFORE sizing so the card's contracts reflect the wider risk.
+      let wallNote = "";
+      if (process.env.WALL_STOP === "1") {
+        const g = getOptionsFeed().snapshot() ?? (await optionsSnapshot().catch(() => null));
+        const ltp = live.snapshot?.ltp ?? s.entry;
+        if (g && Number.isFinite(ltp) && ltp > 0) {
+          const r = applyWallStop(
+            { dir: s.dir, stop: s.stop, entry: s.entry },
+            wallsFromRead(readOptionsFromSnapshot(g, ltp)),
+          );
+          if (r.widened) {
+            s.stop = r.stop;
+            s.risk = Math.abs(s.entry - s.stop);
+            wallNote = r.note;
+          }
+        }
+      }
 
       // position size grounded in the Rapid EOD 50k rules (lib/propRules.ts):
       // fixed $170 risk, 30-micro cap, $2/pt MNQ. FIXED_CONTRACTS overrides
@@ -722,7 +787,7 @@ class SignalFeed {
           aPlus,
           firstToday,
           et,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true, gates: this.gateSnapshot(ov) }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true, gates: this.gateSnapshot(ov), ...es.features }),
         };
         const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
         const armText = [
@@ -735,7 +800,7 @@ class SignalFeed {
             : `<code>TARGET  +1R from the fill</code>`,
           `<code>SIZE    ~${sizeStrArm} at fill</code>`,
           ``,
-          `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}no market order — waits up to ${EXP_RETRACE_BARS} min for the retrace, skipped if untraded`,
+          `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}no market order — waits up to ${EXP_RETRACE_BARS} min for the retrace, skipped if untraded`,
           `<i>${STATS.momentum.stat}</i>`,
         ].join("\n");
         const res = await this.push(armText);
@@ -783,7 +848,7 @@ class SignalFeed {
           : `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${evidence}`,
+        `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}${evidence}${wallNote ? ` · ${wallNote}` : ""}`,
         `<i>${STATS.momentum.stat}</i>`,
       ].join("\n");
       const res = await this.push(text);
@@ -804,7 +869,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, gates: this.gateSnapshot(ov) }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, gates: this.gateSnapshot(ov), wallStop: wallNote || undefined, ...es.features }),
       });
       registerExpectation({
         key: `mom|${key}`,
@@ -1074,10 +1139,13 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
+    const esCtx = this.esContext(fp);
+    const nqMid = fp.map((m) => (m.high + m.low) / 2);
     if (nb) console.log(`[news] ${nb} blackout — skipping RTH cards (candidates recorded)`);
     for (const s of detectSoftMomentum(fp, SOFT_PROD)) {
       if (s.breakIdx !== fp.length - 1) continue;
       if (nb) {
+        const es = esCardChips(esCtx, nqMid, s, false);
         await this.recordSkip({
           timeET: cdtToET(s.t),
           day: s.d,
@@ -1089,7 +1157,7 @@ class SignalFeed {
           verdict: "rth soft-continuation (experimental)",
           headline: `NQ RTH ${s.dir}`,
           reason: `news blackout — ${nb}`,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { family: "rth", newsBlocked: nb }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { family: "rth", newsBlocked: nb, ...es.features }),
         });
         continue;
       }
@@ -1107,6 +1175,7 @@ class SignalFeed {
         firstOfDay: false,
       });
       if (!dec.allow) {
+        const es = esCardChips(esCtx, nqMid, s, false);
         console.log(`[overrides] rth ${s.dir} SKIPPED — ${dec.reasons.join("; ")}`);
         await this.recordSkip({
           timeET: cdtToET(s.t),
@@ -1123,6 +1192,7 @@ class SignalFeed {
             family: "rth",
             rejectedBy: dec.reasons,
             gates: this.gateSnapshot(ov),
+            ...es.features,
           }),
         });
         continue;
@@ -1164,6 +1234,8 @@ class SignalFeed {
         .catch(() => {});
 
       const aPlus = s.breakFrac >= 0.65 || s.breakFrac <= 0.35;
+      const es = esCardChips(esCtx, nqMid, s, false);
+      const chipLine = es.labels.length ? `${es.labels.join(" · ")} · ` : "";
       const text = [
         `🟦 <b>${STATS.rth.name} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
@@ -1172,7 +1244,7 @@ class SignalFeed {
         `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `${aPlus ? `A+ (${STATS.rth.aPlus}) · ` : ""}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
+        `${aPlus ? `A+ (${STATS.rth.aPlus}) · ` : ""}${chipLine}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
         `<i>${STATS.rth.stat} · 0.75R plan — journal separately</i>`,
       ].join("\n");
       const res = await this.push(text);
@@ -1193,7 +1265,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, gates: this.gateSnapshot(ov) }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, gates: this.gateSnapshot(ov), ...es.features }),
       });
       registerExpectation({
         key: `rth|${key}`,
@@ -1590,6 +1662,26 @@ class SignalFeed {
     if (this.ticking) return;
     this.ticking = true;
     try {
+      // ---- signal window (owner rule): Sunday 18:00 ET → Friday 16:00 ET
+      //      with a daily 16:00–18:00 ET halt Mon–Thu (MyFundedFutures
+      //      rejects entries after 16:00; lib/marketHours.ts signalWindowOpen).
+      //      Outside it NOTHING fires: no cards, no orders, no re-sends.
+      //      Armed intra-window state (a resting expansion retrace, the
+      //      pullback watch) is discarded so it can never fire on stale
+      //      bars when the window reopens.
+      if (!signalWindowOpen(Date.now())) {
+        this.liveOk = false;
+        this.lastNote = "signal window closed — Sunday 18:00 → Friday 16:00 NY · daily 16:00–18:00 halt";
+        this.lastRun = Date.now();
+        if (this.expRetracePending) {
+          console.log(
+            `[window] discarding armed expansion retrace ${this.expRetracePending.dir} ${this.expRetracePending.t} — window closed`,
+          );
+          this.expRetracePending = null;
+        }
+        this.pullbackWatch = null;
+        return;
+      }
       const snap = await this.buildSnapshot();
       this.lastRun = Date.now();
       if (snap) {
@@ -1617,6 +1709,9 @@ class SignalFeed {
   async pushNow(): Promise<{ sent: boolean; reason: string }> {
     if (!FEED_REVERSAL) {
       return { sent: false, reason: "LVN reversal feed is paused — set FEED_REVERSAL=1 to re-enable" };
+    }
+    if (!signalWindowOpen(Date.now())) {
+      return { sent: false, reason: "signal window closed — Sunday 18:00 → Friday 16:00 NY · daily 16:00–18:00 halt" };
     }
     const snap = await this.buildSnapshot();
     if (!snap) return { sent: false, reason: this.lastNote ?? "no live signal to send" };

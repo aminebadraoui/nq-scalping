@@ -4,11 +4,10 @@
  * cannot make a test pass by definition. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildEsContext, flushAgreement, breakdownVeto, esDeltaSign, rsBand, type EsMinute } from "../lib/esJoin";
+import { buildEsContext, flushAgreement, breakdownVeto, esFreshExtreme, esDeltaSign, rsBand, esFrontMonth, esCardChips, type EsMinute } from "../lib/esJoin";
 
 /* ---------------- builders ---------------- */
 
-let seq = 0;
 
 /** one ES minute: feed date 2026-10-01, times 17:00 + i minutes */
 function esMinute(i: number, p: { high?: number; low?: number; buy?: number; sell?: number } = {}): EsMinute {
@@ -160,4 +159,63 @@ test("rs band: insufficient history -> neutral", () => {
   const c = ctx(es, 10);
   const nqMid = Array.from({ length: 10 }, (_, i) => 20000 + i * 0.5);
   assert.equal(rsBand(c, nqMid, 9), "neutral");
+});
+
+/* ---------------- esFrontMonth ---------------- */
+
+test("esFrontMonth follows the H/M/U/Z third-Friday calendar", () => {
+  assert.equal(esFrontMonth(new Date("2026-10-05T12:00:00Z")), "ESZ26");
+  assert.equal(esFrontMonth(new Date("2026-09-01T12:00:00Z")), "ESU26");
+  assert.equal(esFrontMonth(new Date("2026-09-18T12:00:00Z")), "ESU26", "expiry day still front month");
+  assert.equal(esFrontMonth(new Date("2026-09-19T12:00:00Z")), "ESZ26", "day after expiry rolls");
+  assert.equal(esFrontMonth(new Date("2024-03-27T12:00:00Z")), "ESM24");
+  assert.equal(esFrontMonth(new Date("2023-12-18T12:00:00Z")), "ESH24");
+});
+
+test("esFreshExtreme is the BROAD CONFIRM alias of breakdownVeto", () => {
+  const es = Array.from({ length: 10 }, (_, i) =>
+    esMinute(i, i === 6 ? { high: 5990, low: 5989 } : {}),
+  );
+  const c = ctx(es, 10);
+  assert.equal(esFreshExtreme(c, 8, "long"), true);
+  assert.equal(esFreshExtreme(c, 8, "long"), breakdownVeto(c, 8, "long"));
+});
+
+/* ---------------- live card chips ---------------- */
+
+test("esCardChips: broad confirm labels and features", () => {
+  const es = Array.from({ length: 10 }, (_, i) =>
+    esMinute(i, i === 6 ? { high: 5990, low: 5989 } : {}),
+  );
+  const c = ctx(es, 10);
+  const nqMid = Array.from({ length: 10 }, () => 20000);
+  const out = esCardChips(c, nqMid, { dir: "long", flushIdx: 4, entryIdx: 8 }, true);
+  assert.ok(out.labels.includes("ES CONFIRM 85%"));
+  assert.equal(out.features.esBroadConfirm, true);
+});
+
+test("esCardChips: delta-negative short warning only for shorts", () => {
+  const es = Array.from({ length: 10 }, (_, i) => esMinute(i, { buy: 100, sell: 900 }));
+  const c = ctx(es, 10);
+  const nqMid = Array.from({ length: 10 }, () => 20000);
+  const shortOut = esCardChips(c, nqMid, { dir: "short", flushIdx: 5, entryIdx: 8 }, true);
+  assert.ok(shortOut.labels.some((l) => l.startsWith("ES Δ−")));
+  assert.equal(shortOut.features.esDeltaNegShort, true);
+  const longOut = esCardChips(c, nqMid, { dir: "long", flushIdx: 5, entryIdx: 8 }, true);
+  assert.ok(!longOut.features.esDeltaNegShort);
+});
+
+test("esCardChips: null context -> no chips", () => {
+  const out = esCardChips(null, [], { dir: "long", flushIdx: 0, entryIdx: 0 }, true);
+  assert.deepEqual(out.labels, []);
+  assert.deepEqual(out.features, {});
+});
+
+test("esCardChips: includeDelta=false skips the flush delta chip", () => {
+  const es = Array.from({ length: 10 }, (_, i) => esMinute(i, { buy: 100, sell: 900 }));
+  const c = ctx(es, 10);
+  const nqMid = Array.from({ length: 10 }, () => 20000);
+  const out = esCardChips(c, nqMid, { dir: "short", flushIdx: 5, entryIdx: 8 }, false);
+  assert.equal(out.features.esDelta, undefined);
+  assert.ok(!out.labels.some((l) => l.startsWith("ES Δ−")));
 });

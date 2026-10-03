@@ -15,7 +15,7 @@ everything else 0.
 ## ⚡ THE MOMENTUM CARD — the one trade signal
 
 Two triggers, one ticket. Entry at the trigger bar's close; stop under that
-bar's low − 0.5; target 1R; risk floor 3 pts; Globex hours only
+bar's low − 0.5, widened to entry ∓ 3.5 when tighter (the widen floor); target 1R; Globex hours only
 (9:30–16:00 ET excluded); ≥5-bar gap between signals; same-bar double-fires
 dedupe to one card; the day's first card is marked `1st today`.
 
@@ -33,7 +33,18 @@ dedupe to one card; the day's first card is marked `1st today`.
    (merged mode).
 4. **Candle-size gate** — breakout bar range ≥ 0.85 × ATR14.
 
-Risk 3–30 pts. Validation (flush trigger): 1,828 trades, 76.1% WR, PF 2.76.
+Risk 3.5–30 pts (stops tighter than 3.5 widen to the floor). Validation (flush trigger): 1,828 trades, 76.1% WR, PF 2.76.
+
+**ES cross-asset chips (journal-only labels, never gates)** — the live card
+prints up to three chips from the ES twin feed (`web/lib/esJoin.ts`, measured
+in `research/es-features-study-2026-10-02.md` over all 649 sessions):
+
+- `ES CONFIRM 85%` — ES printed a fresh session extreme in the 5 bars before
+  entry (n=629: 85.2% WR / PF 4.84, train 84.3 / test 87.4).
+- `ES Δ− 68% test` — short card with ES cumulative delta negative at the
+  flush (the worst cell in every test window).
+- `RS STRETCH 84%` — NQ stretched against the trade direction over the past
+  hour (weak-RS longs / strong-RS shorts).
 
 ### Trigger 2 — huge-bar expansion (`EXP_PROD`)
 
@@ -41,7 +52,7 @@ Risk 3–30 pts. Validation (flush trigger): 1,828 trades, 76.1% WR, PF 2.76.
 2. **|delta| ÷ volume ≥ 0.5** (≥75% one-sided).
 3. **Direction-matching cluster stack**: ≥3 price rows with ≥3 lots and
    ≥2:1 dominance on the trade side.
-4. Volume ≥ max(15, min(0.5 × med60, 250)); risk 3–15 pts.
+4. Volume ≥ max(15, min(0.5 × med60, 250)); risk 3.5–15 pts (floor-widened).
 
 Validation (expansion trigger): 4,152 sequential trades, 78.4% WR, PF 3.14.
 
@@ -120,7 +131,7 @@ found by the footprint × candle-impact interaction research
 2. **≥3 dominant cluster rows** on the trade side (≥3 lots, ≥2:1 — the
    footprint proof),
 3. **range ≥ 1.0 × ATR14** (the candle-size gate),
-4. volume ≥ 0.5 × trailing 60-bar median, risk 3–15 pts
+4. volume ≥ 0.5 × trailing 60-bar median, risk 3.5–15 pts (floor-widened)
    → entry at the close, stop under the bar (1-pt pad), **0.75R target**,
    ≥5-bar gap.
 
@@ -157,7 +168,11 @@ The stop-width × target × contracts grid over every live strategy
 (2026-10-02 confirmation: a dedicated stop-pad sweep over 648 sessions —
 pads 0.25→1.5 and a 00–02 ET night pad — degrades WR/PF monotonically and
 worsens the worst-day tail; stop-runs are 5% of stops with no hour
-clustering. `research/context-veto-stoprun-2026-10-02.md`.)
+clustering. `research/context-veto-stoprun-2026-10-02.md`. Sizing dynamics:
+the tiered shrink-on-green scheme is the measured risk-adjusted optimum —
+loss-shrinking buys ~0, win-scaling is leverage in disguise, and the
+"never risk more than the day's P&L" ceiling breaches the funded trailing
+MLL invisibly. `research/sizing-dynamics-2026-10-02.md`.)
 
 Daily goals (P = probability of the day reaching the goal, 2000 sampled days,
 real sequences through the account sim):
@@ -173,7 +188,16 @@ real sequences through the account sim):
 
 **The balance, adopted:**
 - Structural stops everywhere (the bar's own low — "safe ticks" comes from
-  the 80%+ hit rates, not from widening).
+  the 80%+ hit rates, not from widening) — with ONE measured exception: stops
+  tighter than 3.5 pts widen to entry ∓ 3.5 (the widen floor — the sweep peaks
+  at 3.5; floors past ~4 hurt the tail). Stops under 3 pts never trade. The
+  weak zone's stops get run; widening keeps the trade and beats both skipping
+  and trading it structural (`research/sizing-cap-2026-10-02.md`).
+  - Wall-aware stops (`WALL_STOP=1`, default OFF): widen the stop beyond a
+    near dealer wall (Pulcini's rule). Shipped with tests, but the POC-proxy
+    backtest rejected the placement rule for now (widen = generic stop-
+    widening: more winners, smaller edge) — re-test when historical gamma
+    walls exist. `research/wall-aware-stop-proxy-2026-10-03.md`.
 - Momentum + RTH cards size **9 contracts** by default (median day +$347;
   worst real day −$619; 0% annual breach); `FIXED_CONTRACTS` env overrides.
 - The open family keeps the $170-budget sizing (2 MNQ on the drive's 35-pt

@@ -217,6 +217,32 @@ const RS_WINDOW = 60;
 const RS_MIN_SAMPLES = 30;
 const RS_Z = 1.0; // band threshold in z units
 
+/** ES front-month contract symbol for a New York date — same quarterly
+ *  H/M/U/Z 3rd-Friday cycle as NQ (mirror of gcdata/contracts.py). */
+export function esFrontMonth(date = new Date()): string {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" })
+      .formatToParts(date)
+      .map((x) => [x.type, x.value]),
+  ) as Record<string, string>;
+  const year = Number(p.year);
+  const month = Number(p.month);
+  const day = Number(p.day);
+  const letters = "HMUZ";
+  const q = ((month - 1) / 3) | 0; // 0..3
+  // expiry = 3rd Friday of the quarter's last month (3/6/9/12)
+  const expMonth = (q + 1) * 3;
+  const first = new Date(Date.UTC(year, expMonth - 1, 1));
+  const dow = first.getUTCDay();
+  const thirdFri = 1 + ((5 - dow + 7) % 7) + 14;
+  const sym = `ES${letters[q]}${String(year % 100).padStart(2, "0")}`;
+  // before/on expiry the front month is the CURRENT quarter, after it the next
+  if (month < expMonth || (month === expMonth && day <= thirdFri)) return sym;
+  const nq = (q + 1) % 4;
+  const ny = nq === 0 ? year + 1 : year;
+  return `ES${letters[nq]}${String(ny % 100).padStart(2, "0")}`;
+}
+
 function esVolumeFloor(ctx: EsContext, j: number): number {
   return Math.max(15, Math.min(0.5 * ctx.med60[j], 250));
 }
@@ -263,6 +289,13 @@ export function breakdownVeto(ctx: EsContext, entryIdx: number, dir: "long" | "s
   return false;
 }
 
+/** BROAD CONFIRM (the measured flip of the veto): ES printed a fresh session
+ *  extreme in the 5 bars before entry — broad-tape confirmation of the move.
+ *  629 trades, 85.2% WR / PF 4.84, train 84.3 / test 87.4
+ *  (research/es-features-study-2026-10-02.md §2). Same computation as
+ *  breakdownVeto; named for how the live feed uses it. */
+export const esFreshExtreme = breakdownVeto;
+
 /** ES cumulative-delta sign through the NQ flush bar — the cross-market
  *  absorption evidence (ES buyers absorbing while NQ prints the flush). */
 export function esDeltaSign(ctx: EsContext, k: number): "pos" | "neg" | "flat" {
@@ -292,4 +325,58 @@ export function rsBand(ctx: EsContext, nqMid: number[], entryIdx: number): "stro
   if (z > RS_Z) return "strong";
   if (z < -RS_Z) return "weak";
   return "neutral";
+}
+
+/* ---------------- live card chips ---------------- */
+
+export type EsCardChips = {
+  labels: string[];
+  features: {
+    esBroadConfirm?: boolean;
+    esDelta?: "pos" | "neg" | "flat";
+    esRs?: "strong" | "weak" | "neutral";
+    esDeltaNegShort?: boolean;
+    esRsStretch?: boolean;
+  };
+};
+
+/** The three measured ES chips for a live card (all journal-only labels —
+ *  nothing here votes or blocks):
+ *   · ES CONFIRM — ES printed a fresh session extreme in the 5 bars before
+ *     entry (85.2% WR / PF 4.84, train 84.3 / test 87.4, n=629).
+ *   · ES Δ− warn — short card with ES cum-delta negative at the flush
+ *     (the worst cell in every test window: 67.8% test).
+ *   · RS STRETCH — NQ stretched against the trade direction over the past
+ *     hour: weak-RS longs 84.2% / strong-RS shorts 84.0% in test.
+ *  includeDelta = the flush-based delta chip only applies to the momentum
+ *  flush trigger, not the RTH soft card. */
+export function esCardChips(
+  ctx: EsContext | null,
+  nqMid: number[],
+  s: { dir: "long" | "short"; flushIdx: number; entryIdx: number },
+  includeDelta: boolean,
+): EsCardChips {
+  if (!ctx?.has) return { labels: [], features: {} };
+  const labels: string[] = [];
+  const features: EsCardChips["features"] = {};
+  if (esFreshExtreme(ctx, s.entryIdx, s.dir)) {
+    features.esBroadConfirm = true;
+    labels.push("ES CONFIRM 85%");
+  }
+  if (includeDelta) {
+    const dd = esDeltaSign(ctx, s.flushIdx);
+    features.esDelta = dd;
+    if (s.dir === "short" && dd === "neg") {
+      features.esDeltaNegShort = true;
+      labels.push("ES Δ− 68% test");
+    }
+  }
+  const rs = rsBand(ctx, nqMid, s.entryIdx);
+  features.esRs = rs;
+  const stretch = (s.dir === "long" && rs === "weak") || (s.dir === "short" && rs === "strong");
+  if (stretch) {
+    features.esRsStretch = true;
+    labels.push("RS STRETCH 84%");
+  }
+  return { labels, features };
 }

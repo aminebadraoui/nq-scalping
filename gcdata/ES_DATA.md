@@ -19,8 +19,8 @@ relative strength, RVOL ratio, lead-lag — per `DATA_DIMENSIONS_RESEARCH.md` §
 - **Session windows**: the vendor serves ES with the same feed-clock windows
   as NQ — ETH 17:00 CT → 15:59 CT (1,380 min), RTH 08:30 → 14:59 CT (390 min).
   The shared `backfill.session_usable` rule applies unchanged.
-- **Date list**: the NQ R2 manifest's usable ETH sessions (648 dates,
-  2023-12-18 → 2026-10-01) — "as many dates as we have for NQ".
+- **Date list**: the NQ R2 manifest's usable ETH sessions (649 dates,
+  2023-12-18 → 2026-10-02) — "as many dates as we have for NQ".
 - **Roll-week fallback**: dates within ~10 days of a tenure end that come back
   sparse under the expiring contract are retried under the next contract
   (same behaviour NQ needed `refetch_rollover.py` for).
@@ -28,6 +28,16 @@ relative strength, RVOL ratio, lead-lag — per `DATA_DIMENSIONS_RESEARCH.md` §
   the NQ files (prices in cents, `levels` dict, `_meta` stamped with the ES
   contract symbol and `underlying: "ES"`). ES tick size = 25 (0.25 pt), price
   scale in cents — same field formats as NQ.
+
+## Archive state (built 2026-10-02)
+
+- **R2 `manifest-es.json`: 1,298 objects — 649/649 ETH sessions usable, 649
+  RTH files.** Local `gcdata/data/es` is the landing zone only; after upload
+  the finish workflow prunes it (R2 is the record, same as the NQ flow).
+- Two known vendor quirks (verified non-transient by re-fetch): the RTH
+  sessions of **2024-03-27** (387/390 min) and **2026-03-03** (380/390 min)
+  are served sparse under every contract — ETH for both dates is complete,
+  and all studies load the ETH file, so nothing downstream is affected.
 
 ## Why a separate store
 

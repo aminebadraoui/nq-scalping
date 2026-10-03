@@ -22,6 +22,7 @@
 import { promises as fs } from "node:fs";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { detectMomentum, detectExpansionScalp, closeOf, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
+import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { loadEsMinutes, buildEsContext, flushAgreement, breakdownVeto, esDeltaSign, rsBand, type EsContext } from "../lib/esJoin";
 
 const CONCURRENCY = 8;
@@ -31,13 +32,15 @@ const HOLD_BARS = 60;
 /* ---------------- CLI ---------------- */
 
 function parseArgs(argv: string[]) {
-  const o: { max?: number; split?: string; dump?: string; offline: boolean } = { offline: false };
+  const o: { max?: number; split?: string; dump?: string; offline: boolean; rth: boolean; sequential: boolean } = { offline: false, rth: false, sequential: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--max") o.max = Number(argv[++i]);
     else if (a === "--split") o.split = argv[++i];
     else if (a === "--dump") o.dump = argv[++i];
     else if (a === "--offline") o.offline = true;
+    else if (a === "--rth") o.rth = true;
+    else if (a === "--sequential") o.sequential = true;
   }
   return o;
 }
@@ -86,6 +89,21 @@ function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string): S
   }
   const pnl = (exit - entry) * dir - COST_PTS;
   return { ...sig, date, pnl, exit, hit, heldBars };
+}
+
+/** one trade at a time (mirror of momentumStudy.scoreSequential): a signal
+ *  whose entry falls inside an open trade is skipped. */
+function scoreSequential(minutes: MomMinute[], signals: MomentumSignal[], date: string): Scored[] {
+  const out: Scored[] = [];
+  let openUntil = -1;
+  for (const s of signals) {
+    if (s.entryIdx <= openUntil) continue;
+    const sc = scoreSignal(minutes, s, date);
+    if (!sc) continue;
+    out.push(sc);
+    openUntil = sc.entryIdx + sc.heldBars;
+  }
+  return out;
 }
 
 /* ---------------- stats ---------------- */
@@ -180,33 +198,30 @@ async function main() {
 
       const mom = detectMomentum(minutes, MOM_PROD);
       const exp = detectExpansionScalp(minutes, EXP_PROD);
+      const soft = o.rth ? detectSoftMomentum(minutes, SOFT_PROD) : [];
       const flushSigs = mom.filter((s) => s.kind === "flush");
-      const seen = new Set(flushSigs.map((s) => `${s.entryIdx}|${s.dir}`));
-      const merged = [...flushSigs, ...exp.filter((s) => !seen.has(`${s.entryIdx}|${s.dir}`))];
+      const seen = new Set([...flushSigs, ...soft].map((s) => `${s.entryIdx}|${s.dir}`));
+      const merged = [...flushSigs, ...soft, ...exp.filter((s) => !seen.has(`${s.entryIdx}|${s.dir}`))];
 
       const nqMid = minutes.map((m) => (m.high + m.low) / 2);
+      const src = new Map<MomentumSignal, "flush" | "soft" | "exp">();
+      for (const s of flushSigs) src.set(s, "flush");
+      for (const s of soft) src.set(s, "soft");
 
-      for (const s of flushSigs) {
-        const sc = scoreSignal(minutes, s, date);
-        if (!sc) continue;
+      const scored: Scored[] = o.sequential ? scoreSequential(minutes, merged, date) : merged.map((s) => scoreSignal(minutes, s, date)).filter((s): s is Scored => s !== null);
+
+      for (const sc of scored) {
+        const origin = src.get(merged.find((s) => s.entryIdx === sc.entryIdx && s.dir === sc.dir) as MomentumSignal) ?? "exp";
         if (ctx?.has) {
-          sc.agreement = flushAgreement(ctx, s.flushIdx, s.dir);
-          sc.veto = breakdownVeto(ctx, s.entryIdx, s.dir);
-          sc.esDelta = esDeltaSign(ctx, s.flushIdx);
-          sc.rs = rsBand(ctx, nqMid, s.entryIdx);
-        }
-        flushTrades.push(sc);
-        allTrades.push(sc);
-      }
-      for (const s of merged) {
-        if (s.kind === "flush") continue;
-        const sc = scoreSignal(minutes, s, date);
-        if (!sc) continue;
-        if (ctx?.has) {
-          sc.veto = breakdownVeto(ctx, s.entryIdx, s.dir);
-          sc.rs = rsBand(ctx, nqMid, s.entryIdx);
+          sc.veto = breakdownVeto(ctx, sc.entryIdx, sc.dir);
+          sc.rs = rsBand(ctx, nqMid, sc.entryIdx);
+          if (origin === "flush") {
+            sc.agreement = flushAgreement(ctx, sc.flushIdx, sc.dir);
+            sc.esDelta = esDeltaSign(ctx, sc.flushIdx);
+          }
         }
         allTrades.push(sc);
+        if (origin === "flush") flushTrades.push(sc);
       }
     }
     i += CONCURRENCY;
