@@ -279,6 +279,12 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
 cd web && DATABASE_URL=$(grep '^DATABASE_URL=' .env.local | cut -d= -f2-) \
   node --import ../scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events
 
+# manual trade import (Tradovate fills export → manual_trades + journal corrections):
+#   cd web && node --import ../scripts/ts-loader.mjs ./scripts/importTradovateTrades.ts <export.csv>
+#   — matches round trips to bot trades (exact qty, then multi-leg groups,
+#     ±3 min, matched status only), corrects the journal's FLAT rows, and
+#     stores everything else as the manual bucket (upsert by fill-id pair;
+#     re-run any time the export grows).
 # manual trade reconciliation ("did that Telegram card trade, and how?"):
 cd web && node --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts \
   [--since 2026-10-01T16:00:00Z]

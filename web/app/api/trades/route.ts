@@ -79,7 +79,7 @@ export async function GET(request: Request) {
 
     // ---- account equity curve (one snapshot per reconcile run) ----
     const eqRuns = (await db`
-      select run_at, account_net, account_realized from reconcile_runs
+      select run_at, account_net, account_realized, manual_fills, manual_gross_usd from reconcile_runs
       where run_at >= ${new Date(w0).toISOString()}
       order by run_at asc`) as Array<Record<string, unknown>>;
     const equity = eqRuns
@@ -89,6 +89,34 @@ export async function GET(request: Request) {
         net: Number(r.account_net),
         realized: r.account_realized === null || r.account_realized === undefined ? null : Number(r.account_realized),
       }));
+
+    // ---- balance ledger: account Δ = bot net + manual residual ----
+    // netLiq deltas between consecutive snapshots are the TRUE total P&L
+    // (bot + manual + anything else). The residual vs the bot's own net
+    // is the manual bucket — ground truth, no pairing needed.
+    const ledger = eqRuns
+      .filter((r) => r.account_net !== null && r.account_net !== undefined)
+      .map((r, i, arr) => {
+        const at = Date.parse(String(r.run_at));
+        const prevAt = i > 0 ? Date.parse(String(arr[i - 1].run_at)) : 0;
+        let botNet = 0;
+        for (const t of rangeTrades) {
+          const ts = Number(t.ts ?? 0);
+          if (i === 0 ? ts < at : ts >= prevAt && ts < at) botNet += Number(t.net_usd ?? 0);
+        }
+        const net = Number(r.account_net);
+        const delta = i > 0 ? net - Number(arr[i - 1].account_net) : null;
+        const residual = delta !== null ? Math.round((delta - botNet) * 100) / 100 : null;
+        return {
+          at: String(r.run_at),
+          net,
+          delta,
+          botNet: Math.round(botNet * 100) / 100,
+          manualResidual: residual,
+          manualFills: Number(r.manual_fills ?? 0),
+          manualGrossUsd: r.manual_gross_usd === null || r.manual_gross_usd === undefined ? null : Number(r.manual_gross_usd),
+        };
+      });
 
     // ---- dedicated metric tables (pure, unit-tested shapes) ----
     const metricRows = rangeTrades
@@ -105,6 +133,21 @@ export async function GET(request: Request) {
     const drawdowns = drawdownTable(metricRows);
     const matrix = hourMatrix(metricRows);
     const hours = hourTable(metricRows);
+
+    // ---- manual bucket (Tradovate round trips no signal explains) ----
+    const dayFloor = new Date(w0).toISOString().slice(0, 10);
+    const manualRows = (await db`
+      select * from manual_trades
+      where matched_signal is null and day >= ${dayFloor}
+      order by entry_at desc, id desc
+      limit 500`) as Array<Record<string, unknown>>;
+    const manualDays = (await db`
+      select day, count(*)::int as n, sum(pnl_usd)::numeric(12,2) as gross
+      from manual_trades where matched_signal is null and day >= ${dayFloor}
+      group by day order by day desc`) as Array<Record<string, unknown>>;
+    const manualTotal = manualDays.length
+      ? Math.round(manualDays.reduce((s, d) => s + Number(d.gross ?? 0), 0) * 100) / 100
+      : 0;
 
     const analysis = await db`select * from trade_analysis order by run_at desc limit 1`;
     const a = analysis[0] as (typeof analysis)[number] | undefined;
@@ -217,10 +260,14 @@ export async function GET(request: Request) {
       headline,
       days: dayList,
       equity,
+      ledger,
       streaks,
       drawdowns,
       matrix,
       hours,
+      manual: manualRows,
+      manualDays,
+      manualTotal,
       scoreboard,
       scoreRange: rangeDays > 0 ? `${rangeDays}d` : "all",
       analysis: a

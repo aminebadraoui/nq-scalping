@@ -136,6 +136,31 @@ type DayRow = {
 
 type EquityPoint = { at: string; net: number; realized: number | null };
 
+type LedgerRow = {
+  at: string;
+  net: number;
+  delta: number | null;
+  botNet: number;
+  manualResidual: number | null;
+  manualFills: number;
+  manualGrossUsd: number | null;
+};
+
+type ManualRow = {
+  key: string;
+  day: string;
+  symbol: string;
+  direction: "long" | "short";
+  qty: number;
+  entry_price: number;
+  exit_price: number;
+  pnl_usd: number;
+  entry_at: string;
+  exit_at: string;
+};
+
+type ManualDay = { day: string; n: number; gross: number };
+
 type Override = {
   id: string;
   created_at: string;
@@ -359,6 +384,10 @@ export default function JournalPage() {
   const [headline, setHeadline] = useState<Headline | null>(null);
   const [dayRows, setDayRows] = useState<DayRow[]>([]);
   const [equity, setEquity] = useState<EquityPoint[]>([]);
+  const [ledger, setLedger] = useState<LedgerRow[]>([]);
+  const [manual, setManual] = useState<ManualRow[]>([]);
+  const [manualDays, setManualDays] = useState<ManualDay[]>([]);
+  const [manualTotal, setManualTotal] = useState<number | null>(null);
   const [streaks, setStreaks] = useState<StreakRow[]>([]);
   const [drawdowns, setDrawdowns] = useState<DrawdownRow[]>([]);
   const [matrix, setMatrix] = useState<HourCell[]>([]);
@@ -381,6 +410,10 @@ export default function JournalPage() {
         setHeadline(t.headline ?? null);
         setDayRows(t.days ?? []);
         setEquity(t.equity ?? []);
+        setLedger(t.ledger ?? []);
+        setManual(t.manual ?? []);
+        setManualDays(t.manualDays ?? []);
+        setManualTotal(typeof t.manualTotal === "number" ? t.manualTotal : null);
         setStreaks(t.streaks ?? []);
         setDrawdowns(t.drawdowns ?? []);
         setMatrix(t.matrix ?? []);
@@ -511,6 +544,43 @@ export default function JournalPage() {
             <p className="py-10 text-center font-mono text-xs text-zinc-600">
               {equity.length === 1 ? "one snapshot — the curve starts with the next reconcile" : "no equity data in this range"}
             </p>
+          )}
+          {ledger.length > 1 && (
+            <>
+              <h3 className="mb-1 mt-3 font-mono text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Balance reconciliation</h3>
+              <div className="max-h-[220px] overflow-y-auto">
+                <table className="w-full border-collapse font-mono text-[10px]">
+                  <thead className="sticky top-0 bg-panel">
+                    <tr className="text-left text-zinc-500">
+                      <th className="border-b border-zinc-800 py-1 pr-2 font-normal">snapshot</th>
+                      <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">netLiq</th>
+                      <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="account change since the previous snapshot (ground truth)">Δ acct</th>
+                      <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="matched bot trades in this window (net)">bot net</th>
+                      <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="Δ acct − bot net: manual trading, non-bot fees, deposits">manual</th>
+                      <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="fills not attributable to any signal">fills</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledger.slice(1).map((l, i) => (
+                      <tr key={l.at} className="text-zinc-400">
+                        <td className="py-1 pr-2 whitespace-nowrap text-zinc-500">{l.at.slice(0, 16).replace("T", " ")}Z</td>
+                        <td className="px-2 py-1 text-right">{fmtUsd(l.net)}</td>
+                        <td className={`px-2 py-1 text-right ${(l.delta ?? 0) >= 0 ? "text-long" : "text-short"}`}>{l.delta === null ? "—" : fmtUsd(l.delta)}</td>
+                        <td className={`px-2 py-1 text-right ${l.botNet >= 0 ? "text-long" : "text-short"}`}>{fmtUsd(l.botNet)}</td>
+                        <td className={`px-2 py-1 text-right ${(l.manualResidual ?? 0) >= 0 ? "text-long" : "text-short"}`}>
+                          {l.manualResidual === null ? "—" : fmtUsd(l.manualResidual)}
+                        </td>
+                        <td className="px-2 py-1 text-right text-zinc-500">{l.manualFills}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-1 font-mono text-[9px] leading-snug text-zinc-600">
+                Δ acct = bot net + manual residual — the residual is the true manual bucket (manual trades, non-bot fees, deposits); it comes from the account snapshot,
+                not from fill pairing. manualGross (computed pairing) is in the run notes when orders were available.
+              </p>
+            </>
           )}
         </section>
         <section className="rounded-md border border-zinc-800 bg-panel p-4 xl:col-span-2">
@@ -940,6 +1010,55 @@ export default function JournalPage() {
                 ))}
               </div>
             )}
+          </section>
+
+          <section className="rounded-md border border-zinc-800 bg-panel p-4">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Manual trades</h2>
+              <div className="flex gap-2 font-mono text-[10px]">
+                <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-400">{manual.length} trips</span>
+                <span className={`rounded border px-1.5 py-0.5 ${(manualTotal ?? 0) >= 0 ? "border-long/40 text-long" : "border-short/40 text-short"}`}>
+                  {manualTotal === null ? "—" : fmtUsd(manualTotal)} gross
+                </span>
+                <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-400">{manualDays.length} days</span>
+              </div>
+            </div>
+            <div className="max-h-[240px] overflow-y-auto">
+              <table className="w-full border-collapse font-mono text-[10px]">
+                <thead className="sticky top-0 bg-panel">
+                  <tr className="text-left text-zinc-500">
+                    <th className="border-b border-zinc-800 py-1 pr-2 font-normal">time</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">sym</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">dir</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">entry → exit</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">P&L</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {manual.map((m) => (
+                    <tr key={m.key} className="text-zinc-400">
+                      <td className="py-0.5 pr-2 whitespace-nowrap text-zinc-500">
+                        {m.day.slice(5)} {new Date(m.entry_at).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false }).slice(0, 5)}
+                      </td>
+                      <td className="px-2 py-0.5 whitespace-nowrap">{m.symbol.replace("MNQ", "NQ").replace("MES", "ES")}</td>
+                      <td className={`px-2 py-0.5 font-semibold ${m.direction === "long" ? "text-long" : "text-short"}`}>
+                        {m.direction === "long" ? "L" : "S"}
+                      </td>
+                      <td className="px-2 py-0.5 text-right">{m.qty}</td>
+                      <td className="px-2 py-0.5 text-right whitespace-nowrap">
+                        {Number(m.entry_price).toFixed(2)} → {Number(m.exit_price).toFixed(2)}
+                      </td>
+                      <td className={`px-2 py-0.5 text-right ${Number(m.pnl_usd) >= 0 ? "text-long" : "text-short"}`}>{fmtUsd(Number(m.pnl_usd))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {manual.length === 0 && <p className="py-2 font-mono text-xs text-zinc-600">no manual trades imported — run scripts/importTradovateTrades.ts with the Tradovate fills export</p>}
+            </div>
+            <p className="mt-1 font-mono text-[9px] text-zinc-600">
+              source: Tradovate fills export (round trips no signal explains) · gross only — commissions live in the account, not the fill export
+            </p>
           </section>
 
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
