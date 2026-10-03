@@ -60,6 +60,18 @@ async function main() {
 
   const minTs = Math.min(...mff.map((t) => t.entryAt));
   const maxTs = Math.max(...mff.map((t) => t.exitAt));
+
+  // the MFF list SUPERSEDES earlier gross-only imports (Tradovate round
+  // trips) for its window — purge them so the manual bucket isn't counted
+  // twice (net + gross mixed)
+  const purged = (await sql`
+    delete from manual_trades
+    where key not like 'mff|%'
+      and entry_at >= ${new Date(minTs - 86_400_000)}
+      and entry_at <= ${new Date(maxTs + 86_400_000)}
+  `) as unknown as { count: number };
+  console.log(`purged ${purged.count} pre-MFF manual rows in the window (superseded)`);
+
   const rows = (await sql`
     select signal_key, ts, side, contracts, gross_usd, fill_entry_at
     from trades
