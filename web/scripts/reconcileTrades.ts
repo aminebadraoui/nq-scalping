@@ -453,26 +453,155 @@ function manualNetUsd(orders: OrderRow[], fills: RawFill[], excludedOrderIds: Se
   return usd;
 }
 
+/** Fill-level fallback pairing — used when the CrossTrade ORDERS list is
+ *  empty (session reset wiped it) but durable fills exist. Entry = the
+ *  signal-side fills in [ts−30s, ts+15min], grouped by the first fill's
+ *  orderId (its leg); exits = opposite-side fills chronologically until
+ *  the quantity is covered, bounded by the next signal's entry window.
+ *  Coarser than the order-level path, but it can never invent trades —
+ *  and it keeps the journal truthful after a reset. */
+function pairFillsOnly(
+  fills: RawFill[],
+  signals: SignalRow[],
+): { trades: TradeRow[]; manual: RawFill[] } {
+  const used = new Array<boolean>(fills.length).fill(false);
+  const trades: TradeRow[] = [];
+
+  // pass 1: entry assignment (signal-side fills in the entry window, grouped
+  // by the first fill's orderId = its leg)
+  const entries: Array<{ idxs: number[]; entryFills: RawFill[]; entryQty: number; entryAt: number } | null> = [];
+  for (let i = 0; i < signals.length; i++) {
+    const sig = signals[i];
+    const t0 = sig.ts - ENTRY_BEFORE_MS;
+    const t1 = sig.ts + ENTRY_AFTER_MS;
+    const want = sig.side === "long" ? "Buy" : "Sell";
+    const entryIdxs: number[] = [];
+    let anchorOrder = "";
+    for (let ix = 0; ix < fills.length; ix++) {
+      const f = fills[ix];
+      if (used[ix] || f.action !== want || f.ts < t0 || f.ts > t1) continue;
+      if (!anchorOrder) anchorOrder = f.orderId;
+      if (f.orderId === anchorOrder) entryIdxs.push(ix);
+    }
+    if (entryIdxs.length === 0) {
+      entries.push(null);
+      continue;
+    }
+    entryIdxs.forEach((ix) => (used[ix] = true));
+    const entryFills = entryIdxs.map((ix) => fills[ix]);
+    const entryQty = entryFills.reduce((s, f) => s + f.qty, 0);
+    const entryAt = Math.max(...entryFills.map((f) => f.ts));
+    entries.push({ idxs: entryIdxs, entryFills, entryQty, entryAt });
+  }
+
+  // pass 2: exit assignment — bounded by the NEXT matched trade's actual
+  // entry fill (pass 1's anchor), so a slow exit can't starve the trade
+  // before it and an early one can't steal from the trade after it
+  for (let i = 0; i < signals.length; i++) {
+    const e = entries[i];
+    const sig = signals[i];
+    if (!e) {
+      trades.push({ sig, status: "unexecuted", grossPts: 0, grossUsd: 0, commissions: 0, result: "", sides: 0 });
+      continue;
+    }
+    const want = sig.side === "long" ? "Buy" : "Sell";
+    let boundary = Number.POSITIVE_INFINITY;
+    for (let j = i + 1; j < entries.length; j++) {
+      if (entries[j]) {
+        boundary = entries[j]!.entryAt;
+        break;
+      }
+    }
+    const entryCost = e.entryFills.reduce((s, f) => s + f.qty * f.price, 0);
+    const fillEntry = entryCost / e.entryQty;
+
+    const qtyCap = Math.min(e.entryQty, sig.contracts);
+    const exitIdxs: number[] = [];
+    let exitQty = 0;
+    for (let ix = 0; ix < fills.length; ix++) {
+      const f = fills[ix];
+      if (used[ix] || f.action === want || f.ts <= e.entryAt || f.ts >= boundary) continue;
+      if (exitQty >= qtyCap) break;
+      exitIdxs.push(ix);
+      exitQty += f.qty;
+    }
+    exitIdxs.forEach((ix) => (used[ix] = true));
+    const exitFills = exitIdxs.map((ix) => fills[ix]);
+    const exitCost = exitFills.reduce((s, f) => s + f.qty * f.price, 0);
+    const exitAvg = exitQty > 0 ? exitCost / exitQty : 0;
+
+    const dir = sig.side === "long" ? 1 : -1;
+    const grossPts = exitQty > 0 ? (exitAvg - fillEntry) * dir * Math.min(e.entryQty, sig.contracts) : 0;
+    const grossUsd = grossPts * 2; // MNQ $2/pt
+    const allFills = [...e.entryFills, ...exitFills];
+    const realFees = allFills.reduce((s, f) => s + f.commission + f.fees, 0);
+    const totalContracts = allFills.reduce((s, f) => s + f.qty, 0);
+    const commissions = realFees > 0 ? realFees : totalContracts * COMMISSION_PER_SIDE;
+    const result: TradeRow["result"] = grossUsd > 0.5 ? "win" : grossUsd < -0.5 ? "loss" : "flat";
+
+    trades.push({
+      sig,
+      status: "matched",
+      fillEntry,
+      fillEntryAt: e.entryAt,
+      exitAvg: exitQty > 0 ? exitAvg : undefined,
+      exitFills: exitFills.map((f) => ({ ts: f.ts, action: f.action, qty: f.qty, price: f.price })),
+      grossPts,
+      grossUsd,
+      commissions,
+      result,
+      sides: allFills.length,
+    });
+  }
+
+  const manual = fills.filter((_, ix) => !used[ix]);
+  return { trades, manual };
+}
+
 /* ---- main ----------------------------------------------------------- */
 async function main() {
   await sql.unsafe(TABLE_SQL);
 
   const [fills, signals, orders] = await Promise.all([fetchFills(), fetchSignals(), fetchOrders()]);
-  console.log(`[reconcile] fills=${fills.length} signals=${signals.length}`);
+  console.log(`[reconcile] fills=${fills.length} signals=${signals.length} orders=${orders.length}`);
+  if (!fills.length && !orders.length) {
+    console.error(
+      "[reconcile] ABORT: no fills AND no orders in window — CrossTrade source unavailable. " +
+        "Refusing to persist (would clobber previously matched trades with unexecuted).",
+    );
+    await sql.end();
+    process.exit(1);
+  }
   if (!fills.length) {
     console.warn(
       "[reconcile] WARNING: no fills in window — CrossTrade journal capture may be disabled (Tradovate journal import) or the session reset already happened. Re-run after the durable history catches up.",
     );
   }
 
-  const { trades, manual, usedOrderIds: usedIds } = pair(fills, signals, orders);
+  let trades: TradeRow[];
+  let manual: RawFill[];
+  let usedIds: Set<string>;
+  let fallbackMode = false;
+  if (orders.length === 0) {
+    fallbackMode = true;
+    console.warn("[reconcile] orders list empty (session reset) — using fill-level fallback pairing");
+    const r = pairFillsOnly(fills, signals);
+    trades = r.trades;
+    manual = r.manual;
+    usedIds = new Set();
+  } else {
+    const r = pair(fills, signals, orders);
+    trades = r.trades;
+    manual = r.manual;
+    usedIds = r.usedOrderIds;
+  }
   const matched = trades.filter((t) => t.status === "matched");
   const unexecuted = trades.filter((t) => t.status === "unexecuted");
   const excluded = new Set<string>([
     ...usedIds,
     ...orders.filter((o) => o.parentId !== null && usedIds.has(o.parentId)).map((o) => o.id),
   ]);
-  const manualGross = manualNetUsd(orders, fills, excluded);
+  const manualGross = fallbackMode ? 0 : manualNetUsd(orders, fills, excluded);
 
   // snapshot for the run row (best effort)
   let accountNet: number | null = null;
@@ -518,12 +647,14 @@ async function main() {
         net_usd = excluded.net_usd,
         result = excluded.result,
         features = excluded.features,
-        matched_at = now()`;
+        matched_at = now()
+      where trades.status = 'unexecuted' or excluded.status = 'matched'`;
   }
 
   const signalsGross = matched.reduce((s, t) => s + t.grossUsd, 0);
   const notes = [
     accountRealized != null ? `account realizedPnl ${accountRealized}` : null,
+    fallbackMode ? "orders unavailable — fill-level fallback pairing (coarser)" : null,
     !fills.length ? "NO FILLS IN WINDOW — check CrossTrade journal import" : null,
   ]
     .filter(Boolean)
