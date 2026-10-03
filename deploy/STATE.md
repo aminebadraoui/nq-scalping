@@ -289,6 +289,13 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
 cd web && DATABASE_URL=$(grep '^DATABASE_URL=' .env.local | cut -d= -f2-) \
   node --import ../scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events
 
+# foundation import (MFF trades list — the DEFINITIVE record, net P&L incl.
+# commissions, sums exactly to the account's total P&L):
+#   cd web && node --import ../scripts/ts-loader.mjs ./scripts/importMffTrades.ts <mff-trades.txt>
+#   — overwrites matched bot trades with MFF net/gross/fees, resets phantom
+#     matches to unexecuted, splits grouped trades proportionally, stores the
+#     manual bucket with NET pnl. Foundation verified 2026-10-03: bot −$159.80
+#     + manual +$1,417.50 = +$1,257.70 = MFF total (Δ 0.00).
 # manual trade import (Tradovate fills export → manual_trades + journal corrections):
 #   cd web && node --import ../scripts/ts-loader.mjs ./scripts/importTradovateTrades.ts <export.csv>
 #   — matches round trips to bot trades (exact qty, then multi-leg groups,

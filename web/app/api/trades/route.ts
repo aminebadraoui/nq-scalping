@@ -150,7 +150,7 @@ export async function GET(request: Request) {
         }
       : null;
 
-    // ---- manual bucket (Tradovate round trips no signal explains) ----
+    // ---- manual bucket (MFF/Tradovate round trips no signal explains) ----
     const dayFloor = new Date(w0).toISOString().slice(0, 10);
     const manualRows = (await db`
       select * from manual_trades
@@ -158,11 +158,13 @@ export async function GET(request: Request) {
       order by entry_at desc, id desc
       limit 500`) as Array<Record<string, unknown>>;
     const manualDays = (await db`
-      select day, count(*)::int as n, sum(pnl_usd)::numeric(12,2) as gross
+      select day, count(*)::int as n,
+             sum(coalesce(pnl_net_usd, pnl_usd))::numeric(12,2) as net,
+             sum(pnl_usd)::numeric(12,2) as gross
       from manual_trades where matched_signal is null and day >= ${dayFloor}
       group by day order by day desc`) as Array<Record<string, unknown>>;
     const manualTotal = manualDays.length
-      ? Math.round(manualDays.reduce((s, d) => s + Number(d.gross ?? 0), 0) * 100) / 100
+      ? Math.round(manualDays.reduce((s, d) => s + Number(d.net ?? 0), 0) * 100) / 100
       : 0;
 
     const analysis = await db`select * from trade_analysis order by run_at desc limit 1`;

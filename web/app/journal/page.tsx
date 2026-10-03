@@ -155,11 +155,13 @@ type ManualRow = {
   entry_price: number;
   exit_price: number;
   pnl_usd: number;
+  pnl_net_usd: number | null;
+  fees_usd: number | null;
   entry_at: string;
   exit_at: string;
 };
 
-type ManualDay = { day: string; n: number; gross: number };
+type ManualDay = { day: string; n: number; net: number; gross: number };
 
 type AccountHead = {
   net: number;
@@ -551,7 +553,7 @@ export default function JournalPage() {
           label="MANUAL P&L"
           value={manualTotal === null ? "—" : fmtUsd(manualTotal)}
           tone={(manualTotal ?? 0) >= 0 ? "long" : "short"}
-          sub={`${manual.length} trips · gross (no fees in export)`}
+          sub={`${manual.length} trips · net (fees included)`}
         />
         <GlanceCard
           label="WIN RATE"
@@ -569,7 +571,7 @@ export default function JournalPage() {
           label="BOT + MANUAL"
           value={headline && manualTotal !== null ? fmtUsd(headline.netUsd + manualTotal) : "—"}
           tone={(headline?.netUsd ?? 0) + (manualTotal ?? 0) >= 0 ? "long" : "short"}
-          sub="net + manual gross"
+          sub="net — ties to account P&L"
         />
       </div>
       {headline && manualTotal !== null && (
@@ -1110,7 +1112,9 @@ export default function JournalPage() {
                       <td className="px-2 py-0.5 text-right whitespace-nowrap">
                         {Number(m.entry_price).toFixed(2)} → {Number(m.exit_price).toFixed(2)}
                       </td>
-                      <td className={`px-2 py-0.5 text-right ${Number(m.pnl_usd) >= 0 ? "text-long" : "text-short"}`}>{fmtUsd(Number(m.pnl_usd))}</td>
+                      <td className={`px-2 py-0.5 text-right ${(Number(m.pnl_net_usd ?? m.pnl_usd)) >= 0 ? "text-long" : "text-short"}`}>
+                        {fmtUsd(Number(m.pnl_net_usd ?? m.pnl_usd))}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1118,7 +1122,7 @@ export default function JournalPage() {
               {manual.length === 0 && <p className="py-2 font-mono text-xs text-zinc-600">no manual trades imported — run scripts/importTradovateTrades.ts with the Tradovate fills export</p>}
             </div>
             <p className="mt-1 font-mono text-[9px] text-zinc-600">
-              source: Tradovate fills export (round trips no signal explains) · gross only — commissions live in the account, not the fill export
+              source: MFF/Tradovate fills export (round trips no signal explains) · P&L shown NET (commissions included, $0.95/side/contract)
             </p>
           </section>
 
