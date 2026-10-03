@@ -500,10 +500,22 @@ export default function JournalPage() {
       </div>
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <GlanceCard
-          label="NET P&L"
+          label="BOT NET (after fees)"
           value={fmtUsd(headline?.netUsd ?? null)}
           tone={(headline?.netUsd ?? 0) >= 0 ? "long" : "short"}
-          sub={`gross ${fmtUsd(headline?.grossUsd ?? null)}`}
+          sub={`gross ${fmtUsd(headline?.grossUsd ?? null)} · fees ${fmtUsd(headline ? -headline.commissions : null)}`}
+        />
+        <GlanceCard
+          label="BOT GROSS"
+          value={fmtUsd(headline?.grossUsd ?? null)}
+          tone={(headline?.grossUsd ?? 0) >= 0 ? "long" : "short"}
+          sub={`${headline?.matched ?? 0} matched trades`}
+        />
+        <GlanceCard
+          label="MANUAL P&L"
+          value={manualTotal === null ? "—" : fmtUsd(manualTotal)}
+          tone={(manualTotal ?? 0) >= 0 ? "long" : "short"}
+          sub={`${manual.length} trips · gross (no fees in export)`}
         />
         <GlanceCard
           label="WIN RATE"
@@ -518,14 +530,17 @@ export default function JournalPage() {
           sub="net per trade"
         />
         <GlanceCard
-          label="TRADES"
-          value={String(headline?.matched ?? 0)}
-          tone="none"
-          sub={`fees ${fmtUsd(headline ? -headline.commissions : null)}`}
+          label="BOT + MANUAL"
+          value={headline && manualTotal !== null ? fmtUsd(headline.netUsd + manualTotal) : "—"}
+          tone={(headline?.netUsd ?? 0) + (manualTotal ?? 0) >= 0 ? "long" : "short"}
+          sub="net + manual gross"
         />
-        <GlanceCard label="BEST DAY" value={fmtUsd(headline?.bestDayNet ?? null)} tone="long" sub="bot net" />
-        <GlanceCard label="WORST DAY" value={fmtUsd(headline?.worstDayNet ?? null)} tone="short" sub="bot net" />
       </div>
+      {headline && manualTotal !== null && (
+        <p className="mb-5 -mt-3 font-mono text-[10px] text-zinc-500">
+          reconciliation: bot net {fmtUsd(headline.netUsd)} + manual {fmtUsd(manualTotal)} = {fmtUsd(headline.netUsd + manualTotal)} — compare with the account ledger's Δ acct below
+        </p>
+      )}
 
       {/* equity curve + per-day breakdown */}
       <div className="mb-5 grid grid-cols-1 gap-5 xl:grid-cols-5">
