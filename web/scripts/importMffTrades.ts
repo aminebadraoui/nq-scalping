@@ -41,6 +41,7 @@ if (!DB_URL) {
 }
 
 const DDL = `
+alter table trades add column if not exists source text not null default 'reconcile';
 alter table manual_trades add column if not exists pnl_net_usd numeric(12,2);
 alter table manual_trades add column if not exists fees_usd numeric(12,2);
 `;
