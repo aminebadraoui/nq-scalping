@@ -33,7 +33,8 @@ dedupe to one card; the day's first card is marked `1st today`.
    reference** = max high of the flush bar + the 2 bars before it (mirror:
    low through the reference low). No separate response bar required
    (merged mode).
-4. **Candle-size gate** — breakout bar range ≥ 0.85 × ATR14.
+4. **Candle-size gate** — breakout bar range ≥ 1.0 × ATR14 (adopted
+   2026-10-02 over 0.85 per `research/quality-filter-sweep-2026-10-02.md`).
 
 Risk 3.5–30 pts (stops tighter than 3.5 widen to the floor). Validation (flush trigger): 1,828 trades, 76.1% WR, PF 2.76.
 

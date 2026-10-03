@@ -39,9 +39,9 @@ short is the mirror.
    reference extreme** (max high of the flush bar + the 2 bars before it).
    The breakout bar is its own confirmation — no separate response bar is
    required (merged mode), so flush → immediate breakout sequences fire too.
-   **Candle-size gate**: the breakout bar's range must be **≥0.85× ATR14**
-   (a big one-sided bar continues; a small one doesn't — see
-   `FOOTPRINT_CANDLE_RESEARCH.md`).
+   **Candle-size gate**: the breakout bar's range must be **≥1.0× ATR14**
+   (updated 2026-10-02: 1.0 beats 0.85 — `research/quality-filter-sweep-2026-10-02.md`;
+   the original size×delta evidence is `FOOTPRINT_CANDLE_RESEARCH.md`).
 
 Fires at the breakout bar's close. **Stop**: breakout bar's low − 0.5 pt.
 **Target**: 1R. **Risk floor**: setups with risk < 3 pts are skipped (noise;
