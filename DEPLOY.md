@@ -1,109 +1,64 @@
-# Deploy: Coolify + Neon
+# Deploy: Coolify + Neon + R2
 
-Two moving parts:
+Three moving parts:
 
-1. **Neon Postgres** — the historical store (candles, per-tick footprint,
-   profile sheets, events). Filled from this Mac by `web/db/ingest.ts`.
-2. **Coolify** — runs the dashboard (Docker image of `web/`).
+1. **Neon Postgres** — historical store (candles, footprint ticks, profiles,
+   events) plus the live tables (signals, trades, trade_analysis, insights,
+   strategy_overrides, guard_state).
+2. **Coolify VPS** — runs the dashboard container (Docker image of `web/`).
+3. **Cloudflare R2** — the 2.5-year session archive (NQ + ES), the dashboard's
+   history source.
 
-```
-[this Mac] collect (gcdata) ──► gcdata/data/*.json
-                                   │
-                                   ▼  web/db/ingest.ts (nightly, launchd)
-                              Neon Postgres ◄──── future backtest engine
-                                   │
-                                   ▼  DATABASE_URL
-[Coolify VPS] dashboard container ──► serves / (live dashboard)
-```
+**Full live state (UUIDs, env vars, data flow, hardening history, lessons):
+see `deploy/STATE.md`** — that file is the canonical ops record and is updated
+as the system changes.
 
-## Neon (org is console-only, project/db via API)
+## Live resources
 
-> Creating an **organization** has no API/CLI endpoint — do it once in the
-> Neon console (console.neon.tech → New organization), or reuse an existing
-> org. Everything below works with an org or account API key.
+| Resource | Value |
+|---|---|
+| Coolify | `http://31.97.138.30:8000` (v4.3.23) · app `nq-dashboard` → uuid `vwtqdqezxw3lpmpzq76drgb1` |
+| Dashboard | `https://nq-dashboard.31.97.138.30.sslip.io` (Let's Encrypt, force-HTTPS) |
+| Neon | org `nq-scalping` → project `nq-store` (`summer-poetry-26619129`), aws-us-east-1, Postgres 18 |
+| R2 | bucket `nq-history` → public `https://pub-d68008dba02c4ad190e9814f6c41cbef.r2.dev` |
 
-```bash
-export NEON_API_KEY=napi_…
-# or with neonctl
-neonctl projects create --name nq-store --org-id org-… --region-id aws-us-east-1 --pg-version 17
-# (auto-creates branch `main`, database `neondb`, role `neondb_owner`)
-neonctl connection-string --project-id <id> --database-name neondb --role-name neondb_owner
-```
+## Deploying
 
-Raw API alternative: `POST https://console.neon.tech/api/v2/projects`
-`{"project":{"name":"nq-store","org_id":"…","region_id":"aws-us-east-1","pg_version":17}}`
-(create database via `POST /projects/{id}/branches/{branch}/databases`).
-
-Store the **unpooled** URL as `DATABASE_URL` in `web/.env.local` (gitignored);
-the pooled (`-pooler`) host is for the live dashboard, direct is for ingestion.
-
-## Backfill + nightly ingestion
+- Build: `web/Dockerfile` (node:22-alpine, Next standalone output, port 3000).
+- Coolify app: base directory `/web`, Dockerfile build pack, health check
+  `GET /` on port 3000, no volumes.
+- **Auto-deploy on every push to `main`** (Coolify native GitHub webhook).
+- Manual redeploy:
 
 ```bash
-cd web
-node --import ../scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events   # one-off backfill
-node --import ../scripts/ts-loader.mjs ./db/ingest.ts --verify                    # integrity check
+curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
+  "http://31.97.138.30:8000/api/v1/deploy?uuid=vwtqdqezxw3lpmpzq76drgb1&force=true"
 ```
 
-The ingester applies `db/schema.sql` automatically on first run (idempotent
-upserts throughout). It is scheduled by the same launchd job that collects:
-`com.scalping.collect` → `scripts/nightly.sh` (collect, then ingest), Mon–Fri
-17:15 local/US-Eastern. Data hygiene: `scripts/repair_data.py --repair`.
+## Env vars (Coolify app env)
 
-## Coolify (deploy the dashboard)
+`DATABASE_URL` · `GC_REMOTE_URL` · `GOCHARTING_EMAIL/PASSWORD/COGNITO_CLIENT/DC/
+SYMBOL/EXCHANGE/SEGMENT` · `TELEGRAM_BOT_TOKEN` · `TELEGRAM_CHAT_ID` ·
+`LAB_ENABLED=false` · `LIVE_WRITE` · `CROSSTRADE_URL/KEY/ACCOUNT` ·
+`EXECUTE_LIVE=1`.
 
-- Prerequisites (dashboard-only, can't be scripted): a running Coolify
-  instance with a registered Server, and an API token with `write` + `deploy`
-  permissions (Keys & Tokens → API tokens).
-- Push this repo to GitHub (it has no remote yet), then:
+The Mac's `web/.env.local` keeps `EXECUTE_LIVE=0` — **the VPS is the single
+live executor**, so local runs never double-execute.
 
-```bash
-export CF=https://your-coolify.example.com CF_TOKEN=…
-curl -H "Authorization: Bearer $CF_TOKEN" $CF/api/v1/servers          # → server_uuid
-curl -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json"   $CF/api/v1/projects -d '{"name":"scalping"}'                        # → project_uuid
-curl -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json"   $CF/api/v1/projects/<project_uuid>/environments -d '{"name":"production"}'
-curl -X POST -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json"   $CF/api/v1/applications/public -d '{
-    "project_uuid":"<project_uuid>","server_uuid":"<server_uuid>","environment_name":"production",
-    "git_repository":"https://github.com/<you>/Scalping.git","git_branch":"main",
-    "build_pack":"dockerfile","base_directory":"web","name":"nq-dashboard",
-    "ports_exposes":"3000","health_check_port":"3000","health_check_enabled":true,
-    "instant_deploy":true,"domains":"<your-domain or leave empty for IP:port>"
-  }'
-# env vars (bulk), then deploy
-curl -X PATCH -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json"   $CF/api/v1/applications/<app_uuid>/envs/bulk   -d '{"data":[{"key":"DATABASE_URL","value":"…","is_preview":false,"is_literal":false,"is_multiline":false,"is_shown_once":false}]}'
-curl -X POST -H "Authorization: Bearer $CF_TOKEN" "$CF/api/v1/deploy?uuid=<app_uuid>"
-```
+## Local data pipeline (this Mac)
 
-- Environment:
-    - `GOCHARTING_EMAIL`, `GOCHARTING_PASSWORD`, `GOCHARTING_COGNITO_CLIENT`,
-      `GOCHARTING_DC`, `GOCHARTING_SYMBOL`, `GOCHARTING_EXCHANGE`, `GOCHARTING_SEGMENT`
-    - `DATABASE_URL` (unpooled Neon URL)
-    - `TELEGRAM_BOT_TOKEN` (signals) — required to push. `TELEGRAM_CHAT_ID` is
-      optional: for a personal bot, message it once and it auto-discovers your
-      chat via `getUpdates`; set `TELEGRAM_CHAT_ID` to pin it.
-    - `SIGNAL_REFRESH_SECONDS` (optional, default 30) — how often the server
-      recomputes the live signal and pushes a card when the reversal sequence
-      completes.
-    - `GC_DATA_DIR=/app/data` if you mount historical data
-  - Persistent storage (optional): mount a host dir with `gcdata/data` at
-    `/app/data` so the historical views work on the server too.
+- `launchd com.scalping.collect` → `scripts/nightly.sh`, **Mon–Fri 17:45 US
+  Eastern** (~45 min after the 16:59 close): collect from GoCharting → ingest
+  Neon → reconcile trades → analyze → mine insights → upload/prune R2 → ES
+  archive → Friday risk-stack backtest.
+- `launchd com.scalping.domprobe` → weekly DOM_V2 sample, Sundays 18:05 ET.
 
 ## Credentials policy (do not regress this)
 
-- **Nothing secret is ever committed.** The repo keeps only placeholders:
-  `docs/launchd/com.scalping.ingest.plist` has `__DATABASE_URL__`,
-  `gcdata/.env.example` has example values. `.gitignore` covers `gcdata/.env`,
-  `web/.env*`, collected data and caches.
-- Secrets live in: **Coolify app env vars** (DATABASE_URL, GoCharting feed
-  credentials — set with "shown once"), **GitHub Actions secrets**
-  (`COOLIFY_BASE_URL`, `COOLIFY_TOKEN`), and local-only files
-  (`web/.env.local`, the Mac's installed launchd plist, `gcdata/.env`).
+- **Nothing secret is ever committed.** Secrets live in: the gitignored skill
+  `.agents/skills/coolify-deploy/` (Coolify token, Neon API key), Coolify app
+  env vars, `web/.env.local` (DATABASE_URL, CrossTrade, LLM), and `gcdata/.env`
+  (GoCharting, R2). `.gitignore` covers all of them plus collected data, venv,
+  and caches.
 - If anything secret ever lands in git again: rotate the credential AND rewrite
   the history (a force-push alone is not enough — GitHub keeps dangling objects).
-
-## Next step: read-through
-
-Once Neon holds the store, the dashboard's `/api/gc` can read from it when
-`DATABASE_URL` is set (falling back to files), and the backtest engine can
-query `candles_1m` + `footprint_ticks` directly — the schema is written for
-that: absolute `ts`, date/session partition keys, raw clusters preserved.

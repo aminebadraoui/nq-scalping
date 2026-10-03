@@ -19,7 +19,7 @@
 
 ```
 [this Mac] gcdata collectors ──► gcdata/data/*.json   (nightly landing zone + test fixtures)
-        │  nightly 17:15 local (Mon–Fri, com.scalping.collect → scripts/nightly.sh)
+        │  nightly 17:45 local (Mon–Fri, com.scalping.collect → scripts/nightly.sh)
         │   1. collect  2. ingest → Neon  3. upload → R2 (r2_sync.py)  4. prune local
         ▼
    Neon Postgres (rolling ~21-day window; free tier 512 MB cap)  ◄── live GoCharting feed
@@ -243,7 +243,7 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
 ## Operate
 
 ```bash
-# nightly collection + ingestion (launchd, 17:15 local Mon–Fri):
+# nightly collection + ingestion (launchd, 17:45 local Mon–Fri):
 #   com.scalping.collect → scripts/nightly.sh  (collect + ingest in one job)
 #   (com.scalping.ingest and com.scalping.tickverify were removed — dead)
 
@@ -273,7 +273,7 @@ python3 scripts/repair_data.py --repair   # trim merged holiday files, drop part
 
 ## Test suite
 
-`npm test` — offline, ~90 tests. One network test (`parity.test.mjs`, python-vs-TS
+`npm test` — offline, 361 tests (351 pass, 10 skipped, ~2.5 s). One network test (`parity.test.mjs`, python-vs-TS
 level sheets) is opt-in: `PARITY_NET=1 npm test`. OHLC-twin assertions only cover
 dates that have a vendor OHLC twin (recent `collect_ohlc` window).
 
@@ -291,7 +291,9 @@ dates that have a vendor OHLC twin (recent `collect_ohlc` window).
    footprint). Repair deletes them; only closed-session twins are trusted.
 5. **launchd schedule must be local-time-correct**: the collect plist was written
    for Pacific (14:15 PT) on an Eastern Mac → it fired mid-session and skipped
-   for days. It now runs 17:15 local (Eastern = New York, DST moves together).
+   for days. It now runs 17:45 local (Eastern = New York, DST moves together) —
+   ~45 minutes after the 16:59 close, once the vendor publishes the closed
+   session's FOOTPRINT/V2 history.
 6. **Cognito lockout** (2026-09-27): exponential reconnect backoff in `lib/live.ts`
    (10s → 120s, auth failures 60s → 300s) — do not remove.
 7. **`l_sz` is the print-size field** in the live feed — without it every tick is

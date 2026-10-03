@@ -1,7 +1,7 @@
 # Regression tests
 
 ```bash
-npm test          # ~90 tests, offline (~1.5 s once the data store is warm)
+npm test          # 361 tests (351 pass, 10 skipped), offline (~2.5 s)
 npm run test:watch
 ```
 

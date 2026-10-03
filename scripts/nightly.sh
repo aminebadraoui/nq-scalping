@@ -8,8 +8,9 @@
 #
 # Usage: nightly.sh [days-back]        (default 6)
 #
-# Scheduled by docs/launchd/com.scalping.collect.plist, which runs it at 17:15
-# New York (14:15 Pacific) Monday-Friday — just after the 16:59 NY session close.
+# Scheduled by docs/launchd/com.scalping.collect.plist, which runs it at 17:45
+# local (US Eastern) Monday-Friday — ~45 minutes after the 16:59 NY session
+# close, once the vendor publishes the closed session's FOOTPRINT/V2 history.
 set -uo pipefail
 
 ROOT="/Users/amean/PROJECTS/DEV/Scalping"
