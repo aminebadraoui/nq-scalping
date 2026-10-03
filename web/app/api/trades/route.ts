@@ -1,6 +1,7 @@
 import { dbEnabled, getDb } from "@/lib/gcdb";
 import { familyOf } from "@/lib/tradeStats";
 import { edgeStatuses, REPLAY_EXPR_BASELINES } from "@/lib/edgeMonitor";
+import { streakTable, drawdownTable, hourMatrix, hourTable } from "@/lib/journalMetrics";
 
 export const dynamic = "force-dynamic";
 
@@ -88,6 +89,22 @@ export async function GET(request: Request) {
         net: Number(r.account_net),
         realized: r.account_realized === null || r.account_realized === undefined ? null : Number(r.account_realized),
       }));
+
+    // ---- dedicated metric tables (pure, unit-tested shapes) ----
+    const metricRows = rangeTrades
+      .filter((t) => String(t.status ?? "") === "matched")
+      .map((t) => ({
+        ts: Number(t.ts ?? 0),
+        day: String(t.day ?? ""),
+        family: familyOf(String(t.verdict ?? "")),
+        hourBucket: String(t.hour_bucket ?? ""),
+        result: String(t.result ?? ""),
+        netUsd: Number(t.net_usd ?? 0),
+      }));
+    const streaks = streakTable(metricRows);
+    const drawdowns = drawdownTable(metricRows);
+    const matrix = hourMatrix(metricRows);
+    const hours = hourTable(metricRows);
 
     const analysis = await db`select * from trade_analysis order by run_at desc limit 1`;
     const a = analysis[0] as (typeof analysis)[number] | undefined;
@@ -200,6 +217,10 @@ export async function GET(request: Request) {
       headline,
       days: dayList,
       equity,
+      streaks,
+      drawdowns,
+      matrix,
+      hours,
       scoreboard,
       scoreRange: rangeDays > 0 ? `${rangeDays}d` : "all",
       analysis: a

@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { familyName } from "@/lib/familyNames";
+import { type StreakRow, type DrawdownRow, type HourCell, type HourRow } from "@/lib/journalMetrics";
 
 /* ------------------------------------------------------------------ *
  * Trade journal — the dedicated surface for the self-improving loop:
@@ -145,19 +147,8 @@ type Override = {
   insight_title: string | null;
 };
 
-const FAMILY_LABEL: Record<string, string> = {
-  momentum_flush: "MOM·flush",
-  momentum_expansion: "MOM·expansion",
-  rth: "RTH",
-  open_drive: "OPEN DRIVE",
-  open_pullback: "OPEN PULL",
-  open_sniper: "SNIPER",
-  sweep_reclaim: "SWEEP-RECLAIM",
-  reversal: "REVERSAL",
-  other: "OTHER",
-};
 // the ONE naming scheme — every surface shows the same strategy names
-const familyName = (f: string) => FAMILY_LABEL[f] ?? f;
+// (lib/familyNames.ts, shared with the AI review and the metric tables)
 
 const HOUR_LABEL: Record<string, string> = {
   globex_early: "18–21",
@@ -242,6 +233,63 @@ function Narrative({ text }: { text: string }) {
   );
 }
 
+function StatsTable({ rows, compact = false }: { rows: StatRow[]; compact?: boolean }) {
+  const show = rows.filter((s) => s.n > 0);
+  if (!show.length) return <p className="py-2 font-mono text-xs text-zinc-600">no data in this range</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse font-mono text-[10px]">
+        <thead>
+          <tr className="text-left text-zinc-500">
+            <th className="border-b border-zinc-800 py-1 pr-2 font-normal">{compact ? "group" : "strategy"}</th>
+            <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
+            <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">W/L</th>
+            <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">WR</th>
+            <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">PF</th>
+            <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">gross</th>
+            <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">net</th>
+            {!compact && (
+              <>
+                <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">exp</th>
+                <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">stop-runs</th>
+                <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">drift</th>
+                <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">MFE/MAE</th>
+              </>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {show.map((s) => (
+            <tr key={`${s.group}|${s.label}`} className={s.group === "overall" ? "font-bold text-zinc-100" : "text-zinc-400"}>
+              <td className="py-1 pr-2 whitespace-nowrap">
+                {s.group === "overall" ? "ALL" : s.group === "family" ? familyName(s.label) : s.label}
+              </td>
+              <td className="px-2 py-1 text-right">{s.n}</td>
+              <td className="px-2 py-1 text-right whitespace-nowrap">
+                <span className="text-long">{s.wins}</span>/<span className="text-short">{s.losses}</span>
+              </td>
+              <td className={`px-2 py-1 text-right ${s.winRate !== null && s.winRate >= 0.6 ? "text-long" : s.winRate !== null && s.winRate <= 0.35 ? "text-short" : ""}`}>{pct(s.winRate)}</td>
+              <td className="px-2 py-1 text-right">{pf(s.profitFactor)}</td>
+              <td className="px-2 py-1 text-right">{fmtUsd(s.grossUsd)}</td>
+              <td className={`px-2 py-1 text-right ${s.netUsd >= 0 ? "text-long" : "text-short"}`}>{fmtUsd(s.netUsd)}</td>
+              {!compact && (
+                <>
+                  <td className="px-2 py-1 text-right">{fmtUsd(s.expectancyUsd)}</td>
+                  <td className="px-2 py-1 text-right">
+                    {s.stopRuns}{s.stopRunRate !== null && s.losses > 0 ? ` (${pct(s.stopRunRate)})` : ""}
+                  </td>
+                  <td className="px-2 py-1 text-right">{fmtPts(s.avgEntryAdversePts)}</td>
+                  <td className="px-2 py-1 text-right">{fmtPts(s.avgMfePts)}/{fmtPts(s.avgMaePts)}</td>
+                </>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function GlanceCard({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone: "long" | "short" | "none" }) {
   const color = tone === "long" ? "text-long" : tone === "short" ? "text-short" : "text-zinc-50";
   return (
@@ -301,6 +349,10 @@ export default function JournalPage() {
   const [headline, setHeadline] = useState<Headline | null>(null);
   const [dayRows, setDayRows] = useState<DayRow[]>([]);
   const [equity, setEquity] = useState<EquityPoint[]>([]);
+  const [streaks, setStreaks] = useState<StreakRow[]>([]);
+  const [drawdowns, setDrawdowns] = useState<DrawdownRow[]>([]);
+  const [matrix, setMatrix] = useState<HourCell[]>([]);
+  const [hours, setHours] = useState<HourRow[]>([]);
   const [insights, setInsights] = useState<Insight[]>([]);
   const [overrides, setOverrides] = useState<Override[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -319,6 +371,10 @@ export default function JournalPage() {
         setHeadline(t.headline ?? null);
         setDayRows(t.days ?? []);
         setEquity(t.equity ?? []);
+        setStreaks(t.streaks ?? []);
+        setDrawdowns(t.drawdowns ?? []);
+        setMatrix(t.matrix ?? []);
+        setHours(t.hours ?? []);
         setInsights(i.insights ?? []);
         setOverrides(i.overrides ?? []);
         setLoaded(true);
@@ -347,6 +403,13 @@ export default function JournalPage() {
 
   const stats = analysis?.summary.stats ?? [];
   const overall = stats.find((s) => s.group === "overall") ?? null;
+  const familyStats = stats.filter((s) => s.group === "family");
+  const sideStats = stats.filter((s) => s.group === "side");
+  const firstStats = stats.filter((s) => s.group === "first");
+  const lossStats = stats.filter((s) => s.group === "lossclass");
+  const matrixFams = [...new Set(matrix.map((c) => c.family))].sort((a, b) => familyName(a).localeCompare(familyName(b)));
+  const extraHours = [...new Set(matrix.map((c) => c.hour))].filter((h) => !(h in HOUR_LABEL));
+  const HOUR_KEYS = [...Object.keys(HOUR_LABEL), ...extraHours];
   const narrative = insights.find((i) => i.kind === "narrative" && i.source === "llm") ??
     insights.find((i) => i.kind === "narrative") ?? null;
   const nonNarrative = insights.filter((i) => i.kind !== "narrative");
@@ -713,52 +776,142 @@ export default function JournalPage() {
             </p>
           </section>
 
+          {/* ---- dedicated metric tables (one question each) ---- */}
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
-            <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Win / loss analysis</h2>
+            <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Strategy performance</h2>
+            <StatsTable rows={familyStats} />
+          </section>
+
+          <section className="rounded-md border border-zinc-800 bg-panel p-4">
+            <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Risk, streaks &amp; drawdown</h2>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse font-mono text-[10px]">
                 <thead>
                   <tr className="text-left text-zinc-500">
-                    <th className="border-b border-zinc-800 py-1 pr-2 font-normal">group</th>
+                    <th className="border-b border-zinc-800 py-1 pr-2 font-normal">strategy</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">W/L</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">WR</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">PF</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">gross</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">net</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">avg W/L</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">exp</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">stop-runs</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">drift</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">MFE/MAE</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal text-long" title="longest consecutive wins">max W run</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal text-short" title="longest consecutive losses">max L run</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="current streak (W/L)">now</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="worst peak-to-trough of the running net">max DD</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="max DD as % of the peak it fell from">DD %</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">worst day</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {stats.filter((s) => s.n > 0).map((s) => (
-                    <tr key={`${s.group}|${s.label}`} className={s.group === "overall" ? "font-bold text-zinc-100" : "text-zinc-400"}>
-                      <td className="py-1 pr-2 whitespace-nowrap">
-                        {s.group === "overall" ? "ALL" : s.group === "family" ? familyName(s.label) : `${s.group}: ${s.label}`}
+                  {drawdowns.map((d) => {
+                    const s = streaks.find((x) => x.family === d.family);
+                    return (
+                      <tr key={d.family} className="text-zinc-400">
+                        <td className="py-1 pr-2 whitespace-nowrap">{d.label}</td>
+                        <td className="px-2 py-1 text-right">{s?.n ?? "—"}</td>
+                        <td className="px-2 py-1 text-right text-long">{s?.maxWin ?? "—"}</td>
+                        <td className="px-2 py-1 text-right text-short">{s?.maxLoss ?? "—"}</td>
+                        <td className="px-2 py-1 text-right whitespace-nowrap">
+                          {s ? `${s.curWin > 0 ? `+${s.curWin}W` : s.curLoss > 0 ? `−${s.curLoss}L` : "flat"}` : "—"}
+                        </td>
+                        <td className={`px-2 py-1 text-right ${d.maxDdUsd < 0 ? "text-short" : "text-zinc-400"}`}>{fmtUsd(d.maxDdUsd)}</td>
+                        <td className="px-2 py-1 text-right text-zinc-500">{d.ddPct === null ? "—" : `${d.ddPct.toFixed(0)}%`}</td>
+                        <td className="px-2 py-1 text-right whitespace-nowrap text-zinc-500">
+                          {d.worstDay ? `${d.worstDay.slice(5)} ${fmtUsd(d.worstDayUsd)}` : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {drawdowns.length === 0 && <p className="py-2 font-mono text-xs text-zinc-600">no matched trades in this range</p>}
+            </div>
+          </section>
+
+          <section className="rounded-md border border-zinc-800 bg-panel p-4">
+            <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Strategy × hour</h2>
+            {matrix.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse font-mono text-[10px]">
+                  <thead>
+                    <tr className="text-left text-zinc-500">
+                      <th className="border-b border-zinc-800 py-1 pr-2 font-normal">strategy</th>
+                      {HOUR_KEYS.map((h) => (
+                        <th key={h} className="border-b border-zinc-800 px-2 py-1 text-right font-normal">{HOUR_LABEL[h] ?? h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {matrixFams.map((f) => (
+                      <tr key={f} className="text-zinc-400">
+                        <td className="py-1 pr-2 whitespace-nowrap">{familyName(f)}</td>
+                        {HOUR_KEYS.map((h) => {
+                          const c = matrix.find((x) => x.family === f && x.hour === h);
+                          if (!c) return <td key={h} className="px-2 py-1 text-right text-zinc-700">—</td>;
+                          return (
+                            <td key={h} className={`px-2 py-1 text-right ${c.netUsd >= 0 ? "text-long" : "text-short"}`} title={`${c.wins}W/${c.losses}L · ${c.wr?.toFixed(0) ?? "—"}% WR`}>
+                              {c.n}·{fmtUsd(c.netUsd)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="py-2 font-mono text-xs text-zinc-600">no trades in this range</p>
+            )}
+            <p className="mt-1 font-mono text-[9px] text-zinc-600">cell = trades · net (hover: W/L and win rate) — which strategy pays at which hour block</p>
+          </section>
+
+          <section className="rounded-md border border-zinc-800 bg-panel p-4">
+            <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Hour performance</h2>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse font-mono text-[10px]">
+                <thead>
+                  <tr className="text-left text-zinc-500">
+                    <th className="border-b border-zinc-800 py-1 pr-2 font-normal">hour block</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">W/L</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">WR</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">net</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">exp / trade</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hours.map((h) => (
+                    <tr key={h.hour} className="text-zinc-400">
+                      <td className="py-1 pr-2 whitespace-nowrap">{h.label}</td>
+                      <td className="px-2 py-1 text-right">{h.n}</td>
+                      <td className="px-2 py-1 text-right whitespace-nowrap">
+                        <span className="text-long">{h.wins}</span>/<span className="text-short">{h.losses}</span>
                       </td>
-                      <td className="px-2 py-1 text-right">{s.n}</td>
-                      <td className="px-2 py-1 text-right">{s.wins}/{s.losses}</td>
-                      <td className={`px-2 py-1 text-right ${s.winRate !== null && s.winRate >= 0.6 ? "text-long" : s.winRate !== null && s.winRate <= 0.35 ? "text-short" : ""}`}>{pct(s.winRate)}</td>
-                      <td className="px-2 py-1 text-right">{pf(s.profitFactor)}</td>
-                      <td className="px-2 py-1 text-right">{fmtUsd(s.grossUsd)}</td>
-                      <td className={`px-2 py-1 text-right ${s.netUsd >= 0 ? "text-long" : "text-short"}`}>{fmtUsd(s.netUsd)}</td>
-                      <td className="px-2 py-1 text-right">{fmtUsd(s.avgWinUsd)} / {fmtUsd(s.avgLossUsd)}</td>
-                      <td className="px-2 py-1 text-right">{fmtUsd(s.expectancyUsd)}</td>
-                      <td className="px-2 py-1 text-right">
-                        {s.stopRuns}{s.stopRunRate !== null && s.losses > 0 ? ` (${pct(s.stopRunRate)})` : ""}
-                      </td>
-                      <td className="px-2 py-1 text-right">{fmtPts(s.avgEntryAdversePts)}</td>
-                      <td className="px-2 py-1 text-right">{fmtPts(s.avgMfePts)}/{fmtPts(s.avgMaePts)}</td>
+                      <td className={`px-2 py-1 text-right ${h.wr !== null && h.wr >= 60 ? "text-long" : h.wr !== null && h.wr <= 35 ? "text-short" : ""}`}>{h.wr === null ? "—" : `${h.wr.toFixed(0)}%`}</td>
+                      <td className={`px-2 py-1 text-right ${h.netUsd >= 0 ? "text-long" : "text-short"}`}>{fmtUsd(h.netUsd)}</td>
+                      <td className={`px-2 py-1 text-right ${h.expUsd !== null && h.expUsd >= 0 ? "text-long" : "text-short"}`}>{h.expUsd === null ? "—" : fmtUsd(h.expUsd)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {hours.length === 0 && <p className="py-2 font-mono text-xs text-zinc-600">no trades in this range</p>}
+            </div>
+          </section>
+
+          <section className="rounded-md border border-zinc-800 bg-panel p-4">
+            <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Execution lenses</h2>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div>
+                <h3 className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Side</h3>
+                <StatsTable rows={sideStats} compact />
+              </div>
+              <div>
+                <h3 className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-zinc-500">First of day</h3>
+                <StatsTable rows={firstStats} compact />
+              </div>
+              <div>
+                <h3 className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Loss classes</h3>
+                <StatsTable rows={lossStats} compact />
+              </div>
             </div>
             {overall && (
-              <div className="mt-2 grid grid-cols-2 gap-1 sm:grid-cols-4">
+              <div className="mt-3 grid grid-cols-2 gap-1 sm:grid-cols-4">
                 {[
                   { k: "expectancy / trade", v: fmtUsd(overall.expectancyUsd) },
                   { k: "stop-runs", v: `${overall.stopRuns} of ${overall.losses} losses` },
