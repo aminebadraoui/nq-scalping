@@ -1,0 +1,14 @@
+# jobs image build context (jobs.Dockerfile at repo root)
+.git
+.agents
+.claude
+**/node_modules
+**/.next
+**/.venv
+**/__pycache__
+**/*.tsbuildinfo
+**/.env
+**/.env.local
+gcdata/data
+.DS_Store
+*.log

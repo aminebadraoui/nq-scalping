@@ -8,12 +8,19 @@
 #
 # Usage: nightly.sh [days-back]        (default 6)
 #
-# Scheduled by docs/launchd/com.scalping.collect.plist, which runs it at 17:45
-# local (US Eastern) Monday-Friday — ~45 minutes after the 16:59 NY session
-# close, once the vendor publishes the closed session's FOOTPRINT/V2 history.
+# Runs on the VPS jobs container (Coolify app `nq-jobs`, cron 17:45 ET Mon–Fri)
+# and on the Mac (launchd com.scalping.collect) — never both in the same window:
+# the R2 manifest is single-writer. Portable: SCALPING_ROOT, NODE_BIN and PYTHON_BIN
+# override the auto-detected paths; date math goes through python3 (GNU/BSD-safe).
 set -uo pipefail
 
-ROOT="/Users/amean/PROJECTS/DEV/Scalping"
+ROOT="${SCALPING_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+NODE_BIN="${NODE_BIN:-/opt/homebrew/bin/node}"
+PY="${PYTHON_BIN:-}"
+if [ -z "$PY" ]; then
+  if [ -x "$ROOT/gcdata/.venv/bin/python" ]; then PY="$ROOT/gcdata/.venv/bin/python"; else PY="$(command -v python3)"; fi
+fi
+days_ago() { "$PY" -c 'import datetime,sys;print((datetime.date.today()-datetime.timedelta(days=int(sys.argv[1]))).isoformat())' "$1"; }
 DAYS="${1:-6}"
 LOG_DIR="$ROOT/gcdata/data"
 mkdir -p "$LOG_DIR"
@@ -31,23 +38,19 @@ if [ "$NY_MIN" -ge 1080 ] || [ "$NY_MIN" -lt 1020 ]; then
   exit 0
 fi
 
-FROM=$(date -v-"${DAYS}"d '+%Y-%m-%d')
+FROM=$(days_ago "$DAYS")
 TO=$(date '+%Y-%m-%d')
 log "=== nightly collection start (window $FROM .. $TO) ==="
 
 cd "$ROOT/gcdata" || exit 1
-if [ ! -x ./.venv/bin/python ]; then
-  log "ERROR: python venv missing at gcdata/.venv — run: python3 -m venv .venv && .venv/bin/pip install websocket-client protobuf"
-  exit 1
-fi
 
 log "--- footprint backfill (ETH + RTH) ---"
-./.venv/bin/python backfill.py --from "$FROM" --to "$TO" --sessions ETH RTH 2>&1
+"$PY" backfill.py --from "$FROM" --to "$TO" --sessions ETH RTH 2>&1
 BACKFILL_RC=$?
 log "backfill exit=$BACKFILL_RC"
 
 log "--- OHLC bars (real open/close for the candles) ---"
-./.venv/bin/python collect_ohlc.py --windows 4 2>&1
+"$PY" collect_ohlc.py --windows 4 2>&1
 OHLC_RC=$?
 log "ohlc exit=$OHLC_RC"
 
@@ -70,9 +73,9 @@ log "--- ingest into Neon ---"
 # gcdata/data JSON (the lab/study read those files directly). Ingest a rolling
 # ~3-week window so the dashboard's 5-day profile composite stays intact
 # without hitting the storage cap.
-SINCE=$(date -v-21d '+%Y-%m-%d')
+SINCE=$(days_ago 21)
 log "ingest window: $SINCE .. $TO"
-/opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./db/ingest.ts --since "$SINCE" --profiles --events 2>&1
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./db/ingest.ts --since "$SINCE" --profiles --events 2>&1
 INGEST_RC=$?
 log "ingest exit=$INGEST_RC"
 
@@ -80,7 +83,7 @@ log "--- reconcile trades (CrossTrade fills ↔ signals) ---"
 # Joins the day's Telegram cards with the CrossTrade fill record into the
 # Neon `trades` + `reconcile_runs` tables ("did that card trade, and how?").
 # Idempotent (upsert on signal_key) — re-run any time to backfill a gap.
-/opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts 2>&1
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts 2>&1
 RECONCILE_RC=$?
 log "reconcile exit=$RECONCILE_RC"
 
@@ -88,7 +91,7 @@ log "--- analyze trades (win/loss framework) ---"
 # Per-trade execution anatomy (drift, MFE/MAE, stop-runs) + win/loss
 # aggregates by strategy/hour/side → `trade_analysis` + enriched `trades`.
 # Runs after ingest so the bars are vendor-grade. Idempotent.
-/opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts 2>&1
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts 2>&1
 ANALYSIS_RC=$?
 log "tradeAnalysis exit=$ANALYSIS_RC"
 
@@ -96,12 +99,12 @@ log "--- mine strategy insights (self-improvement) ---"
 # Pattern-mines the trade record into `insights` (proposals + AI review).
 # With SELF_IMPROVE=1 strong proposals auto-apply into `strategy_overrides`;
 # otherwise the dashboard approves. Idempotent (dedup by title).
-/opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./scripts/strategyInsights.ts 2>&1
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/strategyInsights.ts 2>&1
 INSIGHTS_RC=$?
 log "strategyInsights exit=$INSIGHTS_RC"
 
 log "--- archive to R2 + free the disk ---"
-if grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
+if [ -n "${R2_ACCOUNT_ID:-}" ] || grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
   if python3 "$ROOT/scripts/r2_sync.py" upload 2>&1; then
     log "r2 upload ok"
     python3 "$ROOT/scripts/r2_sync.py" prune 2>&1
@@ -118,10 +121,10 @@ if pgrep -f "python.*backfill_es\.py" >/dev/null 2>&1; then
   log "long ES backfill already running — skipping tonight's ES pass (it covers this window)"
 else
   cd "$ROOT/gcdata" || exit 1
-  ./.venv/bin/python backfill_es.py --from "$FROM" --to "$TO" 2>&1
+  "$PY" backfill_es.py --from "$FROM" --to "$TO" 2>&1
   ES_BF_RC=$?
   log "es backfill exit=$ES_BF_RC"
-  if grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
+  if [ -n "${R2_ACCOUNT_ID:-}" ] || grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
     if python3 "$ROOT/scripts/es_r2_sync.py" upload 2>&1; then
       log "es r2 upload ok"
       python3 "$ROOT/scripts/es_r2_sync.py" prune 2>&1
@@ -141,7 +144,7 @@ log "--- weekly risk-stack backtest (Fridays only) ---"
 # the archive grows; ~1 min on the warm cache.
 RISKSTACK_RC=0
 if [ "$(date +%u)" = "5" ]; then
-  /opt/homebrew/bin/node --import ../scripts/ts-loader.mjs ./scripts/riskStackStudy.ts --offline 2>&1 | tail -14
+  "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/riskStackStudy.ts --offline 2>&1 | tail -14
   RISKSTACK_RC=${PIPESTATUS[0]}
   log "riskStack exit=$RISKSTACK_RC"
 else

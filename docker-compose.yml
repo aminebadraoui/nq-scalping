@@ -1,0 +1,45 @@
+# nq-jobs — nightly data pipeline (Coolify compose app; base directory = repo root).
+#
+# The live dashboard stays a separate dockerfile app (web/, untouched). This
+# stack runs ONLY the pipeline container; Coolify injects the app's environment
+# variables (GoCharting, DATABASE_URL, R2, CrossTrade, LLM) into the service,
+# and the ${VAR:-default} interpolation below keeps `docker compose config`
+# valid even without them.
+services:
+  jobs:
+    build:
+      context: .
+      dockerfile: jobs.Dockerfile
+    restart: unless-stopped
+    environment:
+      SCALPING_ROOT: /app
+      NODE_BIN: node
+      TZ: America/New_York
+      MOM_CACHE_DIR: /app/cache
+      DATABASE_URL: ${DATABASE_URL:-}
+      GOCHARTING_EMAIL: ${GOCHARTING_EMAIL:-}
+      GOCHARTING_PASSWORD: ${GOCHARTING_PASSWORD:-}
+      GOCHARTING_COGNITO_CLIENT: ${GOCHARTING_COGNITO_CLIENT:-}
+      GOCHARTING_COGNITO_POOL: ${GOCHARTING_COGNITO_POOL:-}
+      GOCHARTING_DC: ${GOCHARTING_DC:-nyc1}
+      GOCHARTING_SYMBOL: ${GOCHARTING_SYMBOL:-NQZ26}
+      GOCHARTING_EXCHANGE: ${GOCHARTING_EXCHANGE:-CME}
+      GOCHARTING_SEGMENT: ${GOCHARTING_SEGMENT:-FUTURE}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-nq-history}
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+      CROSSTRADE_URL: ${CROSSTRADE_URL:-}
+      CROSSTRADE_KEY: ${CROSSTRADE_KEY:-}
+      CROSSTRADE_ACCOUNT: ${CROSSTRADE_ACCOUNT:-}
+      ANALYSIS_LLM_URL: ${ANALYSIS_LLM_URL:-}
+      ANALYSIS_LLM_KEY: ${ANALYSIS_LLM_KEY:-}
+      ANALYSIS_LLM_MODEL: ${ANALYSIS_LLM_MODEL:-}
+    volumes:
+      - jobs-data:/app/gcdata/data
+      - jobs-cache:/app/cache
+
+volumes:
+  jobs-data:
+  jobs-cache:
