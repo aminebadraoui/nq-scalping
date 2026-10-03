@@ -134,6 +134,22 @@ export async function GET(request: Request) {
     const matrix = hourMatrix(metricRows);
     const hours = hourTable(metricRows);
 
+    // ---- account headline: the FINAL number (netLiq vs start balance) ----
+    // MFF Rapid EOD 50k eval starts at $50,000; ACCOUNT_START_BALANCE
+    // overrides when the account tier changes (funded/payout resets).
+    const START_BALANCE = Number(process.env.ACCOUNT_START_BALANCE ?? "50000");
+    const lastEq = equity.length ? equity[equity.length - 1] : null;
+    const account = lastEq
+      ? {
+          net: lastEq.net,
+          realized: lastEq.realized,
+          at: lastEq.at,
+          startBalance: START_BALANCE,
+          pnl: Math.round((lastEq.net - START_BALANCE) * 100) / 100,
+          pct: Math.round(((lastEq.net - START_BALANCE) / START_BALANCE) * 10000) / 100,
+        }
+      : null;
+
     // ---- manual bucket (Tradovate round trips no signal explains) ----
     const dayFloor = new Date(w0).toISOString().slice(0, 10);
     const manualRows = (await db`
@@ -261,6 +277,7 @@ export async function GET(request: Request) {
       days: dayList,
       equity,
       ledger,
+      account,
       streaks,
       drawdowns,
       matrix,

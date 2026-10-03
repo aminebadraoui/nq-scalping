@@ -161,6 +161,15 @@ type ManualRow = {
 
 type ManualDay = { day: string; n: number; gross: number };
 
+type AccountHead = {
+  net: number;
+  realized: number | null;
+  at: string;
+  startBalance: number;
+  pnl: number;
+  pct: number;
+};
+
 type Override = {
   id: string;
   created_at: string;
@@ -388,6 +397,7 @@ export default function JournalPage() {
   const [manual, setManual] = useState<ManualRow[]>([]);
   const [manualDays, setManualDays] = useState<ManualDay[]>([]);
   const [manualTotal, setManualTotal] = useState<number | null>(null);
+  const [account, setAccount] = useState<AccountHead | null>(null);
   const [streaks, setStreaks] = useState<StreakRow[]>([]);
   const [drawdowns, setDrawdowns] = useState<DrawdownRow[]>([]);
   const [matrix, setMatrix] = useState<HourCell[]>([]);
@@ -414,6 +424,7 @@ export default function JournalPage() {
         setManual(t.manual ?? []);
         setManualDays(t.manualDays ?? []);
         setManualTotal(typeof t.manualTotal === "number" ? t.manualTotal : null);
+        setAccount(t.account ?? null);
         setStreaks(t.streaks ?? []);
         setDrawdowns(t.drawdowns ?? []);
         setMatrix(t.matrix ?? []);
@@ -498,6 +509,31 @@ export default function JournalPage() {
           {scoreRange === "all" ? "all time" : `rolling ${scoreRange} days`} · bot strategies only
         </span>
       </div>
+      {/* the FINAL number — the account itself */}
+      {account && (
+        <div className="mb-5 rounded-md border border-zinc-800 bg-panel px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-3">
+            <div>
+              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">Account · net liquidation value</p>
+              <p className="font-mono text-3xl font-bold text-zinc-50">
+                ${account.net.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">net profit / loss</p>
+              <p className={`font-mono text-2xl font-bold ${account.pnl >= 0 ? "text-long" : "text-short"}`}>
+                {fmtUsd(account.pnl)}{" "}
+                <span className="text-base">({account.pct >= 0 ? "+" : ""}{account.pct.toFixed(2)}%)</span>
+              </p>
+            </div>
+            <div className="text-right font-mono text-[10px] text-zinc-500">
+              start ${account.startBalance.toLocaleString("en-US")}
+              <br />
+              snapshot {account.at.slice(0, 16).replace("T", " ")}Z
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <GlanceCard
           label="BOT NET (after fees)"
