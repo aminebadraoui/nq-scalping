@@ -33,8 +33,8 @@ log() { printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"; }
 # midnight with base-10 coercion so 0805 is not read as invalid octal).
 NY_HHMM=$(TZ=America/New_York date '+%H%M')
 NY_MIN=$(( (10#$NY_HHMM / 100) * 60 + (10#$NY_HHMM % 100) ))
-if [ "$NY_MIN" -ge 1080 ] || [ "$NY_MIN" -lt 1020 ]; then
-  log "session still open (NY $NY_HHMM) — nothing to collect yet, skipping"
+if [ "${NIGHTLY_FORCE:-0}" != "1" ] && { [ "$NY_MIN" -ge 1080 ] || [ "$NY_MIN" -lt 1020 ]; }; then
+  log "session still open (NY $NY_HHMM) — nothing to collect yet, skipping (NIGHTLY_FORCE=1 overrides)"
   exit 0
 fi
 
