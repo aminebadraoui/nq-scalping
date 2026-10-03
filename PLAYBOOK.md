@@ -6,9 +6,11 @@ tested (207 tests), and measured over the same 568-session archive
 (2023-12 → 2026-09, lookahead-free, 0.5 pt round-trip cost, pessimistic
 first-touch scoring, sequential one-trade-at-a-time replay).
 
-**Feed status (live VPS):** `FEED_MOMENTUM=1` · `FEED_UNUSUAL_VOLUME=1`
-(alerts only) · `FEED_OPEN=0` (flip to 1 to enable the 🔔 cards) ·
-everything else 0.
+**Feed status (live VPS, matches the code defaults):** `FEED_MOMENTUM=1` ·
+`FEED_RTH=1` · `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` · `FEED_UNUSUAL_VOLUME=1`
+(alerts only) · everything else 0 (reversal, sweep-reclaim, pullback ticket,
+open pullback, open sniper). Verify any time via
+`/api/gc?action=health` → `execution.feeds`.
 
 ---
 
@@ -76,7 +78,7 @@ Long 78.5% (PF 3.08) / short 76.4% (PF 2.88). First card of the day alone:
 
 ---
 
-## 🔔 THE OPEN FAMILY (9:30–10:30 ET) — experimental, `FEED_OPEN=0`
+## 🔔 THE OPEN FAMILY (9:30–10:30 ET) — `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` (live)
 
 All sized like the momentum card ($170 budget, 30-micro cap) and journaled
 separately.
@@ -121,7 +123,7 @@ separately.
 
 ---
 
-## 🟦 THE RTH CARD — footprint-proven continuation (`FEED_RTH=0`, experimental)
+## 🟦 THE RTH CARD — footprint-proven continuation (`FEED_RTH=1`, live)
 
 The strategy the thick two-way RTH tape (9:30–16:00 ET) actually rewards —
 found by the footprint × candle-impact interaction research

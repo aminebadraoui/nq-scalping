@@ -25,6 +25,7 @@ const TABLE_SQL = `
 create table if not exists dom_refills (
   ts          bigint not null,
   day         text not null,
+  symbol      text not null default 'NQ',
   side        text not null,
   price       numeric(10,2) not null,
   shown       integer not null default 0,
@@ -35,6 +36,7 @@ create table if not exists dom_refills (
   confidence  numeric(4,3) not null default 0,
   peak        integer not null default 0
 );
+alter table dom_refills add column if not exists symbol text not null default 'NQ';
 create index if not exists dom_refills_ts_idx on dom_refills (ts desc);
 create index if not exists dom_refills_price_idx on dom_refills (price, ts desc);
 `;
@@ -54,7 +56,7 @@ async function ensureTable(): Promise<boolean> {
 }
 
 /** Write one row per active candidate. Fire-and-forget from the feed. */
-export async function persistDomRefills(rows: IcebergCandidate[]): Promise<void> {
+export async function persistDomRefills(symbol: "NQ" | "ES", rows: IcebergCandidate[]): Promise<void> {
   if (rows.length === 0) return;
   if (!dbEnabled() || process.env.LIVE_WRITE !== "true") return;
   if (!(await ensureTable())) return;
@@ -63,6 +65,7 @@ export async function persistDomRefills(rows: IcebergCandidate[]): Promise<void>
   const values = rows.map((c) => ({
     ts: now,
     day,
+    symbol,
     side: c.side,
     price: c.price.toFixed(2),
     shown: Math.round(c.size),
@@ -76,7 +79,7 @@ export async function persistDomRefills(rows: IcebergCandidate[]): Promise<void>
   try {
     const sql = getDb();
     await sql`
-      insert into dom_refills ${sql(values as never, "ts", "day", "side", "price", "shown", "absorbed", "refills", "slice", "consistency", "confidence", "peak")}`;
+      insert into dom_refills ${sql(values as never, "ts", "day", "symbol", "side", "price", "shown", "absorbed", "refills", "slice", "consistency", "confidence", "peak")}`;
   } catch {
     /* best-effort — evidence only */
   }

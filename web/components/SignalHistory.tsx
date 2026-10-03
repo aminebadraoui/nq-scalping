@@ -14,11 +14,14 @@ type CompactCandidate = {
 };
 
 type DomContext = {
-  ts: number;
-  candidates: CompactCandidate[];
-  nearEntry: CompactCandidate[];
-  nearStop: CompactCandidate[];
-  nearTarget: CompactCandidate[];
+  nq: {
+    ts: number;
+    candidates: CompactCandidate[];
+    nearEntry: CompactCandidate[];
+    nearStop: CompactCandidate[];
+    nearTarget: CompactCandidate[];
+  };
+  es: { ts: number; candidates: CompactCandidate[] };
 };
 
 type HistoryEntry = {
@@ -155,9 +158,9 @@ export default function SignalHistory() {
                 <div className="text-zinc-600">DOM @ signal</div>
                 {(
                   [
-                    ["entry", e.dom.nearEntry],
-                    ["stop", e.dom.nearStop],
-                    ["target", e.dom.nearTarget],
+                    ["entry", e.dom.nq.nearEntry],
+                    ["stop", e.dom.nq.nearStop],
+                    ["target", e.dom.nq.nearTarget],
                   ] as [string, CompactCandidate[]][]
                 ).map(([label, rows]) =>
                   rows.map((c, i) => (
@@ -172,7 +175,19 @@ export default function SignalHistory() {
                     </div>
                   )),
                 )}
-                {e.dom.candidates.length === 0 && <div>no refill signatures in the window</div>}
+                {e.dom.es.candidates.map((c, i) => (
+                  <div key={`es|${i}`} className="flex justify-between">
+                    <span>
+                      <span className="text-zinc-600">ES</span>{" "}
+                      <span className={c.side === "bid" ? "text-long" : "text-short"}>{c.side === "bid" ? "BID" : "ASK"}</span>{" "}
+                      {fmt(c.price)} · refills {c.refills} · slice {c.refillSize} · abs {c.absorbed}
+                    </span>
+                    <span title={`confidence ${(c.confidence * 100).toFixed(0)}%`}>
+                      {(c.confidence * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                ))}
+                {e.dom.nq.candidates.length === 0 && e.dom.es.candidates.length === 0 && <div>no refill signatures in the window</div>}
               </div>
             )}
           </div>

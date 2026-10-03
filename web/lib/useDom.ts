@@ -17,14 +17,20 @@ export type IcebergCandidate = {
   peak: number;
 };
 
-export type DomState = {
-  connected: boolean;
-  lastMessage: number;
+export type DomSymbolState = {
+  symbol: string;
   snapshots: number;
   increments: number;
   lastSeq: number;
   book: { bids: DomLevel[]; asks: DomLevel[] };
   icebergs: IcebergCandidate[];
+};
+
+export type DomState = {
+  connected: boolean;
+  lastMessage: number;
+  nq: DomSymbolState;
+  es: DomSymbolState;
 };
 
 export function useDom(): DomState | null {

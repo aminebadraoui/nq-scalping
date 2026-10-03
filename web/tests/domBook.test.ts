@@ -3,7 +3,7 @@
  * trades.worker bundle (2026-10-02). */
 import { test } from "node:test";
 import assert from "node:assert";
-import { DomBook, buildDomContext, type DomIncrementalData, type IcebergCandidate } from "../lib/domBook";
+import { DomBook, buildDomContext, compactCandidates, esSymbolFor, type DomIncrementalData, type IcebergCandidate } from "../lib/domBook";
 
 const P = 30800; // price base, 0.25 ticks
 const T0 = Date.parse("2026-10-05T13:30:00Z");
@@ -180,4 +180,26 @@ test("context compacts to at most 5 candidates and drops detector-only fields", 
   assert.ok(!("lastRefillMs" in first), "compact rows must not leak detector internals");
   assert.ok(!("peak" in first));
   assert.equal(typeof ctx.ts, "number");
+});
+
+/* ---------------- ES symbol derivation + compaction helpers ---------------- */
+
+test("esSymbolFor derives the ES front month from the NQ symbol", () => {
+  assert.equal(esSymbolFor("NQZ26"), "ESZ26");
+  assert.equal(esSymbolFor("NQH24"), "ESH24");
+  assert.equal(esSymbolFor("NQM25"), "ESM25");
+  assert.equal(esSymbolFor("nqu26"), "ESU26");
+  assert.equal(esSymbolFor(""), null);
+  assert.equal(esSymbolFor("MNQZ26"), null); // micros are not the cycle anchor
+  assert.equal(esSymbolFor("NQ1!"), null);
+});
+
+test("compactCandidates caps at 5 and strips detector internals", () => {
+  const rows = Array.from({ length: 8 }, (_, i) => candidate({ price: P + i * 0.25 }));
+  const out = compactCandidates(rows);
+  assert.equal(out.length, 5);
+  const first = out[0] as Record<string, unknown>;
+  assert.ok(!("lastRefillMs" in first));
+  assert.ok(!("peak" in first));
+  assert.equal(first.side, "bid");
 });

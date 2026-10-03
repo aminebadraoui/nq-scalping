@@ -321,6 +321,11 @@ const compact = (c: IcebergCandidate[]): CompactCandidate[] =>
     confidence: x.confidence,
   }));
 
+/** compact a candidate list for logging (max 5, detector internals dropped) */
+export function compactCandidates(c: IcebergCandidate[]): CompactCandidate[] {
+  return compact(c);
+}
+
 /**
  * Build the DOM context to log with a signal. `levels` come from the ticket
  * strings (entry/stop/target) — anything unparseable is ignored. Never throws.
@@ -339,12 +344,23 @@ export function buildDomContext(
   const stop = num(levels.stop);
   const target = num(levels.target);
   const near = (lvl: number | null) =>
-    lvl === null ? [] : compact(candidates.filter((c) => Math.abs(c.price - lvl) <= nearPts));
+    lvl === null ? [] : compactCandidates(candidates.filter((c) => Math.abs(c.price - lvl) <= nearPts));
   return {
     ts: nowMs,
-    candidates: compact(candidates),
+    candidates: compactCandidates(candidates),
     nearEntry: near(entry),
     nearStop: near(stop),
     nearTarget: near(target),
   };
+}
+
+/**
+ * ES front month from the NQ symbol: both run the same quarterly cycle
+ * (H/M/U/Z, 3rd-Friday expiry), so front months always match letter + year.
+ * "NQZ26" -> "ESZ26". Null when the NQ symbol doesn't parse.
+ */
+export function esSymbolFor(nq: string): string | null {
+  const m = /^NQ([HMUZ])(\d{2})$/i.exec(nq.trim());
+  if (!m) return null;
+  return `ES${m[1].toUpperCase()}${m[2]}`;
 }

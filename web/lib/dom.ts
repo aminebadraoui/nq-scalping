@@ -12,8 +12,18 @@
  * - snapshot data: {symbol,exchange,segment,bids:[{p,s}],asks:[{p,s}]}
  * - incremental data: {bids:[{a,p,s}],asks:[...]} — a="d" deletes the level.
  *
+ * TWO instruments share the one subscription: NQ (the traded instrument) and
+ * ES (the cross-asset context) — the vendor accepts a symbol array, and
+ * snapshot/incremental rows carry the symbol they belong to. The ES front
+ * month is derived from the NQ symbol (shared H/M/U/Z cycle) so no extra
+ * env config is needed; GOCHARTING_SYMBOL_ES overrides when set.
+ *
  * The book is aggregated per-price visible size (no order IDs), so hidden
  * resting orders are inferred by the refill heuristic in domBook.ts.
+ *
+ * OBSERVATIONAL ONLY: the only consumer outside this module is
+ * signalFeed.record(), which stamps a read-only snapshot into each signal's
+ * feature vector. Nothing here can change a signal.
  *
  * Personal use only — undocumented transport. Study aid, not a signal.
  * ------------------------------------------------------------------ */
@@ -21,20 +31,43 @@
 import { inflateSync, inflateRawSync } from "node:zlib";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { DomBook, buildDomContext, type DomIcebergConfig, type DomSignalContext, type IcebergCandidate } from "./domBook";
+import {
+  DomBook,
+  DEFAULT_DOM_ICEBERG,
+  buildDomContext,
+  compactCandidates,
+  esSymbolFor,
+  type DomIcebergConfig,
+  type DomSignalContext,
+  type IcebergCandidate,
+} from "./domBook";
 import { marketOpenAt } from "./marketHours";
 import { persistDomRefills } from "./domStore";
 
 type DomLevel = { p: number; s: number };
 
-export type DomState = {
-  connected: boolean;
-  lastMessage: number;
+export type DomSymbolState = {
+  symbol: string;
   snapshots: number;
   increments: number;
   lastSeq: number;
   book: { bids: DomLevel[]; asks: DomLevel[] };
   icebergs: IcebergCandidate[];
+};
+
+export type DomState = {
+  connected: boolean;
+  lastMessage: number;
+  nq: DomSymbolState;
+  es: DomSymbolState;
+};
+
+export type DomSignalContextPair = {
+  /** NQ candidates vs the ticket's entry/stop/target lines */
+  nq: DomSignalContext;
+  /** ES top candidates — logged for cross-asset evidence (no proximity logic:
+   *  ES and NQ prices live on different scales) */
+  es: { ts: number; candidates: ReturnType<typeof compactCandidates> };
 };
 
 const TOKEN_REFRESH_MS = 50 * 60_000;
@@ -48,14 +81,22 @@ function numEnv(name: string, def: number): number {
   return Number.isFinite(n) && n > 0 ? n : def;
 }
 
-export function domIcebergConfig(): Partial<DomIcebergConfig> {
+/** per-instrument detector tuning; ES = deeper book, bigger slices */
+export function domIcebergConfig(prefix: "DOM_ICEBERG" | "DOM_ICEBERG_ES", base: Partial<DomIcebergConfig> = {}): Partial<DomIcebergConfig> {
   return {
-    windowMs: numEnv("DOM_ICEBERG_WINDOW_MS", 90_000),
-    minRefills: numEnv("DOM_ICEBERG_MIN_REFILLS", 3),
-    minAbsorbed: numEnv("DOM_ICEBERG_MIN_ABSORBED", 25),
-    minRefillSize: numEnv("DOM_ICEBERG_MIN_REFILL_SIZE", 2),
+    windowMs: numEnv(`${prefix}_WINDOW_MS`, 90_000),
+    minRefills: numEnv(`${prefix}_MIN_REFILLS`, 3),
+    minAbsorbed: numEnv(`${prefix}_MIN_ABSORBED`, 25),
+    minRefillSize: numEnv(`${prefix}_MIN_REFILL_SIZE`, 2),
+    ...base,
   };
 }
+
+export const ES_ICEBERG_DEFAULTS: Partial<DomIcebergConfig> = {
+  ...DEFAULT_DOM_ICEBERG,
+  minAbsorbed: 50, // ES trades ~2x NQ per level
+  minRefillSize: 3,
+};
 
 function loadEnv(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -72,7 +113,7 @@ function loadEnv(): Record<string, string> {
   } catch {
     /* no env file */
   }
-  for (const k of ["GOCHARTING_EMAIL", "GOCHARTING_PASSWORD", "GOCHARTING_COGNITO_CLIENT", "GOCHARTING_DC", "GOCHARTING_SYMBOL", "GOCHARTING_EXCHANGE", "GOCHARTING_SEGMENT"]) {
+  for (const k of ["GOCHARTING_EMAIL", "GOCHARTING_PASSWORD", "GOCHARTING_COGNITO_CLIENT", "GOCHARTING_DC", "GOCHARTING_SYMBOL", "GOCHARTING_SYMBOL_ES", "GOCHARTING_EXCHANGE", "GOCHARTING_SEGMENT"]) {
     if (process.env[k]) out[k] = process.env[k]!;
   }
   return out;
@@ -125,6 +166,13 @@ function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
+/** "CME:FUTURE:ESZ26" -> "ESZ26"; "ESZ26" -> "ESZ26" */
+function bareSymbol(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const parts = v.split(":");
+  return parts[parts.length - 1].trim().toUpperCase() || null;
+}
+
 class DomFeed {
   private ws: WebSocket | null = null;
   private token: string | null = null;
@@ -135,21 +183,32 @@ class DomFeed {
   private retryMs = 10_000;
   private lastEmit = 0;
   private pendingEmit: ReturnType<typeof setTimeout> | null = null;
-  private book: DomBook;
+  private books: { nq: DomBook; es: DomBook };
+  private symbols: { nq: string; es: string | null };
+  private warnUnrouted = false;
 
   state: DomState = {
     connected: false,
     lastMessage: 0,
-    snapshots: 0,
-    increments: 0,
-    lastSeq: 0,
-    book: { bids: [], asks: [] },
-    icebergs: [],
+    nq: { symbol: "", snapshots: 0, increments: 0, lastSeq: 0, book: { bids: [], asks: [] }, icebergs: [] },
+    es: { symbol: "", snapshots: 0, increments: 0, lastSeq: 0, book: { bids: [], asks: [] }, icebergs: [] },
   };
 
   constructor() {
     this.env = loadEnv();
-    this.book = new DomBook(domIcebergConfig());
+    const nq = this.env.GOCHARTING_SYMBOL || "NQZ26";
+    const es = this.env.GOCHARTING_SYMBOL_ES || esSymbolFor(nq);
+    this.symbols = { nq, es };
+    this.state.nq.symbol = nq;
+    this.state.es.symbol = es ?? "";
+    this.books = {
+      nq: new DomBook(domIcebergConfig("DOM_ICEBERG")),
+      es: new DomBook(domIcebergConfig("DOM_ICEBERG_ES", ES_ICEBERG_DEFAULTS)),
+    };
+  }
+
+  get esSymbol(): string | null {
+    return this.symbols.es;
   }
 
   subscribe(fn: (s: DomState) => void) {
@@ -175,19 +234,42 @@ class DomFeed {
 
   private emitNow() {
     this.lastEmit = Date.now();
-    this.state.icebergs = this.book.detect(Date.now());
-    this.state.book = this.book.top(10);
+    const now = Date.now();
+    this.state.nq.icebergs = this.books.nq.detect(now);
+    this.state.nq.book = this.books.nq.top(10);
+    this.state.es.icebergs = this.books.es.detect(now);
+    this.state.es.book = this.books.es.top(10);
     const s = this.state;
     for (const fn of this.listeners) fn(s);
   }
 
   private subscribeChannel() {
     try {
-      const sym = `${this.env.GOCHARTING_EXCHANGE || "CME"}:${this.env.GOCHARTING_SEGMENT || "FUTURE"}:${this.env.GOCHARTING_SYMBOL || "NQZ26"}`;
-      this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "DOM_V2", payload: [sym] }));
+      const sym = `${this.env.GOCHARTING_EXCHANGE || "CME"}:${this.env.GOCHARTING_SEGMENT || "FUTURE"}:`;
+      const payload = [sym + this.symbols.nq];
+      if (this.symbols.es) payload.push(sym + this.symbols.es);
+      this.ws?.send(JSON.stringify({ command: "SUBSCRIBE", channel: "DOM_V2", payload }));
     } catch {
       /* ignore */
     }
+  }
+
+  /** which book does this message belong to? null = can't tell */
+  private route(data: Record<string, unknown>, payload: Record<string, unknown>): "nq" | "es" | null {
+    // the terminal resolves the key the same way: data.symbol first, then
+    // productId/key, then (single subscription) the only symbol subscribed
+    const bare = bareSymbol(data.symbol) ?? bareSymbol(payload.productId) ?? bareSymbol(payload.key);
+    if (bare) {
+      if (bare === bareSymbol(this.symbols.nq)) return "nq";
+      if (this.symbols.es && bare === bareSymbol(this.symbols.es)) return "es";
+      if (!this.warnUnrouted) {
+        this.warnUnrouted = true;
+        console.warn(`[dom] unrouted DOM_V2 message for ${bare} (have ${this.symbols.nq}${this.symbols.es ? ", " + this.symbols.es : ""})`);
+      }
+      return null;
+    }
+    if (!this.symbols.es) return "nq"; // single-symbol mode: assume NQ
+    return null;
   }
 
   private handleText(msg: string) {
@@ -230,15 +312,18 @@ class DomFeed {
     }
     const data = asRecord(d);
     if (!data) return;
+    const which = this.route(data, payload);
+    if (!which) return;
     const t = payload.t;
     const seq = Number(payload.seq);
-    if (Number.isFinite(seq)) this.state.lastSeq = seq;
+    const st = this.state[which];
+    if (Number.isFinite(seq)) st.lastSeq = seq;
     if (t === "s") {
-      this.book.applySnapshot(data as unknown as Parameters<DomBook["applySnapshot"]>[0]);
-      this.state.snapshots += 1;
+      this.books[which].applySnapshot(data as unknown as Parameters<DomBook["applySnapshot"]>[0]);
+      st.snapshots += 1;
     } else if (t === "d") {
-      this.book.applyIncremental(data as unknown as Parameters<DomBook["applyIncremental"]>[0], Date.now());
-      this.state.increments += 1;
+      this.books[which].applyIncremental(data as unknown as Parameters<DomBook["applyIncremental"]>[0], Date.now());
+      st.increments += 1;
     }
     this.emit();
   }
@@ -307,10 +392,11 @@ class DomFeed {
         }
       }
       this.emitNow();
-      // evidence heartbeat: one row per active candidate every 60s while the
-      // signature holds (best-effort, LIVE_WRITE-gated inside the store)
-      if (ticks % 2 === 0 && this.state.connected && this.state.icebergs.length > 0) {
-        void persistDomRefills(this.state.icebergs).catch(() => {});
+      // evidence heartbeat: one row per active candidate per instrument every
+      // 60s while the signature holds (LIVE_WRITE-gated inside the store)
+      if (ticks % 2 === 0 && this.state.connected) {
+        if (this.state.nq.icebergs.length > 0) void persistDomRefills("NQ", this.state.nq.icebergs).catch(() => {});
+        if (this.state.es.icebergs.length > 0) void persistDomRefills("ES", this.state.es.icebergs).catch(() => {});
       }
     }, 30_000);
   }
@@ -327,19 +413,23 @@ export function getDom(): DomFeed {
 }
 
 /**
- * The DOM picture to log with a signal: strongest live candidates plus how
- * they sit relative to the ticket's entry/stop/target lines. PURELY
- * observational — signalFeed stamps it into the signal's features; nothing
- * here can change a signal. Never throws.
+ * The DOM picture to log with a signal: NQ candidates vs the ticket's
+ * entry/stop/target lines + ES top candidates for cross-asset evidence.
+ * PURELY observational — signalFeed stamps it into the signal's features;
+ * nothing here can change a signal. Never throws.
  */
 export function domContextForSignal(levels: {
   entry?: string | number | null;
   stop?: string | number | null;
   target?: string | number | null;
-}): DomSignalContext | null {
+}): DomSignalContextPair | null {
   try {
     const dom = getDom();
-    return buildDomContext(dom.state.icebergs, levels, Date.now());
+    const now = Date.now();
+    return {
+      nq: buildDomContext(dom.state.nq.icebergs, levels, now),
+      es: { ts: now, candidates: compactCandidates(dom.state.es.icebergs) },
+    };
   } catch {
     return null;
   }

@@ -159,4 +159,9 @@ level deleted). Aggregated per-price visible size, no order IDs.
   closed).
 - `web/lib/dom.ts` — production feed: wsdom socket → `web/lib/domBook.ts`
   book + iceberg refill detector → `/api/dom` SSE → dashboard
-  `DOM — hidden liquidity` panel. Study aid, not a signal.
+  `DOM — hidden liquidity` panel. **Both NQ and ES** share the one
+  subscription: the ES front month is derived from `GOCHARTING_SYMBOL`
+  (same H/M/U/Z cycle; `GOCHARTING_SYMBOL_ES` overrides), ES uses its own
+  detector thresholds (`DOM_ICEBERG_ES_*`, defaults: ≥50 absorbed, ≥3-lot
+  slices) and its own `symbol` column in `dom_refills`. Study aid, not a
+  signal — nothing reads it into the strategy.
