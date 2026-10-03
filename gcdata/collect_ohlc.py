@@ -17,9 +17,14 @@ that to walk backwards, one window per request.
 
 Usage
 -----
-    python collect_ohlc.py --windows 20          # backfill ~60 trading days
+    python collect_ohlc.py --windows 4           # the nightly default
     python collect_ohlc.py --windows 3 --dry-run # inspect only
     python collect_ohlc.py --sessions RTH        # RTH-only (legacy)
+
+Vendor retention: the TS/V2 OHLCV feed ignores date hints and pages back
+ONE 3-day window per request on the same socket — it stops answering after
+~4 windows (≈12 trading days, measured 2026-10-03). Deeper OHLC history is
+NOT available from GoCharting; the twins are a rolling recent-day window.
 
 Writes gcdata/data/ohlc/<YYYY-MM-DD>.json (RTH, 390 bars) and
 gcdata/data/ohlc/<YYYY-MM-DD>_ETH.json (ETH, 1380 bars — the full
@@ -209,7 +214,7 @@ def collect_session(session: str, windows: int, dry: bool) -> dict[str, list[dic
 def main() -> int:
     load_env()
     ap = argparse.ArgumentParser()
-    ap.add_argument("--windows", type=int, default=4, help="3 trading days per window")
+    ap.add_argument("--windows", type=int, default=4, help="3 trading days per window; vendor serves ~4 windows max")
     ap.add_argument("--sessions", nargs="+", default=["RTH", "ETH"],
                     help="sessions to collect: RTH (390 min) and/or ETH (1380 min)")
     ap.add_argument("--dry-run", action="store_true")

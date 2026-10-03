@@ -120,13 +120,63 @@ function parseRaw(raw: Buffer): MomMinute[] {
   }));
 }
 
-export async function loadSessionMinutes(date: string): Promise<MomMinute[] | null> {
+/* ---------------- OHLC twins (optional join for studies) ----------------
+ * The session archive is footprint-only by contract (high/low/buy/sell, no
+ * open/close). gcdata/collect_ohlc.py stores vendor OHLCV twins separately
+ * on R2: data/ohlc/<date>_ETH.json (1,380 bars, the full day) and the legacy
+ * 390-bar RTH twin. Studies that need TRUE opens/closes (e.g. next-bar-open
+ * entry fills) can opt in with loadSessionMinutes(date, { withOhlc: true })
+ * — the ETH twin is joined onto each minute by its feed-clock "HH:mm" key.
+ * Minutes without a twin bar keep o=0/c=0 (callers fall back to mid-price). */
+
+export type OhlcTwin = Map<string, { o: number; h: number; l: number; c: number; v: number }>;
+
+async function fetchTwinRaw(date: string): Promise<Buffer | null> {
+  const name = `ohlc-${date}_ETH.json`;
+  const gzFile = path.join(CACHE_DIR, `${name}.gz`);
+  const legacyFile = path.join(CACHE_DIR, name);
+  for (const f of [gzFile, legacyFile]) {
+    try {
+      const b = await fs.readFile(f);
+      return f.endsWith(".gz") ? gunzipSync(b) : b;
+    } catch {
+      /* cache miss */
+    }
+  }
+  if (!REMOTE) return null;
+  const r = await fetch(`${REMOTE}/data/ohlc/${date}_ETH.json`);
+  if (!r.ok) return null;
+  const raw = Buffer.from(await r.arrayBuffer());
+  await fs.writeFile(gzFile, gzipSync(raw)).catch(() => {});
+  await fs.rm(legacyFile, { force: true }).catch(() => {});
+  return raw;
+}
+
+export async function loadOhlcTwin(date: string): Promise<OhlcTwin | null> {
+  const raw = await fetchTwinRaw(date);
+  if (!raw) return null;
+  try {
+    const j = JSON.parse(raw.toString("utf8")) as {
+      bars?: { t: string; o: number; h: number; l: number; c: number; v: number }[];
+    };
+    const out: OhlcTwin = new Map();
+    for (const b of j.bars ?? []) {
+      out.set(String(b.t).slice(11, 16), { o: b.o, h: b.h, l: b.l, c: b.c, v: b.v });
+    }
+    return out.size > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function loadSessionMinutes(date: string, opts?: { withOhlc?: boolean }): Promise<MomMinute[] | null> {
   await fs.mkdir(CACHE_DIR, { recursive: true });
   const key = `data/${date}_ETH.json`;
   const gzFile = path.join(CACHE_DIR, `${date}_ETH.json.gz`);
   const legacyFile = path.join(CACHE_DIR, `${date}_ETH.json`);
 
   // 1) local cache first (gzip form, then the pre-gzip layout)
+  let minutes: MomMinute[] | null = null;
   for (const f of [gzFile, legacyFile]) {
     let raw: Buffer;
     try {
@@ -135,20 +185,40 @@ export async function loadSessionMinutes(date: string): Promise<MomMinute[] | nu
     } catch {
       continue;
     }
-    if (await verifyOk(raw, key)) return parseRaw(raw);
+    if (await verifyOk(raw, key)) {
+      minutes = parseRaw(raw);
+      break;
+    }
     // corrupted or tampered — drop it and fall through to a fresh fetch
     await fs.rm(f, { force: true }).catch(() => {});
   }
 
   // 2) fetch from R2, store gzipped bytes for next time
-  if (!REMOTE) return null;
-  const r = await fetch(`${REMOTE}/${key}`);
-  if (!r.ok) return null;
-  const raw = Buffer.from(await r.arrayBuffer());
-  if (VERIFY && !(await verifyOk(raw, key))) return null;
-  await fs.writeFile(gzFile, gzipSync(raw)).catch(() => {});
-  await fs.rm(legacyFile, { force: true }).catch(() => {});
-  return parseRaw(raw);
+  if (minutes === null) {
+    if (!REMOTE) return null;
+    const r = await fetch(`${REMOTE}/${key}`);
+    if (!r.ok) return null;
+    const raw = Buffer.from(await r.arrayBuffer());
+    if (VERIFY && !(await verifyOk(raw, key))) return null;
+    await fs.writeFile(gzFile, gzipSync(raw)).catch(() => {});
+    await fs.rm(legacyFile, { force: true }).catch(() => {});
+    minutes = parseRaw(raw);
+  }
+
+  // 3) optional OHLC twin join (true opens/closes for the whole day)
+  if (opts?.withOhlc) {
+    const twin = await loadOhlcTwin(date);
+    if (twin) {
+      for (const m of minutes) {
+        const b = twin.get(m.t);
+        if (b) {
+          m.o = b.o;
+          m.c = b.c;
+        }
+      }
+    }
+  }
+  return minutes;
 }
 
 /* ---------------- warm the whole store ---------------- */

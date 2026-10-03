@@ -128,6 +128,19 @@ cp .env.example .env   # then edit with your GoCharting credentials
 .venv/bin/python collect.py --level-sheet --today 2026-09-25
 ```
 
+## OHLC twins (real candle opens/closes)
+
+`collect_ohlc.py --windows 4 --sessions RTH ETH` stores vendor OHLCV twins
+under `data/ohlc/` — `<date>.json` (RTH, 390 bars) and `<date>_ETH.json`
+(ETH, 1,380 bars, the full 18:00→16:59 NY day). **Vendor retention ≈ 4 paged
+windows (~12 trading days, measured 2026-10-03)** — the TS/V2 feed ignores
+date hints and always starts at "most recent", so deeper OHLC history is NOT
+available from GoCharting (deeper history needs CME DataMine / Databento,
+same as the footprint archive). The nightly job keeps the rolling window
+fresh; studies that need true opens/closes join the twins via
+`web/lib/archive.ts` `loadSessionMinutes(date, { withOhlc: true })` — the
+footprint archive itself stays the source of truth.
+
 ## Warnings
 
 - **Undocumented transport.** It can break or be revoked at any deploy.
