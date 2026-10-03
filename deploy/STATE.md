@@ -57,6 +57,18 @@
   warm-up, `/api/lab` 404s); lab + backtesting happen on the Mac against the
   R2 archive. The lab sample set is cached to disk keyed by the session
   inventory, so re-opens are instant after the first build.
+- **Trade reconciliation hardening (2026-10-03)**: the CrossTrade session
+  reset wipes the ORDERS list while the durable fill history survives —
+  order-level matching then matched 0 and the upsert clobbered matched rows
+  into `unexecuted` (the journal briefly showed "no profitable strategy").
+  Fixed: orders-empty + fills-present → fill-level fallback pairing;
+  both-empty → abort without persisting; upsert gains
+  `where trades.status='unexecuted' or excluded.status='matched'` so a
+  degraded run can never downgrade a matched trade. Restored 27/31 matched
+  (losses match TRADE_REVIEW to the dollar). Journal (/journal) now shows
+  headline P&L, an account netLiq equity curve from `reconcile_runs`, and a
+  per-day breakdown over 7/30/90/all ranges. CrossTrade durable capture
+  starts 2026-10-01 22:43Z — fills before that are not recoverable.
 - **Trade reconciliation (2026-10-02)**: `web/scripts/reconcileTrades.ts` joins
   the Neon `signals` rows with the CrossTrade Tradovate fill record into Neon
   `trades` (one row per trade card: status matched/unexecuted, fill entry/exit,
