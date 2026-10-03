@@ -99,6 +99,7 @@ async function main() {
         commissions = ${a.feesUsd.toFixed(2)},
         net_usd = ${a.netUsd.toFixed(2)},
         result = ${a.result},
+        source = 'mff',
         matched_at = now()
       where signal_key = ${a.signalKey}`;
     updated++;

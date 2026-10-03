@@ -224,6 +224,7 @@ create table if not exists trades (
   matched_at timestamptz not null default now()
 );
 alter table trades add column if not exists features jsonb;
+alter table trades add column if not exists source text not null default 'reconcile';
 create index if not exists trades_ts_idx on trades (ts desc);
 create table if not exists reconcile_runs (
   id bigint generated always as identity primary key,
@@ -648,7 +649,7 @@ async function main() {
         result = excluded.result,
         features = excluded.features,
         matched_at = now()
-      where trades.status = 'unexecuted' or excluded.status = 'matched'`;
+      where (trades.status = 'unexecuted' or excluded.status = 'matched') and trades.source <> 'mff'`;
   }
 
   const signalsGross = matched.reduce((s, t) => s + t.grossUsd, 0);
