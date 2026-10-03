@@ -18,17 +18,21 @@
 ## Data flow
 
 ```
-[this Mac] gcdata collectors ──► gcdata/data/*.json   (nightly landing zone + test fixtures)
-        │  nightly 17:45 local (Mon–Fri, com.scalping.collect → scripts/nightly.sh)
-        │   1. collect  2. ingest → Neon  3. upload → R2 (r2_sync.py)  4. prune local
+[Coolify VPS] nq-jobs container ──► staging volume (gcdata/data/*.json)
+        │  cron 17:45 ET Mon–Fri (scripts/nightly.sh — the single writer)
+        │   1. collect  2. ingest → Neon  3. upload → R2  4. prune  5. reconcile →
+        │   analysis → insights  6. ES twin + upload  (Fridays: risk-stack sim)
         ▼
    Neon Postgres (rolling ~21-day window; free tier 512 MB cap)  ◄── live GoCharting feed
-        │                                                          (VPS container writes live
+        │                                                          (web container writes live
         │                                                           candles + ticks to Neon)
         ▼  readthrough: recent + live days
    [dashboard] /api/gc fallback chain:  Neon → R2 (GC_REMOTE_URL) → local files
         ▲
    R2 nq-history — the 2.5-year archive, served from Cloudflare (localhost + deployed)
+        ▲
+   [this Mac] lab + backtests + studies read R2 only (~/.cache/nq-archive);
+   dev dashboard reads the same Neon → R2 chain (LIVE_WRITE stays VPS-only)
 ```
 
 - **Read-through from Neon: DONE** (dashboard serves historical views from the DB).
@@ -243,24 +247,36 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
 ## Operate
 
 ```bash
-# nightly collection + ingestion (launchd, 17:45 local Mon–Fri):
-#   com.scalping.collect → scripts/nightly.sh  (collect + ingest in one job)
-#   (com.scalping.ingest and com.scalping.tickverify were removed — dead)
+# nightly data pipeline — VPS (Coolify app `nq-jobs`, uuid mqfjwjodtmje4lfnjq1gteax):
+#   cron 17:45 ET Mon–Fri inside the jobs container → scripts/nightly.sh
+#   (single writer of Neon operational data + the R2 manifests — NEVER run
+#   the Mac copy of nightly.sh in the same window)
+#
+# Mac fallback (OFF by default — re-enable only if the VPS pipeline is down):
+#   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scalping.collect.plist
+#   ...and boot it out again before the VPS job resumes (manifest = single writer).
+#
+# jobs container controls (Coolify env, then redeploy):
+#   RUN_ONCE=1        run the pipeline once at boot, then sleep (verification)
+#   NIGHTLY_FORCE=1   bypass the 17:00–17:59 ET session guard (manual runs)
+#   CRON_SCHEDULE     overrides the default "45 17 * * 1-5"
+# Heavy one-off jobs (contract walks, ES full builds, 10y warm, studies) stay
+# on the Mac against R2 — never on the executor host.
 
 # manual:
 cd web && DATABASE_URL=$(grep '^DATABASE_URL=' .env.local | cut -d= -f2-) \
-  node --import scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events
+  node --import ../scripts/ts-loader.mjs ./db/ingest.ts --all --profiles --events
 
 # manual trade reconciliation ("did that Telegram card trade, and how?"):
-cd web && node --import scripts/ts-loader.mjs ./scripts/reconcileTrades.ts \
+cd web && node --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts \
   [--since 2026-10-01T16:00:00Z]
 
 # manual win/loss analysis (framework report → stdout + trade_analysis table):
-cd web && node --import scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts \
+cd web && node --import ../scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts \
   [--since 2026-10-01T16:00:00Z]
 
 # manual insight mining (proposals + AI review → insights table):
-cd web && node --import scripts/ts-loader.mjs ./scripts/strategyInsights.ts \
+cd web && node --import ../scripts/ts-loader.mjs ./scripts/strategyInsights.ts \
   [--since 2026-10-01T16:00:00Z]
 
 # self-improvement is OFF by default: approve proposals on the dashboard

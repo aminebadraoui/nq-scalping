@@ -33,23 +33,26 @@ first two sections of `deploy/STATE.md`.
   pullback-ticket, open-pullback, open-sniper OFF
 - **Execution:** the VPS is the single live executor (`EXECUTE_LIVE=1` only
   there; the Mac keeps `EXECUTE_LIVE=0`)
+- **Nightly pipeline:** runs on the VPS (`nq-jobs` Coolify app, cron 17:45 ET
+  Mon–Fri) — collection, Neon ingest, R2 upload/prune, reconciliation,
+  analysis, insights, ES twin. The Mac is a read-only consumer (lab +
+  backtests + dev) with a launchd fallback that stays booted out.
 - **Data:** NQ footprint archive 2023-12-18 → now (649 usable sessions, R2);
   ES cross-asset twin archive same range; Neon holds a rolling ~21-day window
 
 ## Architecture (one diagram)
 
 ```
-[this Mac]  gcdata collectors (GoCharting WebSocket)            [vendor]
-     │        nightly 17:45 ET Mon–Fri · launchd com.scalping.collect
-     │        collect → ingest → reconcile → analyze → insights → R2 sync
-     ▼
-Neon Postgres (rolling 21-day window; signals/trades/insights tables)  ◄─ VPS live capture
-     ▼  read-through: Neon → R2 → local files
-Cloudflare R2 nq-history (full 2.5y archive + manifest.json)
-     ▼
 [Coolify VPS] nq-dashboard container ── dashboard · signal feed · DOM feed
-     │                                          └─ Telegram cards
-     └─ CrossTrade REST ──► MFF Tradovate (bracketed orders, guard-gated)
+     │          live capture → Neon (LIVE_WRITE) · Telegram cards
+     │          └─ CrossTrade REST ──► MFF Tradovate (bracketed, guard-gated)
+     │
+[Coolify VPS] nq-jobs container — cron 17:45 ET Mon–Fri (single writer)
+     │          collect → ingest → reconcile → analyze → insights → R2 sync
+     ▼
+Neon Postgres (rolling 21-day window) · Cloudflare R2 (2.5y archive + manifest)
+     ▼  one read chain: Neon → R2 → local fallback
+deployed dashboard · localhost dev · Mac lab/backtests (Mac = read-only consumer)
 ```
 
 ## Code map
@@ -103,8 +106,10 @@ npm test         # 361 tests, no network
 npm run build && npm start          # production standalone (what the VPS runs)
 ```
 
-Nightly pipeline: `scripts/nightly.sh` (launchd `com.scalping.collect`, Mon–Fri
-17:45 ET). Manual pieces are documented in `deploy/STATE.md` §Operate.
+Nightly pipeline: `scripts/nightly.sh` runs on the VPS `nq-jobs` cron
+(17:45 ET Mon–Fri). Manual local runs: `NIGHTLY_FORCE=1 scripts/nightly.sh`
+— never in the same window as the VPS job (the R2 manifest is single-writer).
+Manual pieces are documented in `deploy/STATE.md` §Operate.
 
 ## Conventions & invariants
 
