@@ -20,8 +20,15 @@ if [ "${RUN_ONCE:-0}" = "1" ]; then
 fi
 
 SCHEDULE="${CRON_SCHEDULE:-45 17 * * 1-5}"
+RECONCILE_SCHEDULE="${CRON_RECONCILE:-50 16 * * 1-5}"
 LOG="/app/gcdata/data/nightly_cron.log"
-echo "$SCHEDULE /bin/bash /app/scripts/nightly.sh >> $LOG 2>&1" > /var/spool/cron/crontabs/root
+RLOG="/app/gcdata/data/reconcile_cron.log"
+{
+  echo "$RECONCILE_SCHEDULE /bin/bash /app/scripts/reconcile.sh >> $RLOG 2>&1"
+  echo "$SCHEDULE /bin/bash /app/scripts/nightly.sh >> $LOG 2>&1"
+} > /var/spool/cron/crontabs/root
 chmod 600 /var/spool/cron/crontabs/root
-echo "[jobs] cron installed: '$SCHEDULE' (tz=$(date +%Z)) → $LOG"
+echo "[jobs] cron installed:"
+echo "[jobs]   reconcile $RECONCILE_SCHEDULE (tz=$(date +%Z)) → $RLOG"
+echo "[jobs]   nightly   $SCHEDULE (tz=$(date +%Z)) → $LOG"
 exec crond -f -l 2

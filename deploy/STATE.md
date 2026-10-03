@@ -260,6 +260,16 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
 
 ```bash
 # nightly data pipeline — VPS (Coolify app `nq-jobs`, uuid mqfjwjodtmje4lfnjq1gteax):
+#   TWO cron entries in the jobs container:
+#     50 16 * * 1-5  scripts/reconcile.sh  — PRE-RESET reconcile + analysis
+#        (orders list still alive → order-level matching; runs inside the
+#        16:00–18:00 ET halt, before the ~17:00 ET CrossTrade session reset)
+#     45 17 * * 1-5  scripts/nightly.sh    — the full pipeline (fallback
+#        fill-level matching if the reset already ate the orders)
+#   CrossTrade is the execution source of truth going forward; the owner
+#   trades no manual fills, so the manual bucket should stay ~empty —
+#   any stray manual fill still lands in manual_trades / the ledger residual.
+#   (One-time historical sync done 2026-10-03 via importTradovateTrades.ts.)
 #   cron 17:45 ET Mon–Fri inside the jobs container → scripts/nightly.sh
 #   (single writer of Neon operational data + the R2 manifests — NEVER run
 #   the Mac copy of nightly.sh in the same window)
