@@ -28,6 +28,7 @@ import { placeOrder, type OrderIntent } from "./executor";
 import { placeCrossTradeScaleOut } from "./crossTrade";
 import { getLive } from "./live";
 import { logExec } from "./execLog";
+import { signalWindowOpen } from "./marketHours";
 
 export type Expectation = {
   key: string;
@@ -208,6 +209,11 @@ export async function checkExpectations(): Promise<void> {
   const now = Date.now();
   let fills: Array<{ ts: number; action: string; qty: number }> | null = null;
   for (const [key, e] of [...pending]) {
+    // signal window (owner rule): nothing is ever placed outside
+    // Sunday 18:00 ET → Friday 16:00 ET (daily 16:00–18:00 halt Mon–Thu) —
+    // entries stay pending and are dropped by the give-up clock once it
+    // expires (no weekend re-send).
+    if (!signalWindowOpen(now)) continue;
     if (now - e.ts < CHECK_AFTER_MS) continue;
     if (now - e.ts > GIVE_UP_MS) {
       pending.delete(key);

@@ -136,8 +136,8 @@ const SCHEMES: Scheme[] = [
   { name: "lossHalve", desc: "×0.5 per loss, reset on win", tiers: false, lossMult: 0.5, winMult: 1, dayPnlCeil: false, fractional: false },
   { name: "lossQuarter", desc: "×0.75 per loss, reset on win", tiers: false, lossMult: 0.75, winMult: 1, dayPnlCeil: false, fractional: false },
   { name: "winScaleRaw", desc: "×1.5 per win (cap ×2), no brake", tiers: false, lossMult: 1, winMult: 1.5, dayPnlCeil: false, fractional: false },
-  { name: "winScale", desc: "×1.5 per win + risk ≤ day P&L", tiers: false, lossMult: 1, winMult: 1.5, dayPnlCeil: true, fractional: false },
-  { name: "greenBudget", desc: "risk ≤ day P&L only", tiers: false, lossMult: 1, winMult: 1, dayPnlCeil: true, fractional: false },
+  { name: "winScale", desc: "×1.5 per win + risk ≤ day P&L (1st trade full)", tiers: false, lossMult: 1, winMult: 1.5, dayPnlCeil: true, fractional: false },
+  { name: "greenBudget", desc: "risk ≤ day P&L (1st trade full)", tiers: false, lossMult: 1, winMult: 1, dayPnlCeil: true, fractional: false },
   { name: "floorFractional", desc: "8.5% of equity−floor per trade", tiers: false, lossMult: 1, winMult: 1, dayPnlCeil: false, fractional: true },
   { name: "b-full", desc: "OPTION B: loss ×0.5 + win ×1.5 + P&L ceil", tiers: false, lossMult: 0.5, winMult: 1.5, dayPnlCeil: true, fractional: false },
   { name: "tiers+lossHalve", desc: "A + the drawdown leg of B", tiers: true, lossMult: 0.5, winMult: 1, dayPnlCeil: false, fractional: false },
@@ -159,6 +159,7 @@ function runDay(
   let halt = false;
   let openUntil = -1;
   let mult = 1; // the streak multiplier (loss- or win-driven)
+  let traded = false; // has the day taken its bootstrap trade yet?
   for (const { s, fam } of signals) {
     if (s.entryIdx <= openUntil) continue; // one MNQ position at a time
     const dir = s.dir === "long" ? 1 : -1;
@@ -185,13 +186,17 @@ function runDay(
     let contracts = Math.max(1, Math.floor((budget * mult * tier) / (riskPts * 2)));
     contracts = Math.min(fam === "momentum" || fam === "expansion" ? MOM_CAP : RTH_CAP, contracts);
     if (scheme.dayPnlCeil) {
-      const maxByPnl = Math.max(0, Math.floor(dayPnl / (riskPts * 2)));
-      contracts = Math.min(contracts, maxByPnl);
-      if (contracts < 1) continue; // cannot risk more than the day's P&L — skip
+      // the house-money rule: the FIRST trade of the day takes the base size
+      // (nothing exists to risk yet); afterwards, dollar risk never exceeds
+      // the day's realized P&L, and a red day takes no more trades.
+      if (traded && dayPnl <= 0) continue;
+      if (traded) contracts = Math.min(contracts, Math.max(0, Math.floor(dayPnl / (riskPts * 2))));
+      if (contracts < 1) continue;
     }
 
     const pnlUsd = sc.pnl * contracts * 2 - 2 * contracts * COMM_PER_SIDE;
     trades.push({ date, fam, pnlUsd, contracts });
+    traded = true;
     dayPnl += pnlUsd;
     dayPeak = Math.max(dayPeak, dayPnl);
     openUntil = s.entryIdx + sc.heldBars;
@@ -300,16 +305,22 @@ async function main() {
   }
   console.log(`${((Date.now() - t0) / 1000).toFixed(0)}s · ${loaded} sessions loaded\n`);
 
-  // cross-check: my engine vs the canonical simulator (must agree)
+  // cross-check: my engine vs the canonical simulator (must agree on
+  // breach day + final equity; passDay is nulled by the sim after a breach
+  // while the engine keeps it, so compare it only when neither breached)
   for (const a of acc) {
     const ev = simulateAccount(a.tradesEval.map((t) => ({ date: t.date, pnl: t.pnlUsd })), "eval");
-    if (ev.breachDay !== a.eval.breachDay || ev.passDay !== a.eval.passDay || Math.abs(ev.finalEquity - a.eval.equity) > 0.01) {
-      console.log(`ENGINE MISMATCH (eval) for ${a.scheme.name}: sim ${ev.breachDay ?? ev.passDay ?? "?"} vs engine ${a.eval.breachDay ?? a.eval.passDay ?? "?"}`);
+    const enginePass = a.eval.breachDay ? null : a.eval.passDay;
+    if (ev.breachDay !== a.eval.breachDay || ev.passDay !== enginePass || Math.abs(ev.finalEquity - a.eval.equity) > 0.01) {
+      console.log(
+        `ENGINE MISMATCH (eval) for ${a.scheme.name}: sim breach=${ev.breachDay ?? "-"} pass=${ev.passDay ?? "-"} eq=${ev.finalEquity.toFixed(2)} vs ` +
+          `engine breach=${a.eval.breachDay ?? "-"} pass=${enginePass ?? "-"} eq=${a.eval.equity.toFixed(2)}`,
+      );
     }
   }
 
   console.log(
-    `${"variant".padEnd(18)} ${"trades".padStart(6)} ${"total".padStart(11)} ${"med day".padStart(8)} ${"worst".padStart(8)} ${"dayVol".padStart(7)} ${"P≥500".padStart(6)} ${"P≥900".padStart(6)} ${">900d".padStart(5)} ${"avgC".padStart(5)}`,
+    `${"variant".padEnd(18)} ${"trades".padStart(6)} ${"total".padStart(11)} ${"med day".padStart(8)} ${"worst".padStart(8)} ${"dayVol".padStart(7)} ${"P≥500".padStart(6)} ${"P≥900".padStart(6)} ${">900d".padStart(5)} ${"avgC".padStart(5)} ${"$/vol".padStart(6)}`,
   );
   for (const a of acc) {
     const tE = a.tradesEval;
@@ -326,7 +337,7 @@ async function main() {
     const avgC = tE.length ? tE.reduce((x, t) => x + t.contracts, 0) / tE.length : 0;
     const totalStr = `${total >= 0 ? "+" : "−"}$${Math.abs(Math.round(total)).toLocaleString("en-US")}`;
     console.log(
-      `${a.scheme.name.padEnd(18)} ${String(tE.length).padStart(6)} ${totalStr.padStart(11)} ${`${med >= 0 ? "+$" : "−$"}${Math.abs(Math.round(med))}`.padStart(8)} ${`${(sorted[0] ?? 0) <= 0 ? "−$" : "+$"}${Math.abs(Math.round(sorted[0] ?? 0))}`.padStart(8)} ${`$${Math.round(dayVol)}`.padStart(7)} ${`${pGoal(500)}%`.padStart(6)} ${`${pGoal(900)}%`.padStart(6)} ${String(breaches).padStart(5)} ${avgC.toFixed(1).padStart(5)}`,
+      `${a.scheme.name.padEnd(18)} ${String(tE.length).padStart(6)} ${totalStr.padStart(11)} ${`${med >= 0 ? "+$" : "−$"}${Math.abs(Math.round(med))}`.padStart(8)} ${`${(sorted[0] ?? 0) <= 0 ? "−$" : "+$"}${Math.abs(Math.round(sorted[0] ?? 0))}`.padStart(8)} ${`$${Math.round(dayVol)}`.padStart(7)} ${`${pGoal(500)}%`.padStart(6)} ${`${pGoal(900)}%`.padStart(6)} ${String(breaches).padStart(5)} ${avgC.toFixed(1).padStart(5)} ${(dayVol > 0 ? total / dayVol : 0).toFixed(0).padStart(6)}`,
     );
     const ev = simulateAccount(tE.map((t) => ({ date: t.date, pnl: t.pnlUsd })), "eval");
     const fu = simulateAccount(a.tradesFunded.map((t) => ({ date: t.date, pnl: t.pnlUsd })), "funded");

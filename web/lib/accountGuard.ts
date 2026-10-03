@@ -17,8 +17,8 @@
  *
  * Persists EOD high-water mark + the day's realized-P&L reference to a local
  * JSON file so a process restart never forgets the trailing floor or the
- * daily consistency budget. Client-safe (no Playwright import) — the
- * page-reading lives in lib/executor.ts (readAccount).
+ * daily consistency budget. Client-safe — the account snapshot comes from
+ * the CrossTrade API via lib/crossGuard.ts (crossGuardGate).
  * ------------------------------------------------------------------ */
 
 import { existsSync, readFileSync, writeFileSync } from "fs";
@@ -300,9 +300,9 @@ function maybeCommitEod(state: GuardState, equity: number, now = new Date()) {
   save();
 }
 
-/** The single entry point: feed it the current account snapshot (from
- *  readAccount) each poll; it returns whether the executor may open a new
- *  trade right now. */
+/** The single entry point: feed it the current account snapshot (from the
+ *  CrossTrade API via lib/crossGuard.ts) each poll; it returns whether the
+ *  executor may open a new trade right now. */
 export function guardCheck(snap: { equity: number; realized: number } | null, now = new Date()): GuardDecision {
   const s = mem();
   const isNews = inNewsWindow(now);

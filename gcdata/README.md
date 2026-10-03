@@ -141,3 +141,22 @@ cp .env.example .env   # then edit with your GoCharting credentials
 
 Regenerate protobuf modules after schema changes:
 `python -m grpc_tools.protoc -I. --python_out=. footprint.proto ohlc_bars.proto`
+
+## DOM_V2 (Level 2 book)
+
+The vendor serves a realtime L2 book on a **dedicated socket** —
+`wss://origin.wsdom.prodb.<dc>.gocharting.com/<dc>/ws` (the trade/quote socket
+is `origin.ws.<dc>`; both reverse-engineered from the terminal's
+`trades.worker` bundle). Frames are binary: a first byte of 109 means protobuf
+framing (FOOTPRINT/V2, TS/V2); otherwise the whole frame is **zlib-deflated
+JSON** of `{channel:"DOM_V2", payload:{t:"s"|"d", seq, data}}` — snapshot
+`{bids/asks:[{p,s}]}` rows, incremental `{bids/asks:[{a,p,s}]}` (`a:"d"` =
+level deleted). Aggregated per-price visible size, no order IDs.
+
+- `probe_dom.py` — capture raw frames for reverse-engineering
+  (launchd: `docs/launchd/com.scalping.domprobe.plist`, Sundays 18:05 ET,
+  right after the Globex reopen; the channel is silent while the market is
+  closed).
+- `web/lib/dom.ts` — production feed: wsdom socket → `web/lib/domBook.ts`
+  book + iceberg refill detector → `/api/dom` SSE → dashboard
+  `DOM — hidden liquidity` panel. Study aid, not a signal.

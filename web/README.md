@@ -55,6 +55,13 @@ recomputes the signal every 30 s from the live GoCharting feed + collected
 levels and pushes cards to Telegram. **The complete inventory — nothing else
 sends to Telegram:**
 
+**Signal window (owner rule):** every card, order and re-send only fires
+Sunday 18:00 ET → Friday 16:00 ET, with a daily 16:00–18:00 ET halt
+Monday–Thursday (`signalWindowOpen` in `lib/marketHours.ts`, which also
+inherits full holidays and early closes). MyFundedFutures rejects entries
+after 16:00 ET, so outside the window the feed is silent and the local
+executor (`db/local_executor.ts`) idles.
+
 1. **REVERSAL card** — the LVN-reversal scalp (the full strategy). **PAUSED by
    default** (`FEED_REVERSAL=0`): the owner is building on the volume-footprint
    alerts first. When enabled: price at/inside an LVN, `present ≥ 4` of the 6

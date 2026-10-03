@@ -141,6 +141,12 @@ export type MomConfig = {
   /** wider stop pad in the 00:00–02:00 ET window (undefined = off) — the
    *  stop-run study's hour-conditional pad candidate. */
   stopPadNight?: number;
+  /** WIDEN mode: structural stops tighter than this are widened to
+   *  entry ∓ riskFloorPts (the 1R target follows). 0 = off. The
+   *  3–4 pt stops are the weak zone (PF 1.87 vs 2.75) whose stop-runs the
+   *  widen removes — measured strictly better than skip or structural
+   *  (research/sizing-cap-2026-10-02.md). */
+  riskFloorPts: number;
 };
 
 export const MOM_DEFAULTS: MomConfig = {
@@ -187,6 +193,7 @@ export const MOM_DEFAULTS: MomConfig = {
   failLocalBars: 20,
   requireTrailProgress: false,
   trailProgBars: 20,
+  riskFloorPts: 0,
 };
 
 /** The production momentum config — see MOMENTUM_SIGNAL.md.
@@ -194,7 +201,12 @@ export const MOM_DEFAULTS: MomConfig = {
  *  ATR size gate at 1.0 beats 0.85 on WR (75.6 vs 75.2), PF (2.71 vs 2.65)
  *  AND total net (+4482 vs +4475) at nearly the same trade count — the
  *  footprint gates (stack/churn/POC/quiet/diag/eff) all trade total net
- *  for per-trade quality (see research/quality-filter-sweep-2026-10-02.md). */
+ *  for per-trade quality (see research/quality-filter-sweep-2026-10-02.md).
+ *  Stop floor 3.5 pts (sizing-cap study 2026-10-02): structural stops
+ *  tighter than 3.5 pts widen to entry ∓ 3.5 (target follows at 1R) — the
+ *  floor sweep peaks at 3.5 (+1.9% total vs structural, −5% worst day);
+ *  floors past ~4 hurt the tail. Stops under minRiskPts (3) still never
+ *  trade. Big stops stay (research/sizing-cap-2026-10-02.md). */
 export const MOM_PROD: MomConfig = {
   ...MOM_DEFAULTS,
   needResponse: false,
@@ -204,6 +216,7 @@ export const MOM_PROD: MomConfig = {
   breakWindow: 10,
   minRiskPts: 3,
   targetR: 1,
+  riskFloorPts: 3.5,
   hourFilter: "globex",
   minBreakRangeR: 1.0,
 };
@@ -554,7 +567,7 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
     // structural stop under the flush extreme
     const hET = hourET(entryBar.t);
     const pad = cfg.stopPadNight !== undefined && hET >= 0 && hET < 2 ? cfg.stopPadNight : cfg.stopPad;
-    const stop =
+    let stop =
       cfg.stopMode === "breakout" && cfg.fireAt === "breakout"
         ? dir === "long"
           ? bk.low - pad
@@ -562,8 +575,17 @@ export function detectMomentum(minutes: MomMinute[], cfg: MomConfig = MOM_DEFAUL
         : dir === "long"
           ? w.flushLow - pad
           : w.flushHigh + pad;
-    const risk = Math.abs(entry - stop);
-    if (!(risk > 0) || risk > cfg.maxRiskPts || risk < cfg.minRiskPts) return null;
+    let risk = Math.abs(entry - stop);
+    // the hard floor first: stops below minRiskPts never trade (measured —
+    // widening them to the floor instead costs 39% of total and produces
+    // −$2.7k days, see research/sizing-cap-2026-10-02.md). Only the
+    // minRiskPts..riskFloorPts zone gets widened.
+    if (!(risk > 0) || risk < cfg.minRiskPts) return null;
+    if (cfg.riskFloorPts > 0 && risk < cfg.riskFloorPts) {
+      stop = dir === "long" ? entry - cfg.riskFloorPts : entry + cfg.riskFloorPts;
+      risk = cfg.riskFloorPts;
+    }
+    if (risk > cfg.maxRiskPts) return null;
     if (cfg.requireVwapSide) {
       const v = vwap[at];
       if (dir === "long" && entry < v) return null;
@@ -848,6 +870,9 @@ export type ExpansionConfig = {
   /** wider stop pad in the 00:00–02:00 ET window (undefined = off) — the
    *  stop-run study's hour-conditional pad candidate. */
   stopPadNight?: number;
+  /** WIDEN mode: stops tighter than this widen to entry ∓ riskFloorPts
+   *  (1R target follows). 0 = off. See the sizing-cap study. */
+  riskFloorPts: number;
 };
 
 export const EXP_DEFAULTS: ExpansionConfig = {
@@ -869,6 +894,7 @@ export const EXP_DEFAULTS: ExpansionConfig = {
   sessionTrend: "none",
   swingVetoTolPts: 0,
   swingLookback: 20,
+  riskFloorPts: 0,
 };
 
 /** The production expansion config — frozen after the 568-session sweeps:
@@ -879,6 +905,7 @@ export const EXP_DEFAULTS: ExpansionConfig = {
 export const EXP_PROD: ExpansionConfig = {
   ...EXP_DEFAULTS,
   hourFilter: "globex",
+  riskFloorPts: 3.5,
 };
 
 export function detectExpansionScalp(minutes: MomMinute[], cfg: ExpansionConfig = EXP_DEFAULTS): MomentumSignal[] {
@@ -976,9 +1003,15 @@ export function detectExpansionScalp(minutes: MomMinute[], cfg: ExpansionConfig 
 
     const entry = closeOf(m);
     const pad = cfg.stopPadNight !== undefined && hourET(m.t) >= 0 && hourET(m.t) < 2 ? cfg.stopPadNight : cfg.stopPad;
-    const stop = dir === "long" ? m.low - pad : m.high + pad;
-    const risk = Math.abs(entry - stop);
-    if (!(risk > 0) || risk < cfg.minRiskPts || risk > cfg.maxRiskPts) continue;
+    let stop = dir === "long" ? m.low - pad : m.high + pad;
+    let risk = Math.abs(entry - stop);
+    // hard floor before the widen (see emit) — sub-minRisk stops stay dead
+    if (!(risk > 0) || risk < cfg.minRiskPts) continue;
+    if (cfg.riskFloorPts > 0 && risk < cfg.riskFloorPts) {
+      stop = dir === "long" ? entry - cfg.riskFloorPts : entry + cfg.riskFloorPts;
+      risk = cfg.riskFloorPts;
+    }
+    if (risk > cfg.maxRiskPts) continue;
     const target = dir === "long" ? entry + cfg.targetR * risk : entry - cfg.targetR * risk;
     lastSignalIdx = i;
     out.push({

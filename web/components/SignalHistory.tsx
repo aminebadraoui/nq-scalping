@@ -2,6 +2,25 @@
 
 import { useEffect, useRef, useState } from "react";
 
+type CompactCandidate = {
+  side: "bid" | "ask";
+  price: number;
+  size: number;
+  refillSize: number;
+  refills: number;
+  absorbed: number;
+  consistency: number;
+  confidence: number;
+};
+
+type DomContext = {
+  ts: number;
+  candidates: CompactCandidate[];
+  nearEntry: CompactCandidate[];
+  nearStop: CompactCandidate[];
+  nearTarget: CompactCandidate[];
+};
+
 type HistoryEntry = {
   ts: number;
   timeET: string;
@@ -19,6 +38,7 @@ type HistoryEntry = {
   test: boolean;
   sent: boolean;
   reason: string;
+  dom?: DomContext | null;
 };
 
 type SignalResponse = {
@@ -128,6 +148,33 @@ export default function SignalHistory() {
               <span><span className="text-zinc-600">TARGET</span> {e.target || "—"}</span>
               <span><span className="text-zinc-600">SIZE</span> {e.size || "—"}</span>
             </div>
+
+            {/* the DOM picture captured at signal time — observational only */}
+            {e.dom && (
+              <div className="mt-1 border-t border-zinc-800/60 pt-0.5 font-mono text-[9px] leading-snug text-zinc-500">
+                <div className="text-zinc-600">DOM @ signal</div>
+                {(
+                  [
+                    ["entry", e.dom.nearEntry],
+                    ["stop", e.dom.nearStop],
+                    ["target", e.dom.nearTarget],
+                  ] as [string, CompactCandidate[]][]
+                ).map(([label, rows]) =>
+                  rows.map((c, i) => (
+                    <div key={`${label}|${i}`} className="flex justify-between">
+                      <span>
+                        <span className={c.side === "bid" ? "text-long" : "text-short"}>{c.side === "bid" ? "BID" : "ASK"}</span>{" "}
+                        {fmt(c.price)} near {label} · refills {c.refills} · slice {c.refillSize} · abs {c.absorbed}
+                      </span>
+                      <span title={`confidence ${(c.confidence * 100).toFixed(0)}%`}>
+                        {(c.confidence * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                  )),
+                )}
+                {e.dom.candidates.length === 0 && <div>no refill signatures in the window</div>}
+              </div>
+            )}
           </div>
         ))}
       </div>

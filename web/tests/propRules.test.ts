@@ -22,6 +22,9 @@ test("Rapid EOD 50k constants match the official plan rules", () => {
   assert.equal(RAPID_EOD_50K.maxLoss, 2000, "max loss limit $2,000");
   assert.equal(RAPID_EOD_50K.consistency, 0.3, "30% consistency (eval only)");
   assert.equal(RAPID_EOD_50K.minDays, 4, "4 minimum trading days");
+  // the plan allows 30 micro; the operational protection is the STOP BAND
+  // (minRiskPts 4 / maxRiskPts 15) — with stops in [4,15] pts, $170 budget
+  // ⇒ 5–21 contracts, so this cap never binds (research/sizing-cap-2026-10-02.md)
   assert.equal(RAPID_EOD_50K.maxMicro, 30, "30 micro / 3 mini contract cap");
   assert.equal(RAPID_EOD_50K.pointValue, 2, "MNQ $2 per point");
   assert.equal(RAPID_EOD_50K.buffer, 2100, "first-payout buffer $2,100");
@@ -72,8 +75,10 @@ test("ten consecutive full losses fit inside the $2,000 Max Loss Limit", () => {
 });
 
 test("contractsForRisk agrees with momentumSize (same $2/pt MNQ math)", () => {
-  const c = contractsForRisk(170, 3.5);
-  assert.equal(Math.floor(c), momentumSize(3.5).contracts);
+  // risk 7 pts → 12 contracts: below the 30-micro cap, so the raw helper and
+  // the capped sizer agree
+  const c = contractsForRisk(170, 7);
+  assert.equal(Math.floor(c), momentumSize(7).contracts);
 });
 
 test("estimateEval respects the 4 minimum trading days", () => {

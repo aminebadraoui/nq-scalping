@@ -14,6 +14,8 @@
  *     watchdog needed vendor volume to be moving, which is exactly
  *     what's missing when the feed is dead)
  *   · lib/live.ts — bootstrap + rollover handling key off the calendar
+ *   · lib/signalFeed.ts + db/local_executor.ts — signalWindowOpen() is
+ *     the trading window: nothing is announced or ordered outside it
  *   · /api/gc?action=health — reports `market.open` so a dead feed is
  *     distinguishable from a closed market at a glance
  *
@@ -91,6 +93,28 @@ export function marketOpenAt(tsMs: number, holidays: typeof CME_HOLIDAYS_2026 = 
   if (p.dow === "Sun") return hm >= 18 * 60;
   if (p.dow === "Fri") return hm < closeMin;
   return hm < closeMin || hm >= 18 * 60; // Mon–Thu, 17:00–18:00 halt
+}
+
+/**
+ * The signal window — STRICTER than the raw Globex calendar (owner rule):
+ * signals and orders only go out Sunday 18:00 ET → Friday 16:00 ET, with a
+ * daily 16:00–18:00 ET halt Monday–Thursday. MyFundedFutures rejects
+ * entries after 16:00 ET, so the window shuts an hour before the Globex
+ * close and reopens with the evening session at 18:00. Everything else —
+ * weekends, full holidays and early closes — is inherited unchanged from
+ * marketOpenAt (a holiday Friday would otherwise stay "open" until 16:00
+ * with nobody to fill).
+ */
+export function signalWindowOpen(
+  tsMs: number,
+  holidays: typeof CME_HOLIDAYS_2026 = CME_HOLIDAYS_2026,
+): boolean {
+  if (!marketOpenAt(tsMs, holidays)) return false;
+  const p = etParts(tsMs);
+  const hm = p.hour * 60 + p.minute;
+  if (p.dow === "Fri") return hm < 16 * 60; // broker: no trades after 16:00
+  if (p.dow === "Sun") return true; // marketOpenAt already enforced >= 18:00
+  return hm < 16 * 60 || hm >= 18 * 60; // Mon–Thu daily 16:00–18:00 halt
 }
 
 export type MarketEvent = {

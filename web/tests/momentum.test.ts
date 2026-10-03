@@ -98,9 +98,9 @@ const TAPE: Bar[] = [
   ["22:47", 30773.0, 30772.0, 2, 6],
 ];
 
-test("production config fires the 18:16 long on the real failed-flush tape", () => {
-  // the sequence fires with the historical 0.85×ATR size floor; prod moved
-  // to 1.0 after the 2026-10-02 quality-filter sweep (see the next test)
+test("the 18:16 long fires structurally — its 3.5-pt stop sits AT the widen floor", () => {
+  // the 3.5-pt structural stop equals the widen floor (riskFloorPts 3.5),
+  // so it trades structural — the floor only lifts stops TIGHTER than 3.5.
   const sigs = detectMomentum(bars(TAPE), { ...MOM_PROD, minBreakRangeR: 0.85 });
   assert.equal(sigs.length, 1, "exactly one signal expected");
   const s = sigs[0];
@@ -110,8 +110,9 @@ test("production config fires the 18:16 long on the real failed-flush tape", () 
   assert.equal(s.breakIdx, 16); // 22:16 breakout
   assert.equal(s.respIdx, 16); // merged mode: the breakout bar is its own response evidence
   assert.ok(Math.abs(s.entry - 30738.0) < 0.01, `entry ${s.entry}`);
-  assert.ok(Math.abs(s.stop - 30734.5) < 0.01, `stop ${s.stop}`);
-  assert.ok(s.risk >= 3, "risk floor");
+  assert.ok(Math.abs(s.stop - 30734.5) < 0.01, `structural stop kept, got ${s.stop}`);
+  assert.ok(Math.abs(s.risk - 3.5) < 0.01, `structural risk kept, got ${s.risk}`);
+  assert.ok(Math.abs(s.target - 30741.5) < 0.01, `structural 1R target, got ${s.target}`);
 });
 
 test("the 18:16 bar is under the 1.0×ATR floor — prod skips it (quality-filter sweep)", () => {
@@ -126,7 +127,7 @@ test("the 18:16 long is sized inside the Rapid EOD 50k rules", () => {
   assert.equal(size.contracts, 24);
   assert.equal(size.dollarRisk, 168);
   assert.equal(size.capped, false);
-  assert.ok(size.contracts <= RAPID_EOD_50K.maxMicro, "inside the 30-micro cap");
+  assert.ok(size.contracts <= RAPID_EOD_50K.maxMicro, "inside the plan micro cap");
   assert.ok(size.dollarRisk <= 170, "inside the $170 risk budget");
   assert.ok(size.contracts * s.risk * RAPID_EOD_50K.pointValue <= 170);
   // and the 1R target pays 24 × 3.5 × $2 = $168 when it wins
@@ -160,8 +161,8 @@ test("mirror: failed rally → sell response → breakdown fires a short", () =>
     // the long machine correctly ignores this tape)
     ["17:01", 100.0, 97.5, 5, 45, [[99.5, 0, 12], [99.0, 2, 8]]],
     ["17:02", 100.75, 100.0, 10, 20],
-    // one-sided sell breakout through the reference low (risk >= 3)
-    ["17:03", 102.5, 97.0, 5, 55],
+    // one-sided sell breakout through the reference low (risk >= 4)
+    ["17:03", 102.5, 95.5, 5, 55],
   ]);
   const sigs = detectMomentum(m, MOM_PROD);
   const shorts = sigs.filter((s) => s.dir === "short");
@@ -208,16 +209,16 @@ test("merged mode: strength bar → failed flush → immediate breakout fires wi
   const m = pad([
     ["17:00", 102.0, 100.5, 90, 10],
     ["17:01", 101.5, 99.5, 10, 90],
-    ["17:02", 106.0, 101.0, 55, 5],
+    ["17:02", 106.0, 99.0, 55, 5],
   ]);
   const merged = detectMomentum(m, MOM_PROD); // merged is the production mode
   const longs = merged.filter((s) => s.dir === "long");
   assert.equal(longs.length, 1);
   assert.equal(longs[0].t, "17:02");
   assert.equal(longs[0].flushIdx, 31); // 17:01 in the padded array
-  assert.ok(Math.abs(longs[0].entry - 103.5) < 0.01, `entry ${longs[0].entry}`);
-  assert.ok(Math.abs(longs[0].stop - 100.5) < 0.01, `stop ${longs[0].stop}`);
-  assert.ok(longs[0].risk >= 3, "risk floor");
+  assert.ok(Math.abs(longs[0].entry - 102.5) < 0.01, `entry ${longs[0].entry}`);
+  assert.ok(Math.abs(longs[0].stop - 98.5) < 0.01, `stop ${longs[0].stop}`);
+  assert.ok(longs[0].risk >= 4, "risk floor");
 
   // with a separate response required (needResponse=true) it does NOT fire:
   // the breakout bar has no tick proof, so the response gate fails
@@ -234,8 +235,8 @@ test("expansion: the real tape has no huge-bar signal (covers the other run clas
 
 test("expansion fires on a huge one-sided bar with a matching stack", () => {
   const m = pad([
-    // 6-pt bar on a ~0.5-pt ATR (12× ATR), 90% buy, buy stack
-    ["17:00", 105.0, 99.0, 90, 10, [[104.5, 8, 0], [104.0, 10, 1], [103.5, 6, 0], [103.0, 5, 1]]],
+    // 7-pt bar on a ~0.5-pt ATR (14× ATR), 90% buy, buy stack — 4.0-pt stop
+    ["17:00", 105.0, 98.0, 90, 10, [[104.5, 8, 0], [104.0, 10, 1], [103.5, 6, 0], [103.0, 5, 1]]],
   ]);
   const sigs = detectExpansionScalp(m, EXP_PROD);
   const longs = sigs.filter((s) => s.dir === "long");
@@ -243,8 +244,8 @@ test("expansion fires on a huge one-sided bar with a matching stack", () => {
   const s = longs[0];
   assert.equal(s.kind, "expansion");
   assert.equal(s.t, "17:00");
-  assert.ok(Math.abs(s.entry - 102.0) < 0.01, `entry ${s.entry}`);
-  assert.ok(Math.abs(s.stop - 98.5) < 0.01, `stop ${s.stop}`);
+  assert.ok(Math.abs(s.entry - 101.5) < 0.01, `entry ${s.entry}`);
+  assert.ok(Math.abs(s.stop - 97.5) < 0.01, `stop ${s.stop}`);
   assert.ok(s.breakRangeR >= 1.6, `rangeR ${s.breakRangeR}`);
 });
 
@@ -446,13 +447,13 @@ const SELL_STACK: [number, number, number][] = [
 ];
 
 test("expansion sessionTrend gates veto counter-trend huge bars", () => {
-  const up = bars([...quietSell(30), ["18:30", 101, 95, 80, 20, BUY_STACK]]);
+  const up = bars([...quietSell(30), ["18:30", 101, 94, 80, 20, BUY_STACK]]);
   assert.equal(detectExpansionScalp(up, EXP_PROD).length, 1, "baseline fires the huge up bar");
   assert.equal(detectExpansionScalp(up, { ...EXP_PROD, sessionTrend: "cumDelta" }).length, 0, "cumD is negative — long vetoed");
   assert.equal(detectExpansionScalp(up, { ...EXP_PROD, sessionTrend: "vwap" }).length, 0, "entry below session VWAP — long vetoed");
   assert.equal(detectExpansionScalp(up, { ...EXP_PROD, sessionTrend: "both" }).length, 0, "both gates — long vetoed");
 
-  const down = bars([...quietSell(30), ["18:30", 101, 95, 20, 80, SELL_STACK]]);
+  const down = bars([...quietSell(30), ["18:30", 101, 94, 20, 80, SELL_STACK]]);
   assert.equal(detectExpansionScalp(down, { ...EXP_PROD, sessionTrend: "cumDelta" }).length, 1, "cumD is negative — short allowed");
   assert.equal(detectExpansionScalp(down, { ...EXP_PROD, sessionTrend: "both" }).length, 1, "short is on the VWAP side too — allowed");
 });
@@ -465,7 +466,7 @@ test("expansion swing veto skips exact double-top entries", () => {
     ["18:33", 100.25, 99.75, 50, 50],
     ["18:34", 100.25, 99.75, 50, 50],
     ["18:35", 100.25, 99.75, 50, 50],
-    ["18:36", 101, 95, 80, 20, BUY_STACK], // high == the 18:30 high, to the tick
+    ["18:36", 101, 94, 80, 20, BUY_STACK], // high == the 18:30 high, to the tick
   ]);
   assert.equal(detectExpansionScalp(tape, EXP_PROD).length, 2, "both huge bars fire without the veto");
   assert.equal(detectExpansionScalp(tape, { ...EXP_PROD, swingVetoTolPts: 0.25 }).length, 1, "second bar is a double top — vetoed");
@@ -479,12 +480,32 @@ test("expansion signals carry real session cumDelta + VWAP distance", () => {
   assert.ok(sigs[0].distVwapPts < 0, `entry should sit below session VWAP, got ${sigs[0].distVwapPts}`);
 });
 
+test("expansion widen floor: a 3.25-pt stop becomes a 3.5-pt stop, trade kept", () => {
+  const tape = pad([["18:30", 101, 95.5, 80, 20, BUY_STACK]]); // structural risk 3.25
+  const sigs = detectExpansionScalp(tape, EXP_PROD);
+  assert.equal(sigs.length, 1, "the trade is kept, not skipped");
+  const s = sigs[0];
+  assert.ok(Math.abs(s.entry - 98.25) < 0.01, `entry ${s.entry}`);
+  assert.ok(Math.abs(s.stop - 94.75) < 0.01, `stop widened to entry − 3.5, got ${s.stop}`);
+  assert.ok(Math.abs(s.risk - 3.5) < 0.01, `risk widened to 3.5, got ${s.risk}`);
+  assert.ok(Math.abs(s.target - 101.75) < 0.01, `target follows the widened 1R, got ${s.target}`);
+  // and with the widen off, the structural stop is used as before
+  const raw = detectExpansionScalp(tape, { ...EXP_PROD, riskFloorPts: 0 });
+  assert.ok(Math.abs(raw[0].stop - 95.0) < 0.01, `structural stop ${raw[0].stop}`);
+});
+
+test("widen floor never rescues stops under minRiskPts (sub-3 stays dead)", () => {
+  const tape = pad([["18:30", 101, 96.5, 80, 20, BUY_STACK]]); // structural risk 2.75
+  assert.equal(detectExpansionScalp(tape, EXP_PROD).length, 0, "sub-3 stop: no trade");
+  assert.equal(detectExpansionScalp(tape, { ...EXP_PROD, riskFloorPts: 5 }).length, 0, "even a 5-pt floor must not rescue it");
+});
+
 test("stopPadNight widens the stop only in the 00–02 ET window", () => {
-  const tape = pad([["23:30", 101, 95, 80, 20, BUY_STACK]]); // 00:30 ET
+  const tape = pad([["23:30", 101, 94, 80, 20, BUY_STACK]]); // 00:30 ET
   const prod = detectExpansionScalp(tape, EXP_PROD)[0];
   const night = detectExpansionScalp(tape, { ...EXP_PROD, stopPadNight: 1.0 })[0];
-  assert.equal(prod.stop, 94.5, "production pad 0.5");
-  assert.equal(night.stop, 94.0, "night pad 1.0 applies at 00:30 ET");
+  assert.equal(prod.stop, 93.5, "production pad 0.5");
+  assert.equal(night.stop, 93.0, "night pad 1.0 applies at 00:30 ET");
 });
 
 test("requireTrailProgress vetoes breakouts inside overhead congestion", () => {
@@ -503,7 +524,7 @@ test("requireTrailProgress vetoes breakouts inside overhead congestion", () => {
       ["18:11", 102.5, 100.0, 20, 80], // failed flush (holds the session low)
       ["18:12", 100.25, 99.75, 50, 50],
       ["18:13", 100.25, 99.75, 50, 50],
-    ["18:14", 104, 99, 80, 20], // breakout through the ref, but below the 108 congestion top
+    ["18:14", 104, 97, 80, 20], // breakout through the ref, but below the 108 congestion top
   ]);
   assert.equal(detectMomentum(tape, MOM_PROD).length, 1, "baseline fires the breakout");
   assert.equal(

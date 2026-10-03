@@ -45,6 +45,8 @@ export async function GET() {
       test: h.test,
       sent: h.sent,
       reason: h.reason,
+      // the DOM (iceberg) picture captured at signal time — observational only
+      dom: h.features?.dom ?? null,
     })),
     signal: s
       ? {

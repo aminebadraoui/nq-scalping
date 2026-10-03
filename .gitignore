@@ -17,7 +17,6 @@ gcdata/ingest_log.txt
 # ---- environments & caches ----
 gcdata/.venv/
 .npm-cache/
-.playwright-browsers/
 __pycache__/
 *.pyc
 *.tsbuildinfo

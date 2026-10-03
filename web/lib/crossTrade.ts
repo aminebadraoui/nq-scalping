@@ -7,9 +7,9 @@
  * by them. No browser, no VPS, no NinjaTrader install — one HTTP POST
  * from the signal feed at the moment the card fires.
  *
- * This path REPLACES the Playwright browser path (lib/executor.ts)
- * whenever CROSSTRADE_KEY is configured. The same EXECUTE_LIVE gate
- * applies: dry-run (log only) until EXECUTE_LIVE=1.
+ * This is the ONLY execution path — the former Playwright browser path
+ * (lib/executor.ts) was removed. The same EXECUTE_LIVE gate applies:
+ * dry-run (log only) until EXECUTE_LIVE=1.
  *
  * Brackets: stop_loss / take_profit are sent in TICKS (MNQ tick =
  * 0.25 pt). CrossTrade snapshots the live reference quote when the
@@ -255,8 +255,7 @@ export function classifyResponse(status: number, bodyText: string): { ok: boolea
 
 /**
  * Send the order intent to the CrossTrade webhook. Dry-run (log only)
- * unless EXECUTE_LIVE=1 — the same gate as the Playwright path, so the
- * two backends are interchangeable without extra switches.
+ * unless EXECUTE_LIVE=1.
  */
 export async function placeCrossTradeOrder(
   intent: OrderIntent,

@@ -3,7 +3,7 @@
  * the daily 17:00–18:00 halt, holidays and early closes. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { marketOpenAt, nextMarketEvent, CME_HOLIDAYS_2026, etDate } from "../lib/marketHours";
+import { marketOpenAt, nextMarketEvent, signalWindowOpen, CME_HOLIDAYS_2026, etDate } from "../lib/marketHours";
 import { etToEpoch } from "../lib/times";
 
 /** New-York wall clock → epoch ms, DST-correct. */
@@ -38,6 +38,29 @@ test("early closes shut at the listed minute", () => {
   assert.equal(marketOpenAt(et("2026-07-03", "13:00")), false);
   assert.equal(marketOpenAt(et("2026-11-27", "13:14")), true); // day after Thanksgiving
   assert.equal(marketOpenAt(et("2026-11-27", "13:15")), false);
+});
+
+test("signal window: Sun 18:00 → Fri 16:00 ET + daily 16:00–18:00 halt", () => {
+  // Friday shuts at 16:00 ET for signals — a full hour before the Globex close
+  assert.equal(signalWindowOpen(et("2026-10-02", "15:59")), true);
+  assert.equal(signalWindowOpen(et("2026-10-02", "16:00")), false);
+  assert.equal(signalWindowOpen(et("2026-10-02", "16:59")), false); // market still open — window closed
+  // Mon–Thu: the broker rejects entries after 16:00 → daily 16:00–18:00 halt
+  assert.equal(signalWindowOpen(et("2026-10-01", "15:59")), true); // Thu
+  assert.equal(signalWindowOpen(et("2026-10-01", "16:00")), false);
+  assert.equal(signalWindowOpen(et("2026-10-01", "16:59")), false); // Globex open — window closed
+  assert.equal(signalWindowOpen(et("2026-10-01", "17:30")), false); // Globex halt
+  assert.equal(signalWindowOpen(et("2026-10-01", "18:00")), true); // Thu reopen
+  // weekend
+  assert.equal(signalWindowOpen(et("2026-10-03", "12:00")), false); // Sat
+  assert.equal(signalWindowOpen(et("2026-10-04", "17:59")), false); // Sun pre-open
+  assert.equal(signalWindowOpen(et("2026-10-04", "18:00")), true); // Sun open
+  assert.equal(signalWindowOpen(et("2026-10-05", "00:30")), true); // Mon overnight
+  // holidays still close the window
+  assert.equal(signalWindowOpen(et("2026-05-25", "10:00")), false); // Memorial Day
+  // a Friday early close (13:00 ET) also closes the signal window at 13:00
+  assert.equal(signalWindowOpen(et("2026-07-03", "12:59")), true);
+  assert.equal(signalWindowOpen(et("2026-07-03", "13:00")), false);
 });
 
 test("nextMarketEvent finds the next boundary", () => {
