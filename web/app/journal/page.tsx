@@ -180,11 +180,21 @@ const EDGE_STYLE: Record<string, string> = {
   insufficient: "border-zinc-700 bg-zinc-800/40 text-zinc-500",
 };
 
+// Edge-monitor verdicts, in trading English. NOTE: these compare LIVE
+// expectancy to the replay baseline only — "edge lost" says nothing about
+// the MFF account or its guard; the account guard lives in /api/gc health.
 const EDGE_LABEL: Record<string, string> = {
-  ok: "OK",
-  watch: "WATCH",
-  breach: "BREACH",
-  insufficient: "collecting",
+  ok: "edge OK",
+  watch: "edge weak",
+  breach: "edge lost",
+  insufficient: "no data",
+};
+
+const EDGE_HINT: Record<string, string> = {
+  ok: "live expR ≥ half the replay baseline",
+  watch: "live expR below half the replay baseline",
+  breach: "live expR ≤ 0 — the live sample is losing. Compares live vs replay ONLY; NOT an account breach.",
+  insufficient: "fewer than 8 live fills — too early to judge",
 };
 
 const RESULT_STYLE: Record<string, string> = {
@@ -718,7 +728,7 @@ export default function JournalPage() {
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">net</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="live expectancy per R (mean gross R/trade)">live expR</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="replay baseline from the 648-session archive">replay expR</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">edge</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal" title="live expectancy vs the 648-session replay baseline — a strategy-quality flag, NOT an account metric">edge</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -755,7 +765,10 @@ export default function JournalPage() {
                         </td>
                         <td className="px-2 py-1 text-right text-zinc-500">{s.baselineExpR.toFixed(2)}</td>
                         <td className="px-2 py-1">
-                          <span className={`inline-block rounded border px-1 py-0.5 text-[8px] uppercase ${EDGE_STYLE[s.status] ?? EDGE_STYLE.insufficient}`} title={s.detail}>
+                          <span
+                            className={`inline-block rounded border px-1 py-0.5 text-[8px] uppercase ${EDGE_STYLE[s.status] ?? EDGE_STYLE.insufficient}`}
+                            title={`${EDGE_HINT[s.status] ?? ""} · live ${s.liveExpR === null ? "n/a" : `${s.liveExpR >= 0 ? "+" : ""}${s.liveExpR.toFixed(2)}R`} vs replay ${s.baselineExpR.toFixed(2)}R${s.detail ? ` · ${s.detail}` : ""}`}
+                          >
                             {EDGE_LABEL[s.status] ?? EDGE_LABEL.insufficient}
                           </span>
                         </td>
@@ -772,7 +785,9 @@ export default function JournalPage() {
             <p className="mt-2 font-mono text-[9px] leading-snug text-zinc-600">
               accumulates over the selected range (7D / 30D / 90D / ALL — never resets; trades and cards persist forever) ·
               sort: net $ = account contribution · expR = mean gross R/trade (replay baseline until a family has ≥8 fills) · frequency = fills, then cards ·
-              live n is small — treat ranks as provisional · skips = cards recorded but not filled (gates, retrace expiries, refusals) · edge = range expR vs the 648-session replay baseline
+              live n is small — treat ranks as provisional · skips = cards recorded but not filled (gates, retrace expiries, refusals) ·
+              edge compares LIVE expR to the 648-session replay baseline only (edge OK &gt;= half · edge weak &lt; half · edge lost &lt;= 0) — it is a strategy-quality flag,
+              never an account/guard metric (the MFF account guard is reported in /api/gc?action=health → execution.protections)
             </p>
           </section>
 
