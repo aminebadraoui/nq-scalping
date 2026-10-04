@@ -1,4 +1,6 @@
 .env
 data/*.json
+!data/trials.json
+!data/holdouts.json
 __pycache__/
 .venv/

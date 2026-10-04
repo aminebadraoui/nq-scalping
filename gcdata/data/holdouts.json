@@ -1,0 +1,27 @@
+{
+ "momentum": {
+  "frozenAt": "2026-10-04T00:44:54.670Z",
+  "sessions": 40,
+  "from": "2026-08-06",
+  "to": "2026-10-02",
+  "pickId": "s0.35_t2.25_x60",
+  "note": "single-use: the first declaration pins the window and pick; re-running must reuse them",
+  "lastReport": "momentum-2026-10-04T00-44.json"
+ },
+ "rth": {
+  "frozenAt": "2026-10-04T00:46:14.191Z",
+  "sessions": 40,
+  "from": "2026-08-06",
+  "to": "2026-10-02",
+  "pickId": "s0.45_t1.75_x45",
+  "note": "single-use: the first declaration pins the window and pick; re-running must reuse them"
+ },
+ "expansion": {
+  "frozenAt": "2026-10-04T01:41:00.664Z",
+  "sessions": 40,
+  "from": "2026-08-06",
+  "to": "2026-10-02",
+  "pickId": "s0.4_t1.75_x45",
+  "note": "single-use: the first declaration pins the window and pick; re-running must reuse them"
+ }
+}

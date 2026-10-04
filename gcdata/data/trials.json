@@ -1,0 +1,209 @@
+{
+ "entries": [
+  {
+   "family": "momentum",
+   "generatedAt": "2026-10-04T00:44:54.911Z",
+   "file": "momentum-2026-10-04T00-44.json",
+   "script": "web/scripts/exportSweep.ts",
+   "nConfigs": 225,
+   "nSessions": 649,
+   "costPts": 0.95,
+   "grid": {
+    "stops": [
+     0.25,
+     0.3,
+     0.35,
+     0.4,
+     0.45,
+     0.5,
+     0.55,
+     0.6
+    ],
+    "targets": [
+     1.25,
+     1.5,
+     1.75,
+     2,
+     2.25,
+     2.5,
+     3
+    ],
+    "times": [
+     45,
+     60,
+     75,
+     90
+    ],
+    "base": {
+     "s": 1,
+     "t": 1,
+     "x": 60
+    }
+   },
+   "validation": {
+    "pick": "s0.35_t2.25_x60",
+    "dsr": 1.0,
+    "pbo": 0.2421,
+    "slope": -0.8641,
+    "observedSharpe": 0.514,
+    "nEffectiveTrials": 11,
+    "verdict": [
+     "DSR strong (>=0.95)",
+     "PBO high (0.24 > 0.20)",
+     "IS->OOS slope <= 0 (selection unstable)",
+     "track record sufficient",
+     "holdout PASS ($328, WR 65%)"
+    ],
+    "holdout": {
+     "sessions": 40,
+     "from": "2026-08-06",
+     "to": "2026-10-02",
+     "pickId": "s0.35_t2.25_x60",
+     "n": 101,
+     "wins": 66,
+     "wr": 0.6534653465346535,
+     "netUsd": 328.4187499999839,
+     "netPts": 164.20937499999195,
+     "riskUsd": 408.45,
+     "sharpe": 0.48109020058307306
+    }
+   }
+  },
+  {
+   "family": "rth",
+   "generatedAt": "2026-10-04T00:46:14.302Z",
+   "file": "rth-2026-10-04T00-46.json",
+   "script": "web/scripts/exportSweep.ts",
+   "nConfigs": 225,
+   "nSessions": 649,
+   "costPts": 0.95,
+   "grid": {
+    "stops": [
+     0.25,
+     0.3,
+     0.35,
+     0.4,
+     0.45,
+     0.5,
+     0.55,
+     0.6
+    ],
+    "targets": [
+     1.25,
+     1.5,
+     1.75,
+     2,
+     2.25,
+     2.5,
+     3
+    ],
+    "times": [
+     45,
+     60,
+     75,
+     90
+    ],
+    "base": {
+     "s": 1,
+     "t": 1,
+     "x": 60
+    }
+   },
+   "validation": {
+    "pick": "s0.45_t1.75_x45",
+    "dsr": 1.0,
+    "pbo": 0.0031,
+    "slope": -0.8617,
+    "observedSharpe": 1.131,
+    "nEffectiveTrials": 11,
+    "verdict": [
+     "DSR strong (>=0.95)",
+     "selection stable (PBO 0.003)",
+     "track record sufficient",
+     "holdout PASS ($1587, WR 74%)"
+    ],
+    "holdout": {
+     "sessions": 40,
+     "from": "2026-08-06",
+     "to": "2026-10-02",
+     "pickId": "s0.45_t1.75_x45",
+     "n": 223,
+     "wins": 166,
+     "wr": 0.7443946188340808,
+     "netUsd": 1587.0687500000317,
+     "netPts": 793.5343750000159,
+     "riskUsd": 1781.5500000000002,
+     "sharpe": 1.5872767893111694
+    }
+   }
+  },
+  {
+   "family": "expansion",
+   "generatedAt": "2026-10-04T01:41:00.753Z",
+   "file": "expansion-2026-10-04T01-41.json",
+   "script": "web/scripts/exportSweep.ts",
+   "nConfigs": 225,
+   "nSessions": 649,
+   "costPts": 0.95,
+   "grid": {
+    "stops": [
+     0.25,
+     0.3,
+     0.35,
+     0.4,
+     0.45,
+     0.5,
+     0.55,
+     0.6
+    ],
+    "targets": [
+     1.25,
+     1.5,
+     1.75,
+     2,
+     2.25,
+     2.5,
+     3
+    ],
+    "times": [
+     45,
+     60,
+     75,
+     90
+    ],
+    "base": {
+     "s": 1,
+     "t": 1,
+     "x": 60
+    }
+   },
+   "validation": {
+    "pick": "s0.4_t1.75_x45",
+    "dsr": 1.0,
+    "pbo": 0.0009,
+    "slope": -0.8538,
+    "observedSharpe": 1.0596,
+    "nEffectiveTrials": 25,
+    "verdict": [
+     "DSR strong (>=0.95)",
+     "selection stable (PBO 0.001)",
+     "track record sufficient",
+     "holdout PASS ($802, WR 72%)"
+    ],
+    "holdout": {
+     "sessions": 40,
+     "from": "2026-08-06",
+     "to": "2026-10-02",
+     "pickId": "s0.4_t1.75_x45",
+     "n": 207,
+     "wins": 150,
+     "wr": 0.7246376811594203,
+     "netUsd": 802.1499999999608,
+     "netPts": 401.0749999999804,
+     "riskUsd": 1120.6000000000001,
+     "sharpe": 1.0815720214466558
+    }
+   }
+  }
+ ]
+}
