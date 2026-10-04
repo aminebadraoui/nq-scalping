@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 
 export const dynamic = "force-dynamic";
@@ -8,13 +8,20 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const dir = path.join(process.cwd(), "data", "validation");
   const ledgerPath = path.join(dir, "trials.json");
+  const diag: { cwd: string; dir: string; dirExists: boolean; files: string[] } = {
+    cwd: process.cwd(),
+    dir,
+    dirExists: existsSync(dir),
+    files: [],
+  };
   try {
+    if (diag.dirExists) {
+      diag.files = readdirSync(dir).sort();
+    }
     let reports: unknown[] = [];
-    if (existsSync(dir)) {
-      reports = readdirSync(dir)
+    if (diag.dirExists) {
+      reports = diag.files
         .filter((f) => f.endsWith(".validation.json"))
-        .sort()
-        .reverse()
         .map((f) => {
           try {
             return JSON.parse(readFileSync(path.join(dir, f), "utf8"));
@@ -32,8 +39,8 @@ export async function GET() {
         /* stale ledger — treat as empty */
       }
     }
-    return Response.json({ ok: true, version: 2, reports, ledger });
+    return Response.json({ ok: true, version: 3, diag, reports, ledger });
   } catch (e) {
-    return Response.json({ ok: false, status: "error", message: String(e) });
+    return Response.json({ ok: false, status: "error", message: String(e), diag });
   }
 }
