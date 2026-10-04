@@ -25,6 +25,7 @@ import { optionsSnapshot } from "./gcdata";
 import type { FootprintMinute } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, midOf, type MomentumSignal } from "./momentum";
 import { buildEsContext, esCardChips, type EsContext, type EsMinute } from "./esJoin";
+import { seasonalChips } from "./seasonal";
 import { readOptionsFromSnapshot, wallsFromRead } from "./options";
 import { applyWallStop } from "./wallStop";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
@@ -42,8 +43,8 @@ import { detectOneSidedReclaim } from "./reclaimSetup";
 import { contractsForRisk, RAPID_EOD_50K } from "./propRules";
 import { rvol, isUnusualVolume } from "./volumeProfile";
 import { utcToET, cdtToET, utcToFeedStamp } from "./times";
-import { placeOrder, type OrderIntent } from "./executor";
-import { crossTradeEnabled, placeCrossTradeScaleOut } from "./crossTrade";
+import { placeOrder, placeScaleOut, type OrderIntent } from "./executor";
+import { crossTradeEnabled } from "./crossTrade";
 import { runnerTracker } from "./runnerTracker";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
@@ -57,6 +58,8 @@ import { getOverrides, decideSignal } from "./strategyOverrides";
 import { crossGuardDayPnl } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations } from "./execWatch";
+import { momentumProfile, rthProfile, applyProfile, timeExitAt } from "./profile";
+import { registerTimeExit, checkTimeExits } from "./timeExit";
 import { logExec } from "./execLog";
 import { signalWindowOpen } from "./marketHours";
 
@@ -645,6 +648,7 @@ class SignalFeed {
         if (s.breakIdx !== fp.length - 1) continue;
         const fam = s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
         const es = esCardChips(esCtx, nqMid, s, true);
+        const seasonal = seasonalChips(s);
         await this.recordSkip({
           timeET: cdtToET(s.t),
           day: s.d,
@@ -656,7 +660,7 @@ class SignalFeed {
           verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
           headline: `NQ momentum ${s.dir}`,
           reason: `news blackout — ${nb}`,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features, ...seasonal.features }),
         });
       }
       console.log(`[news] ${nb} blackout — skipping momentum card (${sigs.filter((s) => s.breakIdx === fp.length - 1).length} candidates recorded)`);
@@ -670,7 +674,8 @@ class SignalFeed {
       const et = cdtToET(s.t);
       const firstToday = !this.cardedDays.has(s.d);
       const es = esCardChips(esCtx, nqMid, s, true);
-      const chipLine = es.labels.length ? `${es.labels.join(" · ")} · ` : "";
+      const seasonal = seasonalChips(s);
+      const chipLine = [...seasonal.labels, ...es.labels].length ? `${[...seasonal.labels, ...es.labels].join(" · ")} · ` : "";
 
       // ---- self-improvement gates (strategy_overrides) — the approved
       //      insight loop filters the card BEFORE anything is sent ----
@@ -706,6 +711,7 @@ class SignalFeed {
             rejectedBy: dec.reasons,
             gates: this.gateSnapshot(ov),
             ...es.features,
+            ...seasonal.features,
           }),
         });
         continue;
@@ -739,26 +745,32 @@ class SignalFeed {
       // with an exact contract count (the sizing study optimum: 9).
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
       const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
+      const prof = momentumProfile();
+      const profBracket = prof.enabled ? applyProfile(s.dir, s.entry, s.risk, prof) : null;
+      // the optimized profile (0.35× stop / 2.25R / 60-bar) is single-leg;
+      // the validated scale-out keeps its own 1R ladder and needs an
+      // explicit CROSSTRADE_SCALEOUT=1 opt-in when the profile is on
+      const scaleOut = prof.enabled
+        ? process.env.CROSSTRADE_SCALEOUT === "1"
+        : process.env.CROSSTRADE_SCALEOUT !== "0" && crossTradeEnabled();
+      const stop = scaleOut ? s.stop : profBracket ? profBracket.stop : s.stop;
+      const target = scaleOut ? s.target : profBracket ? profBracket.target : s.target;
+      const riskPts = scaleOut ? s.risk : profBracket ? profBracket.riskPts : s.risk;
       const size = await this.applyDayTier(
         fixed > 0
-          ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * s.risk * 2, capped: false }
-          : momentumSize(s.risk, riskBudget),
-        s.risk,
+          ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * riskPts * 2, capped: false }
+          : momentumSize(riskPts, riskBudget * (prof.enabled && !scaleOut ? prof.sizeMult : 1)),
+        riskPts,
       );
 
-      // emit the order intent to the executor (dry-run by default).
-      // Scale-out is ON by default (re-validated 2026-10-02 on the rr1.0
-      // gate: expR 0.47 vs 0.44 fixed-1R, account sim PASS): bank 2/3 at
-      // 1R + runner 1/3 laddered via CHANGE orders. CROSSTRADE_SCALEOUT=0
-      // returns the momentum card to a single bracketed order.
-      const scaleOut = process.env.CROSSTRADE_SCALEOUT !== "0" && crossTradeEnabled();
+      // emit the order intent to the executor (dry-run by default)
       const intent: OrderIntent = {
         symbol: symbol(),
         dir: s.dir,
         contracts: size.contracts,
         entry: s.entry,
-        stop: s.stop,
-        target: s.target,
+        stop,
+        target,
         timeET: et,
       };
       this.cardedDays.add(s.d);
@@ -842,10 +854,10 @@ class SignalFeed {
         `⚡ <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
         `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
-        `<code>STOP    ${fmtPx(s.stop)}   ${distTxt(s.entry, s.stop)}</code>`,
+        `<code>STOP    ${fmtPx(stop)}   ${distTxt(s.entry, stop)}</code>`,
         scaleOut
           ? `<code>BANK 2/3 @ +1R · RUN 1/3 ladder (BE @1R · +1R @2R · +2R @3R…)</code>`
-          : `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
+          : `<code>TARGET  ${fmtPx(target)}   ${distTxt(s.entry, target)}${profBracket ? ` (${prof.targetR}R @ ${prof.stopMult}× stop)` : ""}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
         `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}${evidence}${wallNote ? ` · ${wallNote}` : ""}`,
@@ -860,8 +872,8 @@ class SignalFeed {
         side: s.dir,
         price: s.entry,
         entry: s.entry.toFixed(2),
-        stop: s.stop.toFixed(2),
-        target: s.target.toFixed(2),
+        stop: stop.toFixed(2),
+        target: target.toFixed(2),
         size: sizeStr,
         verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
         headline: `NQ momentum ${s.dir}`,
@@ -869,7 +881,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, gates: this.gateSnapshot(ov), wallStop: wallNote || undefined, ...es.features }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, gates: this.gateSnapshot(ov), wallStop: wallNote || undefined, ...es.features, ...seasonal.features }),
       });
       registerExpectation({
         key: `mom|${key}`,
@@ -880,8 +892,8 @@ class SignalFeed {
           dir: s.dir,
           contracts: size.contracts,
           entry: s.entry,
-          stop: s.stop,
-          target: s.target,
+          stop,
+          target,
           timeET: et,
         },
         scaleOut,
@@ -901,7 +913,7 @@ class SignalFeed {
   ): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
     if (scaleOut) {
       try {
-        const res = await placeCrossTradeScaleOut(intent);
+        const res = await placeScaleOut(intent);
         void logExec({
           key: `mom|${key}`,
           label: `momentum ${intent.dir} ${et} (scale-out${suffix})`,
@@ -929,6 +941,18 @@ class SignalFeed {
         reason: res.reason,
       });
       if (!res.ok) registerSendFailure(key, `momentum ${intent.dir} ${et}${suffix}`, res.reason);
+      if (res.ok && !scaleOut) {
+        const prof = momentumProfile();
+        if (prof.enabled) {
+          registerTimeExit({
+            key: `mom|${key}`,
+            label: `momentum ${intent.dir} ${et} (${prof.timeExitBars}-bar profile)`,
+            symbol: intent.symbol,
+            dir: intent.dir,
+            exitAtMs: timeExitAt(Date.now(), prof),
+          });
+        }
+      }
       return res;
     } catch (e) {
       return { ok: false, reason: String(e) };
@@ -1202,12 +1226,19 @@ class SignalFeed {
 
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
       const cap = Number(process.env.RTH_RISK_CAP ?? "200");
-      const fixed = fixedContracts(9);
+      const prof = rthProfile();
+      const profBracket = prof.enabled ? applyProfile(s.dir, s.entry, s.risk, prof) : null;
+      const fixed = prof.enabled ? fixedContracts(0) : fixedContracts(9);
+      const stop = profBracket ? profBracket.stop : s.stop;
+      const target = profBracket ? profBracket.target : s.target;
+      const riskPts = profBracket ? profBracket.riskPts : s.risk;
       const contracts =
-        fixed > 0 ? cappedContracts(fixed, s.risk, cap) : momentumSize(s.risk, riskBudget).contracts;
+        fixed > 0
+          ? cappedContracts(fixed, riskPts, cap)
+          : momentumSize(riskPts, riskBudget * (prof.enabled ? prof.sizeMult : 1)).contracts;
       const size = await this.applyDayTier(
-        { contracts, dollarRisk: contracts * s.risk * 2, capped: fixed > 0 && cap > 0 && fixed > contracts },
-        s.risk,
+        { contracts, dollarRisk: contracts * riskPts * 2, capped: fixed > 0 && cap > 0 && fixed > contracts },
+        riskPts,
       );
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
 
@@ -1217,8 +1248,8 @@ class SignalFeed {
         dir: s.dir,
         contracts: size.contracts,
         entry: s.entry,
-        stop: s.stop,
-        target: s.target,
+        stop,
+        target,
         timeET: et,
       })
         .then((res) => {
@@ -1230,6 +1261,15 @@ class SignalFeed {
             reason: res.reason,
           });
           if (!res.ok) registerSendFailure(key, `rth ${s.dir} ${et}`, res.reason);
+          if (res.ok && prof.enabled) {
+            registerTimeExit({
+              key: `rth|${key}`,
+              label: `rth ${s.dir} ${et} (${prof.timeExitBars}-bar profile)`,
+              symbol: symbol(),
+              dir: s.dir,
+              exitAtMs: timeExitAt(Date.now(), prof),
+            });
+          }
         })
         .catch(() => {});
 
@@ -1240,12 +1280,12 @@ class SignalFeed {
         `🟦 <b>${STATS.rth.name} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
         `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
-        `<code>STOP    ${fmtPx(s.stop)}   ${distTxt(s.entry, s.stop)}</code>`,
-        `<code>TARGET  ${fmtPx(s.target)}   ${distTxt(s.entry, s.target)}</code>`,
+        `<code>STOP    ${fmtPx(stop)}   ${distTxt(s.entry, stop)}</code>`,
+        `<code>TARGET  ${fmtPx(target)}   ${distTxt(s.entry, target)}${profBracket ? ` (${prof.targetR}R @ ${prof.stopMult}× stop)` : ""}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
         `${aPlus ? `A+ (${STATS.rth.aPlus}) · ` : ""}${chipLine}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
-        `<i>${STATS.rth.stat} · 0.75R plan — journal separately</i>`,
+        `<i>${STATS.rth.stat}${profBracket ? ` · ${prof.targetR}R @ ${prof.stopMult}× profile` : " · 0.75R plan — journal separately"}</i>`,
       ].join("\n");
       const res = await this.push(text);
       if (!res.sent) this.lastError = res.reason;
@@ -1256,8 +1296,8 @@ class SignalFeed {
         side: s.dir,
         price: s.entry,
         entry: s.entry.toFixed(2),
-        stop: s.stop.toFixed(2),
-        target: s.target.toFixed(2),
+        stop: stop.toFixed(2),
+        target: target.toFixed(2),
         size: sizeStr,
         verdict: "rth soft-continuation (experimental)",
         headline: `NQ RTH ${s.dir}`,
@@ -1698,6 +1738,7 @@ class SignalFeed {
       await this.checkRth();
       this.feedGapCheck();
       void checkExpectations().catch(() => {});
+      void checkTimeExits().catch(() => {});
     } catch (e) {
       this.lastError = String(e);
     } finally {

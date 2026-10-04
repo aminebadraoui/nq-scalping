@@ -15,7 +15,7 @@
  * Credentials come from env (gitignored), never logged.
  * ------------------------------------------------------------------ */
 
-import { crossTradeEnabled, placeCrossTradeOrder, placeCrossTradeOrderREST } from "./crossTrade";
+import { crossTradeEnabled, placeCrossTradeOrder, placeCrossTradeOrderREST, placeCrossTradeScaleOut, placeCrossTradeScaleOutREST } from "./crossTrade";
 
 export type OrderIntent = {
   symbol: string;
@@ -37,4 +37,20 @@ export async function placeOrder(intent: OrderIntent): Promise<{ ok: boolean; re
       : placeCrossTradeOrderREST(intent);
   }
   return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
+}
+
+/** Place the scale-out pair (bank 2/3 + runner 1/3). REST absolute
+ *  brackets are the default — the runner's stop is the signal's
+ *  structural level, never a quote-anchored tick distance.
+ *  CROSSTRADE_REST=0 or CROSSTRADE_SCALEOUT_REST=0 returns to the
+ *  quote-anchored webhook pair. */
+export async function placeScaleOut(
+  intent: OrderIntent,
+): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
+  if (!crossTradeEnabled()) {
+    return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
+  }
+  return process.env.CROSSTRADE_REST === "0" || process.env.CROSSTRADE_SCALEOUT_REST === "0"
+    ? placeCrossTradeScaleOut(intent)
+    : placeCrossTradeScaleOutREST(intent);
 }

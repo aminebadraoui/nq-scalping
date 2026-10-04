@@ -39,6 +39,14 @@
  *                           account is flat on that instrument; set to
  *                           "" or "off" to allow stacking (NOT
  *                           recommended for the 1R cards).
+ *   CROSSTRADE_REST         default ON — place with ABSOLUTE stop/target
+ *                           at the signal's structural levels via
+ *                           /orders/place; "0" returns to the
+ *                           quote-anchored webhook.
+ *   CROSSTRADE_SCALEOUT_REST default ON — the scale-out pair also goes
+ *                           through the REST absolute-bracket path; "0"
+ *                           (or CROSSTRADE_REST=0) returns the pair to
+ *                           the quote-anchored webhook.
  * ------------------------------------------------------------------ */
 
 import type { OrderIntent } from "./executor";
@@ -458,17 +466,124 @@ export async function placeCrossTradeOrderREST(
     console.log(`[crossTrade] DRY-RUN(REST) ${describeIntent(intent)}`);
     return { ok: true, reason: "dry-run (logged only)" };
   }
+
+  const flat = await restFlatGate(cfg);
+  if (!flat.ok) return { ok: false, reason: flat.reason };
+
+  let payload: RESTPlacePayload;
+  try {
+    payload = buildRESTPlacePayload(intent, cfg);
+  } catch (e) {
+    return { ok: false, reason: String(e) };
+  }
+
+  console.log(
+    `[crossTrade] LIVE(REST) ${intent.dir.toUpperCase()} ${payload.qty} ${payload.instrument} ` +
+      `entry ${intent.entry.toFixed(2)} · stop ${intent.stop.toFixed(2)} · target ${intent.target.toFixed(2)} · ${intent.timeET} NY`,
+  );
+  const leg = await postRESTLeg(payload, cfg);
+  if (leg.kind === "auth") {
+    // plan/auth rejections happen BEFORE dispatch — safe to fall back to
+    // the webhook path exactly once (nothing was placed)
+    console.warn(`[crossTrade] REST unavailable (${leg.reason}) — falling back to the webhook path`);
+    return placeCrossTradeOrder(intent);
+  }
+  if (leg.kind !== "ok") return { ok: false, reason: leg.reason };
+  markEntryPlaced();
+  return { ok: true, reason: `REST placed ${payload.orderId ?? ""}` };
+}
+
+/* ------------------------------------------------------------------ *
+ * REST payload shape — the /orders/place body with ABSOLUTE prices.
+ * Pure + unit-tested; stopLoss is the signal's structural stop, not a
+ * tick distance from whatever quote the webhook happens to see.
+ * ------------------------------------------------------------------ */
+
+export type RESTPlacePayload = {
+  instrument: string;
+  action: "buy" | "sell";
+  qty: number;
+  orderType: "market";
+  tif: "day";
+  stopLoss: string; // ABSOLUTE — the signal's structural stop
+  takeProfit?: string; // ABSOLUTE — omitted on runner legs (no fixed target)
+  orderId?: string; // ours, so a later CHANGE can address this order
+};
+
+export function buildRESTPlacePayload(
+  intent: OrderIntent,
+  cfg: CrossTradeConfig,
+  opts: { orderId?: string; withTarget?: boolean } = {},
+): RESTPlacePayload {
   const instrument = mapInstrument(intent.symbol, cfg.instrument);
   if (!instrument) {
-    return { ok: false, reason: `crossTrade: cannot map symbol "${intent.symbol}"` };
+    throw new Error(`crossTrade: cannot map symbol "${intent.symbol}" to a Tradovate instrument`);
+  }
+  if (!Number.isFinite(intent.stop)) {
+    throw new Error(`crossTrade: invalid stop — entry ${intent.entry} stop ${intent.stop}`);
   }
   const qty = Math.max(1, Math.min(30, Math.floor(intent.contracts)));
+  const payload: RESTPlacePayload = {
+    instrument,
+    action: intent.dir === "long" ? "buy" : "sell",
+    qty,
+    orderType: "market",
+    tif: "day",
+    stopLoss: intent.stop.toFixed(2),
+  };
+  if (opts.withTarget ?? true) {
+    if (!Number.isFinite(intent.target)) {
+      throw new Error(`crossTrade: invalid target — entry ${intent.entry} target ${intent.target}`);
+    }
+    payload.takeProfit = intent.target.toFixed(2);
+  }
+  if (opts.orderId) payload.orderId = opts.orderId;
+  return payload;
+}
 
-  const key = cfg.key;
-  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${key}` };
-  const account = cfg.account;
+type RESTLegResult = { kind: "ok" | "auth" | "rejected" | "unknown"; reason: string };
 
-  // ---- flat check (require_market_position=flat equivalent) + latch ----
+/** POST one REST leg. 401/403 = auth (pre-dispatch, safe to fall back);
+ *  non-2xx or success:false = rejection (pre-dispatch, nothing placed);
+ *  network failure = UNKNOWN (do NOT retry — reconcile first). */
+async function postRESTLeg(payload: Omit<RESTPlacePayload, "stopLoss"> & { stopLoss?: string }, cfg: CrossTradeConfig): Promise<RESTLegResult> {
+  try {
+    const res = await fetch(
+      `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/orders/place`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    const bodyText = await res.text();
+    if (res.status === 401 || res.status === 403) {
+      return { kind: "auth", reason: `REST unavailable (${res.status})` };
+    }
+    let j: Record<string, unknown> | null = null;
+    try {
+      j = JSON.parse(bodyText);
+    } catch {
+      /* plain text */
+    }
+    if (!res.ok) return { kind: "rejected", reason: `REST rejected (${res.status}) ${bodyText.slice(0, 200)}` };
+    if (j && j.success === false) {
+      return { kind: "rejected", reason: `REST rejected: ${String(j.error ?? bodyText).slice(0, 200)}` };
+    }
+    return { kind: "ok", reason: bodyText.slice(0, 120) };
+  } catch (e) {
+    return {
+      kind: "unknown",
+      reason: `REST UNKNOWN (network: ${String(e)}) — reconcile before acting; no automatic retry`,
+    };
+  }
+}
+
+/** the flat check + entry latch shared by the REST paths (single-leg and
+ *  scale-out). One gate per TRADE — the scale-out runner must NOT be
+ *  flat-checked separately or a filled bank would refuse its own runner. */
+async function restFlatGate(cfg: CrossTradeConfig): Promise<{ ok: boolean; reason: string }> {
   const latchNow = Date.now();
   const latchGate = stackGuardDecision(awaitingFlat, latchNow - entryPlacedAt, null);
   if (latchGate === "refuse_recent_entry") {
@@ -478,8 +593,8 @@ export async function placeCrossTradeOrderREST(
     };
   }
   try {
-    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`, {
-      headers,
+    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`, {
+      headers: { Authorization: `Bearer ${cfg.key}` },
       signal: AbortSignal.timeout(15_000),
     });
     const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> | Array<{ data?: Array<Record<string, unknown>> }> };
@@ -503,58 +618,153 @@ export async function placeCrossTradeOrderREST(
       return { ok: false, reason: `crossTrade: our entry is ${Math.round((latchNow - entryPlacedAt) / 1000)}s old and the book is unreadable — refusing to stack` };
     }
     if (decision === "confirm_flat") awaitingFlat = false; // confirmed by a successful read
+    return { ok: true, reason: "flat confirmed" };
   } catch (e) {
     return { ok: false, reason: `crossTrade: cannot verify flat state (${String(e)}) — refusing` };
   }
+}
 
-  // ---- absolute bracket placement ----
-  const orderId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const payload = {
-    instrument,
-    action: intent.dir === "long" ? "buy" : "sell",
-    qty,
-    orderType: "market",
-    tif: "day",
-    takeProfit: intent.target.toFixed(2), // ABSOLUTE — the signal's structural target
-    stopLoss: intent.stop.toFixed(2), // ABSOLUTE — the signal's structural stop
-    orderId,
-  };
-  console.log(
-    `[crossTrade] LIVE(REST) ${intent.dir.toUpperCase()} ${qty} ${instrument} ` +
-      `entry ${intent.entry.toFixed(2)} · stop ${intent.stop.toFixed(2)} · target ${intent.target.toFixed(2)} · ${intent.timeET} NY`,
-  );
+/* ------------------------------------------------------------------ *
+ * REST scale-out — the bank+runner pair with ABSOLUTE brackets, the
+ * same fix the single-leg path got: stopLoss/takeProfit at the
+ * signal's structural levels, never quote-anchored ticks.
+ *
+ * Fallback semantics (per leg, pre-dispatch only):
+ *   bank 401/403 → NOTHING was placed → the whole pair falls back to
+ *     the webhook scale-out exactly once.
+ *   bank placed, runner 401/403 → the runner alone falls back to the
+ *     webhook (the bank is never re-placed).
+ *   UNKNOWN (network) → never retried, reported for reconciliation.
+ * ------------------------------------------------------------------ */
+
+export async function placeCrossTradeScaleOutREST(
+  intent: OrderIntent,
+): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
+  const guard = await crossGuardGate();
+  if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
+  const cfg = loadConfig();
+  const live = process.env.EXECUTE_LIVE === "1";
+  const { bank, runner } = splitScaleOut(intent);
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const bankOrderId = `${id}-bank`;
+  const runnerOrderId = `${id}-run`;
+
+  if (runner.contracts < 1) {
+    // too small to split — fall back to a single bracketed order (REST path)
+    return placeCrossTradeOrderREST(bank);
+  }
+  if (!live) {
+    console.log(
+      `[crossTrade] DRY-RUN(REST) SCALE-OUT ${intent.dir.toUpperCase()} ${intent.contracts} ${intent.symbol} ` +
+        `→ bank ${bank.contracts} (1R) + runner ${runner.contracts} (ladder) · ${intent.timeET} NY`,
+    );
+    return { ok: true, reason: "dry-run (logged only)", bankOrderId, runnerOrderId, runnerQty: runner.contracts };
+  }
+
+  const flat = await restFlatGate(cfg);
+  if (!flat.ok) return { ok: false, reason: flat.reason };
+
+  let bankPayload: RESTPlacePayload;
+  let runnerPayload: RESTPlacePayload;
   try {
-    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/orders/place`, {
+    bankPayload = buildRESTPlacePayload(bank, cfg, { orderId: bankOrderId, withTarget: true });
+    runnerPayload = buildRESTPlacePayload(runner, cfg, { orderId: runnerOrderId, withTarget: false });
+  } catch (e) {
+    return { ok: false, reason: String(e) };
+  }
+
+  console.log(`[crossTrade] LIVE(REST) SCALE-OUT bank ${bankOrderId} → ${bankPayload.instrument} @ ${cfg.account}`);
+  const bankRes = await postRESTLeg(bankPayload, cfg);
+  if (bankRes.kind === "auth") {
+    console.warn(`[crossTrade] REST unavailable for the pair (${bankRes.reason}) — falling back to the webhook scale-out`);
+    return placeCrossTradeScaleOut(intent);
+  }
+  if (bankRes.kind !== "ok") return { ok: false, reason: `bank: ${bankRes.reason}` };
+  markEntryPlaced(); // the entry is placed — latch against stacking from here
+
+  console.log(`[crossTrade] LIVE(REST) SCALE-OUT runner ${runnerOrderId} → ${runnerPayload.instrument} @ ${cfg.account}`);
+  const runnerRes = await postRESTLeg(runnerPayload, cfg);
+  if (runnerRes.kind === "auth") {
+    // bank already placed — fall back to the webhook for the RUNNER ONLY.
+    // (The runner webhook still requires flat; if the bank already filled
+    // it will be refused and reported — never silently stacked.)
+    console.warn(`[crossTrade] REST unavailable for the runner (${runnerRes.reason}) — runner via webhook (bank already placed)`);
+    const w = await postWebhookLeg(runner, cfg, { orderId: runnerOrderId, withTarget: false });
+    return {
+      ok: w.ok,
+      reason: `bank: ${bankRes.reason} · runner(webhook): ${w.reason}`,
+      bankOrderId,
+      runnerOrderId: w.ok ? runnerOrderId : undefined,
+      runnerQty: runner.contracts,
+    };
+  }
+  return {
+    ok: runnerRes.kind === "ok",
+    reason: `bank: ${bankRes.reason} · runner: ${runnerRes.reason}`,
+    bankOrderId,
+    runnerOrderId: runnerRes.kind === "ok" ? runnerOrderId : undefined,
+    runnerQty: runner.contracts,
+  };
+}
+
+/** post ONE webhook leg with our order id (the runner-only fallback). */
+async function postWebhookLeg(
+  intent: OrderIntent,
+  cfg: CrossTradeConfig,
+  opts: { orderId: string; withTarget: boolean },
+): Promise<{ ok: boolean; reason: string }> {
+  let payload: CrossTradePayload;
+  try {
+    payload = buildCrossTradePayload(intent, cfg, opts);
+  } catch (e) {
+    return { ok: false, reason: String(e) };
+  }
+  try {
+    const res = await fetch(cfg.url, {
       method: "POST",
-      headers,
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15_000),
     });
-    const bodyText = await res.text();
-    let j: Record<string, unknown> | null = null;
-    try {
-      j = JSON.parse(bodyText);
-    } catch {
-      /* plain text */
-    }
-    // plan/auth rejections happen BEFORE dispatch — safe to fall back to
-    // the webhook path exactly once (nothing was placed)
-    if (res.status === 401 || res.status === 403) {
-      console.warn(`[crossTrade] REST unavailable (${res.status}) — falling back to the webhook path`);
-      return placeCrossTradeOrder(intent);
-    }
-    if (!res.ok) return { ok: false, reason: `REST rejected (${res.status}) ${bodyText.slice(0, 200)}` };
-    if (j && j.success === false) {
-      return { ok: false, reason: `REST rejected: ${String(j.error ?? bodyText).slice(0, 200)}` };
-    }
-    markEntryPlaced();
-    return { ok: true, reason: `REST placed ${orderId}` };
+    return classifyResponse(res.status, await res.text());
   } catch (e) {
     return {
       ok: false,
-      reason: `REST UNKNOWN (network: ${String(e)}) — reconcile before acting; no automatic retry`,
+      reason: `UNKNOWN (network: ${String(e)}) — check CrossTrade Alert History before acting; no automatic retry`,
     };
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * REST bracketless market EXIT — the time-exit path. Closes an open
+ * position with a plain market order (no stop/target attached; the
+ * entry's OCO brackets cancel when Tradovate flattens the position).
+ * Dry-run unless EXECUTE_LIVE=1; UNKNOWN never auto-retries.
+ * ------------------------------------------------------------------ */
+
+export async function placeCrossTradeExitREST(
+  intent: { symbol: string; dir: "long" | "short"; contracts: number },
+): Promise<{ ok: boolean; reason: string }> {
+  const cfg = loadConfig();
+  const live = process.env.EXECUTE_LIVE === "1";
+  const instrument = mapInstrument(intent.symbol, cfg.instrument);
+  if (!instrument) return { ok: false, reason: `crossTrade: cannot map symbol "${intent.symbol}"` };
+  const qty = Math.max(1, Math.min(30, Math.floor(intent.contracts)));
+  if (!live) {
+    console.log(`[crossTrade] DRY-RUN(REST) EXIT ${intent.dir === "long" ? "SELL" : "BUY"} ${qty} ${instrument} (time exit)`);
+    return { ok: true, reason: "dry-run (logged only)" };
+  }
+  const payload: Omit<RESTPlacePayload, "stopLoss"> = {
+    instrument,
+    action: intent.dir === "long" ? "sell" : "buy",
+    qty,
+    orderType: "market",
+    tif: "day",
+    orderId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-exit`,
+  };
+  console.log(`[crossTrade] LIVE(REST) EXIT ${payload.action.toUpperCase()} ${qty} ${instrument} (time exit)`);
+  const leg = await postRESTLeg(payload, cfg);
+  return leg.kind === "ok" ? { ok: true, reason: `REST exit placed ${payload.orderId}` } : { ok: false, reason: leg.reason };
 }
 
 /** TEST ONLY: reset the flat-entry latch. */

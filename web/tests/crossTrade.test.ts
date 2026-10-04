@@ -185,3 +185,58 @@ test("stackGuardDecision: temporal barrier, then confirmed-flat, then hold", () 
   assert.equal(stackGuardDecision(true, 61_000, 0), "confirm_flat");
   __resetLatchForTest();
 });
+
+import { buildRESTPlacePayload, placeCrossTradeScaleOutREST } from "../lib/crossTrade";
+import { placeScaleOut } from "../lib/executor";
+
+test("REST payload: ABSOLUTE stop/target at the signal's structural levels", () => {
+  const p = buildRESTPlacePayload(intent(), CFG);
+  assert.equal(p.instrument, "MNQZ6");
+  assert.equal(p.action, "buy");
+  assert.equal(p.orderType, "market");
+  assert.equal(p.tif, "day");
+  assert.equal(p.stopLoss, "21847.50"); // absolute — never a tick distance
+  assert.equal(p.takeProfit, "21860.00");
+  assert.equal(p.qty, 9);
+});
+
+test("REST payload: runner leg omits takeProfit, keeps absolute stop", () => {
+  const p = buildRESTPlacePayload(intent(), CFG, { orderId: "abc-run", withTarget: false });
+  assert.ok(!("takeProfit" in p));
+  assert.equal(p.stopLoss, "21847.50");
+  assert.equal(p.orderId, "abc-run");
+});
+
+test("REST payload: qty floored/capped, throws on garbage", () => {
+  assert.equal(buildRESTPlacePayload(intent({ contracts: 0 }), CFG).qty, 1);
+  assert.equal(buildRESTPlacePayload(intent({ contracts: 500 }), CFG).qty, 30);
+  assert.throws(() => buildRESTPlacePayload(intent({ symbol: "ESZ26" }), CFG));
+  assert.throws(() => buildRESTPlacePayload(intent({ stop: Number.NaN }), CFG));
+  assert.throws(() => buildRESTPlacePayload(intent({ target: Infinity }), CFG));
+});
+
+test("REST scale-out: dry-run splits the pair with our order ids (no fetch)", () => {
+  return placeCrossTradeScaleOutREST(intent({ contracts: 9 })).then((r) => {
+    assert.equal(r.ok, true);
+    assert.match(r.reason, /dry-run/);
+    assert.match(r.bankOrderId ?? "", /-bank$/);
+    assert.match(r.runnerOrderId ?? "", /-run$/);
+    assert.equal(r.runnerQty, 3);
+  });
+});
+
+test("REST scale-out: 1-contract intent falls back to a single dry-run order", () => {
+  return placeCrossTradeScaleOutREST(intent({ contracts: 1 })).then((r) => {
+    assert.equal(r.ok, true);
+    assert.equal(r.bankOrderId, undefined);
+    assert.equal(r.runnerQty, undefined);
+  });
+});
+
+test("placeScaleOut: not configured returns refused without any network", () => {
+  // CROSSTRADE_* unset in the test env → crossTradeEnabled() false
+  return placeScaleOut(intent({ contracts: 9 })).then((r) => {
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /not configured/);
+  });
+});

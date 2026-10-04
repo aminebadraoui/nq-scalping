@@ -24,8 +24,9 @@
  * ------------------------------------------------------------------ */
 
 import { sendTelegram } from "./notify";
-import { placeOrder, type OrderIntent } from "./executor";
-import { placeCrossTradeScaleOut } from "./crossTrade";
+import { placeOrder, placeScaleOut, type OrderIntent } from "./executor";
+import { momentumProfile, timeExitAt } from "./profile";
+import { registerTimeExit } from "./timeExit";
 import { getLive } from "./live";
 import { logExec } from "./execLog";
 import { signalWindowOpen } from "./marketHours";
@@ -276,7 +277,19 @@ export async function checkExpectations(): Promise<void> {
       );
       continue;
     }
-    const res = e.scaleOut ? await placeCrossTradeScaleOut(e.intent) : await placeOrder(e.intent);
+    const res = e.scaleOut ? await placeScaleOut(e.intent) : await placeOrder(e.intent);
+    if (res.ok && !e.scaleOut) {
+      const prof = momentumProfile();
+      if (prof.enabled) {
+        registerTimeExit({
+          key,
+          label: e.label,
+          symbol: e.intent.symbol,
+          dir: e.intent.dir,
+          exitAtMs: timeExitAt(Date.now(), prof),
+        });
+      }
+    }
     pending.delete(key);
     void logExec({
       key,
