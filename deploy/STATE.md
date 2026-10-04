@@ -209,6 +209,30 @@
   MFF account rules) every FRIDAY in nightly.sh — the protection math
   re-validates as the archive grows.
 
+## Execution-failure fix (2026-10-04, Sunday reopen)
+
+First session after the Sat 10-03 deploy: every entry after the first of the
+evening failed with `entry placed Ns ago — refusing to stack until the book
+confirms flat` (exec_log rows 23/25). Root cause + fix:
+
+1. **Stuck flat-entry latch** (`lib/crossTrade.ts` `restFlatGate`): the first
+   gate called `stackGuardDecision(awaiting, elapsed, null)` — with `held=null`
+   the decision is `refuse_recent_entry`, so once armed the gate refused BEFORE
+   the positions read, and the `confirm_flat → awaitingFlat=false` step was
+   unreachable. The latch armed at 18:31 ET and refused everything after
+   (19:20, 19:35 cards) for the rest of the session. Fixed: the first gate is
+   now only the hard 60s barrier (`awaiting && elapsed < 60s`); past 60s the
+   gate always reads the broker and `confirm_flat` clears the latch.
+2. **Verified re-send never fired** (`lib/execWatch.ts` +
+   `lib/signalFeed.ts`): `registerSendFailure` was called with the unprefixed
+   card key while the watcher's pending map stores prefixed keys
+   (`mom|`/`rth|`/…), so `sendFailed` was never set and the 90s watch
+   misclassified failed sends as "SEND OK BUT NO FILL" (alert-only, no
+   re-send). The watcher's `alerted` guard also dropped send-failed cards
+   before verification. Fixed: prefixed keys at all five call sites + the
+   guard now lets `sendFailed` cards through to the verified re-send.
+   (A redeploy resets the in-memory latch — do it while the book is flat.)
+
 ## Trade execution (2026-10-01)
 
 - **CrossTrade is the ONLY execution backend**: `web/lib/crossTrade.ts` places

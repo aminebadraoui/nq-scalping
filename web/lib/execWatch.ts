@@ -239,8 +239,12 @@ export async function checkExpectations(): Promise<void> {
       continue;
     }
 
-    // verified re-send path (exactly once per card)
-    if (alerted.has(key)) {
+    // verified re-send path (exactly once per card). A card whose send
+    // FAILED was alerted at send time (alerted contains its key) but must
+    // still run the broker verification + exactly-one re-send — that is
+    // the whole point of the verified retry. Cards that were never
+    // send-failed are dropped here once alerted.
+    if (alerted.has(key) && !e.sendFailed) {
       pending.delete(key);
       continue;
     }

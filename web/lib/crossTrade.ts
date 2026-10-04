@@ -585,11 +585,15 @@ async function postRESTLeg(payload: Omit<RESTPlacePayload, "stopLoss"> & { stopL
  *  flat-checked separately or a filled bank would refuse its own runner. */
 async function restFlatGate(cfg: CrossTradeConfig): Promise<{ ok: boolean; reason: string }> {
   const latchNow = Date.now();
-  const latchGate = stackGuardDecision(awaitingFlat, latchNow - entryPlacedAt, null);
-  if (latchGate === "refuse_recent_entry") {
+  const elapsed = latchNow - entryPlacedAt;
+  // Hard 60s barrier: inside the window no read is trusted (stale reads lie —
+  // that is exactly how the 14:21 stack happened). After the window the
+  // latch must be cleared by a FRESH positions read confirming flat — so
+  // never short-circuit on the latch itself past 60s; always read the book.
+  if (awaitingFlat && elapsed < 60_000) {
     return {
       ok: false,
-      reason: `crossTrade: entry placed ${Math.round((latchNow - entryPlacedAt) / 1000)}s ago — refusing to stack until the book confirms flat`,
+      reason: `crossTrade: entry placed ${Math.round(elapsed / 1000)}s ago — refusing to stack inside the 60s confirm window`,
     };
   }
   try {
@@ -610,12 +614,12 @@ async function restFlatGate(cfg: CrossTradeConfig): Promise<{ ok: boolean; reaso
       const ins = String(r.instrument ?? r.contractName ?? "");
       return qty !== 0 && ins.includes("MNQ");
     }).length;
-    const decision = stackGuardDecision(awaitingFlat, latchNow - entryPlacedAt, heldCount);
+    const decision = stackGuardDecision(awaitingFlat, elapsed, heldCount);
     if (decision === "refuse_position_open") {
       return { ok: false, reason: "crossTrade: not flat — an MNQ position is open (refusing)" };
     }
     if (decision === "refuse_recent_entry") {
-      return { ok: false, reason: `crossTrade: our entry is ${Math.round((latchNow - entryPlacedAt) / 1000)}s old and the book is unreadable — refusing to stack` };
+      return { ok: false, reason: `crossTrade: our entry is ${Math.round(elapsed / 1000)}s old and the book is unreadable — refusing to stack` };
     }
     if (decision === "confirm_flat") awaitingFlat = false; // confirmed by a successful read
     return { ok: true, reason: "flat confirmed" };

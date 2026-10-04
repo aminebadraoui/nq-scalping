@@ -565,7 +565,7 @@ class SignalFeed {
           outcome: res.ok ? "ok" : "failed",
           reason: res.reason,
         });
-        if (!res.ok) registerSendFailure(key, `sweep-reclaim ${setup.dir} ${setup.timeET}`, res.reason);
+        if (!res.ok) registerSendFailure(`reclaim|${key}`, `sweep-reclaim ${setup.dir} ${setup.timeET}`, res.reason);
       })
       .catch(() => {});
 
@@ -924,7 +924,7 @@ class SignalFeed {
         });
         if (!res.ok) {
           this.lastError = `scale-out: ${res.reason}`;
-          registerSendFailure(key, `momentum ${intent.dir} ${et} (scale-out${suffix})`, res.reason);
+          registerSendFailure(`mom|${key}`, `momentum ${intent.dir} ${et} (scale-out${suffix})`, res.reason);
         }
         return res;
       } catch (e) {
@@ -941,7 +941,7 @@ class SignalFeed {
         outcome: res.ok ? "ok" : "failed",
         reason: res.reason,
       });
-      if (!res.ok) registerSendFailure(key, `momentum ${intent.dir} ${et}${suffix}`, res.reason);
+      if (!res.ok) registerSendFailure(`mom|${key}`, `momentum ${intent.dir} ${et}${suffix}`, res.reason);
       if (res.ok && !scaleOut) {
         const prof = momentumProfile();
         if (prof.enabled) {
@@ -1261,7 +1261,7 @@ class SignalFeed {
             outcome: res.ok ? "ok" : "failed",
             reason: res.reason,
           });
-          if (!res.ok) registerSendFailure(key, `rth ${s.dir} ${et}`, res.reason);
+          if (!res.ok) registerSendFailure(`rth|${key}`, `rth ${s.dir} ${et}`, res.reason);
           if (res.ok && prof.enabled) {
             registerTimeExit({
               key: `rth|${key}`,
@@ -1463,7 +1463,7 @@ class SignalFeed {
             outcome: res.ok ? "ok" : "failed",
             reason: res.reason,
           });
-          if (!res.ok) registerSendFailure(key, `${family} ${s.dir} ${et}`, res.reason);
+          if (!res.ok) registerSendFailure(`open|${key}`, `${family} ${s.dir} ${et}`, res.reason);
         })
         .catch(() => {});
 
