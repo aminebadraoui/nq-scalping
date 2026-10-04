@@ -9,7 +9,8 @@ import {
   parseBriefingContent,
   renderDeterministicBriefing,
   chartLinesOfSnapshot,
-  BRIEFING_SCHEMA_EXAMPLE,
+  systemVerdictOf,
+  enforceHeadlineBias,
   type BriefingSnapshot,
 } from "../lib/briefingText";
 
@@ -101,6 +102,7 @@ function snapshot(over: Partial<BriefingSnapshot> = {}): BriefingSnapshot {
       news: { ok: true, stale: false, fetchedAt: "2026-10-05T13:10:00.000Z", error: null },
       earnings: { ok: true, stale: false, fetchedAt: "2026-10-05T13:10:00.000Z", error: null },
     },
+    systemVerdict: { bias: "up", vol: "normal", evidence: ["+1 chg 0.16%"] },
   };
   return { ...base, ...over };
 }
@@ -115,13 +117,14 @@ test("payload: JSON-mode shape, thinking disabled, bias enum in prompt", () => {
   const system = p.messages.find((m) => m.role === "system");
   assert.ok(system, "system prompt present");
   assert.match(system!.content.toLowerCase(), /json/i, "JSON mode requires the word json in the prompt");
-  assert.match(system!.content, /up \| down \| chop/, "bias enum is up/down/chop");
+  assert.match(system!.content, /bias is pre-decided/i, "bias comes from systemVerdict, not the model");
   assert.match(system!.content, /never invent other prices/i, "model must not invent prices");
   assert.match(system!.content, /scalper reads your output between ticks/i, "brevity-first framing");
   const user = p.messages.find((m) => m.role === "user");
   const j = JSON.parse(user!.content);
   assert.equal(j.snapshot.kind, "pre-open");
-  assert.equal(j.exampleJsonOutput.bias, BRIEFING_SCHEMA_EXAMPLE.bias);
+  assert.equal(j.snapshot.systemVerdict.bias, "up", "verdict rides in the snapshot");
+  assert.ok(!("bias" in j.exampleJsonOutput), "schema example has no bias field — the system decides");
   assert.ok(Array.isArray(j.exampleJsonOutput.watchFors), "watchFors are in the schema example");
   assert.ok(j.snapshot.nq.levels.length > 0, "snapshot carries the precomputed NQ levels");
 });
@@ -256,4 +259,55 @@ test("parseBriefingContent: repairs fenced JSON with trailing prose", () => {
   const c = parseBriefingContent(raw);
   assert.ok(c);
   assert.equal(c!.bias, "up");
+});
+
+test("systemVerdictOf: code-decided, stable across calls, evidence attached", () => {
+  const s = snapshot();
+  const v1 = systemVerdictOf(s);
+  const v2 = systemVerdictOf(s);
+  assert.deepEqual(v1, v2, "same snapshot → same verdict, always");
+  assert.equal(v1.bias, "up");
+  assert.equal(v1.vol, "normal");
+  assert.ok(v1.evidence.some((e) => e.includes("HTF HH/HL")), "evidence lists the HTF contribution");
+  assert.ok(v1.evidence.some((e) => e.includes("score +")), "evidence states the score");
+});
+
+test("biasOf: no current tape → prior session fields decide", () => {
+  const s = snapshot({
+    nq: {
+      ...snapshot().nq,
+      bars: 0,
+      lastClose: null,
+      changePct: null,
+      sessionHigh: null,
+      sessionLow: null,
+      cumulativeDelta: null,
+      closePosPct: null,
+      prevClosePosPct: 72,
+      prevCumulativeDelta: -5378,
+    },
+  });
+  const v = systemVerdictOf(s);
+  assert.ok(v.evidence.some((e) => e.includes("prior close 72%")), "prior close position is used");
+  assert.ok(v.evidence.some((e) => e.includes("prior delta")), "prior delta is used");
+  assert.ok(["up", "down", "chop"].includes(v.bias));
+  // mid-range (55%) is neutral: no evidence line, still a valid verdict
+  const mid = snapshot({
+    nq: {
+      ...snapshot().nq,
+      bars: 0, lastClose: null, changePct: null, sessionHigh: null, sessionLow: null,
+      cumulativeDelta: null, closePosPct: null, prevClosePosPct: 55, prevCumulativeDelta: null,
+    },
+  });
+  assert.ok(!systemVerdictOf(mid).evidence.some((e) => e.includes("prior close")), "neutral position contributes nothing");
+  assert.ok(["up", "down", "chop"].includes(v.bias));
+});
+
+test("enforceHeadlineBias: leading bias word is corrected to the verdict", () => {
+  assert.equal(enforceHeadlineBias("Chop: tape hasn't opened", "up"), "Up: tape hasn't opened");
+  assert.equal(enforceHeadlineBias("Up until GEX flip holds", "up"), "Up until GEX flip holds");
+  assert.equal(enforceHeadlineBias("Down into 30,739", "down"), "Down into 30,739");
+  assert.equal(enforceHeadlineBias("Chop until the flip breaks", "chop"), "Chop until the flip breaks");
+  // non-leading bias words are not touched (avoid mangling prose)
+  assert.equal(enforceHeadlineBias("Range breaks down below 30,739", "up"), "Range breaks down below 30,739");
 });

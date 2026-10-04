@@ -75,6 +75,10 @@ export type SnapshotEarningsItem = {
 
 export type SnapshotLevel = { label: string; value: string; note: string };
 
+/** code-decided bias + vol with the evidence that produced them —
+ *  the model must use these verbatim (no bias flip-flopping) */
+export type SystemVerdict = { bias: string; vol: string; evidence: string[] };
+
 export type BriefingSnapshot = {
   kind: BriefingKind;
   /** ISO instant the snapshot was built */
@@ -116,6 +120,8 @@ export type BriefingSnapshot = {
     /** numeric twin of `levels` — what the chart draws as hlines */
     lines: SnapshotLine[];
   };
+  /** the code-decided bias + vol the model must use verbatim */
+  systemVerdict: SystemVerdict;
   rates: {
     y2: number | null;
     y10: number | null;
@@ -179,12 +185,10 @@ export type BriefingSnapshot = {
  * DeepSeek JSON-mode payload
  * ---------------------------------------------------------------- */
 
-export const BRIEFING_SCHEMA_EXAMPLE: BriefingContent = {
-  headline: "EXAMPLE — one-line bottom line: up/down/chop + the main condition",
-  bias: "up",
-  vol: "normal",
+export const BRIEFING_SCHEMA_EXAMPLE: Omit<BriefingContent, "bias" | "vol"> = {
+  headline: "EXAMPLE — one-line bottom line using the systemVerdict bias word (up/down/chop)",
   read: [
-    "EXAMPLE why — the macro driver behind the bias (rates, breadth, positioning)",
+    "EXAMPLE why — the macro driver behind the verdict, citing the evidence",
     "EXAMPLE fragility — what is priced in too far",
   ],
   watchFors: [
@@ -205,33 +209,31 @@ const SYSTEM_PROMPT = [
   "positioning), and NQ price context from the live 1-minute tape.",
   "",
   "The user wants exactly two things: (1) the BIAS — up, down or chop, (2) what would change it.",
+  "THE BIAS IS PRE-DECIDED: snapshot.systemVerdict is computed in code from the tape (with its",
+  "evidence listed). Use systemVerdict.bias and systemVerdict.vol VERBATIM — do not output bias or",
+  "vol fields (they are ignored), and never argue for a different bias. If the macro genuinely",
+  "contradicts the verdict, say so inside read[0] while keeping the verdict.",
   "Key levels are ALREADY computed for you in snapshot.nq.levels as NQ prices (GEX walls/flip are",
   "converted QQQ→NQ in code) — reference them by label and price, never invent other prices.",
   "",
   "Rules:",
-  "1. bias is exactly one of: up | down | chop. up = buyers in control, expect higher; down =",
-  "sellers in control, expect lower; chop = two-sided range, no edge. Decide from the tape FIRST",
-  "(changePct, closePosPct, cumulative delta, realized 1σ vs VIX band, HTF structure), then",
-  "confirm or contradict with the macro. When tape and macro disagree, say so in read[0] and",
-  "lean on the tape.",
-  "2. headline: the bottom line, ≤15 words, conditional on the watch-fors. It must contain the",
-  "word up, down or chop.",
+  "1. The headline is the bottom line, ≤15 words, and MUST contain the systemVerdict.bias word",
+  "(up/down/chop) — it must not contradict it.",
+  "2. read: ≤2 bullets, each ≤18 words: why the verdict (cite systemVerdict.evidence + the macro",
+  "driver) and the fragility (what is priced in too far). Cite numbers only to support the conclusion.",
   "3. watchFors: ≤3 conditions that would change the bias TODAY, each referencing a level from",
   "snapshot.nq.levels (by label AND its NQ price) or a quote, each ≤20 words. No far-away",
   "hypotheticals.",
-  "4. read: ≤2 bullets, each ≤18 words: why the bias (the macro driver) and the fragility",
-  "(what is priced in too far). Cite numbers only to support the conclusion.",
-  "5. caveats: data-vintage warnings ONLY (delayed/stale/unavailable). ≤2, each ≤10 words.",
-  "6. VINTAGES: daily prints (curve, VIX stats, FRED, COT, HTF) are NOT intraday; CNBC quotes",
+  "4. caveats: data-vintage warnings ONLY (delayed/stale/unavailable). ≤2, each ≤10 words.",
+  "5. VINTAGES: daily prints (curve, VIX stats, FRED, COT, HTF) are NOT intraday; CNBC quotes",
   "are ~20 min delayed; the realized band is live. State the vintage when it changes the meaning.",
-  "7. null means the source is unavailable — say so, never invent a number. If the current NQ",
+  "6. null means the source is unavailable — say so, never invent a number. If the current NQ",
   "session has no bars, use the previous session (prev* fields) and say the tape has not opened.",
-  "8. DISPLAY-ONLY context for the human trader; it never feeds a signal engine. Analysis of the",
+  "7. DISPLAY-ONLY context for the human trader; it never feeds a signal engine. Analysis of the",
   "situation only — no trade instructions, orders, or disclaimers.",
-  "9. vol is exactly one of: compressed | normal | elevated | extreme.",
-  "10. JSON GRAMMAR (strict): every string must be a SINGLE line — never a literal newline",
+  "8. JSON GRAMMAR (strict): every string must be a SINGLE line — never a literal newline",
   "inside a string value. Emit ONLY the JSON object, nothing else.",
-  "11. The example shows SHAPE ONLY — its words and prices are placeholders. Every claim and",
+  "9. The example shows SHAPE ONLY — its words and prices are placeholders. Every claim and",
   "number must come from the snapshot; never reuse an example sentence.",
 ].join("\n");
 
@@ -363,34 +365,75 @@ function repairJson(raw: string): string {
 
 const nqFmt = (v: number | null): string => (v == null ? "n/a" : v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 }));
 
-function biasOf(s: BriefingSnapshot): string {
+/** the tape-scorer: one deterministic verdict per snapshot. The model is
+ *  NOT allowed to change it — it only explains it (see the system prompt).
+ *  Weights: current-session tape first; when the session has no bars yet
+ *  (weekend/pre-open), the prior session's close position + delta stand in. */
+function biasParts(s: BriefingSnapshot): { score: number; parts: string[] } {
   const nq = s.nq;
-  const q = (sym: string) => s.watch.quotes.find((x) => x.symbol === sym)?.changePct ?? null;
+  const parts: string[] = [];
   let score = 0;
-  if (nq.changePct != null) score += nq.changePct > 0.1 ? 1 : nq.changePct < -0.1 ? -1 : 0;
-  if (nq.closePosPct != null) score += nq.closePosPct > 65 ? 1 : nq.closePosPct < 35 ? -1 : 0;
-  if (nq.cumulativeDelta != null) score += nq.cumulativeDelta > 2000 ? 1 : nq.cumulativeDelta < -2000 ? -1 : 0;
+  const add = (w: number, label: string) => {
+    if (w === 0) return;
+    score += w;
+    parts.push(`${w >= 0 ? "+" : ""}${w} ${label}`);
+  };
+  const hasTape = (nq.bars ?? 0) > 0;
+  if (hasTape) {
+    if (nq.changePct != null) add(nq.changePct > 0.1 ? 1 : nq.changePct < -0.1 ? -1 : 0, `chg ${nq.changePct}%`);
+    if (nq.closePosPct != null) add(nq.closePosPct > 65 ? 1 : nq.closePosPct < 35 ? -1 : 0, `close ${nq.closePosPct}% of range`);
+    if (nq.cumulativeDelta != null) add(nq.cumulativeDelta > 2000 ? 1 : nq.cumulativeDelta < -2000 ? -1 : 0, `delta ${nq.cumulativeDelta.toLocaleString()}`);
+  } else {
+    if (nq.prevClosePosPct != null) add(nq.prevClosePosPct > 65 ? 1 : nq.prevClosePosPct < 35 ? -1 : 0, `prior close ${nq.prevClosePosPct}% of range`);
+    if (nq.prevCumulativeDelta != null) add(nq.prevCumulativeDelta > 2000 ? 1 : nq.prevCumulativeDelta < -2000 ? -1 : 0, `prior delta ${nq.prevCumulativeDelta.toLocaleString()}`);
+  }
   const htf = s.watch.htf?.daily ?? null;
-  if (htf === "HH/HL") score += 1;
-  if (htf === "LH/LL") score -= 1;
+  if (htf === "HH/HL") add(1, "HTF HH/HL");
+  if (htf === "LH/LL") add(-1, "HTF LH/LL");
   const gex = s.watch.gex;
-  if (gex?.regime === "trend" && gex.spot != null && gex.flip != null) score += gex.spot > gex.flip ? 1 : -1;
+  if (gex?.regime === "trend" && gex.spot != null && gex.flip != null) {
+    add(gex.spot > gex.flip ? 1 : -1, `GEX ${gex.spot > gex.flip ? "above" : "below"} flip`);
+  }
+  const q = (sym: string) => s.watch.quotes.find((x) => x.symbol === sym)?.changePct ?? null;
   const spx = q(".SPX");
   const ndx = q(".NDX");
-  if (spx != null) score += spx > 0.3 ? 0.5 : spx < -0.3 ? -0.5 : 0;
-  if (ndx != null) score += ndx > 0.3 ? 0.5 : ndx < -0.3 ? -0.5 : 0;
+  if (spx != null) add(spx > 0.3 ? 0.5 : spx < -0.3 ? -0.5 : 0, `SPX ${spx}%`);
+  if (ndx != null) add(ndx > 0.3 ? 0.5 : ndx < -0.3 ? -0.5 : 0, `NDX ${ndx}%`);
+  return { score, parts };
+}
+
+export function biasOf(s: BriefingSnapshot): string {
+  const { score } = biasParts(s);
   if (score >= 1) return "up";
   if (score <= -1) return "down";
   return "chop";
 }
 
-function volOf(s: BriefingSnapshot): string {
+export function volOf(s: BriefingSnapshot): string {
   const v = s.watch.vix?.level ?? null;
   if (v == null) return "normal";
   if (v < 14) return "compressed";
   if (v < 22) return "normal";
   if (v < 30) return "elevated";
   return "extreme";
+}
+
+/** the code-decided bias + vol handed to the model — the single source of
+ *  truth so reruns over the same data can never flip-flop */
+export function systemVerdictOf(s: BriefingSnapshot): SystemVerdict {
+  const { score, parts } = biasParts(s);
+  const v = s.watch.vix?.level ?? null;
+  return {
+    bias: biasOf(s),
+    vol: volOf(s),
+    evidence: [...parts, `score ${score >= 0 ? "+" : ""}${score} → ${biasOf(s)}`, v != null ? `VIX ${v} → ${volOf(s)}` : "VIX n/a → normal"],
+  };
+}
+
+/** guard: the headline must carry the verdict's word. Replaces a LEADING
+ *  "Up/Down/Chop" label (the typical shape) when the model drifts. */
+export function enforceHeadlineBias(headline: string, bias: string): string {
+  return headline.replace(/^(up|down|chop)\b/i, (m) => (m.toLowerCase() === bias ? m : bias === "up" ? "Up" : bias === "down" ? "Down" : "Chop"));
 }
 
 export function renderDeterministicBriefing(s: BriefingSnapshot): BriefingContent {

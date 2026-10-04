@@ -27,8 +27,10 @@ import { marketOpenAt } from "./marketHours";
 import { getOptionsFeed } from "./optionsFeed";
 import {
   buildBriefingPayload,
+  enforceHeadlineBias,
   parseBriefingContent,
   renderDeterministicBriefing,
+  systemVerdictOf,
   type BriefingContent,
   type BriefingKind,
   type BriefingSnapshot,
@@ -426,7 +428,7 @@ export async function buildBriefingSnapshot(kind: BriefingKind): Promise<Briefin
     errors: w?.errors ?? [],
   };
 
-  return {
+  const snapshot: BriefingSnapshot = {
     kind,
     generatedAt: new Date().toISOString(),
     etDay: now.day,
@@ -438,12 +440,15 @@ export async function buildBriefingSnapshot(kind: BriefingKind): Promise<Briefin
     news,
     earnings,
     watch,
+    systemVerdict: { bias: "", vol: "", evidence: [] }, // filled below (needs the whole snapshot)
     staleness: {
       bonds: { ok: ctx.bonds.ok, stale: ctx.bonds.stale, fetchedAt: ctx.bonds.fetchedAt ?? null, error: ctx.bonds.error ?? null },
       news: { ok: ctx.news.ok, stale: ctx.news.stale, fetchedAt: ctx.news.fetchedAt ?? null, error: ctx.news.error ?? null },
       earnings: { ok: ctx.earnings.ok, stale: ctx.earnings.stale, fetchedAt: ctx.earnings.fetchedAt ?? null, error: ctx.earnings.error ?? null },
     },
   };
+  snapshot.systemVerdict = systemVerdictOf(snapshot);
+  return snapshot;
 }
 
 /* ---------------------------------------------------------------- *
@@ -485,7 +490,9 @@ export async function callDeepSeekBriefing(
 
 /** the full generation path, shared by the CLI and the refresh route.
  *  Never throws: LLM failure degrades to the deterministic renderer,
- *  DB failure returns null (the card shows its own error state). */
+ *  DB failure returns null (the card shows its own error state).
+ *  The bias + vol are ALWAYS the code-decided systemVerdict — the model
+ *  only writes prose around it, so reruns can never flip the verdict. */
 export async function generateBriefing(kind: BriefingKind): Promise<{ row: BriefingRow | null; source: BriefingSource }> {
   const snapshot = await buildBriefingSnapshot(kind);
   const url = process.env.ANALYSIS_LLM_URL;
@@ -496,8 +503,12 @@ export async function generateBriefing(kind: BriefingKind): Promise<{ row: Brief
     content = await callDeepSeekBriefing(buildBriefingPayload(snapshot, model), url, key);
   }
   if (!content) {
-    return { row: await persistBriefing(kind, renderDeterministicBriefing(snapshot), snapshot, "deterministic", model), source: "deterministic" };
+    const det = renderDeterministicBriefing(snapshot);
+    return { row: await persistBriefing(kind, det, snapshot, "deterministic", model), source: "deterministic" };
   }
+  content.bias = snapshot.systemVerdict.bias;
+  content.vol = snapshot.systemVerdict.vol;
+  content.headline = enforceHeadlineBias(content.headline, content.bias);
   return { row: await persistBriefing(kind, content, snapshot, "llm", model), source: "llm" };
 }
 
