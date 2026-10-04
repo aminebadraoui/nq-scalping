@@ -172,10 +172,10 @@ async function main() {
   await writeFile(outFile, JSON.stringify(payload));
 
   /* ---- trial ledger: every config ever tried, per family.
-   *  Lives in web/data/validation (committed) so the deployed dashboard
-   *  (Coolify base /web) can render it alongside the audit reports. ---- */
-  const ledgerPath = join(process.cwd(), "data/validation/trials.json");
-  await mkdir(join(process.cwd(), "data/validation"), { recursive: true });
+   *  Lives inside the validation route's folder (committed) so the ledger
+   *  ships inside the deployed server bundle — the only mechanism the
+   *  deployed image provably updates (see commit 62c9cad). ---- */
+  const ledgerPath = join(process.cwd(), "app/api/backtest/validation/reports/trials.json");
   const ledger = existsSync(ledgerPath) ? JSON.parse(await readFile(ledgerPath, "utf8")) : { entries: [] };
   ledger.entries.push({
     family: family.label,

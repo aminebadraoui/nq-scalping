@@ -44,10 +44,13 @@ from purgedcv import (
 )
 
 SESSIONS_PER_YEAR = 250  # ~5 RTH days/wk x 50 wk
-# small JSON artifacts live in web/data/validation (committed) so the
-# deployed dashboard (Coolify base /web) can render them; the big sweep
-# JSONs stay local in gcdata/data/sweeps (gitignored).
-VALIDATION_DIR = Path(__file__).resolve().parent.parent / "web" / "data" / "validation"
+# small JSON artifacts live inside the validation route's folder (committed)
+# so they ship inside the deployed server bundle; the big sweep JSONs stay
+# local in gcdata/data/sweeps (gitignored).
+VALIDATION_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "web" / "app" / "api" / "backtest" / "validation" / "reports"
+)
 HOLDOUTS_PATH = VALIDATION_DIR / "holdouts.json"
 LEDGER_PATH = VALIDATION_DIR / "trials.json"
 

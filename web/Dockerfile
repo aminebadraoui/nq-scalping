@@ -4,10 +4,6 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-# the audit JSONs must be in the build context (web/data/validation) — fail
-# the build loudly instead of shipping an empty reports dir
-RUN test -d /app/data/validation || (echo "ERROR: web/data/validation missing from build context" && exit 1)
-RUN echo "== build stage /app/data/validation:" && ls -la /app/data/validation
 RUN npm run build
 
 # ---- runtime (Next standalone) -------------------------------------------
@@ -24,9 +20,6 @@ ENV HOSTNAME=0.0.0.0
 COPY --from=build /app/public ./public
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
-# overfitting-audit reports + trial ledger + holdout pins (web/data/validation)
-COPY --from=build /app/data ./data
-RUN echo "== runtime stage /app/data:" && ls -la /app/data && ls -la /app/data/validation
 
 # collected feed data can be mounted here (GC_DATA_DIR=/app/data)
 RUN mkdir -p /app/data
