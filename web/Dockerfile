@@ -20,6 +20,8 @@ ENV HOSTNAME=0.0.0.0
 COPY --from=build /app/public ./public
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
+# overfitting-audit reports + trial ledger + holdout pins (web/data/validation)
+COPY --from=build /app/data ./data
 
 # collected feed data can be mounted here (GC_DATA_DIR=/app/data)
 RUN mkdir -p /app/data

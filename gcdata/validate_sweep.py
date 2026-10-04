@@ -44,7 +44,12 @@ from purgedcv import (
 )
 
 SESSIONS_PER_YEAR = 250  # ~5 RTH days/wk x 50 wk
-HOLDOUTS_PATH = Path(__file__).resolve().parent / "data" / "holdouts.json"
+# small JSON artifacts live in web/data/validation (committed) so the
+# deployed dashboard (Coolify base /web) can render them; the big sweep
+# JSONs stay local in gcdata/data/sweeps (gitignored).
+VALIDATION_DIR = Path(__file__).resolve().parent.parent / "web" / "data" / "validation"
+HOLDOUTS_PATH = VALIDATION_DIR / "holdouts.json"
+LEDGER_PATH = VALIDATION_DIR / "trials.json"
 
 
 def sharpe(row: np.ndarray) -> float:
@@ -329,11 +334,12 @@ def main() -> int:
         ],
     }
 
-    out_path = sweep_path.parent / (sweep_path.stem + ".validation.json")
+    VALIDATION_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = VALIDATION_DIR / (sweep_path.stem + ".validation.json")
     out_path.write_text(json.dumps(report, indent=1))
 
     # ---- stamp the verdict onto the trial ledger entry for this sweep ----
-    ledger_path = sweep_path.parent.parent / "trials.json"
+    ledger_path = LEDGER_PATH
     if ledger_path.exists():
         try:
             ledger = json.loads(ledger_path.read_text())

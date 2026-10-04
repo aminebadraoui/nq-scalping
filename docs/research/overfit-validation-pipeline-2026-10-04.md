@@ -3,7 +3,7 @@
 The backtests stopped having to *argue* they are not overfit: every family's
 grid sweep now gets a multiple-testing-corrected audit computed from the same
 replay data. This doc is the pipeline contract; the per-family numbers live
-in `gcdata/data/sweeps/<family>-*.validation.json` and the `/backtest` page.
+in `web/data/validation/<family>-*.validation.json` (committed) and the `/backtest` page.
 
 ## Pipeline (three stages, one direction)
 
@@ -12,11 +12,11 @@ web/scripts/exportSweep.ts      TS grid replay (SAME detectors as live)
   --family momentum|expansion|rth --cost 0.95
   → gcdata/data/sweeps/<family>-<stamp>.json
       per config: per-session netUsd/riskUsd/trades/wins (1 MNQ)
-      + appends gcdata/data/trials.json (the trial ledger)
+      + appends web/data/validation/trials.json (the trial ledger)
 
 gcdata/validate_sweep.py        purgedcv audit (Python 3.14 venv)
   --holdout-last 40 = frozen single-use holdout (pinned in data/holdouts.json)
-  → <sweep>.validation.json: PBO (CSCV) · DSR · PSR · MinTRL · MinBTL
+  → web/data/validation/<sweep>.validation.json: PBO (CSCV) · DSR · PSR · MinTRL · MinBTL
       · per-year table · concentration · Sharpe heatmap · top-20 · pick series
       · holdout result + verdict · stamps the trial ledger entry
 
@@ -40,7 +40,7 @@ node --import ./tests/ts-loader.mjs ./scripts/exportSweep.ts --family rth --cost
 N=40) as a single-use out-of-sample window:
 
 - The FIRST run that declares a holdout for a family pins `{N, pick}` in
-  `gcdata/data/holdouts.json` — the pin is immutable; later runs must reuse
+  `web/data/validation/holdouts.json` — the pin is immutable; later runs must reuse
   the same window and pick (goalpost-moving is refused with a warning).
 - DSR / PBO / PSR / MinTRL / MinBTL / trial Sharpes / heatmap are all
   computed on the PRE-holdout sessions only; the pick is chosen on

@@ -11,14 +11,7 @@ web/.env.*.local
 web/.executor-guard.json
 
 # ---- collected feed data (regenerable; Neon Postgres is the store) ----
-# the big sweep JSONs stay local; the small audit reports + trial ledger +
-# frozen-holdout pins ship so the deployed dashboard can render them
-gcdata/data/*
-!gcdata/data/sweeps/
-!gcdata/data/trials.json
-!gcdata/data/holdouts.json
-gcdata/data/sweeps/*
-!gcdata/data/sweeps/*.validation.json
+gcdata/data/
 gcdata/ingest_log.txt
 
 # ---- environments & caches ----

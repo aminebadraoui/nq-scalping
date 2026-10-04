@@ -3,11 +3,11 @@ import path from "node:path";
 
 export const dynamic = "force-dynamic";
 
-/** Serve the overfitting-audit reports (written by gcdata/validate_sweep.py)
- *  plus the trial ledger (written by web/scripts/exportSweep.ts). */
+/** Serve the overfitting-audit reports (written by gcdata/validate_sweep.py
+ *  into web/data/validation) plus the trial ledger (exportSweep.ts). */
 export async function GET() {
-  const dir = path.join(process.cwd(), "..", "gcdata", "data", "sweeps");
-  const ledgerPath = path.join(process.cwd(), "..", "gcdata", "data", "trials.json");
+  const dir = path.join(process.cwd(), "data", "validation");
+  const ledgerPath = path.join(dir, "trials.json");
   try {
     let reports: unknown[] = [];
     if (existsSync(dir)) {
