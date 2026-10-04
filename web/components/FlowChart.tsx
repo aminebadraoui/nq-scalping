@@ -13,6 +13,7 @@ import {
   type ISeriesPrimitiveBase,
   type SeriesAttachedParameter,
   type IPrimitivePaneView,
+  type IPrimitivePaneRenderer,
   type AutoscaleInfo,
 } from "lightweight-charts";
 import type { LiveMinute } from "@/lib/useLive";
@@ -320,6 +321,215 @@ class LevelOverlayPrimitive implements ISeriesPrimitiveBase<SeriesAttachedParame
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Focus line primitive: the vertical amber guide marking the minute   */
+/* the ladder currently shows (tap a footprint bar → the chart scrolls */
+/* there and this line marks the bar). Drawn at the "top" z-order so   */
+/* candles and level bands never hide it.                              */
+/* ------------------------------------------------------------------ */
+class FocusLinePrimitive implements ISeriesPrimitiveBase<SeriesAttachedParameter> {
+  private param: SeriesAttachedParameter | null = null;
+  time: UTCTimestamp | null = null;
+
+  attached(param: SeriesAttachedParameter) {
+    this.param = param;
+  }
+  detached() {
+    this.param = null;
+  }
+  /** move (or clear) the guide line */
+  update(time: UTCTimestamp | null) {
+    this.time = time;
+    try {
+      (this.param as unknown as { requestUpdate?: () => void })?.requestUpdate?.();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  paneViews(): readonly IPrimitivePaneView[] {
+    return [
+      {
+        zOrder: () => "top" as const,
+        renderer: (): IPrimitivePaneRenderer => ({
+          draw: (target) => {
+            target.useBitmapCoordinateSpace((scope) => {
+              const p = this.param;
+              if (!p || this.time === null) return;
+              const x = p.chart.timeScale().timeToCoordinate(this.time);
+              if (x === null) return;
+              const ctx = scope.context;
+              const hr = scope.horizontalPixelRatio;
+              const H = scope.mediaSize.height * scope.verticalPixelRatio;
+              const X = x * hr;
+              ctx.globalAlpha = 0.85;
+              ctx.strokeStyle = "#fbbf24";
+              ctx.lineWidth = 1.5 * hr;
+              ctx.setLineDash([4 * hr, 3 * hr]);
+              ctx.beginPath();
+              ctx.moveTo(X, 0);
+              ctx.lineTo(X, H);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.globalAlpha = 1;
+            });
+          },
+        }),
+      },
+    ];
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Trade overlay primitive: the entry/stop/target lines of the signal   */
+/* ------------------------------------------------------------------ *
+ * HLinePrimitive — dashed horizontal level lines with left-edge label
+ * chips (the AI briefing's levels: GEX flip/walls, session extremes).
+ * Same renderer pattern as TradeLinePrimitive.
+ * ------------------------------------------------------------------ */
+class HLinePrimitive implements ISeriesPrimitiveBase<SeriesAttachedParameter> {
+  private param: SeriesAttachedParameter | null = null;
+  lines: { label: string; price: number; color: string }[] = [];
+
+  attached(param: SeriesAttachedParameter) {
+    this.param = param;
+  }
+  detached() {
+    this.param = null;
+  }
+  /** set (or clear) the horizontal lines to draw */
+  update(lines: { label: string; price: number; color: string }[]) {
+    this.lines = lines ?? [];
+    try {
+      (this.param as unknown as { requestUpdate?: () => void })?.requestUpdate?.();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  paneViews(): readonly IPrimitivePaneView[] {
+    return [
+      {
+        zOrder: () => "top" as const,
+        renderer: (): IPrimitivePaneRenderer => ({
+          draw: (target) => {
+            target.useBitmapCoordinateSpace((scope) => {
+              const p = this.param;
+              if (!p || this.lines.length === 0) return;
+              const ctx = scope.context;
+              const hr = scope.horizontalPixelRatio;
+              const vr = scope.verticalPixelRatio;
+              const W = scope.mediaSize.width * hr;
+              const H = scope.mediaSize.height * vr;
+              ctx.font = `${8 * vr}px ui-monospace, monospace`;
+              for (const l of this.lines) {
+                if (!Number.isFinite(l.price)) continue;
+                const y = p.series.priceToCoordinate(l.price);
+                if (y === null) continue;
+                const Y = y * vr;
+                if (Y < -2 || Y > H + 2) continue;
+                ctx.globalAlpha = 0.55;
+                ctx.strokeStyle = l.color;
+                ctx.lineWidth = 1 * hr;
+                ctx.setLineDash([4 * hr, 4 * hr]);
+                ctx.beginPath();
+                ctx.moveTo(0, Y);
+                ctx.lineTo(W, Y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                const text = `${l.label} ${l.price.toFixed(2)}`;
+                const tw = ctx.measureText(text).width;
+                const ty = Math.max(7 * vr, Math.min(H - 7 * vr, Y - 4 * vr));
+                ctx.globalAlpha = 0.85;
+                ctx.fillStyle = "rgba(12,12,15,0.85)";
+                ctx.fillRect(4 * hr, ty - 5.5 * vr, tw + 5 * hr, 11 * vr);
+                ctx.fillStyle = l.color;
+                ctx.fillText(text, 6 * hr, ty);
+              }
+              ctx.globalAlpha = 1;
+            });
+          },
+        }),
+      },
+    ];
+  }
+}
+
+/* selected in the dashboard's signal card — the trade visualized on    */
+/* the chart. Drawn at the "top" z-order with left-edge label chips.    */
+/* ------------------------------------------------------------------ */
+class TradeLinePrimitive implements ISeriesPrimitiveBase<SeriesAttachedParameter> {
+  private param: SeriesAttachedParameter | null = null;
+  trade: { side: "long" | "short"; entry: number; stop: number; target: number } | null = null;
+
+  attached(param: SeriesAttachedParameter) {
+    this.param = param;
+  }
+  detached() {
+    this.param = null;
+  }
+  /** set (or clear) the trade being visualized */
+  update(trade: { side: "long" | "short"; entry: number; stop: number; target: number } | null) {
+    this.trade = trade;
+    try {
+      (this.param as unknown as { requestUpdate?: () => void })?.requestUpdate?.();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  paneViews(): readonly IPrimitivePaneView[] {
+    return [
+      {
+        zOrder: () => "top" as const,
+        renderer: (): IPrimitivePaneRenderer => ({
+          draw: (target) => {
+            target.useBitmapCoordinateSpace((scope) => {
+              const p = this.param;
+              if (!p || !this.trade) return;
+              const ctx = scope.context;
+              const hr = scope.horizontalPixelRatio;
+              const vr = scope.verticalPixelRatio;
+              const W = scope.mediaSize.width * hr;
+              const H = scope.mediaSize.height * vr;
+              const lines = [
+                { label: "ENTRY", price: this.trade.entry, color: "#fbbf24" },
+                { label: "STOP", price: this.trade.stop, color: "#f87171" },
+                { label: "TARGET", price: this.trade.target, color: "#34d399" },
+              ];
+              ctx.font = `${8.5 * vr}px ui-monospace, monospace`;
+              for (const l of lines) {
+                if (!Number.isFinite(l.price)) continue;
+                const y = p.series.priceToCoordinate(l.price);
+                if (y === null) continue;
+                const Y = y * vr;
+                if (Y < -2 || Y > H + 2) continue;
+                ctx.globalAlpha = 0.9;
+                ctx.strokeStyle = l.color;
+                ctx.lineWidth = 1.5 * hr;
+                ctx.setLineDash([5 * hr, 3 * hr]);
+                ctx.beginPath();
+                ctx.moveTo(0, Y);
+                ctx.lineTo(W, Y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                const text = `${l.label} ${l.price.toFixed(2)}`;
+                const tw = ctx.measureText(text).width;
+                const ty = Math.max(7 * vr, Math.min(H - 7 * vr, Y - 5 * vr));
+                ctx.fillStyle = "rgba(12,12,15,0.85)";
+                ctx.fillRect(4 * hr, ty - 6 * vr, tw + 6 * hr, 12 * vr);
+                ctx.fillStyle = l.color;
+                ctx.fillText(text, 7 * hr, ty);
+              }
+              ctx.globalAlpha = 1;
+            });
+          },
+        }),
+      },
+    ];
+  }
+}
+
 export default function FlowChart({
   minutes,
   levels,
@@ -332,6 +542,9 @@ export default function FlowChart({
   colorBy = "move",
   height = 420,
   autoHeight = false,
+  focus = null,
+  trade = null,
+  hlines = [],
 }: {
   minutes: LiveMinute[];
   levels: LevelSet[];
@@ -346,14 +559,29 @@ export default function FlowChart({
   height?: number;
   /** measure the wrapper div and resize the chart to fill it (for big flexible layouts) */
   autoHeight?: boolean;
+  /** minute the footprint ladder selected — scrolls the chart there and draws a guide line */
+  focus?: { t: string; d?: string } | null;
+  /** a signal's trade levels to visualize (entry/stop/target lines) */
+  trade?: { side: "long" | "short"; entry: number; stop: number; target: number } | null;
+  /** horizontal level lines (the AI briefing's GEX flip/walls + session extremes) */
+  hlines?: { label: string; price: number; color: string }[];
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const vwapSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const overlayRef = useRef<LevelOverlayPrimitive | null>(null);
+  const focusLineRef = useRef<FocusLinePrimitive | null>(null);
+  const tradeLineRef = useRef<TradeLinePrimitive | null>(null);
+  const hlineRef = useRef<HLinePrimitive | null>(null);
+  /** the focus request already centred on — the page mints a new object per
+   *  tap, so identity distinguishes "user tapped again" from "live update" */
+  const focusAppliedRef = useRef<{ t: string; d?: string } | null>(null);
   const [ohlcCount, setOhlcCount] = useState(0);
   const barsRef = useRef<{ low: number; high: number; close: number }[]>([]);
+  /** epoch of the last loaded bar — blanks the time-axis labels drawn in the
+   *  rightOffset slot after it (TradingView-style trailing space) */
+  const lastTimeRef = useRef(0);
   const visRef = useRef({ from: 0, to: 0 });
 
   // axis measurements (declared before the chart effect — its rAF uses it)
@@ -417,7 +645,34 @@ export default function FlowChart({
   const userTouchedRef = useRef(false);
   /** true while a pagination step (not incoming data) changed the loaded span */
   const pagingRef = useRef(false);
-  const data = useMemo(() => minutes.slice(-windowBars), [sig, windowBars, minutes]);
+
+  // ── ladder focus: widen the loaded window so the tapped minute is in it ──
+  // Derived during render (never setState-in-effect): the ladder shows the
+  // whole session while the chart pages a window of the most recent bars, so
+  // a tap on an old minute must page enough history into the loaded span.
+  // The chart-sync effect below then centres the view on the bar and draws
+  // the amber guide line. The page mints a NEW focus object per tap, so the
+  // effect re-centres only on a real tap — live-update re-runs hit the
+  // identity guard and leave the view alone.
+  const FOCUS_BEFORE = 75; // bars of price action shown left of the focused bar
+  const FOCUS_AFTER = 15; // bars shown right of it
+  const FOCUS_CONTEXT = FOCUS_BEFORE + 30; // extra history paged in on an off-window focus
+  const focusEpoch = focus && /^\d{2}:\d{2}$/.test(focus.t) ? feedToEpoch(focus.t, focus.d ?? date) : null;
+  const effWindow = useMemo(() => {
+    if (!Number.isFinite(windowBars)) return windowBars; // "day" — everything loaded
+    if (!focus || focusEpoch === null || !Number.isFinite(focusEpoch)) return windowBars;
+    let need = -1;
+    for (let k = 0; k < minutes.length; k++) {
+      const m = minutes[k];
+      if (toTime(m.t, date, m.live, m.d) === focusEpoch) {
+        need = minutes.length - k;
+        break;
+      }
+    }
+    if (need < 0) return windowBars;
+    return Math.min(minutes.length, Math.max(windowBars, need + FOCUS_CONTEXT));
+  }, [focus, focusEpoch, minutes, date, windowBars]);
+  const data = useMemo(() => minutes.slice(-effWindow), [sig, effWindow, minutes]);
 
   /** Set the loaded span to a chosen window and re-fit the view to it. */
   const applyWindow = (bars: number) => {
@@ -461,13 +716,20 @@ export default function FlowChart({
         borderColor: "rgba(63,63,70,0.8)",
         timeVisible: true,
         secondsVisible: false,
-        tickMarkFormatter: (time: number) => fmtETTime(time),
-        // NOTE: no rightOffset / barSpacing / minBarSpacing here on purpose.
-        // rightOffset makes the axis draw extrapolated time labels past the
-        // last candle, and explicit spacing options fight fitContent() (the
-        // loaded-window slice IS the zoom control) — both made the time axis
-        // look wrong. lockVisibleTimeRangeOnResize is also left off so a
-        // resize keeps fitting the loaded span.
+        // TradingView-style trailing space: keep a few empty bars after the
+        // last candle so it never sits flush on the right edge. The axis
+        // formatter blanks the extrapolated slots beyond the last bar (the
+        // one artifact rightOffset otherwise draws).
+        rightOffset: 3,
+        tickMarkFormatter: (time: number) => {
+          const last = lastTimeRef.current;
+          return last > 0 && time > last ? "" : fmtETTime(time);
+        },
+        // NOTE: no barSpacing / minBarSpacing here on purpose — explicit
+        // spacing options fight fitContent() (the loaded-window slice IS the
+        // zoom control) and made the time axis look wrong.
+        // lockVisibleTimeRangeOnResize is also left off so a resize keeps
+        // fitting the loaded span.
       },
       localization: {
         locale: "en-US",
@@ -541,6 +803,30 @@ export default function FlowChart({
     }
 
     try {
+      const focusLine = new FocusLinePrimitive();
+      candleRef.current.attachPrimitive(focusLine);
+      focusLineRef.current = focusLine;
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      const tradeLine = new TradeLinePrimitive();
+      candleRef.current.attachPrimitive(tradeLine);
+      tradeLineRef.current = tradeLine;
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      const hline = new HLinePrimitive();
+      candleRef.current.attachPrimitive(hline);
+      hlineRef.current = hline;
+    } catch {
+      /* ignore */
+    }
+
+    try {
       chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
         if (!r) return;
         visRef.current = { from: r.from, to: r.to };
@@ -566,6 +852,11 @@ export default function FlowChart({
       candleRef.current = null;
       vwapSeriesRef.current = null;
       overlayRef.current = null;
+      focusLineRef.current = null;
+      tradeLineRef.current = null;
+      hlineRef.current = null;
+      focusAppliedRef.current = null;
+      lastTimeRef.current = 0;
     };
   }, [height, autoHeight]);
 
@@ -646,11 +937,11 @@ export default function FlowChart({
     if (!s) return;
     s.setData(
       vwapSeries
-        .slice(-windowBars)
+        .slice(-effWindow)
         .map((v) => ({ time: toTime(v.t, date, false, v.d), value: v.value }))
         .filter((v) => Number.isFinite(v.time)),
     );
-  }, [vwapSeries, date, windowBars]);
+  }, [vwapSeries, date, effWindow]);
 
   // bars + markers
   const lastSigRef = useRef("");
@@ -690,6 +981,7 @@ export default function FlowChart({
     // epochs; a defensive filter keeps the chart alive even with bad input
     const goodBars = bars.filter((b) => Number.isFinite(b.time));
     barsRef.current = goodBars.map((b) => ({ low: b.low, high: b.high, close: b.close }));
+    lastTimeRef.current = goodBars[goodBars.length - 1]?.time ?? 0;
     if (cur !== lastSigRef.current) {
       lastSigRef.current = cur;
       series.setData(goodBars);
@@ -723,6 +1015,9 @@ export default function FlowChart({
       }
     } else if (!userTouchedRef.current) {
       const fit = () => {
+        // a focus applied in the same commit already owns the view — skip
+        // (the scheduled rAF fits would otherwise override its range)
+        if (userTouchedRef.current) return;
         try {
           chart.timeScale().fitContent();
         } catch {
@@ -752,6 +1047,65 @@ export default function FlowChart({
       /* markers unsupported */
     }
   }, [data, date, mSig, markers, colorBy]);
+
+  // ── external focus: a footprint-ladder tap scrolls the chart there ──────
+  // The window widening happened during render (effWindow above); this effect
+  // only talks to the chart: centre the visible range on the tapped minute,
+  // draw the amber guide line and hold the view so incoming live bars don't
+  // yank it away (double-click the time axis / a window button resumes the
+  // live follow). The page mints a NEW focus object per tap, so the identity
+  // guard re-centres only on a real tap, not on live-update re-runs.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !focus) return;
+    if (focusAppliedRef.current === focus) return; // already centred on this tap
+    if (focusEpoch === null || !Number.isFinite(focusEpoch)) return;
+    let fullIdx = -1;
+    for (let k = 0; k < minutes.length; k++) {
+      const m = minutes[k];
+      if (toTime(m.t, date, m.live, m.d) === focusEpoch) {
+        fullIdx = k;
+        break;
+      }
+    }
+    if (fullIdx < 0) {
+      focusLineRef.current?.update(null); // stale focus from a previous dataset
+      return;
+    }
+    const loadedFrom = Math.max(0, Number.isFinite(effWindow) ? minutes.length - effWindow : 0);
+    const logIdx = fullIdx - loadedFrom;
+    const bar = data[logIdx];
+    if (!bar) return;
+    focusAppliedRef.current = focus;
+    focusLineRef.current?.update(focusEpoch as UTCTimestamp);
+    const from = Math.max(0, logIdx - FOCUS_BEFORE);
+    const to = Math.min(data.length - 1, logIdx + FOCUS_AFTER);
+    // keep the range event from being read as a user scroll to the left edge
+    // (which would trigger history paging and shift the centred view)
+    prevFromRef.current = from;
+    try {
+      chart.timeScale().setVisibleLogicalRange({ from, to });
+    } catch {
+      /* ignore */
+    }
+    // fit the price scale to the bars now in view — center mode only holds a
+    // 50-pt band at the live edge, so a focused historical bar would
+    // otherwise sit outside the pane
+    requestAnimationFrame(() => resetPriceScale());
+    // hold the view: live updates must not re-fit over the tapped minute
+    userTouchedRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus, focusEpoch, date, minutes.length, effWindow, data.length]);
+
+  // ── trade overlay: draw the selected signal's entry/stop/target lines ───
+  useEffect(() => {
+    tradeLineRef.current?.update(trade);
+  }, [trade]);
+
+  // ── briefing overlay: GEX flip/walls + session extremes as hlines ──────
+  useEffect(() => {
+    hlineRef.current?.update(hlines);
+  }, [hlines]);
 
   // levels + vwap → overlay primitive
   useEffect(() => {

@@ -299,12 +299,27 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
 
 ```bash
 # nightly data pipeline — VPS (Coolify app `nq-jobs`, uuid mqfjwjodtmje4lfnjq1gteax):
-#   TWO cron entries in the jobs container:
+#   crontab entries in the jobs container (all ET, TZ=America/New_York):
 #     50 16 * * 1-5  scripts/reconcile.sh  — PRE-RESET reconcile + analysis
 #        (orders list still alive → order-level matching; runs inside the
 #        16:00–18:00 ET halt, before the ~17:00 ET CrossTrade session reset)
+#     AI briefing cadence (scripts/briefing.sh <kind> → macro_briefings;
+#        DeepSeek v4-pro; read-only vs Neon, self-skips holidays, ~1¢/run):
+#        5 18 * * 0-4  evening-open  (Globex reopen — weekend gap)
+#       15  9 * * 1-5  pre-open      (overnight tape + today's calendar)
+#       35  9 * * 1-5  post-open     (opening drive verdict)
+#       30 11 * * 1-5  mid-morning   (Europe close handoff)
+#       30 13 * * 1-5  midday        (lunch lull reassessment)
+#        5 16 * * 1-5  pre-close     (RTH close / MOC positioning)
+#       45 17 * * 1-5  post-close    (inside scripts/nightly.sh, after ingest)
 #     45 17 * * 1-5  scripts/nightly.sh    — the full pipeline (fallback
 #        fill-level matching if the reset already ate the orders)
+#   CRON_BRIEFING_{EVENING,PREOPEN,POSTOPEN,MIDMORNING,MIDDAY,PRECLOSE}
+#   override the six briefing slots.
+#   AI briefing env: ANALYSIS_LLM_URL/KEY are required in the nq-jobs env
+#   (already plumbed in docker-compose) AND in the nq-dashboard env for the
+#   card's on-demand refresh button (else it degrades to deterministic).
+#   BRIEFING_LLM_MODEL overrides the model (default deepseek-v4-pro).
 #   CrossTrade is the execution source of truth going forward; the owner
 #   trades no manual fills, so the manual bucket should stay ~empty —
 #   any stray manual fill still lands in manual_trades / the ledger residual.

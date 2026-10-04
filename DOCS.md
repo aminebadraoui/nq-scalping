@@ -105,6 +105,7 @@ checklist, sources) and `web/tests/README.md` (what the 361 tests pin down).
 | `docs/data/DATA_SOURCE_AUDIT_2026-10-03.md` | **active** | ~80 live-probed endpoints for the macro watch layer: CNBC pipe batches, CBOE history CSVs, FRED keyless CSV, TreasuryDirect auctions JSON, CFTC Socrata, Yahoo server-side — working vs dead lists. |
 | `docs/data/economic-calendar-source-research-2026-10.md` | **active** | Live-verified audit of news-calendar sources (Finnhub/FMP/FF mirror/Nasdaq/…) — endpoints, limits, what died 2024→2026. |
 | `docs/data/MACRO_PANELS_UI_RESEARCH.md` | **active** | UI/UX pattern inventory + the design spec behind the macro strip and the three panels, with evidence links. |
+| `docs/data/AI_MACRO_BRIEFING_RESEARCH.md` | **active** | The DeepSeek AI briefing card (top of the dashboard): field-level macro inventory, JSON-mode + thinking-disabled call shape, interpretation-first prompt, the 09:15 ET / post-close / on-demand scheduling design, implementation plan. |
 
 ---
 

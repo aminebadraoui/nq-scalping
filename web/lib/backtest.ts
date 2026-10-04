@@ -26,6 +26,8 @@ import { readMechanism } from "./mechanism";
 import { readPriceAction } from "./priceaction";
 import { cdtToET } from "./times";
 import { dollarize, simulateAccount, type AccountSimResult } from "./propAccount";
+import { loadSessionDivergences, type DivRow } from "./divStore";
+import { divergenceFuel } from "./divergence";
 
 export type TuningConfig = {
   name: string;
@@ -51,6 +53,9 @@ export const BASELINE: TuningConfig = {
 const COST_PTS = 0.5;
 /** max holding bars before a time-based exit */
 const HOLD_BARS = 60;
+/** divergence "fuel" window — a matching D2/D4 within this many bars BEFORE
+ *  the entry counts (the same DIV_BARS the studies use, shared definition) */
+const DIV_BARS = 10;
 
 /* ---------------- tunable absorption (mirrors gcdata.ts analyzeMinutes) ---------------- */
 
@@ -132,9 +137,12 @@ export type TradeResult = Fire & {
   pnl: number; // net points (cost already deducted)
   hit: "target" | "stop" | "time";
   heldBars: number;
+  /** a matching divergence (D2 for longs / D4 for shorts) sat within the
+   *  fuel window before this entry — the win-rate influence question */
+  hasDiv: boolean;
 };
 
-function scoreFire(minutes: FootprintMinute[], fire: Fire): TradeResult | null {
+function scoreFire(minutes: FootprintMinute[], fire: Fire, hasDiv: boolean): TradeResult | null {
   const { entry, stop, target, side } = fire;
   const dir = side === "long" ? 1 : -1;
   // invalid levels (wrong side / NaN) can't be evaluated — drop
@@ -164,7 +172,7 @@ function scoreFire(minutes: FootprintMinute[], fire: Fire): TradeResult | null {
   }
 
   const pnl = (exit - entry) * dir - COST_PTS;
-  return { ...fire, exit, pnl, hit, heldBars };
+  return { ...fire, exit, pnl, hit, heldBars, hasDiv };
 }
 
 /* ---------------- session replay ---------------- */
@@ -192,6 +200,8 @@ export type SessionData = {
   alerts: AlertEvent[];
   reclaims: Reclaim[];
   imbalance: ImbalanceRollup | null;
+  /** stored per-session divergences (canonical divStore artifact) */
+  divergences: DivRow[];
 };
 
 /** extract LVN edges + POCs from a level sheet (cents strings → points) */
@@ -261,12 +271,32 @@ export async function loadSession(date: string, session: "RTH" | "ETH", priorDat
 
   const mapped = minutes.map((m) => ({ t: m.t, high: m.high, low: m.low, delta: m.buy - m.sell }));
   const mIndex = new Map(mapped.map((m, i) => [m.t, i] as const));
-  return { date, minutes, mapped, mIndex, candles, lvnEdges, pocCands, prefixHigh, prefixLow, prefixVwap, alerts: an.alerts, reclaims: an.reclaims, imbalance: an.imbalance };
+
+  // the divergence store (loads the canonical artifact; a read miss computes
+  // and persists it, so this backtest itself progressively fills the store)
+  const divStore = await loadSessionDivergences(date, session);
+
+  return {
+    date,
+    minutes,
+    mapped,
+    mIndex,
+    candles,
+    lvnEdges,
+    pocCands,
+    prefixHigh,
+    prefixLow,
+    prefixVwap,
+    alerts: an.alerts,
+    reclaims: an.reclaims,
+    imbalance: an.imbalance,
+    divergences: divStore?.divergences ?? [],
+  };
 }
 
 /** replay one session under one config (cheap; reuses SessionData). */
 export function replay(sd: SessionData, cfg: TuningConfig): SessionResult {
-  const { minutes, mapped, mIndex, candles, prefixHigh, prefixLow, prefixVwap, lvnEdges, pocCands, alerts, reclaims, imbalance } = sd;
+  const { minutes, mapped, mIndex, candles, prefixHigh, prefixLow, prefixVwap, lvnEdges, pocCands, alerts, reclaims, imbalance, divergences } = sd;
   const n = minutes.length;
   const absorption = detectAbsorption(minutes, cfg);
   const fires: Fire[] = [];
@@ -328,7 +358,11 @@ export function replay(sd: SessionData, cfg: TuningConfig): SessionResult {
     }
   }
 
-  const trades = fires.map((f) => scoreFire(minutes, f)).filter((x): x is TradeResult => x !== null);
+  // tag each fire with its divergence fuel (shared rule) so the sweep can
+  // report the win-rate influence of a matching D2/D4
+  const trades = fires
+    .map((f) => scoreFire(minutes, f, divergenceFuel(divergences, f.t, f.side, DIV_BARS) !== null))
+    .filter((x): x is TradeResult => x !== null);
   return { date: sd.date, fires, trades };
 }
 
@@ -343,6 +377,18 @@ export type SetupStats = {
   grossLoss: number;
   profitFactor: number;
   avgPts: number;
+  /** the fuel split — does a matching divergence change the win rate? */
+  withDiv: FuelSplit;
+  withoutDiv: FuelSplit;
+};
+
+/** win/loss aggregates of one trade cohort (divergence-fueled vs not) */
+export type FuelSplit = {
+  trades: number;
+  wins: number;
+  winRate: number;
+  netPts: number;
+  profitFactor: number;
 };
 
 /** the rules layer every sweep run now reports: every trade sized under the
@@ -368,6 +414,19 @@ export type ConfigResult = {
   account: AccountSummary;
 };
 
+function fuel(trades: TradeResult[]): FuelSplit {
+  const wins = trades.filter((t) => t.pnl > 0);
+  const grossWin = wins.reduce((a, t) => a + t.pnl, 0);
+  const grossLoss = Math.abs(trades.filter((t) => t.pnl <= 0).reduce((a, t) => a + t.pnl, 0));
+  return {
+    trades: trades.length,
+    wins: wins.length,
+    winRate: trades.length ? wins.length / trades.length : 0,
+    netPts: trades.reduce((a, t) => a + t.pnl, 0),
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? Infinity : 0,
+  };
+}
+
 function summarize(trades: TradeResult[]): SetupStats {
   const wins = trades.filter((t) => t.pnl > 0);
   const losses = trades.filter((t) => t.pnl <= 0);
@@ -383,6 +442,8 @@ function summarize(trades: TradeResult[]): SetupStats {
     grossLoss,
     profitFactor: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? Infinity : 0,
     avgPts: trades.length ? netPts / trades.length : 0,
+    withDiv: fuel(trades.filter((t) => t.hasDiv)),
+    withoutDiv: fuel(trades.filter((t) => !t.hasDiv)),
   };
 }
 

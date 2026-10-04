@@ -1,21 +1,111 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FPMinute } from "@/lib/footprint";
 import { cdtToET, utcToET } from "@/lib/times";
 import { computeDivergences, cumulativeDelta } from "@/lib/divergence";
+
+const compact = (v: number): string => {
+  const a = Math.abs(v);
+  const s = v >= 0 ? "+" : "";
+  if (a >= 1_000_000) return `${s}${(v / 1_000_000).toFixed(1)}M`;
+  if (a >= 1_000) return `${s}${(v / 1_000).toFixed(1)}k`;
+  return `${s}${v}`;
+};
+
+/** one minute of the full-session strip (memoized — ~1400 cells, only the
+ *  live tail and the selection actually change between renders) */
+const StripCell = memo(function StripCell({
+  k,
+  x,
+  cum,
+  dv,
+  sel,
+  selRef,
+  toET,
+  onTap,
+}: {
+  k: number;
+  x: FPMinute;
+  cum: number;
+  dv?: "D2" | "D4";
+  sel: boolean;
+  selRef?: (el: HTMLButtonElement | null) => void;
+  toET: (hhmm: string) => string;
+  onTap: (k: number) => void;
+}) {
+  return (
+    <button
+      ref={selRef}
+      onClick={() => onTap(k)}
+      title={
+        dv
+          ? dv === "D2"
+            ? `D2 · bullish divergence — lower pivot low with HIGHER cumulative delta (sellers exhausted). Tap to inspect the bar and sync the chart.`
+            : `D4 · bearish divergence — higher pivot high with LOWER cumulative delta (buyers exhausted). Tap to inspect the bar and sync the chart.`
+          : `${toET(x.t)} NY · Δ ${x.delta >= 0 ? "+" : ""}${x.delta} · cumΔ ${cum >= 0 ? "+" : ""}${cum} — tap to sync the chart`
+      }
+      className={`w-9 min-w-9 flex-none rounded-b py-1 text-center font-mono ${
+        sel
+          ? "bg-zinc-900/70 ring-1 ring-amber-400"
+          : dv
+            ? dv === "D2"
+              ? "bg-long/10 hover:bg-long/20"
+              : "bg-short/10 hover:bg-short/20"
+            : "hover:bg-zinc-900/40"
+      }`}
+    >
+      <p className={`text-[9px] leading-[12px] tabular-nums ${x.delta >= 0 ? "text-long" : "text-short"}`}>{compact(x.delta)}</p>
+      <p className={`text-[9px] leading-[12px] tabular-nums ${cum >= 0 ? "text-long" : "text-short"}`}>{compact(cum)}</p>
+      <p className={`text-[10px] leading-[12px] ${dv ? (dv === "D2" ? "text-long" : "text-short") : "text-zinc-700"}`}>
+        {dv ? (dv === "D2" ? "▲" : "▼") : "·"}
+      </p>
+    </button>
+  );
+});
+
+/** one histogram bar of the per-minute strip — the same 36px column as the
+ *  stats cell below it, so the two rows scroll as one aligned grid */
+const HistBar = memo(function HistBar({
+  k,
+  x,
+  sel,
+  maxAbs,
+  toET,
+  onTap,
+}: {
+  k: number;
+  x: FPMinute;
+  sel: boolean;
+  maxAbs: number;
+  toET: (hhmm: string) => string;
+  onTap: (k: number) => void;
+}) {
+  const h = 15 + (Math.abs(x.delta) / maxAbs) * 85;
+  return (
+    <button
+      onClick={() => onTap(k)}
+      title={`${toET(x.t)} NY · Δ ${x.delta >= 0 ? "+" : ""}${x.delta} — tap to sync the chart`}
+      className={`w-9 min-w-9 flex-none rounded-[1px] ${sel ? "ring-1 ring-amber-400" : ""}`}
+      style={{ height: `${h}%`, background: x.delta >= 0 ? "#34d399" : "#f87171", opacity: 0.8 }}
+    />
+  );
+});
 
 export default function MinuteNavigator({
   minutes,
   date,
   absorption = [],
   timeMode = "cdt",
+  onSelect,
 }: {
   minutes: FPMinute[];
   date: string;
   absorption?: { t: string; price: number; side: "bid" | "ask"; bias: "bull" | "bear"; volume?: number; imbalance?: number }[];
   /** "cdt" = collected feed clock (US Central) · "utc" = live tick clock */
   timeMode?: "cdt" | "utc";
+  /** fired whenever the user taps/selects a bar — the page syncs the chart to it */
+  onSelect?: (t: string, d?: string) => void;
 }) {
   const toET = timeMode === "utc" ? utcToET : cdtToET;
   const n = minutes.length;
@@ -38,33 +128,58 @@ export default function MinuteNavigator({
     return map;
   }, [divergences]);
 
-  // sparkline context: last 16 bars (readable per-candle stats below)
-  const ctx = useMemo(() => minutes.slice(-16), [minutes]);
-  const maxAbs = Math.max(1, ...ctx.map((x) => Math.abs(x.delta)));
-  const selInCtx = i - (n - ctx.length);
+  // histogram scale across the WHOLE session (the strip shows every minute,
+  // so the reference is the session's biggest |Δ|, with a visible floor)
+  const maxAbs = Math.max(1, ...minutes.map((x) => Math.abs(x.delta)));
 
-  const stepBar = (dir: number) => {
+  /** select bar k and tell the page (which syncs the chart to that minute) */
+  const jumpTo = (k: number) => {
+    const kk = Math.min(Math.max(0, k), Math.max(0, n - 1));
     setPinned(false);
-    setIdx((v) => Math.min(Math.max(0, v + dir), Math.max(0, n - 1)));
+    setIdx(kk);
+    const mm = minutes[kk];
+    if (mm) onSelect?.(mm.t, mm.d);
+  };
+  const stepBar = (dir: number) => {
+    jumpTo(idx + dir);
   };
   const goLatest = () => {
     setPinned(true);
     setIdx(Math.max(0, n - 1));
+    const mm = minutes[Math.max(0, n - 1)];
+    if (mm) onSelect?.(mm.t, mm.d);
   };
 
-  const compact = (v: number): string => {
-    const a = Math.abs(v);
-    const s = v >= 0 ? "+" : "";
-    if (a >= 1_000_000) return `${s}${(v / 1_000_000).toFixed(1)}M`;
-    if (a >= 1_000) return `${s}${(v / 1_000).toFixed(1)}k`;
-    return `${s}${v}`;
-  };
+  // full-session strip scrolling: follow the live edge while pinned, centre
+  // the tapped bar while exploring. Cells call jumpTo through a ref so the
+  // memoized strip survives the per-tick minutes identity change.
+  const stripRef = useRef<HTMLDivElement>(null);
+  const selCellRef = useRef<HTMLButtonElement | null>(null);
+  const setSelCell = useCallback((el: HTMLButtonElement | null) => {
+    selCellRef.current = el;
+  }, []);
+  const jumpToRef = useRef<(k: number) => void>(() => {});
+  useEffect(() => {
+    jumpToRef.current = jumpTo;
+  });
+  const tapCell = useCallback((k: number) => jumpToRef.current(k), []);
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    if (pinned) {
+      el.scrollTo({ left: el.scrollWidth, behavior: "auto" });
+    } else {
+      selCellRef.current?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+    }
+  }, [i, pinned, n]);
 
   const pocOf = m.levels.reduce(
     (best, l) => (l.buy + l.sell > (best?.buy ?? 0) + (best?.sell ?? 0) ? l : best),
     m.levels[0],
   );
   const absorbs = absorption.filter((a) => a.t === m.t);
+  const divHere = divAt.get(i) ?? null;
+  const divDetail = divergences.find((d) => d.index === i) ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col rounded-md border border-zinc-800 bg-panel p-3">
@@ -87,10 +202,7 @@ export default function MinuteNavigator({
           min={0}
           max={Math.max(0, n - 1)}
           value={i}
-          onChange={(e) => {
-            setPinned(false);
-            setIdx(Number(e.target.value));
-          }}
+          onChange={(e) => jumpTo(Number(e.target.value))}
           className="min-w-40 flex-1 accent-amber-400"
         />
         <span className="whitespace-nowrap text-zinc-400">
@@ -151,50 +263,85 @@ export default function MinuteNavigator({
         )}
       </div>
 
-      {/* sparkline: last 16 minutes of delta — click to jump */}
-      <div className="mb-1 flex h-12 items-end gap-1 overflow-x-auto rounded border border-zinc-800/70 bg-zinc-950/60 px-1 py-1">
-        {ctx.map((x, k) => {
-          const h = 25 + (Math.abs(x.delta) / maxAbs) * 70;
-          return (
-            <button
-              key={k}
-              title={`${toET(x.t)} NY · Δ ${x.delta >= 0 ? "+" : ""}${x.delta}`}
-              onClick={() => {
-                setPinned(false);
-                setIdx(n - ctx.length + k);
-              }}
-              className={`min-w-0 flex-1 rounded-[1px] ${k === selInCtx ? "ring-1 ring-amber-400" : ""}`}
-              style={{ height: `${h}%`, background: x.delta >= 0 ? "#34d399" : "#f87171", opacity: 0.75 }}
-            />
-          );
-        })}
-      </div>
+      {/* divergence explainer — appears when the selected bar carries a D2/D4 */}
+      {divHere && (
+        <div
+          className={`mb-2 rounded border px-2 py-1.5 font-mono text-[11px] leading-snug ${
+            divHere === "D2" ? "border-long/40 bg-long/10" : "border-short/40 bg-short/10"
+          }`}
+        >
+          <span className={`font-bold ${divHere === "D2" ? "text-long" : "text-short"}`}>
+            {divHere === "D2" ? "▲ D2 · bullish divergence" : "▼ D4 · bearish divergence"}
+          </span>
+          {divDetail ? <span className="text-zinc-400"> — pivot at {divDetail.price.toFixed(2)}</span> : null}
+          <span className="block text-zinc-300">
+            {divHere === "D2"
+              ? "price made a LOWER pivot low than the previous pivot low, but cumulative delta (buy−sell) is HIGHER — the new low was pushed with less aggressive selling. Sellers are exhausting / buyers are absorbing. It's a symptom, not a trigger: wait for a reclaim (buyers stepping back in) before acting."
+              : "price made a HIGHER pivot high than the previous pivot high, but cumulative delta (buy−sell) is LOWER — the new high was pushed with less aggressive buying. Buyers are exhausting / sellers are absorbing. It's a symptom, not a trigger: wait for a rejection or a sweep-and-reclaim before acting."}
+          </span>
+        </div>
+      )}
 
-      {/* per-candle stats: Δ · cumΔ · divergence under each bar of the strip above */}
-      <div className="mb-2 flex gap-1 overflow-x-auto">
-        {ctx.map((x, k) => {
-          const barIdx = n - ctx.length + k;
-          const dv = divAt.get(barIdx);
-          const cum = cvd[barIdx] ?? 0;
-          return (
-            <button
-              key={k}
-              onClick={() => {
-                setPinned(false);
-                setIdx(barIdx);
-              }}
-              className={`min-w-[40px] flex-1 rounded-b py-1 text-center font-mono ${
-                k === selInCtx ? "bg-zinc-900/70 ring-1 ring-amber-400" : "hover:bg-zinc-900/40"
-              }`}
-            >
-              <p className={`text-[9px] leading-[12px] tabular-nums ${x.delta >= 0 ? "text-long" : "text-short"}`}>{compact(x.delta)}</p>
-              <p className={`text-[9px] leading-[12px] tabular-nums ${cum >= 0 ? "text-long" : "text-short"}`}>{compact(cum)}</p>
-              <p className={`text-[10px] leading-[12px] ${dv ? (dv === "D2" ? "text-long" : "text-short") : "text-zinc-700"}`}>
-                {dv ? (dv === "D2" ? "▲" : "▼") : "·"}
-              </p>
-            </button>
-          );
-        })}
+      {/* divergence index — every D2/D4 of the session in one place; tapping a
+          chip selects that bar, shows its explainer and syncs the chart */}
+      {divergences.length > 0 && (
+        <div className="mb-2 flex max-h-20 flex-wrap items-center gap-1 overflow-y-auto rounded border border-zinc-800/70 bg-zinc-950/60 px-1.5 py-1">
+          <span className="mr-1 font-mono text-[9px] uppercase tracking-wider text-zinc-500">divergences · {divergences.length}</span>
+          {divergences.map((dv) => {
+            const active = dv.index === i;
+            const bull = dv.kind === "D2";
+            return (
+              <button
+                key={dv.index}
+                onClick={() => jumpTo(dv.index)}
+                title={
+                  bull
+                    ? `D2 · bullish divergence at ${toET(minutes[dv.index].t)} NY — lower pivot low with HIGHER cumulative delta (sellers exhausted). Tap to inspect the bar and sync the chart.`
+                    : `D4 · bearish divergence at ${toET(minutes[dv.index].t)} NY — higher pivot high with LOWER cumulative delta (buyers exhausted). Tap to inspect the bar and sync the chart.`
+                }
+                className={`rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none ${
+                  active
+                    ? bull
+                      ? "border-long bg-long/25 text-long"
+                      : "border-short bg-short/25 text-short"
+                    : bull
+                      ? "border-long/40 bg-long/5 text-long/90 hover:bg-long/15"
+                      : "border-short/40 bg-short/5 text-short/90 hover:bg-short/15"
+                }`}
+              >
+                {bull ? "▲" : "▼"} {toET(minutes[dv.index].t)} @ {dv.price.toFixed(2)}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* per-minute strip: histogram (Δ) + stats (Δ · cumΔ · divergence), the
+          WHOLE session, one shared scroll — every histogram bar sits in the
+          same 36px column as its stats cell, so rows stay aligned */}
+      <div ref={stripRef} className="mb-2 overflow-x-auto rounded border border-zinc-800/70 bg-zinc-950/60 px-1 pb-0.5 pt-1">
+        <div className="flex w-max flex-col gap-1">
+          <div className="flex items-end gap-1" style={{ height: "2.5rem" }}>
+            {minutes.map((x, k) => (
+              <HistBar key={k} k={k} x={x} sel={k === i} maxAbs={maxAbs} toET={toET} onTap={tapCell} />
+            ))}
+          </div>
+          <div className="flex gap-1">
+            {minutes.map((x, k) => (
+              <StripCell
+                key={k}
+                k={k}
+                x={x}
+                cum={cvd[k] ?? 0}
+                dv={divAt.get(k)}
+                sel={k === i}
+                selRef={k === i ? setSelCell : undefined}
+                toET={toET}
+                onTap={tapCell}
+              />
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* ladder */}
@@ -204,7 +351,8 @@ export default function MinuteNavigator({
         <span className="text-short">▼ sell imb</span>
         <span>◆ diagonal</span>
         <span>□ zero-side</span>
-        <span>Δ · cumΔ · divergence under each bar of the strip above</span>
+        <span>histogram (Δ) · Δ · cumΔ · divergence per minute — full session, scroll ↔ · tinted cells = divergence</span>
+        <span className="text-warn">tapping a bar (or ◀/▶/slider) syncs the chart to that minute</span>
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-6 gap-x-2 gap-y-0 overflow-y-auto pr-2 font-mono text-[10px] leading-4">
         <div className="col-span-6 grid grid-cols-6 border-b border-zinc-800 pb-0.5 text-zinc-500">

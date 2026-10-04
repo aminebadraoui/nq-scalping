@@ -1,9 +1,26 @@
 import { Callout, Section } from "@/components/ui";
 
+/** live FEED_* switch states as served by /api/gc?action=health */
+export type FeedFlags = {
+  momentum?: boolean;
+  rth?: boolean;
+  open?: boolean;
+  openDrive?: boolean;
+  openPullback?: boolean;
+  openSniper?: boolean;
+  reversal?: boolean;
+  sweepReclaim?: boolean;
+  pullbackTicket?: boolean;
+  unusualVolume?: boolean;
+};
+
 type Strategy = {
   emoji: string;
   name: string;
+  /** static status, used when no live feed flags are available (docs page) */
   status: string;
+  /** the FEED_* flags that control this strategy — every one must be ON for it to fire */
+  feeds?: (keyof FeedFlags)[];
   window: string;
   conditions: string[];
   mechanics: { entry: string; stop: string; target: string; risk: string; gap?: string };
@@ -16,6 +33,7 @@ const STRATEGIES: Strategy[] = [
     emoji: "⚡",
     name: "MOMENTUM — the one trade signal",
     status: "LIVE",
+    feeds: ["momentum"],
     window: "Globex only · 18:00 → 9:30 ET (RTH 9:30–16:00 excluded)",
     conditions: [
       "TRIGGER A — failed-flush breakout: a bar with ≥70% one-sided volume (buy-frac ≤0.30 for longs) and volume ≥ max(15, ½×60-bar median, 250)",
@@ -27,7 +45,7 @@ const STRATEGIES: Strategy[] = [
     ],
     mechanics: {
       entry: "trigger bar's close",
-      stop: "trigger bar's low −0.5 (short: high +0.5)",
+      stop: "trigger bar's low −0.5 (short: high +0.5) · stops tighter than 3.5 pts widen to entry ∓3.5 (1R target follows) · under 3 pts never trades",
       target: "1R (1 × entry-to-stop distance)",
       risk: "3–30 pts · ≥5-bar gap",
     },
@@ -42,6 +60,7 @@ const STRATEGIES: Strategy[] = [
     emoji: "🟦",
     name: "RTH — footprint-proven continuation",
     status: "LIVE",
+    feeds: ["rth"],
     window: "RTH only · 9:30 → 16:00 ET (ends at the 16:00 closing bar)",
     conditions: [
       "A bar in RTH with ≥60% one-sided volume (buy-frac ≥0.60 for longs; mirror ≤0.40)",
@@ -67,6 +86,7 @@ const STRATEGIES: Strategy[] = [
     emoji: "🔔",
     name: "OPEN DRIVE — the 9:30 scan",
     status: "LIVE",
+    feeds: ["open", "openDrive"],
     window: "9:30 → 9:59 ET",
     conditions: [
       "Track the running opening-range high/low and cumulative delta from 9:30",
@@ -89,6 +109,7 @@ const STRATEGIES: Strategy[] = [
     emoji: "🔔",
     name: "OPEN PULLBACK — the morning instinct, objective",
     status: "DEPLOYED — OFF (FEED_OPEN_PULLBACK=0)",
+    feeds: ["open", "openPullback"],
     window: "9:30 → 10:30 ET",
     conditions: [
       "TREND: the trailing 15-bar cumulative delta is positive (mirror: negative)",
@@ -110,6 +131,7 @@ const STRATEGIES: Strategy[] = [
     emoji: "🔔",
     name: "OPEN SNIPER — the 9:36:01 trade",
     status: "DEPLOYED — OFF (FEED_OPEN_SNIPER=0)",
+    feeds: ["open", "openSniper"],
     window: "9:36 → 9:45 ET",
     conditions: [
       "Opening range = the first 6 minutes (9:30–9:35); anchor = its low/high",
@@ -131,6 +153,7 @@ const STRATEGIES: Strategy[] = [
     emoji: "⚠",
     name: "UNUSUAL VOLUME — heads-up, never a trade",
     status: "LIVE (context only)",
+    feeds: ["unusualVolume"],
     window: "all hours",
     conditions: [
       "A completed minute with volume ≥2× its hour's median AND ≥70% one-sided",
@@ -142,94 +165,112 @@ const STRATEGIES: Strategy[] = [
   },
 ];
 
-const RETIRED = [
-  { name: "LVN reversal", note: "the original fade playbook — docs/strategy/STRATEGY.md; FEED_REVERSAL=0" },
-  { name: "Sweep-reclaim", note: "session-extreme fades — retired because it fired shorts into one-sided runs; FEED_SWEEP_RECLAIM=0" },
-  { name: "Pullback-exhausted ticket", note: "the trade ticket inside the unusual-volume watch — FEED_PULLBACK_TICKET=0" },
+const RETIRED: { name: string; note: string; feeds?: (keyof FeedFlags)[] }[] = [
+  { name: "LVN reversal", note: "the original fade playbook — docs/strategy/STRATEGY.md; the box pipeline (order flow + price action + options) with the 3-required + confirmation card gate", feeds: ["reversal"] },
+  { name: "Sweep-reclaim", note: "session-extreme fades — retired because it fired shorts into one-sided runs", feeds: ["sweepReclaim"] },
+  { name: "Pullback-exhausted ticket", note: "the trade ticket inside the unusual-volume watch", feeds: ["pullbackTicket"] },
   { name: "Open daily rule + strict drive", note: "superseded config modes in lib/openDrive.ts (79% hit every day / 92% hit ~1 day in 8)" },
 ];
 
-export function LiveStrategiesSection() {
+function statusFor(s: Strategy, feeds: FeedFlags | null): { text: string; cls: string } {
+  if (!feeds) {
+    // static docs render
+    const tone = s.status.startsWith("LIVE") ? "emerald" : "zinc";
+    return { text: s.status, cls: tone === "emerald" ? "border-emerald-500/40 text-emerald-400" : "border-zinc-600 text-zinc-400" };
+  }
+  const keys = s.feeds ?? [];
+  if (keys.length === 0) return { text: s.status, cls: "border-zinc-600 text-zinc-400" };
+  const on = keys.every((k) => feeds[k] === true);
+  return on
+    ? { text: "ON — live", cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" }
+    : { text: `OFF — ${keys.join(" + ")} disabled`, cls: "border-zinc-600 bg-zinc-900/40 text-zinc-400" };
+}
+
+export function LiveStrategiesSection({ feeds = null }: { feeds?: FeedFlags | null }) {
+  const callout = feeds
+    ? `⚡ momentum ${feeds.momentum ? "ON" : "OFF"} · 🟦 RTH ${feeds.rth ? "ON" : "OFF"} · 🔔 open master ${feeds.open ? "ON" : "OFF"} (drive ${feeds.openDrive ? "ON" : "OFF"}, pullback ${feeds.openPullback ? "ON" : "OFF"}, sniper ${feeds.openSniper ? "ON" : "OFF"}) · ⚠ unusual volume ${feeds.unusualVolume ? "ON" : "OFF"} · reversal ${feeds.reversal ? "ON" : "OFF"} / sweep-reclaim ${feeds.sweepReclaim ? "ON" : "OFF"} / pullback ticket ${feeds.pullbackTicket ? "ON" : "OFF"} — read live from this server's environment.`
+    : "⚡ momentum ON · 🟦 RTH ON · 🔔 open master ON (drive ON, pullback/sniper OFF) · ⚠ unusual volume ON · reversal / sweep-reclaim / pullback ticket OFF.";
+
   return (
     <>
       <Section
-        kicker="07 · Live strategies"
+        kicker="Live strategies"
         title="Every strategy, condition by condition"
         lede="What the feed actually trades right now — each condition is exactly what the code checks, and every number is the backtest result over the same 568-session archive (2023-12 → 2026-09, lookahead-free, 0.5 pt round-trip cost, pessimistic first-touch scoring, sequential one-trade-at-a-time replay, MyFundedFutures Rapid EOD 50k account simulator)."
       />
 
-      <Callout tone="info" title="LIVE FEED RIGHT NOW">
-        ⚡ momentum ON · 🟦 RTH ON · 🔔 open master ON (drive ON, pullback/sniper OFF) · ⚠ unusual volume ON ·
-        reversal / sweep-reclaim / pullback ticket OFF.
-      </Callout>
+      <Callout tone="info" title={feeds ? "LIVE FEED RIGHT NOW — from this server" : "LIVE FEED RIGHT NOW"}>{callout}</Callout>
 
       <div className="space-y-10">
-        {STRATEGIES.map((s) => (
-          <section key={s.name} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-5">
-            <div className="mb-3 flex flex-wrap items-center gap-3">
-              <h3 className="text-xl font-bold text-zinc-50">
-                {s.emoji} {s.name}
-              </h3>
-              <span
-                className={`rounded border px-2 py-0.5 font-mono text-xs ${
-                  s.status === "LIVE"
-                    ? "border-emerald-500/40 text-emerald-400"
-                    : s.status === "LIVE (context only)"
-                      ? "border-amber-500/40 text-amber-400"
-                      : "border-zinc-600 text-zinc-400"
-                }`}
-              >
-                {s.status}
-              </span>
-            </div>
-            <p className="mb-4 font-mono text-[11px] text-zinc-500">{s.window}</p>
-            <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-zinc-500">conditions — all must hold</p>
-            <ol className="mb-4 space-y-2">
-              {s.conditions.map((c, i) => (
-                <li key={i} className="flex gap-3">
-                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-info/40 font-mono text-xs text-info">
-                    {i + 1}
-                  </span>
-                  <p className="text-sm leading-relaxed text-zinc-300">{c}</p>
-                </li>
-              ))}
-            </ol>
-            <div className="mb-4 grid gap-2 rounded border border-zinc-800 bg-zinc-900/40 p-3 sm:grid-cols-2 lg:grid-cols-4">
-              {[
-                ["ENTRY", s.mechanics.entry],
-                ["STOP", s.mechanics.stop],
-                ["TARGET", s.mechanics.target],
-                ["RISK", s.mechanics.risk],
-              ].map(([k, v]) => (
-                <div key={k}>
-                  <p className="font-mono text-[10px] text-long">{k}</p>
-                  <p className="text-sm text-zinc-200">{v}</p>
-                </div>
-              ))}
-            </div>
-            <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-zinc-500">backtest findings</p>
-            <ul className="space-y-1.5">
-              {s.stats.map((st, i) => (
-                <li key={i} className="flex gap-3 text-sm">
-                  <span className="w-32 shrink-0 font-mono text-[11px] text-zinc-500">{st.label}</span>
-                  <span className="text-zinc-200">{st.value}</span>
-                </li>
-              ))}
-            </ul>
-            {s.note ? <p className="mt-3 text-sm italic text-zinc-400">{s.note}</p> : null}
-          </section>
-        ))}
+        {STRATEGIES.map((s) => {
+          const st = statusFor(s, feeds);
+          return (
+            <section key={s.name} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-5">
+              <div className="mb-3 flex flex-wrap items-center gap-3">
+                <h3 className="text-xl font-bold text-zinc-50">
+                  {s.emoji} {s.name}
+                </h3>
+                <span className={`rounded border px-2 py-0.5 font-mono text-xs ${st.cls}`}>{st.text}</span>
+              </div>
+              <p className="mb-4 font-mono text-[11px] text-zinc-500">{s.window}</p>
+              <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-zinc-500">conditions — all must hold</p>
+              <ol className="mb-4 space-y-2">
+                {s.conditions.map((c, i) => (
+                  <li key={i} className="flex gap-3">
+                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-info/40 font-mono text-xs text-info">
+                      {i + 1}
+                    </span>
+                    <p className="text-sm leading-relaxed text-zinc-300">{c}</p>
+                  </li>
+                ))}
+              </ol>
+              <div className="mb-4 grid gap-2 rounded border border-zinc-800 bg-zinc-900/40 p-3 sm:grid-cols-2 lg:grid-cols-4">
+                {[
+                  ["ENTRY", s.mechanics.entry],
+                  ["STOP", s.mechanics.stop],
+                  ["TARGET", s.mechanics.target],
+                  ["RISK", s.mechanics.risk],
+                ].map(([k, v]) => (
+                  <div key={k}>
+                    <p className="font-mono text-[10px] text-long">{k}</p>
+                    <p className="text-sm text-zinc-200">{v}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-zinc-500">backtest findings</p>
+              <ul className="space-y-1.5">
+                {s.stats.map((st, i) => (
+                  <li key={i} className="flex gap-3 text-sm">
+                    <span className="w-32 shrink-0 font-mono text-[11px] text-zinc-500">{st.label}</span>
+                    <span className="text-zinc-200">{st.value}</span>
+                  </li>
+                ))}
+              </ul>
+              {s.note ? <p className="mt-3 text-sm italic text-zinc-400">{s.note}</p> : null}
+            </section>
+          );
+        })}
       </div>
 
       <section className="mt-10 rounded-lg border border-zinc-800 bg-zinc-900/60 p-5">
         <h3 className="mb-4 text-xl font-bold text-zinc-50">Retired / archived</h3>
         <ul className="space-y-2">
-          {RETIRED.map((r) => (
-            <li key={r.name} className="flex gap-3 text-sm">
-              <span className="w-44 shrink-0 font-mono text-[11px] text-zinc-500">{r.name}</span>
-              <span className="text-zinc-300">{r.note}</span>
-            </li>
-          ))}
+          {RETIRED.map((r) => {
+            const on = feeds && r.feeds ? r.feeds.every((k) => feeds[k] === true) : null;
+            return (
+              <li key={r.name} className="flex gap-3 text-sm">
+                <span className="w-44 shrink-0 font-mono text-[11px] text-zinc-500">{r.name}</span>
+                <span className="min-w-0">
+                  <span className="text-zinc-300">{r.note}</span>
+                  {on !== null && (
+                    <span className={`ml-2 rounded border px-1.5 py-0.5 font-mono text-[10px] ${on ? "border-emerald-500/40 text-emerald-400" : "border-zinc-700 text-zinc-500"}`}>
+                      {on ? "ENABLED" : "off"}
+                    </span>
+                  )}
+                </span>
+              </li>
+            );
+          })}
         </ul>
       </section>
 

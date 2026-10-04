@@ -18,6 +18,16 @@ import { dbEnabled, getDb } from "./gcdb";
 
 export type SignalSide = "long" | "short" | "none";
 
+/** the post-fire outcome columns (written by the scorer — observational only) */
+export type SignalOutcomeRow = {
+  outcome: "win" | "loss" | "time" | "open" | "";
+  exitPrice: number | null;
+  exitTime: string;
+  exitReason: "target" | "stop" | "time" | "";
+  mfePts: number | null;
+  maePts: number | null;
+};
+
 export type SignalHistoryEntry = {
   /** process-generated unique id (also the DB dedupe key) */
   id: string;
@@ -50,6 +60,8 @@ export type SignalHistoryEntry = {
   reason: string;
   /** the detector's feature vector at signal time (strategy analysis input) */
   features: Record<string, unknown> | null;
+  /** did this signal win or lose (price-replay score; "" = unscored) */
+  outcome?: SignalOutcomeRow;
 };
 
 const MAX_MEMORY = 200;
@@ -89,7 +101,16 @@ create table if not exists signals (
 );
 alter table signals add column if not exists size text not null default '';
 alter table signals add column if not exists features jsonb;
+-- post-fire win/loss scoring (observational only — never read by the signal engine)
+alter table signals add column if not exists outcome text not null default '';
+alter table signals add column if not exists exit_price numeric(10,2);
+alter table signals add column if not exists exit_time text not null default '';
+alter table signals add column if not exists exit_reason text not null default '';
+alter table signals add column if not exists mfe_pts numeric(10,2);
+alter table signals add column if not exists mae_pts numeric(10,2);
+alter table signals add column if not exists scored_at timestamptz;
 create index if not exists signals_ts_idx on signals (ts desc);
+create index if not exists signals_outcome_idx on signals (outcome, day);
 `;
 
 async function ensureTable(): Promise<boolean> {
@@ -184,6 +205,12 @@ type DbRow = {
   sent: boolean;
   reason: string;
   features: unknown;
+  outcome: string;
+  exit_price: string | number | null;
+  exit_time: string;
+  exit_reason: string;
+  mfe_pts: string | number | null;
+  mae_pts: string | number | null;
 };
 
 function mapDbRow(r: DbRow): SignalHistoryEntry {
@@ -215,7 +242,34 @@ function mapDbRow(r: DbRow): SignalHistoryEntry {
     sent: !!r.sent,
     reason: r.reason,
     features,
+    outcome: {
+      outcome: (r.outcome || "") as SignalOutcomeRow["outcome"],
+      exitPrice: r.exit_price === null || r.exit_price === undefined ? null : Number(r.exit_price),
+      exitTime: r.exit_time ?? "",
+      exitReason: (r.exit_reason || "") as SignalOutcomeRow["exitReason"],
+      mfePts: r.mfe_pts === null || r.mfe_pts === undefined ? null : Number(r.mfe_pts),
+      maePts: r.mae_pts === null || r.mae_pts === undefined ? null : Number(r.mae_pts),
+    },
   };
+}
+
+/** write a scored outcome back to the row (idempotent; observational only) */
+export async function updateSignalOutcome(key: string, o: SignalOutcomeRow): Promise<void> {
+  if (!(await ensureTable())) return;
+  try {
+    await getDb()`
+      update signals
+      set outcome = ${o.outcome},
+          exit_price = ${o.exitPrice},
+          exit_time = ${o.exitTime},
+          exit_reason = ${o.exitReason},
+          mfe_pts = ${o.mfePts},
+          mae_pts = ${o.maePts},
+          scored_at = now()
+      where key = ${key}`;
+  } catch {
+    /* best-effort */
+  }
 }
 
 /**
@@ -229,7 +283,8 @@ export async function getSignalHistory(limit = 100): Promise<SignalHistoryEntry[
   if (await ensureTable()) {
     try {
       const rows = (await getDb()`
-        select key, ts, day, time_et, symbol, side, price, entry, stop, target, size, verdict, headline, source, test, sent, reason, features
+        select key, ts, day, time_et, symbol, side, price, entry, stop, target, size, verdict, headline, source, test, sent, reason, features,
+               outcome, exit_price, exit_time, exit_reason, mfe_pts, mae_pts
         from signals order by ts desc limit ${limit}`) as unknown as DbRow[];
       const seen = new Set(mem.map((m) => m.id));
       for (const r of rows) {

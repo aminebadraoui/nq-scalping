@@ -110,6 +110,15 @@ create table if not exists signals (
   source   text not null default 'live',
   test     boolean not null default false,
   sent     boolean not null default false,
-  reason   text not null default ''
+  reason   text not null default '',
+  -- post-fire win/loss scoring (observational only — never read by the signal engine)
+  outcome      text not null default '',      -- win | loss | time | open | '' (unscored)
+  exit_price   numeric(10,2),
+  exit_time    text not null default '',
+  exit_reason  text not null default '',      -- target | stop | time
+  mfe_pts      numeric(10,2),
+  mae_pts      numeric(10,2),
+  scored_at    timestamptz
 );
 create index if not exists signals_ts_idx on signals (ts desc);
+create index if not exists signals_outcome_idx on signals (outcome, day);

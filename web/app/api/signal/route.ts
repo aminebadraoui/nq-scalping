@@ -45,6 +45,13 @@ export async function GET() {
       test: h.test,
       sent: h.sent,
       reason: h.reason,
+      // post-fire win/loss score (price replay; observational only)
+      outcome: h.outcome?.outcome ?? "",
+      exitPrice: h.outcome?.exitPrice ?? null,
+      exitTime: h.outcome?.exitTime ?? "",
+      exitReason: h.outcome?.exitReason ?? "",
+      mfePts: h.outcome?.mfePts ?? null,
+      maePts: h.outcome?.maePts ?? null,
       // the DOM (iceberg) picture captured at signal time — observational only
       dom: h.features?.dom ?? null,
     })),

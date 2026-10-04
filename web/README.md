@@ -2,7 +2,11 @@
 
 Two surfaces, nothing else:
 
-- **`/` — the dashboard** (the working surface). Live NQ order flow: 1-minute
+- **`/` — the dashboard** (the working surface). At the top, the **AI macro
+  briefing** card: DeepSeek (v4-pro) interprets all the macro-context data
+  into a ≤5-bullet read + watch-fors (generated 09:15 ET pre-open, 17:45 ET
+  post-close, or via the card's refresh button; display-only — never touches
+  signals). Below it, live NQ order flow: 1-minute
   candles with real OHLC, the P0–P5 profile stack (P0 = most recent → P5 = oldest): POC / VAH / VAL / LVN
   zones drawn with distance-weighted emphasis), developing VWAP, the footprint
   minute ladder with bid×ask imbalances, the cross-bar **footprint story**

@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
  * self-improving loop), the theory lab, and the research. */
 const links = [
   { href: "/", label: "Dashboard", note: "live working surface" },
+  { href: "/strategies", label: "Strategies", note: "how the live signal feed works, condition by condition" },
   { href: "/journal", label: "Journal", note: "trades, win/loss analysis, AI review + gates" },
   { href: "/lab", label: "Lab", note: "test entry theories against the collected sessions" },
   { href: "/docs", label: "Docs", note: "the research" },

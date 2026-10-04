@@ -9,7 +9,12 @@ type Stats = {
   netPts: number;
   profitFactor: number;
   avgPts: number;
+  /** divergence-fuel split (present when the sweep was run with the div store) */
+  withDiv?: FuelSplit;
+  withoutDiv?: FuelSplit;
 };
+
+type FuelSplit = { trades: number; wins: number; winRate: number; netPts: number; profitFactor: number };
 
 type ConfigResult = {
   config: { name: string; floor: number; dom: number; posHi: number; posLo: number; localBars: number; pbNear: number };
@@ -282,6 +287,15 @@ function Row({ r, best, expanded, onToggle }: { r: ConfigResult; best: boolean; 
                 </span>
               ))}
             </div>
+            {r.train.withDiv && r.test.withDiv && (
+              <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-zinc-400">
+                <span className="text-zinc-500">divergence fuel (matching D2/D4 ≤10 bars before entry):</span>
+                <Fuel label="train with" s={r.train.withDiv} against={r.train.withoutDiv} />
+                <Fuel label="train without" s={r.train.withoutDiv} against={r.train.withDiv} />
+                <Fuel label="test with" s={r.test.withDiv} against={r.test.withoutDiv} />
+                <Fuel label="test without" s={r.test.withoutDiv} against={r.test.withDiv} />
+              </div>
+            )}
           </td>
         </tr>
       )}
@@ -290,6 +304,19 @@ function Row({ r, best, expanded, onToggle }: { r: ConfigResult; best: boolean; 
 }
 
 /* ---------------- overfitting-audit section ---------------- */
+
+/** one divergence-fuel cohort, colored by whether it beats its counterpart */
+function Fuel({ label, s, against }: { label: string; s?: FuelSplit; against?: FuelSplit }) {
+  if (!s || !against) return null;
+  const better = s.winRate > against.winRate + 0.001;
+  const worse = s.winRate < against.winRate - 0.001;
+  const tone = better ? "text-emerald-300" : worse ? "text-red-300" : "text-zinc-300";
+  return (
+    <span className={tone} title={`net ${fmt(s.netPts)} pts · PF ${pf(s.profitFactor)}`}>
+      {label}: <b>{Math.round(s.winRate * 100)}%</b> ({s.trades}t · net {fmt(s.netPts)})
+    </span>
+  );
+}
 
 function verdictTone(flag: string): string {
   const f = flag.toLowerCase();

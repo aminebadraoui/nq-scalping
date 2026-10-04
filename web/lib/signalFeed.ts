@@ -49,6 +49,7 @@ import { runnerTracker } from "./runnerTracker";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
 import { uvWatchCheck, type UVWatch } from "./unusualVolume";
+import { updateLiveOutcomes } from "./signalOutcomes";
 import { sendTelegram } from "./notify";
 import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
@@ -1737,6 +1738,12 @@ class SignalFeed {
       await this.checkOpen();
       await this.checkRth();
       this.feedGapCheck();
+      // post-fire outcome tracking: re-score today's still-open signals from
+      // the live bars and write win/loss into the signals table as the day
+      // progresses. OBSERVATIONAL ONLY — the outcome columns are never read
+      // by the signal engine, so this can never change a decision
+      // (fire-and-forget; DB hiccups are swallowed inside).
+      void updateLiveOutcomes(getLive().state.minutes).catch(() => {});
       void checkExpectations().catch(() => {});
       void checkTimeExits().catch(() => {});
     } catch (e) {

@@ -71,6 +71,15 @@ async function main() {
     for (const y of wf.trainBest.byYear) {
       console.log(`  ${y.year}: ${y.stats.netPts.toFixed(1)} pts · ${y.stats.trades} trades · ${Math.round(y.stats.winRate * 100)}% win`);
     }
+    // the divergence-fuel question: does a matching D2/D4 move the win rate?
+    const t = wf.testOfBest;
+    console.log(`\nDIVERGENCE FUEL — walk-forward winner, out-of-sample (test):`);
+    console.log(
+      `  with matching divergence   n=${t.withDiv.trades.toString().padStart(4)}  win=${String(Math.round(t.withDiv.winRate * 100)).padStart(3)}%  net=${t.withDiv.netPts.toFixed(1).padStart(8)} pts  PF=${Number.isFinite(t.withDiv.profitFactor) ? t.withDiv.profitFactor.toFixed(2) : "inf"}`,
+    );
+    console.log(
+      `  without divergence         n=${t.withoutDiv.trades.toString().padStart(4)}  win=${String(Math.round(t.withoutDiv.winRate * 100)).padStart(3)}%  net=${t.withoutDiv.netPts.toFixed(1).padStart(8)} pts  PF=${Number.isFinite(t.withoutDiv.profitFactor) ? t.withoutDiv.profitFactor.toFixed(2) : "inf"}`,
+    );
   }
 }
 

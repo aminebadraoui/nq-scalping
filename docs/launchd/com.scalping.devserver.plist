@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Dashboard dev server (next dev on :3000) under launchd so it survives
+  SIGTERM sweeps that keep killing harness-spawned background jobs.
+  KeepAlive=true restarts it automatically on any exit.
+
+  Install (load from the workspace path — no copy to ~/Library needed):
+    launchctl bootstrap gui/$(id -u) docs/launchd/com.scalping.devserver.plist
+  Restart after a change:
+    launchctl kickstart -k gui/$(id -u)/com.scalping.devserver
+  Stop permanently:
+    launchctl bootout gui/$(id -u)/com.scalping.devserver
+  Log: /tmp/nq-dev-launchd.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.scalping.devserver</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /Users/amean/PROJECTS/DEV/Scalping/web &amp;&amp; exec npm run dev</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/amean/PROJECTS/DEV/Scalping/web</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/nq-dev-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/nq-dev-launchd.log</string>
+</dict>
+</plist>

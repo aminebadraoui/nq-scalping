@@ -79,6 +79,14 @@ log "ingest window: $SINCE .. $TO"
 INGEST_RC=$?
 log "ingest exit=$INGEST_RC"
 
+log "--- divergence store refresh (progressive, backtest-grade) ---"
+# Canonical per-session D2/D4 artifacts the backtest engine reads
+# (gcdata/data/divergences/*.json). New/updated sessions are written the
+# night they are collected; --skip-existing leaves older days untouched.
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./db/divStore.ts --since "$SINCE" --skip-existing 2>&1
+DIVSTORE_RC=$?
+log "divStore exit=$DIVSTORE_RC"
+
 log "--- reconcile trades (CrossTrade fills ↔ signals) ---"
 # Joins the day's Telegram cards with the CrossTrade fill record into the
 # Neon `trades` + `reconcile_runs` tables ("did that card trade, and how?").
@@ -86,6 +94,15 @@ log "--- reconcile trades (CrossTrade fills ↔ signals) ---"
 "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/reconcileTrades.ts 2>&1
 RECONCILE_RC=$?
 log "reconcile exit=$RECONCILE_RC"
+
+log "--- score signal outcomes (win/loss replay, observational) ---"
+# Replays every recorded signal against the collected session files and
+# writes win/loss/time into the signals table (the dashboard's signal
+# history shows the outcome). Idempotent + deterministic. Informational
+# only — the signal engine never reads these columns.
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/scoreSignals.ts 2>&1
+SCORESIG_RC=$?
+log "scoreSignals exit=$SCORESIG_RC"
 
 log "--- analyze trades (win/loss framework) ---"
 # Per-trade execution anatomy (drift, MFE/MAE, stop-runs) + win/loss
@@ -102,6 +119,15 @@ log "--- mine strategy insights (self-improvement) ---"
 "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/strategyInsights.ts 2>&1
 INSIGHTS_RC=$?
 log "strategyInsights exit=$INSIGHTS_RC"
+
+log "--- AI macro briefing (post-close) ---"
+# DeepSeek situation analysis over the macro context + the day's now-ingested
+# tape → one `macro_briefings` row for the dashboard card. Runs AFTER ingest
+# so the snapshot reads vendor-grade bars. Best-effort: the card also has the
+# 09:15 ET pre-open row and its own refresh button.
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/macroBriefing.ts post-close 2>&1
+BRIEFING_RC=$?
+log "macroBriefing exit=$BRIEFING_RC"
 
 log "--- archive to R2 + free the disk ---"
 if [ -n "${R2_ACCOUNT_ID:-}" ] || grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
@@ -152,9 +178,12 @@ else
 fi
 
 FINAL_RC=$INGEST_RC
+if [ "$DIVSTORE_RC" -ne 0 ]; then FINAL_RC=$DIVSTORE_RC; fi
 if [ "$RECONCILE_RC" -ne 0 ]; then FINAL_RC=$RECONCILE_RC; fi
+if [ "$SCORESIG_RC" -ne 0 ]; then FINAL_RC=$SCORESIG_RC; fi
 if [ "$ANALYSIS_RC" -ne 0 ]; then FINAL_RC=$ANALYSIS_RC; fi
 if [ "$INSIGHTS_RC" -ne 0 ]; then FINAL_RC=$INSIGHTS_RC; fi
+if [ "${BRIEFING_RC:-0}" -ne 0 ]; then FINAL_RC=$BRIEFING_RC; fi
 if [ "$RISKSTACK_RC" -ne 0 ]; then FINAL_RC=$RISKSTACK_RC; fi
-log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC reconcile=$RECONCILE_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC riskstack=$RISKSTACK_RC) ==="
+log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC divstore=$DIVSTORE_RC reconcile=$RECONCILE_RC scoresig=$SCORESIG_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC briefing=${BRIEFING_RC:-0} riskstack=$RISKSTACK_RC) ==="
 exit $FINAL_RC

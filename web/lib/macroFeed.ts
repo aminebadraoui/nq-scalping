@@ -184,7 +184,7 @@ export async function getNews(): Promise<MacroSource & { data: NewsWeek | null }
 const EARNINGS_TTL = 6 * 60 * 60 * 1000; // 6 h
 
 export async function getEarnings(): Promise<MacroSource & { data: QuarterData | null }> {
-  const key = "earnings-quarter-v3";
+  const key = "earnings-quarter-v4";
   const hit = cache.get(key);
   try {
     const fresh = await cached(key, EARNINGS_TTL, fetchNdxQuarter);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { cdtToET } from "@/lib/times";
 
 type CompactCandidate = {
   side: "bid" | "ask";
@@ -24,7 +25,7 @@ type DomContext = {
   es: { ts: number; candidates: CompactCandidate[] };
 };
 
-type HistoryEntry = {
+export type HistoryEntry = {
   ts: number;
   timeET: string;
   day: string;
@@ -42,6 +43,13 @@ type HistoryEntry = {
   sent: boolean;
   reason: string;
   dom?: DomContext | null;
+  /** post-fire price-replay score: win | loss | time | open | "" (unscored) */
+  outcome?: string;
+  exitPrice?: number | null;
+  exitTime?: string;
+  exitReason?: string;
+  mfePts?: number | null;
+  maePts?: number | null;
 };
 
 type SignalResponse = {
@@ -64,17 +72,50 @@ const SIDE_LABEL: Record<HistoryEntry["side"], string> = {
   none: "—",
 };
 
+const OUTCOME_STYLE: Record<string, string> = {
+  win: "border-long/40 bg-long/10 text-long",
+  loss: "border-short/40 bg-short/10 text-short",
+  time: "border-zinc-600 bg-zinc-800/40 text-zinc-300",
+  open: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+};
+
+const OUTCOME_LABEL: Record<string, string> = {
+  win: "✓ win",
+  loss: "✗ loss",
+  time: "⏱ time",
+  open: "● open",
+};
+
+function outcomeTitle(e: HistoryEntry): string {
+  if (!e.outcome) return "";
+  const pnl =
+    e.exitPrice !== null && e.exitPrice !== undefined && Number.isFinite(e.exitPrice)
+      ? (e.exitPrice - (parseFloat(e.entry) || e.price)) * (e.side === "long" ? 1 : -1)
+      : 0;
+  const parts = [`exit ${e.exitReason || "—"}`];
+  if (e.exitTime) parts.push(`@ ${cdtToET(e.exitTime)} NY`);
+  if (Number.isFinite(pnl)) parts.push(`${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} pts`);
+  if (e.mfePts !== null && e.mfePts !== undefined) parts.push(`MFE ${e.mfePts.toFixed(2)}`);
+  if (e.maePts !== null && e.maePts !== undefined) parts.push(`MAE ${e.maePts.toFixed(2)}`);
+  return parts.join(" · ");
+}
+
 function fmt(n: number): string {
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-export default function SignalHistory() {
+export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEntry) => void }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [live, setLive] = useState<boolean | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const closedCount = entries.filter((e) => e.outcome === "win" || e.outcome === "loss").length;
+  const wins = entries.filter((e) => e.outcome === "win").length;
+  const openCount = entries.filter((e) => e.outcome === "open").length;
+  const timeCount = entries.filter((e) => e.outcome === "time").length;
 
   useEffect(() => {
     let cancelled = false;
@@ -109,10 +150,28 @@ export default function SignalHistory() {
 
       <p className="mb-2 font-mono text-[10px] leading-snug text-zinc-500">
         every Telegram push from the always-on signal feed — the completed reversal sequence
-        (location + mechanism + trigger), most recent first
+        (location + mechanism + trigger), most recent first ·{" "}
+        {onInspect ? <span className="text-warn">click a signal to visualize its trade on the chart</span> : null}
       </p>
 
       {note && <p className="mb-2 font-mono text-[10px] text-warn">{note}</p>}
+
+      {loaded && entries.some((e) => e.outcome) && (
+        <p className="mb-2 font-mono text-[10px] text-zinc-500">
+          {closedCount > 0 ? (
+            <>
+              last {closedCount} closed: <span className="text-long">{wins}W</span> / <span className="text-short">{closedCount - wins}L</span>
+              {timeCount > 0 ? <span className="text-zinc-400"> · {timeCount}⏱</span> : null}
+              {openCount > 0 ? <span className="text-amber-300"> · {openCount} open</span> : null}
+            </>
+          ) : (
+            <>
+              {timeCount > 0 ? <span className="text-zinc-400">{timeCount}⏱</span> : null}
+              {openCount > 0 ? <span className="text-amber-300">{openCount} open so far</span> : null}
+            </>
+          )}
+        </p>
+      )}
 
       {loaded && entries.length === 0 && (
         <p className="font-mono text-xs text-zinc-600">
@@ -120,14 +179,41 @@ export default function SignalHistory() {
         </p>
       )}
 
-      <div className="max-h-[560px] space-y-1.5 overflow-y-auto pr-1">
-        {entries.map((e) => (
-          <div key={`${e.ts}|${e.day}|${e.side}|${e.price}`} className="rounded border border-zinc-800/70 px-2 py-1.5">
+      <div className="max-h-[420px] space-y-1.5 overflow-y-auto pr-1">
+        {entries.map((e) => {
+          const id = `${e.ts}|${e.day}|${e.side}|${e.price}`;
+          const active = activeId === id;
+          return (
+            <div
+              key={id}
+              role={onInspect ? "button" : undefined}
+              tabIndex={onInspect ? 0 : undefined}
+              onClick={() => {
+                if (!onInspect) return;
+                setActiveId(active ? null : id);
+                onInspect(e); // the page toggles: clicking the same signal clears the view
+              }}
+              onKeyDown={(ev) => {
+                if (onInspect && (ev.key === "Enter" || ev.key === " ")) {
+                  ev.preventDefault();
+                  setActiveId(id);
+                  onInspect(e);
+                }
+              }}
+              className={`rounded border border-zinc-800/70 px-2 py-1.5 transition-colors ${
+                onInspect ? "cursor-pointer hover:border-zinc-600 hover:bg-zinc-900/60" : ""
+              } ${active ? "border-amber-400/60 bg-amber-400/5" : ""}`}
+            >
             <div className="flex items-center justify-between gap-2 font-mono text-[10px]">
               <span className="text-zinc-400">
                 {e.day} {e.timeET || "—"} NY
               </span>
               <span className="flex items-center gap-1.5">
+                {e.outcome && OUTCOME_LABEL[e.outcome] ? (
+                  <span title={outcomeTitle(e)} className={`rounded border px-1 py-0.5 text-[9px] font-semibold ${OUTCOME_STYLE[e.outcome] ?? "border-zinc-700 text-zinc-500"}`}>
+                    {OUTCOME_LABEL[e.outcome]}
+                  </span>
+                ) : null}
                 {e.test && <span className="rounded border border-zinc-700 px-1 py-0.5 text-[9px] text-zinc-500">manual</span>}
                 <span className={`rounded border px-1 py-0.5 text-[9px] ${e.sent ? "border-info/40 bg-info/10 text-info" : "border-short/40 bg-short/10 text-short"}`}>
                   {e.sent ? "✓ sent" : "✗ failed"}
@@ -190,8 +276,9 @@ export default function SignalHistory() {
                 {e.dom.nq.candidates.length === 0 && e.dom.es.candidates.length === 0 && <div>no refill signatures in the window</div>}
               </div>
             )}
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
     </section>
   );

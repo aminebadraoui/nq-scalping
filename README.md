@@ -63,10 +63,12 @@ web/                 the dashboard + signal engine (Next.js 16, React 19, TS)
                      API:  /api/gc /api/live /api/dom /api/signal
                            /api/trades /api/insights /api/lab /api/backtest
                            /api/macro (display-only macro panels)
+                           /api/briefing (the AI macro briefing card)
   components/        dashboard panels + the /docs content sections + the macro
                      bento (MacroPulseCard · CrossAssetCard · TreasuriesCard ·
                      NewsCalendarPanel · EarningsPanel · MacroFooter · BentoCard ·
-                     TickMomentumPanel — live tick-speed read, study aid)
+                     TickMomentumPanel — live tick-speed read, study aid) +
+                     AiBriefingCard (DeepSeek macro interpretation, top of /)
   lib/               the engine (~60 modules, pure functions + live singletons):
       feeds          live.ts · liveStore.ts · dom.ts · domBook.ts · domStore.ts ·
                      optionsFeed.ts · useLive.ts · useDom.ts · tickMomentum.ts

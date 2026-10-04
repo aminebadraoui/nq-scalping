@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import FlowChart, { fmt } from "@/components/FlowChart";
 import MinuteNavigator from "@/components/MinuteNavigator";
 import SweepReclaimPanel from "@/components/SweepReclaimPanel";
 import PriceActionPanel from "@/components/PriceActionPanel";
-import SignalHistory from "@/components/SignalHistory";
+import SignalHistory, { type HistoryEntry as SignalEntry } from "@/components/SignalHistory";
 import DomIcebergPanel from "@/components/DomIcebergPanel";
 import TickMomentumPanel from "@/components/TickMomentumPanel";
 import MacroPulseCard from "@/components/MacroPulseCard";
@@ -14,10 +14,13 @@ import TreasuriesCard from "@/components/TreasuriesCard";
 import NewsCalendarPanel from "@/components/NewsCalendarPanel";
 import EarningsPanel from "@/components/EarningsPanel";
 import MacroFooter from "@/components/MacroFooter";
+import AiBriefingCard from "@/components/AiBriefingCard";
+import SessionPicker, { type DatasetInfo } from "@/components/SessionPicker";
 import { useMacro } from "@/lib/useMacro";
 import { blendLiveMinutes, type FPMinute } from "@/lib/footprint";
 import { useLive, type LiveMinute } from "@/lib/useLive";
 import { imbalanceFor, summarizeImb } from "@/lib/imbalance";
+import { etToFeed } from "@/lib/times";
 import { readPriceAction } from "@/lib/priceaction";
 import { realizedDailyBandPct } from "@/lib/macroFmt";
 
@@ -28,59 +31,144 @@ export default function DashboardPage() {
   const macro = useMacro();
   const [hist, setHist] = useState<LiveMinute[]>([]);
   const [fp, setFp] = useState<{ minutes: FPMinute[]; minPrice: number; maxPrice: number } | null>(null);
-  const [dataDate, setDataDate] = useState("");
+  const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
+  /** the session being viewed — null until the first dataset list arrives */
+  const [sel, setSel] = useState<{ date: string; session: "ETH" | "RTH" } | null>(null);
   const [chartMax, setChartMax] = useState(false);
+  /** the minute the footprint ladder selected — the chart scrolls to it */
+  const [focusT, setFocusT] = useState<{ t: string; d?: string } | null>(null);
+  /** the signal whose trade is visualized on the chart (entry/stop/target) */
+  const [tradeView, setTradeView] = useState<{ id: string; side: "long" | "short"; entry: number; stop: number; target: number; timeET: string } | null>(null);
+  /** the AI briefing's level lines, marked on the chart */
+  const [briefLines, setBriefLines] = useState<Array<{ label: string; price: number; color: string }>>([]);
 
   const snap = live?.snapshot ?? null;
   const today = snap?.date ?? new Date().toISOString().slice(0, 10);
 
-  // bootstrap: latest collected date + its footprint (feeds the chart + ladder)
+  // bootstrap: list the collected sessions (newest first), then default to
+  // the latest date's ETH window (the live one — ticks keep streaming in)
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      let d = today;
-      try {
-        const j = await fetch("/api/gc?action=datasets").then((r) => r.json());
-        const ds: { date: string }[] = j.datasets ?? [];
-        if (ds[0]?.date) d = ds[0].date;
-      } catch {
-        /* keep today */
-      }
-      if (cancelled) return;
-      setDataDate(d);
-
-      fetch(`/api/gc?action=footprint&date=${d}&session=ETH&start=&end=`)
-        .then((r) => r.json())
-        .then((j) => {
-          if (!j.minutes) return;
-          setHist(
-            j.minutes.map((m: FootMinute) => ({
-              t: m.t,
-              d: m.d,
-              o: m.o ?? 0,
-              h: m.high,
-              l: m.low,
-              c: m.c ?? 0,
-              vol: m.buy + m.sell,
-              buy: m.buy,
-              sell: m.sell,
-              live: false,
-            })),
+    fetch("/api/gc?action=datasets")
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled) return;
+        const ds: DatasetInfo[] = j.datasets ?? [];
+        setDatasets(ds);
+        if (ds[0]?.date) {
+          setSel((cur) =>
+            cur ??
+            ({
+              date: ds[0].date,
+              session: (ds[0].sessions.includes("ETH") ? "ETH" : ds[0].sessions[0]) as "ETH" | "RTH",
+            } as const),
           );
-          setFp({ minutes: j.minutes, minPrice: j.minPrice, maxPrice: j.maxPrice });
-        })
-        .catch(() => {});
-    })();
+        }
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, [today]);
 
-  // collected full day, continued by live ticks
+  // load the selected session's footprint (feeds the chart + ladder)
+  // `shown` tracks the session whose data is actually DISPLAYED, so the
+  // "loading" transition is derived from state instead of an effect reset
+  const [shown, setShown] = useState<{ date: string; session: "ETH" | "RTH" } | null>(null);
+  const loadingSession = sel !== null && (shown?.date !== sel.date || shown?.session !== sel.session);
+  useEffect(() => {
+    if (!sel) return;
+    let cancelled = false;
+    fetch(`/api/gc?action=footprint&date=${sel.date}&session=${sel.session}&start=&end=`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (cancelled || !j.minutes) return;
+        setHist(
+          j.minutes.map((m: FootMinute) => ({
+            t: m.t,
+            d: m.d,
+            o: m.o ?? 0,
+            h: m.high,
+            l: m.low,
+            c: m.c ?? 0,
+            vol: m.buy + m.sell,
+            buy: m.buy,
+            sell: m.sell,
+            live: false,
+          })),
+        );
+        setFp({ minutes: j.minutes, minPrice: j.minPrice, maxPrice: j.maxPrice });
+        setShown(sel);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [sel]);
+
+  // live ticks blend into the session ONLY when viewing the newest collected
+  // ETH window (the "current session" continuation). A historical date — or
+  // any RTH window, which is only ever collected after it closes — must not
+  // be polluted with today's live bars.
+  const latestDate = datasets[0]?.date ?? "";
+  const viewingLive = sel ? (sel.date === latestDate || latestDate === "") && sel.session === "ETH" : true;
+  const dataDate = sel?.date ?? latestDate ?? today;
+
+  // bring the chart into view when a signal/ladder interaction synced to it —
+  // but only when it is NOT already on screen (side-by-side xl layout and
+  // mid-page positions never scroll)
+  const chartSectionRef = useRef<HTMLElement | null>(null);
+  const revealChart = () => {
+    if (chartMax) return;
+    const el = chartSectionRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const inView = r.top >= 0 && r.top < vh - 120 && r.bottom > 120;
+    if (inView) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // click a signal in the history card → visualize its trade on the chart:
+  // switch to the signal's session (overnight bars may live in the previous
+  // day's file, so fall back one calendar day), focus the entry minute and
+  // draw entry/stop/target lines. Clicking the same signal again clears it.
+  const inspectSignal = (e: SignalEntry) => {
+    const id = `${e.ts}|${e.day}|${e.side}|${e.price}`;
+    if (tradeView?.id === id) {
+      setTradeView(null);
+      return;
+    }
+    let target = datasets.find((d) => d.date === e.day);
+    if (!target) {
+      const prev = new Date(`${e.day}T12:00:00Z`);
+      prev.setUTCDate(prev.getUTCDate() - 1);
+      const prevStr = prev.toISOString().slice(0, 10);
+      target = datasets.find((d) => d.date === prevStr);
+    }
+    if (target) {
+      setSel((cur) => (cur?.date === target!.date ? cur : { date: target!.date, session: "ETH" }));
+    }
+    const t = etToFeed(e.timeET);
+    setFocusT({ t, d: target?.date });
+    const entry = parseFloat(e.entry);
+    const stop = parseFloat(e.stop);
+    const tgt = parseFloat(e.target);
+    if (e.side !== "none" && [entry, stop, tgt].every((v) => Number.isFinite(v))) {
+      setTradeView({ id, side: e.side as "long" | "short", entry, stop, target: tgt, timeET: e.timeET });
+    } else {
+      // reversal-style text levels — focus the entry minute, no lines
+      setTradeView(null);
+    }
+    revealChart();
+  };
+
+  // collected full day, continued by live ticks (latest session only)
   const blended = useMemo<LiveMinute[]>(() => {
+    if (!viewingLive) return hist;
     const liveMins = live ? (live.cur ? [...live.minutes, live.cur] : live.minutes) : [];
     return blendLiveMinutes(hist, liveMins as LiveMinute[]);
-  }, [hist, live]);
+  }, [hist, live, viewingLive]);
   const liveTail = blended.slice(hist.length);
 
   // the appended live minutes as footprint rows (for the ladder)
@@ -103,6 +191,7 @@ export default function DashboardPage() {
           }
           return {
             t: m.t,
+            d: m.d,
             o: m.o,
             c: m.c,
             vwap: den > 0 ? num / den : (m.h + m.l) / 2,
@@ -117,24 +206,29 @@ export default function DashboardPage() {
         }),
     [liveTail],
   );
-  const ladderMinutes: FPMinute[] = fp ? [...fp.minutes, ...liveFpTail] : liveFpTail;
-  const ladderDate = dataDate || today;
+  const ladderMinutes: FPMinute[] = fp ? (viewingLive ? [...fp.minutes, ...liveFpTail] : fp.minutes) : viewingLive ? liveFpTail : [];
+  const ladderDate = dataDate;
   const chartMinutes: LiveMinute[] = blended;
 
   const lastMin = chartMinutes[chartMinutes.length - 1];
   const lastPrice = lastMin ? lastMin.c || lastMin.h : snap?.ltp ?? 0;
   const chg = snap ? snap.ltp - snap.prev_close : 0;
 
-  // premium / discount location across all six timeframes, live
+  // the session high/low of the session being VIEWED: the live snapshot for
+  // the latest (live) session, the bars themselves for a historical one
+  const sessHigh = viewingLive ? snap?.high : chartMinutes.length ? Math.max(...chartMinutes.map((m) => m.h)) : undefined;
+  const sessLow = viewingLive ? snap?.low : chartMinutes.length ? Math.min(...chartMinutes.map((m) => m.l)) : undefined;
+
+  // premium / discount location across all six timeframes
   const pa = useMemo(
     () =>
       readPriceAction({
         minutes: chartMinutes.map((m) => ({ high: m.h, low: m.l, t: m.t, d: m.d })),
         lastPrice,
-        sessionHigh: snap?.high,
-        sessionLow: snap?.low,
+        sessionHigh: sessHigh,
+        sessionLow: sessLow,
       }),
-    [chartMinutes, lastPrice, snap?.high, snap?.low],
+    [chartMinutes, lastPrice, sessHigh, sessLow],
   );
   // live realized 1σ band from the blended 1-min closes — the
   // real-time twin of the (delayed) VIX-based band
@@ -160,6 +254,14 @@ export default function DashboardPage() {
           <span className={`inline-block h-2 w-2 rounded-full ${live?.connected ? "bg-long shadow-[0_0_8px_rgba(52,211,153,0.9)]" : "bg-short"}`} />
           {live?.connected ? "connected" : "reconnecting…"}
         </span>
+      </div>
+
+      {/* AI MACRO BRIEFING — DeepSeek's situation analysis over all the
+          macro-context data (top of the page, above the live strip;
+          display-only, generated by the 09:15 ET pre-open cron / nightly
+          post-close step / the card's refresh button) */}
+      <div className="mb-4">
+        <AiBriefingCard onChartLines={setBriefLines} />
       </div>
 
       {/* live strip */}
@@ -188,40 +290,51 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* BENTO BAND 1 · market context first: pulse 3 / cross-asset 6 / rates 3 */}
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12 md:col-span-6 xl:col-span-3">
-          <MacroPulseCard
-            watch={macro.ctx?.watch ?? null}
-            news={macro.ctx?.news.data ?? null}
-            earnings={macro.ctx?.earnings.data ?? null}
-            nqPrice={lastPrice}
-            realizedBandPct={realizedBandPct}
-          />
-        </div>
-        <div className="col-span-12 md:col-span-6 xl:col-span-6">
-          <CrossAssetCard
-            watch={macro.ctx?.watch ?? null}
-            nqPct={snap && snap.prev_close > 0 ? Math.round(((snap.ltp - snap.prev_close) / snap.prev_close) * 10000) / 100 : null}
-          />
-        </div>
-        <div className="col-span-12 md:col-span-12 xl:col-span-3">
-          <TreasuriesCard
-            data={macro.ctx?.bonds.data ?? null}
-            intraday={macro.ctx?.bonds.intraday ?? null}
-            stale={macro.ctx ? !macro.ctx.bonds.ok : false}
-            watch={macro.ctx?.watch ?? null}
-          />
-        </div>
+      {/* BENTO BAND 1 · market context lives BELOW the workspace (see the
+          macro section after the trading grid) — the page starts with the
+          session scroller and the chart above the fold */}
+
+      {/* session browser — every collected date, grouped with its windows */}
+      <div className="mt-4">
+        <SessionPicker
+          datasets={datasets}
+          selected={sel}
+          isLive={viewingLive}
+          onPick={(date, session) => {
+            setSel({ date, session });
+            setFocusT(null); // the old session's bar doesn't exist in this one
+            setTradeView(null); // the visualized trade belongs to the old session
+          }}
+        />
       </div>
 
       {/* BENTO BAND 2 · the trading workspace (sacred: chart + rail) */}
       <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,360px)]">
-        {/* left: chart + footprint ladder (the ladder grows to fill the column) */}
-        <div className="flex min-w-0 flex-col gap-4">
-          <section className={`flex flex-col rounded-md border border-zinc-800 bg-panel p-3 ${chartMax ? "fixed inset-0 z-40 rounded-none bg-zinc-950" : ""}`}>
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-zinc-50">1-min candles — delta tinted</h2>
+        {/* left: chart + footprint ladder — side by side on xl+ so the chart
+            and every control that drives it sit on ONE screen (no scroll) */}
+        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,380px)]">
+          <section ref={chartSectionRef} className={`scroll-mt-14 flex flex-col rounded-md border border-zinc-800 bg-panel p-3 ${chartMax ? "fixed inset-0 z-40 rounded-none bg-zinc-950" : ""}`}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h2 className="text-lg font-bold text-zinc-50">
+                1-min candles — delta tinted{" "}
+                <span className="font-mono text-xs font-normal text-zinc-500">
+                  · {dataDate} {sel?.session ?? ""}
+                  {viewingLive ? " · live" : ""}
+                  {loadingSession ? " · loading…" : ""}
+                </span>
+                {tradeView && (
+                  <span className={`ml-1 rounded border px-1.5 py-0.5 font-mono text-[10px] ${tradeView.side === "long" ? "border-long/40 bg-long/10 text-long" : "border-short/40 bg-short/10 text-short"}`}>
+                    {tradeView.side.toUpperCase()} signal {tradeView.timeET} NY · entry {tradeView.entry.toFixed(2)} · stop {tradeView.stop.toFixed(2)} · target {tradeView.target.toFixed(2)}
+                    <button
+                      onClick={() => setTradeView(null)}
+                      className="ml-1.5 rounded border border-zinc-700 px-1 text-zinc-400 hover:text-zinc-200"
+                      title="clear the visualized trade"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                )}
+              </h2>
               <button
                 onClick={() => setChartMax((v) => !v)}
                 className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${chartMax ? "border-info/50 bg-info/10 text-info" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}
@@ -236,10 +349,13 @@ export default function DashboardPage() {
                   minutes={chartMinutes}
                   levels={[]}
                   markers={[]}
-                  dataDate={dataDate || today}
+                  dataDate={dataDate}
                   colorBy="delta"
                   height={560}
                   autoHeight
+                  focus={focusT}
+                  trade={tradeView}
+                  hlines={briefLines}
                 />
               ) : (
                 <p className="p-8 font-mono text-sm text-zinc-600">waiting for data…</p>
@@ -250,32 +366,75 @@ export default function DashboardPage() {
           <section className="flex min-h-0 flex-1 flex-col rounded-md border border-zinc-800 bg-panel p-3">
             <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-lg font-bold text-zinc-50">Footprint — minute ladder</h2>
-              <p className="font-mono text-[10px] text-zinc-500">bid×ask per tick · ▲▼ = imbalance · full day 18:00 → 16:59 NY</p>
+              <p className="font-mono text-[10px] text-zinc-500">
+                bid×ask per tick · ▲▼ = imbalance ·{" "}
+                {sel?.session === "RTH" ? "RTH 09:30 → 16:00 NY" : "full day 18:00 → 16:59 NY"} · {ladderDate}
+              </p>
             </div>
             {ladderMinutes.length > 0 ? (
-              <MinuteNavigator minutes={ladderMinutes} date={ladderDate} timeMode="cdt" />
+              <MinuteNavigator
+                minutes={ladderMinutes}
+                date={ladderDate}
+                timeMode="cdt"
+                onSelect={(t, d) => {
+                  setFocusT({ t, d });
+                  revealChart();
+                }}
+              />
             ) : (
               <p className="p-8 font-mono text-sm text-zinc-600">no footprint data — collect with gcdata</p>
             )}
           </section>
         </div>
 
-        {/* right: the strategy */}
+        {/* right: the strategy — the signal history sits FIRST, at the chart's
+            level, since it is the primary interaction: click → trade on chart */}
         <aside className="space-y-4">
+          <SignalHistory onInspect={inspectSignal} />
           <PriceActionPanel
             read={pa}
             asOfET={asOfET}
             stale={!live?.connected}
-            source={live?.connected ? "live" : "collected"}
+            source={viewingLive && live?.connected ? "live" : "collected"}
           />
-          <SweepReclaimPanel minutes={chartMinutes} cur={live?.cur} lastPrice={lastPrice} />
+          <SweepReclaimPanel minutes={chartMinutes} cur={viewingLive ? live?.cur : null} lastPrice={lastPrice} />
           <TickMomentumPanel />
           <DomIcebergPanel />
-          <SignalHistory />
         </aside>
       </div>
 
-      {/* BENTO BAND 3 · detail layer: earnings 8 / week ahead 4 */}
+      {/* BENTO BAND 3 · market context (below the workspace): macro pulse /
+          cross-asset / rates, then equities + the week's calendar */}
+      <div className="mt-4">
+        <p className="mb-2 font-mono text-[9px] uppercase tracking-wider text-zinc-500">market context</p>
+        <div className="grid grid-cols-12 gap-4">
+          <div className="col-span-12 md:col-span-6 xl:col-span-3">
+            <MacroPulseCard
+              watch={macro.ctx?.watch ?? null}
+              news={macro.ctx?.news.data ?? null}
+              earnings={macro.ctx?.earnings.data ?? null}
+              nqPrice={lastPrice}
+              realizedBandPct={realizedBandPct}
+            />
+          </div>
+          <div className="col-span-12 md:col-span-6 xl:col-span-6">
+            <CrossAssetCard
+              watch={macro.ctx?.watch ?? null}
+              nqPct={snap && snap.prev_close > 0 ? Math.round(((snap.ltp - snap.prev_close) / snap.prev_close) * 10000) / 100 : null}
+            />
+          </div>
+          <div className="col-span-12 md:col-span-12 xl:col-span-3">
+            <TreasuriesCard
+              data={macro.ctx?.bonds.data ?? null}
+              intraday={macro.ctx?.bonds.intraday ?? null}
+              stale={macro.ctx ? !macro.ctx.bonds.ok : false}
+              watch={macro.ctx?.watch ?? null}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* BENTO BAND 4 · detail layer: earnings 8 / week ahead 4 */}
       <div className="mt-4 grid grid-cols-12 gap-4">
         <div className="col-span-12 xl:col-span-8">
           <EarningsPanel data={macro.ctx?.earnings.data ?? null} stale={macro.ctx ? !macro.ctx.earnings.ok : false} error={macro.ctx?.earnings.error} />

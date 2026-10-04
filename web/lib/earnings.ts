@@ -395,9 +395,10 @@ export async function fetchEarnings(): Promise<{ data: EarningsData; fetchedAt: 
  * ~90 days, enriched with last-report detail for the top-30 names.
  *   - constituents: api.nasdaq.com/api/quote/list-type/nasdaq100
  *     (101 rows, one keyless call, 24 h cache)
- *   - next dates: Finnhub /calendar/earnings (ONE call for the whole
- *     range) when FINNHUB_API_KEY is set; otherwise a day-by-day
- *     Nasdaq calendar scan (≤90 calls, 6 h cache)
+ *   - next dates: Finnhub /calendar/earnings (3-day chunked — the feed
+ *     caps at 1500 rows newest-first and would otherwise drop the
+ *     nearest weeks) when FINNHUB_API_KEY is set; otherwise a
+ *     day-by-day Nasdaq calendar scan (≤90 calls, 6 h cache)
  *   - last reports: the existing top-30 path (fetchEarnings)
  * ------------------------------------------------------------------ */
 
@@ -483,24 +484,52 @@ export async function fetchNdxConstituents(): Promise<{ symbol: string; name: st
 
 export type FhCalendarHit = { date: string; hour: string; epsEstimate: number | null };
 
-/** Finnhub full-market earnings calendar → per-symbol next date map */
+/* Finnhub caps /calendar/earnings at 1500 rows, returned newest-first,
+ * so one wide request silently truncates away the nearest weeks (every
+ * October report disappeared from a 90-day window). Fetch in 3-day
+ * chunks — well under the cap even at earnings-season peak (~340
+ * rows/day) — and re-fetch any chunk that hits the cap day by day. */
+const FH_MAX_ROWS = 1500;
+const FH_CHUNK_DAYS = 3;
+
+/** Finnhub full-market earnings calendar → per-symbol EARLIEST date map.
+ *  A name can report twice inside a 90-day window, so keep the soonest
+ *  date per symbol, not the first row seen. */
 export async function fetchFinnhubCalendar(from: string, to: string): Promise<Map<string, FhCalendarHit>> {
   const key = process.env.FINNHUB_API_KEY;
   if (!key) throw new Error("no FINNHUB_API_KEY");
-  const j = (await getJson(`${FINNHUB}/calendar/earnings?from=${from}&to=${to}&token=${key}`)) as {
-    earningsCalendar?: { symbol?: string; date?: string; hour?: string; epsEstimate?: number | null }[];
-  };
   const map = new Map<string, FhCalendarHit>();
-  for (const r of j.earningsCalendar ?? []) {
-    if (!r.symbol || !r.date) continue;
-    const sym = r.symbol.toUpperCase();
-    if (!map.has(sym)) {
-      map.set(sym, {
-        date: r.date,
-        hour: r.hour ?? "",
-        epsEstimate: r.epsEstimate ?? null,
-      });
+  const ingest = (rows: FhCalendarRow[]) => {
+    for (const r of rows) {
+      if (!r.symbol || !r.date) continue;
+      const sym = r.symbol.toUpperCase();
+      const cur = map.get(sym);
+      if (!cur || r.date < cur.date) {
+        map.set(sym, { date: r.date, hour: r.hour ?? "", epsEstimate: r.epsEstimate ?? null });
+      }
     }
+  };
+  for (let day = from; day <= to; ) {
+    const end = addDaysIso(day, FH_CHUNK_DAYS - 1) > to ? to : addDaysIso(day, FH_CHUNK_DAYS - 1);
+    const j = (await getJson(`${FINNHUB}/calendar/earnings?from=${day}&to=${end}&token=${key}`)) as {
+      earningsCalendar?: FhCalendarRow[];
+    };
+    const rows = j.earningsCalendar ?? [];
+    if (rows.length >= FH_MAX_ROWS) {
+      /* capped: the earliest days of this chunk were dropped — fetch
+       * the chunk one day at a time so nothing is lost */
+      for (let d = day; d <= end; d = addDaysIso(d, 1)) {
+        const jd = (await getJson(`${FINNHUB}/calendar/earnings?from=${d}&to=${d}&token=${key}`)) as {
+          earningsCalendar?: FhCalendarRow[];
+        };
+        ingest(jd.earningsCalendar ?? []);
+        await sleep(DELAY_MS);
+      }
+    } else {
+      ingest(rows);
+    }
+    await sleep(DELAY_MS);
+    day = addDaysIso(end, 1);
   }
   if (map.size === 0) throw new Error("finnhub calendar empty");
   return map;
@@ -532,6 +561,36 @@ async function lastReportFor(symbol: string): Promise<ReportedRow | null> {
   }
 }
 
+/** Nasdaq forward-calendar scan for the given symbols (tomorrow → up to
+ *  `days` out, early-exit once every symbol has a date). Used as the
+ *  whole-panel fallback when Finnhub fails and as a top-up for the few
+ *  names Finnhub's calendar doesn't carry. */
+async function scanNasdaqCalendar(symbols: Iterable<string>, days: number): Promise<Map<string, FhCalendarHit>> {
+  const want = new Set([...symbols].map((s) => s.toUpperCase()));
+  const map = new Map<string, FhCalendarHit>();
+  for (let i = 1; i <= days && want.size > 0; i++) {
+    const d = new Date(Date.now() + i * 86_400_000).toISOString().slice(0, 10);
+    try {
+      const json = await getJson(`${NASDAQ}/calendar/earnings?date=${d}`);
+      for (const r of (json as { data?: { rows?: CalendarRow[] } }).data?.rows ?? []) {
+        const sym = r.symbol.toUpperCase();
+        if (want.has(sym)) {
+          map.set(sym, {
+            date: d,
+            hour: r.time,
+            epsEstimate: parseMoney(r.epsForecast),
+          });
+          want.delete(sym);
+        }
+      }
+    } catch {
+      /* one bad day shouldn't kill the scan */
+    }
+    await sleep(DELAY_MS);
+  }
+  return map;
+}
+
 export async function fetchNdxQuarter(): Promise<QuarterData> {
   const constituents = await cachedQ("ndx-constituents", 24 * 3600_000, fetchNdxConstituents);
   const from = new Date().toISOString().slice(0, 10);
@@ -542,30 +601,24 @@ export async function fetchNdxQuarter(): Promise<QuarterData> {
   let nextBySymbol: Map<string, FhCalendarHit>;
   try {
     nextBySymbol = await fetchFinnhubCalendar(from, to);
+    /* Finnhub's calendar doesn't carry every NDX name (ASML, GOOG,
+     * SPCX, TRI…). Top up the missing ones from Nasdaq so the Upcoming
+     * ledger really is every name with a known next date. */
+    const missing = constituents.map((t) => t.symbol).filter((s) => !nextBySymbol.has(s));
+    if (missing.length > 0) {
+      try {
+        const topup = await scanNasdaqCalendar(missing, 90);
+        for (const [s, hit] of topup) if (!nextBySymbol.has(s)) nextBySymbol.set(s, hit);
+      } catch {
+        /* keep the Finnhub rows; a partial ledger beats none */
+      }
+    }
   } catch {
     provider = "nasdaq";
-    const want = new Set(constituents.map((t) => t.symbol));
-    nextBySymbol = new Map<string, FhCalendarHit>();
-    for (let i = 1; i <= 90 && want.size > 0; i++) {
-      const d = new Date(Date.now() + i * 86_400_000).toISOString().slice(0, 10);
-      try {
-        const json = await getJson(`${NASDAQ}/calendar/earnings?date=${d}`);
-        for (const r of (json as { data?: { rows?: CalendarRow[] } }).data?.rows ?? []) {
-          const sym = r.symbol.toUpperCase();
-          if (want.has(sym) && !nextBySymbol.has(sym)) {
-            nextBySymbol.set(sym, {
-              date: d,
-              hour: r.time,
-              epsEstimate: parseMoney(r.epsForecast),
-            });
-            want.delete(sym);
-          }
-        }
-      } catch {
-        /* one bad day shouldn't kill the scan */
-      }
-      await sleep(DELAY_MS);
-    }
+    nextBySymbol = await scanNasdaqCalendar(
+      constituents.map((t) => t.symbol),
+      90,
+    );
   }
 
   /* last report for EVERY constituent (3 in flight, 150 ms between chunks) */
