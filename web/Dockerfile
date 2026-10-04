@@ -4,6 +4,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# the audit JSONs must be in the build context (web/data/validation) — fail
+# the build loudly instead of shipping an empty reports dir
+RUN test -d /app/data/validation || (echo "ERROR: web/data/validation missing from build context" && exit 1)
 RUN npm run build
 
 # ---- runtime (Next standalone) -------------------------------------------

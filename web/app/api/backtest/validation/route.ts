@@ -32,7 +32,7 @@ export async function GET() {
         /* stale ledger — treat as empty */
       }
     }
-    return Response.json({ ok: true, reports, ledger });
+    return Response.json({ ok: true, version: 2, reports, ledger });
   } catch (e) {
     return Response.json({ ok: false, status: "error", message: String(e) });
   }
