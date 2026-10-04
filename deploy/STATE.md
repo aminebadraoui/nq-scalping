@@ -123,10 +123,15 @@
    immediately with the reason; no matching fill within 90s triggers a
    VERIFIED re-send (default ON, `AUTO_RETRY_VERIFIED=0` to disable):
    the watcher re-reads the broker (no MNQ working order AND no MNQ
-   position) before re-sending the original intent once — a broker
-   check, never a blind retry. Stale-entry guard: skipped if price moved
+   position) before re-sending the original intent — a broker check,
+   never a blind retry. Stale-entry guard: skipped if price moved
    more than half the risk from the signal. Verification failures never
-   re-send (fail closed).
+   re-send (fail closed). 2026-10-04: the single retry became a bounded
+   loop — up to 3 verified attempts 90s apart, each re-verifying the
+   book + re-checking staleness; news blackouts defer (not drop) a
+   retry; structural failures (bad symbol/stop/target, an open position)
+   abort the loop. New exec_log outcomes: resend_failed_retrying /
+   resend_gave_up / resend_aborted / deferred_blackout.
 3. **Account guard parity** (`lib/crossGuard.ts`): the MFF Rapid EOD 50k
    guard (floor/target/consistency) now feeds from the CrossTrade account
    snapshot instead of the browser page; halts before every order, fail
@@ -230,7 +235,9 @@ confirms flat` (exec_log rows 23/25). Root cause + fix:
    misclassified failed sends as "SEND OK BUT NO FILL" (alert-only, no
    re-send). The watcher's `alerted` guard also dropped send-failed cards
    before verification. Fixed: prefixed keys at all five call sites + the
-   guard now lets `sendFailed` cards through to the verified re-send.
+   guard now lets `sendFailed` cards through to the verified re-send —
+   which is now a bounded loop (up to 3 broker-verified attempts, 90s
+   apart, stale-checked each time, news-blackout deferred).
    (A redeploy resets the in-memory latch — do it while the book is flat.)
 
 ## Trade execution (2026-10-01)

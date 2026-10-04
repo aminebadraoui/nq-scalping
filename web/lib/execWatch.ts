@@ -1,6 +1,6 @@
 /* ------------------------------------------------------------------ *
- * Execution watcher — "a card fired, but did it fill?" — with an
- * optional VERIFIED re-send.
+ * Execution watcher — "a card fired, but did it fill?" — with a
+ * bounded, broker-VERIFIED re-send loop.
  *
  * When the feed is LIVE (EXECUTE_LIVE=1) every trade card is registered
  * at send time. 90 seconds later the watcher checks the CrossTrade
@@ -8,12 +8,14 @@
  *
  *   AUTO_RETRY_VERIFIED=1 (default ON): the watcher VERIFIES with the
  *     broker — no MNQ working order AND no MNQ position — before
- *     re-sending the ORIGINAL intent exactly once. The broker check is
- *     what makes this safe: a blind retry can double a position, a
- *     verified one cannot (the flat check + guard run again on the
- *     re-send too). If the price has moved more than half the risk
- *     from the signal, the re-send is skipped (a stale entry is a
- *     different trade — no edge to chase it).
+ *     re-sending the ORIGINAL intent. Every attempt is broker-verified,
+ *     never blind: a failed re-send keeps the card registered and is
+ *     retried up to MAX_RESEND_ATTEMPTS times, 90s apart, each attempt
+ *     re-verifying the book and re-checking staleness (price moved more
+ *     than half the risk → the entry is dead and retries stop). News
+ *     blackout windows defer a retry rather than firing into them.
+ *     Structural failures (bad symbol/stop/target, an open position)
+ *     abort the loop immediately — no retry can fix them.
  *   AUTO_RETRY_VERIFIED=0: alert only, never re-send (the old behavior).
  *
  * Send failures alert immediately with the reason; with verified retry
@@ -30,6 +32,7 @@ import { registerTimeExit } from "./timeExit";
 import { getLive } from "./live";
 import { logExec } from "./execLog";
 import { signalWindowOpen } from "./marketHours";
+import { newsBlockedNow } from "./newsGate";
 
 export type Expectation = {
   key: string;
@@ -42,10 +45,16 @@ export type Expectation = {
    *  fill is a data-lag problem, not a missing order — re-sending it
    *  risks a double (the 14:21 stack that cost ~$180). */
   sendFailed: boolean;
+  /** verified re-send attempts made so far (bounded by MAX_RESEND_ATTEMPTS) */
+  attempts: number;
+  /** epoch ms of the last re-send attempt (throttled by RETRY_INTERVAL_MS) */
+  lastAttemptAt: number;
 };
 
 const CHECK_AFTER_MS = 90_000;
 const GIVE_UP_MS = 10 * 60_000;
+const RETRY_INTERVAL_MS = 90_000;
+const MAX_RESEND_ATTEMPTS = 3;
 const FILL_CACHE_MS = 60_000;
 const MATCH_WINDOW_MS = 5 * 60_000;
 const MNQ = "MNQ";
@@ -166,9 +175,9 @@ export function priceDistancePts(e: { intent: OrderIntent }): number | null {
 }
 
 /** register a just-sent trade card (no-op when not live) */
-export function registerExpectation(e: Omit<Expectation, "sendFailed">) {
+export function registerExpectation(e: Omit<Expectation, "sendFailed" | "attempts" | "lastAttemptAt">) {
   if (!enabled()) return;
-  pending.set(e.key, { ...e, sendFailed: failedKeys.has(e.key) });
+  pending.set(e.key, { ...e, sendFailed: failedKeys.has(e.key), attempts: 0, lastAttemptAt: 0 });
 }
 
 /** pure decision helper (unit-tested): what to do when the 90s check
@@ -180,6 +189,18 @@ export function resendDecision(
 ): "resend" | "alert_only" | "silent" {
   if (sendFailed) return verifiedAbsent ? "resend" : "silent";
   return verifiedAbsent ? "alert_only" : "silent";
+}
+
+/** structural failures no retry can fix (bad symbol/stop/target, an open
+ *  position the flat gate refuses) — these abort the retry loop at once.
+ *  Transient guard/latch/network failures keep retrying (each attempt is
+ *  still broker-verified and stale-checked). */
+export function isRetryableFailure(reason: string): boolean {
+  if (reason.includes("cannot map symbol")) return false;
+  if (reason.includes("invalid stop")) return false;
+  if (reason.includes("invalid target")) return false;
+  if (reason.includes("not flat — an MNQ position is open")) return false;
+  return true;
 }
 
 /** a place-attempt returned not-ok: alert immediately. With verified
@@ -198,7 +219,7 @@ export function registerSendFailure(key: string, label: string, reason: string) 
     `<code>${label}</code>`,
     `${reason}`,
     willRetry
-      ? `<i>will verify with the broker at +90s and re-send ONCE if the book is clean</i>`
+      ? `<i>will verify with the broker and re-send (up to ${MAX_RESEND_ATTEMPTS} verified attempts, ${RETRY_INTERVAL_MS / 1000}s apart) while the book stays clean</i>`
       : `<i>no automatic retry (exactly-once policy) — verify account state before acting</i>`,
   ].join("\n");
   void alert(text);
@@ -218,7 +239,7 @@ export async function checkExpectations(): Promise<void> {
     if (now - e.ts < CHECK_AFTER_MS) continue;
     if (now - e.ts > GIVE_UP_MS) {
       pending.delete(key);
-      if (!alerted.has(key)) {
+      if (!alerted.has(key) || e.sendFailed) {
         alerted.add(key);
         void alert(`⚠ <b>EXECUTION UNCONFIRMED</b> — <code>${e.label}</code> never confirmed after 10 min`);
       }
@@ -239,15 +260,18 @@ export async function checkExpectations(): Promise<void> {
       continue;
     }
 
-    // verified re-send path (exactly once per card). A card whose send
+    // verified re-send path (bounded retries per card). A card whose send
     // FAILED was alerted at send time (alerted contains its key) but must
-    // still run the broker verification + exactly-one re-send — that is
-    // the whole point of the verified retry. Cards that were never
-    // send-failed are dropped here once alerted.
+    // still run the broker verification + re-sends — that is the whole
+    // point of the verified retry. Cards that were never send-failed are
+    // dropped here once alerted.
     if (alerted.has(key) && !e.sendFailed) {
       pending.delete(key);
       continue;
     }
+    // throttle: one verified attempt per RETRY_INTERVAL_MS (the first
+    // watch is already gated by CHECK_AFTER_MS above)
+    if (e.sendFailed && e.attempts > 0 && now - e.lastAttemptAt < RETRY_INTERVAL_MS) continue;
     alerted.add(key);
     const v = await verifyAbsent();
     void logExec({ key, label: e.label, attempt: "watch", outcome: v.clean ? "verified_absent" : "unresolved", reason: v.reason });
@@ -271,6 +295,14 @@ export async function checkExpectations(): Promise<void> {
       continue;
     }
     // decision === "resend": original send FAILED and the book verifies clean
+    const nb = newsBlockedNow(now);
+    if (nb) {
+      // defer, don't drop: a retry that would fire inside a blackout window
+      // waits for it to pass (still bounded by the give-up clock)
+      void logExec({ key, label: e.label, attempt: "watch", outcome: "deferred_blackout", reason: nb });
+      e.lastAttemptAt = now;
+      continue;
+    }
     const dist = priceDistancePts(e);
     const risk = Math.abs(e.intent.entry - e.intent.stop);
     if (dist !== null && dist > 0.5 * risk) {
@@ -282,31 +314,61 @@ export async function checkExpectations(): Promise<void> {
       continue;
     }
     const res = e.scaleOut ? await placeScaleOut(e.intent) : await placeOrder(e.intent);
-    if (res.ok && !e.scaleOut) {
-      const prof = momentumProfile();
-      if (prof.enabled) {
-        registerTimeExit({
-          key,
-          label: e.label,
-          symbol: e.intent.symbol,
-          dir: e.intent.dir,
-          exitAtMs: timeExitAt(Date.now(), prof),
-        });
+    e.attempts += 1;
+    e.lastAttemptAt = now;
+    if (res.ok) {
+      if (!e.scaleOut) {
+        const prof = momentumProfile();
+        if (prof.enabled) {
+          registerTimeExit({
+            key,
+            label: e.label,
+            symbol: e.intent.symbol,
+            dir: e.intent.dir,
+            exitAtMs: timeExitAt(Date.now(), prof),
+          });
+        }
       }
+      pending.delete(key);
+      void logExec({
+        key,
+        label: e.label,
+        attempt: "resend",
+        outcome: "resend_ok",
+        reason: res.reason,
+      });
+      void alert(`🔁 <b>AUTO RE-SENT</b> — <code>${e.label}</code> verified absent, re-sent (attempt ${e.attempts}/${MAX_RESEND_ATTEMPTS}): ${res.reason}`);
+      continue;
+    }
+    // failed re-send: retry while the failure can plausibly clear, the
+    // attempt budget lasts, and the give-up clock hasn't expired
+    const retryable = isRetryableFailure(res.reason);
+    if (retryable && e.attempts < MAX_RESEND_ATTEMPTS && now - e.ts < GIVE_UP_MS) {
+      void logExec({
+        key,
+        label: e.label,
+        attempt: "resend",
+        outcome: "resend_failed_retrying",
+        reason: res.reason,
+      });
+      void alert(
+        `🔁 <b>RE-SEND FAILED (attempt ${e.attempts}/${MAX_RESEND_ATTEMPTS})</b> — <code>${e.label}</code>\n${res.reason}\n<i>broker-verified retry in ~${RETRY_INTERVAL_MS / 1000}s</i>`,
+      );
+      continue; // stays pending — next verified attempt after the throttle
     }
     pending.delete(key);
     void logExec({
       key,
       label: e.label,
       attempt: "resend",
-      outcome: res.ok ? "resend_ok" : "resend_failed",
+      outcome: retryable ? "resend_gave_up" : "resend_aborted",
       reason: res.reason,
     });
-    if (res.ok) {
-      void alert(`🔁 <b>AUTO RE-SENT</b> — <code>${e.label}</code> verified absent, re-sent once: ${res.reason}`);
-    } else {
-      void alert(`🚨 <b>RE-SEND FAILED</b> — <code>${e.label}</code> — ${res.reason}`);
-    }
+    void alert(
+      retryable
+        ? `🚨 <b>RE-SEND GAVE UP</b> — <code>${e.label}</code> — ${MAX_RESEND_ATTEMPTS} verified attempts failed: ${res.reason}`
+        : `🚨 <b>RE-SEND ABORTED</b> — <code>${e.label}</code> — ${res.reason} (not retryable)`,
+    );
   }
 }
 

@@ -38,8 +38,12 @@ export type ExecLogEntry = {
     | "verified_absent"
     | "unresolved"
     | "skipped_stale"
+    | "deferred_blackout"
     | "resend_ok"
-    | "resend_failed";
+    | "resend_failed"
+    | "resend_failed_retrying"
+    | "resend_gave_up"
+    | "resend_aborted";
   reason: string;
   meta?: Record<string, unknown>;
 };

@@ -100,11 +100,25 @@ test("execWatch fillMatches: side, size and window must all match", () => {
   ], 200_000));
 });
 
-import { resendDecision } from "../lib/execWatch";
+import { resendDecision, isRetryableFailure } from "../lib/execWatch";
 
 test("execWatch resendDecision: only failed sends may re-send", () => {
   assert.equal(resendDecision(true, true), "resend");
   assert.equal(resendDecision(true, false), "silent"); // failed send but book not clean — verify manually
   assert.equal(resendDecision(false, true), "alert_only"); // send OK + no trace — NEVER re-send (double risk)
   assert.equal(resendDecision(false, false), "silent");
+});
+
+test("execWatch isRetryableFailure: structural failures abort, transient ones retry", () => {
+  // structural: no retry can fix these — abort immediately
+  assert.equal(isRetryableFailure("crossTrade: cannot map symbol \"NQ\" to a Tradovate instrument"), false);
+  assert.equal(isRetryableFailure("crossTrade: invalid stop — entry 1 stop NaN"), false);
+  assert.equal(isRetryableFailure("crossTrade: invalid target — entry 1 target NaN"), false);
+  assert.equal(isRetryableFailure("crossTrade: not flat — an MNQ position is open (refusing)"), false);
+  // transient: latch/guard/network/book-read failures keep retrying (verified)
+  assert.equal(isRetryableFailure("crossTrade: entry placed 30s ago — refusing to stack inside the 60s confirm window"), true);
+  assert.equal(isRetryableFailure("guard: account snapshot unreadable — fail closed"), true);
+  assert.equal(isRetryableFailure("crossTrade: cannot verify flat state (timeout) — refusing"), true);
+  assert.equal(isRetryableFailure("REST UNKNOWN (network: timeout) — reconcile before acting; no automatic retry"), true);
+  assert.equal(isRetryableFailure("REST rejected (400) bad request"), true);
 });
