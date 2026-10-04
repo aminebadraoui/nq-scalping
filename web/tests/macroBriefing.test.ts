@@ -102,7 +102,7 @@ function snapshot(over: Partial<BriefingSnapshot> = {}): BriefingSnapshot {
       news: { ok: true, stale: false, fetchedAt: "2026-10-05T13:10:00.000Z", error: null },
       earnings: { ok: true, stale: false, fetchedAt: "2026-10-05T13:10:00.000Z", error: null },
     },
-    systemVerdict: { bias: "up", vol: "normal", evidence: ["+1 chg 0.16%"] },
+    systemVerdict: { bias: "up", vol: "normal", evidence: ["+1 chg 0.16%"], confidencePct: 55 },
   };
   return { ...base, ...over };
 }
@@ -171,10 +171,11 @@ test("parseBriefingContent: garbage / empty / non-object → null", () => {
   assert.equal(parseBriefingContent(JSON.stringify({ foo: "bar" })), null); // no headline/bias
 });
 
-test("deterministic: up-bias, NQ levels, watch-fors from a rich snapshot", () => {
-  const c = renderDeterministicBriefing(snapshot());
-  assert.equal(c.bias, "up", "tape + HTF + GEX all point up");
-  assert.match(c.headline, /UP/, "headline states the bias");
+test("deterministic: verdict-consistent bias, NQ levels, watch-fors from a rich snapshot", () => {
+  const s = snapshot();
+  const c = renderDeterministicBriefing(s);
+  assert.equal(c.bias, systemVerdictOf(s).bias, "renderer and verdict agree by construction");
+  assert.match(c.headline, new RegExp(c.bias.toUpperCase()), "headline states the verdict word");
   assert.match(c.headline, /30,?700/, "headline carries the NQ price");
   assert.ok(c.read.length >= 1 && c.read.length <= 2, "why is ≤2 bullets");
   assert.ok(c.read.some((d) => d.includes("semis leading")), "breadth becomes a why bullet");
@@ -266,13 +267,31 @@ test("systemVerdictOf: code-decided, stable across calls, evidence attached", ()
   const v1 = systemVerdictOf(s);
   const v2 = systemVerdictOf(s);
   assert.deepEqual(v1, v2, "same snapshot → same verdict, always");
-  assert.equal(v1.bias, "up");
+  // the fitted model: mid-strength features stay in-band → CHOP (honest default)
+  assert.equal(v1.bias, "chop", "mid features land inside the tau band");
   assert.equal(v1.vol, "normal");
-  assert.ok(v1.evidence.some((e) => e.includes("HTF HH/HL")), "evidence lists the HTF contribution");
-  assert.ok(v1.evidence.some((e) => e.includes("score +")), "evidence states the score");
+  assert.equal(v1.confidencePct, null, "chop carries no confidence");
+  assert.ok(v1.evidence.some((e) => e.includes("HTF D HH/HL")), "evidence lists the HTF read");
+  assert.ok(v1.evidence.some((e) => e.includes("slot pre-open")), "evidence lists the slot");
+  assert.ok(v1.evidence.some((e) => e.includes("in-band")), "evidence explains the chop band");
 });
 
-test("biasOf: no current tape → prior session fields decide", () => {
+test("systemVerdictOf: extreme tape clears the band → up/down with confidence", () => {
+  const base = snapshot().nq;
+  const up = snapshot({ nq: { ...base, changePct: 5, closePosPct: 95, cumulativeDelta: 8000, realizedBandPct: 3 } });
+  up.watch.htf = { daily: "HH/HL", weekly: "HH/HL", at: "2026-10-02" };
+  const vUp = systemVerdictOf(up);
+  assert.equal(vUp.bias, "up");
+  assert.ok(vUp.confidencePct != null && vUp.confidencePct > 60, "confident up call carries its fitted confidence");
+
+  const down = snapshot({ nq: { ...base, changePct: -5, closePosPct: 5, cumulativeDelta: -8000, realizedBandPct: 3 } });
+  down.watch.htf = { daily: "LH/LL", weekly: "LH/LL", at: "2026-10-02" };
+  const vDown = systemVerdictOf(down);
+  assert.equal(vDown.bias, "down");
+  assert.ok(vDown.confidencePct != null, "confident down call carries its fitted confidence");
+});
+
+test("biasOf: no current tape → prior session fields feed the fitted score", () => {
   const s = snapshot({
     nq: {
       ...snapshot().nq,
@@ -288,18 +307,7 @@ test("biasOf: no current tape → prior session fields decide", () => {
     },
   });
   const v = systemVerdictOf(s);
-  assert.ok(v.evidence.some((e) => e.includes("prior close 72%")), "prior close position is used");
-  assert.ok(v.evidence.some((e) => e.includes("prior delta")), "prior delta is used");
-  assert.ok(["up", "down", "chop"].includes(v.bias));
-  // mid-range (55%) is neutral: no evidence line, still a valid verdict
-  const mid = snapshot({
-    nq: {
-      ...snapshot().nq,
-      bars: 0, lastClose: null, changePct: null, sessionHigh: null, sessionLow: null,
-      cumulativeDelta: null, closePosPct: null, prevClosePosPct: 55, prevCumulativeDelta: null,
-    },
-  });
-  assert.ok(!systemVerdictOf(mid).evidence.some((e) => e.includes("prior close")), "neutral position contributes nothing");
+  assert.ok(v.evidence.some((e) => e.includes("prior session")), "prior-session features are used on a closed tape");
   assert.ok(["up", "down", "chop"].includes(v.bias));
 });
 

@@ -440,7 +440,7 @@ export async function buildBriefingSnapshot(kind: BriefingKind): Promise<Briefin
     news,
     earnings,
     watch,
-    systemVerdict: { bias: "", vol: "", evidence: [] }, // filled below (needs the whole snapshot)
+    systemVerdict: { bias: "", vol: "", evidence: [], confidencePct: null }, // filled below (needs the whole snapshot)
     staleness: {
       bonds: { ok: ctx.bonds.ok, stale: ctx.bonds.stale, fetchedAt: ctx.bonds.fetchedAt ?? null, error: ctx.bonds.error ?? null },
       news: { ok: ctx.news.ok, stale: ctx.news.stale, fetchedAt: ctx.news.fetchedAt ?? null, error: ctx.news.error ?? null },

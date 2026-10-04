@@ -77,7 +77,7 @@ export type SnapshotLevel = { label: string; value: string; note: string };
 
 /** code-decided bias + vol with the evidence that produced them —
  *  the model must use these verbatim (no bias flip-flopping) */
-export type SystemVerdict = { bias: string; vol: string; evidence: string[] };
+export type SystemVerdict = { bias: string; vol: string; evidence: string[]; confidencePct: number | null };
 
 export type BriefingSnapshot = {
   kind: BriefingKind;
@@ -365,48 +365,54 @@ function repairJson(raw: string): string {
 
 const nqFmt = (v: number | null): string => (v == null ? "n/a" : v.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 }));
 
-/** the tape-scorer: one deterministic verdict per snapshot. The model is
- *  NOT allowed to change it — it only explains it (see the system prompt).
- *  Weights: current-session tape first; when the session has no bars yet
- *  (weekend/pre-open), the prior session's close position + delta stand in. */
-function biasParts(s: BriefingSnapshot): { score: number; parts: string[] } {
-  const nq = s.nq;
-  const parts: string[] = [];
-  let score = 0;
-  const add = (w: number, label: string) => {
-    if (w === 0) return;
-    score += w;
-    parts.push(`${w >= 0 ? "+" : ""}${w} ${label}`);
+/* ------------------------------------------------------------------ *
+ * the tape-scorer: one deterministic verdict per snapshot. The model
+ * is NOT allowed to change it — it only explains it (system prompt).
+ *
+ * Weights are DATA-FITTED, not hand-picked: logistic regression over
+ * all 649 archived sessions (2023-12 → 2026-10), features knowable at
+ * each briefing timestamp, label = NQ direction over the next ~60 min
+ * (to the close for pre-close). Walk-forward split, strict temporal.
+ * See docs/research/BIAS_FIT.md + web/scripts/biasFit.ts.
+ *
+ * Honest finding: 60-min direction is weakly predictable — overall
+ * test accuracy 50.6% vs a 51.6% always-up baseline. Only the score's
+ * extremes carried a small edge (|p−0.5| > 0.10 → 56% acc on ~10% of
+ * samples), so the verdict is CHOP by default and up/down only beyond
+ * BIAS_TAU, with the fitted confidence shown.
+ * ------------------------------------------------------------------ */
+
+const BIAS_SLOTS = ["evening-open", "pre-open", "post-open", "mid-morning", "midday", "pre-close"] as const;
+const BIAS_MEANS = [0.0494, 54.9452, 0.0167, 0.5741, 0.295, 0.1826];
+const BIAS_STDS = [1.3275, 29.4258, 3.1208, 1.1399, 1.323, 1.1802];
+const BIAS_WEIGHTS = [0.224, -0.0228, 0.0847, 0.1456, 0.0165, -0.0973, 0.122, 0.0576, 0.0358, 0.1886, 0.1694, -0.0572];
+/** only scores beyond this band get an up/down call (historical: ~10% of
+ *  briefings, 56% direction accuracy out-of-sample) */
+export const BIAS_TAU = 0.1;
+
+function slotIndexOf(s: BriefingSnapshot): number {
+  const kindMap: Record<string, number> = {
+    "evening-open": 0,
+    "pre-open": 1,
+    "post-open": 2,
+    "mid-morning": 3,
+    midday: 4,
+    "pre-close": 5,
+    "post-close": 5, // not fitted — nearest studied window (to the close)
   };
-  const hasTape = (nq.bars ?? 0) > 0;
-  if (hasTape) {
-    if (nq.changePct != null) add(nq.changePct > 0.1 ? 1 : nq.changePct < -0.1 ? -1 : 0, `chg ${nq.changePct}%`);
-    if (nq.closePosPct != null) add(nq.closePosPct > 65 ? 1 : nq.closePosPct < 35 ? -1 : 0, `close ${nq.closePosPct}% of range`);
-    if (nq.cumulativeDelta != null) add(nq.cumulativeDelta > 2000 ? 1 : nq.cumulativeDelta < -2000 ? -1 : 0, `delta ${nq.cumulativeDelta.toLocaleString()}`);
-  } else {
-    if (nq.prevClosePosPct != null) add(nq.prevClosePosPct > 65 ? 1 : nq.prevClosePosPct < 35 ? -1 : 0, `prior close ${nq.prevClosePosPct}% of range`);
-    if (nq.prevCumulativeDelta != null) add(nq.prevCumulativeDelta > 2000 ? 1 : nq.prevCumulativeDelta < -2000 ? -1 : 0, `prior delta ${nq.prevCumulativeDelta.toLocaleString()}`);
-  }
-  const htf = s.watch.htf?.daily ?? null;
-  if (htf === "HH/HL") add(1, "HTF HH/HL");
-  if (htf === "LH/LL") add(-1, "HTF LH/LL");
-  const gex = s.watch.gex;
-  if (gex?.regime === "trend" && gex.spot != null && gex.flip != null) {
-    add(gex.spot > gex.flip ? 1 : -1, `GEX ${gex.spot > gex.flip ? "above" : "below"} flip`);
-  }
-  const q = (sym: string) => s.watch.quotes.find((x) => x.symbol === sym)?.changePct ?? null;
-  const spx = q(".SPX");
-  const ndx = q(".NDX");
-  if (spx != null) add(spx > 0.3 ? 0.5 : spx < -0.3 ? -0.5 : 0, `SPX ${spx}%`);
-  if (ndx != null) add(ndx > 0.3 ? 0.5 : ndx < -0.3 ? -0.5 : 0, `NDX ${ndx}%`);
-  return { score, parts };
+  if (s.kind !== "on-demand" && kindMap[s.kind] !== undefined) return kindMap[s.kind];
+  // on-demand: the slot whose session-minute offset is the closest before now
+  const [h, m] = s.etClock.split(":").map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return 1;
+  const sessionMin = h * 60 + m >= 18 * 60 ? h * 60 + m - 18 * 60 : h * 60 + m + 6 * 60;
+  const offsets = [5, 915, 935, 1050, 1170, 1325];
+  let best = 1;
+  for (let i = 0; i < offsets.length; i++) if (sessionMin >= offsets[i] + 30) best = i;
+  return best;
 }
 
 export function biasOf(s: BriefingSnapshot): string {
-  const { score } = biasParts(s);
-  if (score >= 1) return "up";
-  if (score <= -1) return "down";
-  return "chop";
+  return systemVerdictOf(s).bias;
 }
 
 export function volOf(s: BriefingSnapshot): string {
@@ -421,13 +427,40 @@ export function volOf(s: BriefingSnapshot): string {
 /** the code-decided bias + vol handed to the model — the single source of
  *  truth so reruns over the same data can never flip-flop */
 export function systemVerdictOf(s: BriefingSnapshot): SystemVerdict {
-  const { score, parts } = biasParts(s);
+  const nq = s.nq;
+  const hasTape = (nq.bars ?? 0) > 0;
+  const chgPct = nq.changePct ?? 0;
+  const closePos = hasTape ? (nq.closePosPct ?? 50) : (nq.prevClosePosPct ?? 50);
+  const cumDelta = ((hasTape ? nq.cumulativeDelta : nq.prevCumulativeDelta) ?? 0) / 1000;
+  const realized = nq.realizedBandPct ?? 0;
+  const htf = s.watch.htf ?? null;
+  const htfD = htf?.daily === "HH/HL" ? 1 : htf?.daily === "LH/LL" ? -1 : 0;
+  const htfW = htf?.weekly === "HH/HL" ? 1 : htf?.weekly === "LH/LL" ? -1 : 0;
+  const f = [chgPct, closePos, cumDelta, realized, htfD, htfW];
+  const slot = slotIndexOf(s);
+
+  const evidence = [
+    `chg ${chgPct >= 0 ? "+" : ""}${chgPct.toFixed(2)}%${hasTape ? "" : " (prior session)"}`,
+    `close ${closePos.toFixed(0)}% of range${hasTape ? "" : " (prior session)"}`,
+    `delta ${cumDelta >= 0 ? "+" : ""}${cumDelta.toFixed(1)}k${hasTape ? "" : " (prior session)"}`,
+    realized > 0 ? `real 1σ ${realized.toFixed(2)}%` : "real 1σ n/a",
+    `HTF D ${htf?.daily ?? "n/a"} · W ${htf?.weekly ?? "n/a"}`,
+    `slot ${BIAS_SLOTS[slot]}`,
+  ];
+
+  let z = BIAS_WEIGHTS[6 + slot];
+  for (let j = 0; j < 6; j++) z += ((f[j] - BIAS_MEANS[j]) / BIAS_STDS[j]) * BIAS_WEIGHTS[j];
+  const p = 1 / (1 + Math.exp(-z));
+  const score = p - 0.5;
+  const bias = score > BIAS_TAU ? "up" : score < -BIAS_TAU ? "down" : "chop";
+  const confidencePct = bias === "chop" ? null : Math.round(p * 100);
   const v = s.watch.vix?.level ?? null;
-  return {
-    bias: biasOf(s),
-    vol: volOf(s),
-    evidence: [...parts, `score ${score >= 0 ? "+" : ""}${score} → ${biasOf(s)}`, v != null ? `VIX ${v} → ${volOf(s)}` : "VIX n/a → normal"],
-  };
+  evidence.push(
+    `score ${score >= 0 ? "+" : ""}${score.toFixed(3)} → ${bias.toUpperCase()}${confidencePct != null ? ` (conf ${confidencePct}%)` : " (in-band: no edge at this horizon)"}`,
+    v != null ? `VIX ${v} → vol ${volOf(s)}` : "VIX n/a → vol normal",
+  );
+
+  return { bias, vol: volOf(s), evidence, confidencePct };
 }
 
 /** guard: the headline must carry the verdict's word. Replaces a LEADING
@@ -517,4 +550,11 @@ export function chartLinesOfSnapshot(snap: unknown): ChartLine[] {
     out.push({ label, price, color: LINE_COLORS[tone] ?? "#a1a1aa" });
   }
   return out;
+}
+
+/** the fitted confidence for a stored row's snapshot (loose jsonb shape) */
+export function confidenceOfSnapshot(snap: unknown): number | null {
+  const s = (snap ?? {}) as { systemVerdict?: { confidencePct?: unknown } };
+  const c = s?.systemVerdict?.confidencePct;
+  return typeof c === "number" && Number.isFinite(c) ? c : null;
 }
