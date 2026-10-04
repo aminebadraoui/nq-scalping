@@ -51,6 +51,10 @@ const FOMC: Array<[string, string]> = [
   ["2026-12-09", "FOMC decision"],
 ];
 
+/** 2026 FOMC decision days, exported for the seasonal card chips
+ *  (lib/seasonal.ts) — single source of truth for the current year. */
+export const FOMC_DECISION_DAYS: string[] = FOMC.map(([day]) => day);
+
 const BLS_0830: Array<[string, string]> = [
   // Employment Situation (NFP) — first Friday (second when the 1st is a Friday)
   ["2026-10-02", "Employment Situation"],

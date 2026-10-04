@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FPMinute } from "@/lib/footprint";
 import { cdtToET, utcToET } from "@/lib/times";
+import { computeDivergences, cumulativeDelta } from "@/lib/divergence";
 
 export default function MinuteNavigator({
   minutes,
@@ -28,8 +29,17 @@ export default function MinuteNavigator({
   const i = Math.min(Math.max(0, idx), Math.max(0, n - 1));
   const m = minutes[i];
 
-  // sparkline context: last 60 bars, delta-colored
-  const ctx = useMemo(() => minutes.slice(-60), [minutes]);
+  // per-bar stats: session cumulative delta + the shared divergence def
+  const cvd = useMemo(() => cumulativeDelta(minutes), [minutes]);
+  const divergences = useMemo(() => computeDivergences(minutes), [minutes]);
+  const divAt = useMemo(() => {
+    const map = new Map<number, "D2" | "D4">();
+    for (const d of divergences) map.set(d.index, d.kind);
+    return map;
+  }, [divergences]);
+
+  // sparkline context: last 16 bars (readable per-candle stats below)
+  const ctx = useMemo(() => minutes.slice(-16), [minutes]);
   const maxAbs = Math.max(1, ...ctx.map((x) => Math.abs(x.delta)));
   const selInCtx = i - (n - ctx.length);
 
@@ -42,6 +52,14 @@ export default function MinuteNavigator({
     setIdx(Math.max(0, n - 1));
   };
 
+  const compact = (v: number): string => {
+    const a = Math.abs(v);
+    const s = v >= 0 ? "+" : "";
+    if (a >= 1_000_000) return `${s}${(v / 1_000_000).toFixed(1)}M`;
+    if (a >= 1_000) return `${s}${(v / 1_000).toFixed(1)}k`;
+    return `${s}${v}`;
+  };
+
   const pocOf = m.levels.reduce(
     (best, l) => (l.buy + l.sell > (best?.buy ?? 0) + (best?.sell ?? 0) ? l : best),
     m.levels[0],
@@ -49,7 +67,7 @@ export default function MinuteNavigator({
   const absorbs = absorption.filter((a) => a.t === m.t);
 
   return (
-    <div className="rounded-md border border-zinc-800 bg-panel p-3">
+    <div className="flex h-full min-h-0 flex-col rounded-md border border-zinc-800 bg-panel p-3">
       {/* navigation */}
       <div className="mb-2 flex flex-wrap items-center gap-2 font-mono text-xs">
         <button onClick={() => stepBar(-1)} disabled={i <= 0} className="rounded border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:opacity-30">
@@ -133,8 +151,8 @@ export default function MinuteNavigator({
         )}
       </div>
 
-      {/* sparkline: last 60 minutes of delta — click to jump */}
-      <div className="mb-2 flex h-10 items-end gap-px overflow-hidden rounded border border-zinc-800/70 bg-zinc-950/60 px-1 py-1">
+      {/* sparkline: last 16 minutes of delta — click to jump */}
+      <div className="mb-1 flex h-12 items-end gap-1 overflow-x-auto rounded border border-zinc-800/70 bg-zinc-950/60 px-1 py-1">
         {ctx.map((x, k) => {
           const h = 25 + (Math.abs(x.delta) / maxAbs) * 70;
           return (
@@ -152,17 +170,44 @@ export default function MinuteNavigator({
         })}
       </div>
 
-      {/* ladder */}
-      <div className="mb-1 flex flex-wrap items-center gap-3 font-mono text-[10px] text-zinc-500">
-        <span className="text-zinc-400">bid × ask per tick</span>
-        <span className="text-long">▲ buy-side imbalance</span>
-        <span className="text-short">▼ sell-side imbalance</span>
-        <span>◆ measured against the adjacent tick (diagonal)</span>
-        <span>□ zero-side tick — unfinished auction</span>
-        <span className="text-zinc-400">stacked = 3+ ticks imbalanced the same way (boxed in the footprint view)</span>
+      {/* per-candle stats: Δ · cumΔ · divergence under each bar of the strip above */}
+      <div className="mb-2 flex gap-1 overflow-x-auto">
+        {ctx.map((x, k) => {
+          const barIdx = n - ctx.length + k;
+          const dv = divAt.get(barIdx);
+          const cum = cvd[barIdx] ?? 0;
+          return (
+            <button
+              key={k}
+              onClick={() => {
+                setPinned(false);
+                setIdx(barIdx);
+              }}
+              className={`min-w-[40px] flex-1 rounded-b py-1 text-center font-mono ${
+                k === selInCtx ? "bg-zinc-900/70 ring-1 ring-amber-400" : "hover:bg-zinc-900/40"
+              }`}
+            >
+              <p className={`text-[9px] leading-[12px] tabular-nums ${x.delta >= 0 ? "text-long" : "text-short"}`}>{compact(x.delta)}</p>
+              <p className={`text-[9px] leading-[12px] tabular-nums ${cum >= 0 ? "text-long" : "text-short"}`}>{compact(cum)}</p>
+              <p className={`text-[10px] leading-[12px] ${dv ? (dv === "D2" ? "text-long" : "text-short") : "text-zinc-700"}`}>
+                {dv ? (dv === "D2" ? "▲" : "▼") : "·"}
+              </p>
+            </button>
+          );
+        })}
       </div>
-      <div className="grid max-h-96 grid-cols-6 gap-x-2 gap-y-0.5 overflow-y-auto pr-2 font-mono text-[11px]">
-        <div className="col-span-6 grid grid-cols-6 border-b border-zinc-800 pb-1 text-zinc-500">
+
+      {/* ladder */}
+      <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[9px] leading-tight text-zinc-600">
+        <span className="text-zinc-500">bid × ask per tick</span>
+        <span className="text-long">▲ buy imb</span>
+        <span className="text-short">▼ sell imb</span>
+        <span>◆ diagonal</span>
+        <span>□ zero-side</span>
+        <span>Δ · cumΔ · divergence under each bar of the strip above</span>
+      </div>
+      <div className="grid min-h-0 flex-1 grid-cols-6 gap-x-2 gap-y-0 overflow-y-auto pr-2 font-mono text-[10px] leading-4">
+        <div className="col-span-6 grid grid-cols-6 border-b border-zinc-800 pb-0.5 text-zinc-500">
           <span>price</span>
           <span className="text-right">bid</span>
           <span className="text-right">ask</span>
@@ -211,6 +256,7 @@ export default function MinuteNavigator({
           );
         })}
       </div>
+
     </div>
   );
 }

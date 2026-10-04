@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { Tick } from "./tickMomentum";
 
 export type Snapshot = {
   date: string;
@@ -38,7 +39,7 @@ export type LiveState = {
   connected: boolean;
   lastMessage: number;
   snapshot: Snapshot | null;
-  ticks: unknown[];
+  ticks: Tick[];
   minutes: LiveMinute[];
   cur: LiveMinute | null;
 };

@@ -175,9 +175,21 @@ export type GammaRead = {
   totalGexUsd: number;
   regime: Regime;
   aboveFlip: boolean;
+  /** pin: strike with the largest total OI (expiry-magnet level) */
+  pin: { strike: number; oi: number } | null;
   /** walls split by expiration bucket (populated by the server); near = scalping */
   buckets?: Record<ExpiryBucket, WallSet | null>;
 };
+
+/** the strike with the largest total (call+put) open interest — the
+ *  expiry "pin" level from the same aggregated profile. */
+export function pinStrike(prof: StrikeGex[]): { strike: number; oi: number } | null {
+  let best: StrikeGex | null = null;
+  for (const s of prof) {
+    if (!best || s.callOi + s.putOi > best.callOi + best.putOi) best = s;
+  }
+  return best ? { strike: best.strike, oi: best.callOi + best.putOi } : null;
+}
 
 /** flip / call wall / put wall from an already-aggregated per-strike profile. */
 function wallSet(prof: StrikeGex[], spot: number): WallSet {
@@ -232,6 +244,7 @@ export function computeGamma(rows: ParsedOption[], spot: number): GammaRead {
     totalGexUsd: netGex * spot * spot * 100,
     regime,
     aboveFlip,
+    pin: pinStrike(prof),
   };
 }
 

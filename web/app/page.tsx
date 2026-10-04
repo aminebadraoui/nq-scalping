@@ -5,18 +5,27 @@ import FlowChart, { fmt } from "@/components/FlowChart";
 import MinuteNavigator from "@/components/MinuteNavigator";
 import SweepReclaimPanel from "@/components/SweepReclaimPanel";
 import PriceActionPanel from "@/components/PriceActionPanel";
-import PropPanel from "@/components/PropPanel";
 import SignalHistory from "@/components/SignalHistory";
 import DomIcebergPanel from "@/components/DomIcebergPanel";
+import TickMomentumPanel from "@/components/TickMomentumPanel";
+import MacroPulseCard from "@/components/MacroPulseCard";
+import CrossAssetCard from "@/components/CrossAssetCard";
+import TreasuriesCard from "@/components/TreasuriesCard";
+import NewsCalendarPanel from "@/components/NewsCalendarPanel";
+import EarningsPanel from "@/components/EarningsPanel";
+import MacroFooter from "@/components/MacroFooter";
+import { useMacro } from "@/lib/useMacro";
 import { blendLiveMinutes, type FPMinute } from "@/lib/footprint";
 import { useLive, type LiveMinute } from "@/lib/useLive";
 import { imbalanceFor, summarizeImb } from "@/lib/imbalance";
 import { readPriceAction } from "@/lib/priceaction";
+import { realizedDailyBandPct } from "@/lib/macroFmt";
 
 type FootMinute = { t: string; d?: string; o?: number; c?: number; vwap?: number; high: number; low: number; buy: number; sell: number; delta: number };
 
 export default function DashboardPage() {
   const live = useLive();
+  const macro = useMacro();
   const [hist, setHist] = useState<LiveMinute[]>([]);
   const [fp, setFp] = useState<{ minutes: FPMinute[]; minPrice: number; maxPrice: number } | null>(null);
   const [dataDate, setDataDate] = useState("");
@@ -127,6 +136,13 @@ export default function DashboardPage() {
       }),
     [chartMinutes, lastPrice, snap?.high, snap?.low],
   );
+  // live realized 1σ band from the blended 1-min closes — the
+  // real-time twin of the (delayed) VIX-based band
+  const realizedBandPct = useMemo(
+    () => realizedDailyBandPct(chartMinutes.map((m) => ({ c: m.c })), 30),
+    [chartMinutes],
+  );
+
   const asOfET = new Date().toLocaleTimeString("en-US", {
     timeZone: "America/New_York",
     hour12: false,
@@ -172,9 +188,37 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-        {/* left: chart + footprint ladder */}
-        <div className="min-w-0 space-y-4">
+      {/* BENTO BAND 1 · market context first: pulse 3 / cross-asset 6 / rates 3 */}
+      <div className="grid grid-cols-12 gap-4">
+        <div className="col-span-12 md:col-span-6 xl:col-span-3">
+          <MacroPulseCard
+            watch={macro.ctx?.watch ?? null}
+            news={macro.ctx?.news.data ?? null}
+            earnings={macro.ctx?.earnings.data ?? null}
+            nqPrice={lastPrice}
+            realizedBandPct={realizedBandPct}
+          />
+        </div>
+        <div className="col-span-12 md:col-span-6 xl:col-span-6">
+          <CrossAssetCard
+            watch={macro.ctx?.watch ?? null}
+            nqPct={snap && snap.prev_close > 0 ? Math.round(((snap.ltp - snap.prev_close) / snap.prev_close) * 10000) / 100 : null}
+          />
+        </div>
+        <div className="col-span-12 md:col-span-12 xl:col-span-3">
+          <TreasuriesCard
+            data={macro.ctx?.bonds.data ?? null}
+            intraday={macro.ctx?.bonds.intraday ?? null}
+            stale={macro.ctx ? !macro.ctx.bonds.ok : false}
+            watch={macro.ctx?.watch ?? null}
+          />
+        </div>
+      </div>
+
+      {/* BENTO BAND 2 · the trading workspace (sacred: chart + rail) */}
+      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(340px,360px)]">
+        {/* left: chart + footprint ladder (the ladder grows to fill the column) */}
+        <div className="flex min-w-0 flex-col gap-4">
           <section className={`flex flex-col rounded-md border border-zinc-800 bg-panel p-3 ${chartMax ? "fixed inset-0 z-40 rounded-none bg-zinc-950" : ""}`}>
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-lg font-bold text-zinc-50">1-min candles — delta tinted</h2>
@@ -203,7 +247,7 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          <section className="rounded-md border border-zinc-800 bg-panel p-3">
+          <section className="flex min-h-0 flex-1 flex-col rounded-md border border-zinc-800 bg-panel p-3">
             <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-lg font-bold text-zinc-50">Footprint — minute ladder</h2>
               <p className="font-mono text-[10px] text-zinc-500">bid×ask per tick · ▲▼ = imbalance · full day 18:00 → 16:59 NY</p>
@@ -225,11 +269,23 @@ export default function DashboardPage() {
             source={live?.connected ? "live" : "collected"}
           />
           <SweepReclaimPanel minutes={chartMinutes} cur={live?.cur} lastPrice={lastPrice} />
+          <TickMomentumPanel />
           <DomIcebergPanel />
-          <PropPanel />
           <SignalHistory />
         </aside>
       </div>
+
+      {/* BENTO BAND 3 · detail layer: earnings 8 / week ahead 4 */}
+      <div className="mt-4 grid grid-cols-12 gap-4">
+        <div className="col-span-12 xl:col-span-8">
+          <EarningsPanel data={macro.ctx?.earnings.data ?? null} stale={macro.ctx ? !macro.ctx.earnings.ok : false} error={macro.ctx?.earnings.error} />
+        </div>
+        <div className="col-span-12 xl:col-span-4">
+          <NewsCalendarPanel week={macro.ctx?.news.data ?? null} stale={macro.ctx ? !macro.ctx.news.ok : false} error={macro.ctx?.news.error} />
+        </div>
+      </div>
+
+      <MacroFooter ctx={macro.ctx} error={macro.error} />
     </main>
   );
 }

@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { imbalanceFor, summarizeImb, type FPLevel, type ImbSummary } from "./imbalance";
+import { computeDivergences } from "./divergence";
 import { dbEnabled, dbListDatasets, dbLoadDay, dbLoadOhlc, dbLoadSheet } from "./gcdb";
 import { parseChain, inferSpot, computeGamma, computeGammaByExpiry, type GammaRead, type OptionRow } from "./options";
 
@@ -731,14 +732,6 @@ export function analyzeMinutes(
   const hi = minutes.map((m) => m.high);
   const lo = minutes.map((m) => m.low);
   const mid = minutes.map((m) => (m.high + m.low) / 2);
-  let cum = 0;
-  const cvd = minutes.map((m) => (cum += m.buy - m.sell));
-  const pLows: number[] = [];
-  const pHighs: number[] = [];
-  for (let i = 2; i < n - 2; i++) {
-    if (lo[i] < Math.min(lo[i - 1], lo[i - 2], lo[i + 1], lo[i + 2])) pLows.push(i);
-    if (hi[i] > Math.max(hi[i - 1], hi[i - 2], hi[i + 1], hi[i + 2])) pHighs.push(i);
-  }
 
   const nearLevel = (p: number) => {
     if (Math.abs(p - s.poc / 100) <= NEAR) return "POC";
@@ -764,30 +757,25 @@ export function analyzeMinutes(
       alerts.push({ t: m.t, kind: "LVN_EXIT", price: mid[i], side: null, vwapSide: vwapSide(mid[i]), bias: null, deltaPct: deltaPct(m), message: "price exited the LVN zone" });
   });
 
-  // Divergence D2 / D4 across EVERY consecutive pivot pair.
-  for (let k = 1; k < pLows.length; k++) {
-    const i1 = pLows[k - 1];
-    const i2 = pLows[k];
-    if (lo[i2] < lo[i1] && cvd[i2] > cvd[i1]) {
-      const loc = nearLevel(lo[i2]);
-      alerts.push({
-        t: minutes[i2].t, kind: "DIVERGENCE_D2", price: lo[i2], side: null,
-        vwapSide: vwapSide(lo[i2]), bias: "bull", deltaPct: deltaPct(minutes[i2]),
-        message: `price lower low, CVD higher low ${loc ? `at ${loc}` : "(mid-range — weak)"}`,
-      });
-    }
-  }
-  for (let k = 1; k < pHighs.length; k++) {
-    const i1 = pHighs[k - 1];
-    const i2 = pHighs[k];
-    if (hi[i2] > hi[i1] && cvd[i2] < cvd[i1]) {
-      const loc = nearLevel(hi[i2]);
-      alerts.push({
-        t: minutes[i2].t, kind: "DIVERGENCE_D4", price: hi[i2], side: null,
-        vwapSide: vwapSide(hi[i2]), bias: "bear", deltaPct: deltaPct(minutes[i2]),
-        message: `price higher high, CVD lower high ${loc ? `at ${loc}` : "(mid-range — weak)"}`,
-      });
-    }
+  // Divergence D2 / D4 across EVERY consecutive pivot pair — the shared
+  // definition in lib/divergence.ts (the ladder's per-bar strip uses the
+  // same function, so the two views can never drift apart).
+  for (const dv of computeDivergences(minutes)) {
+    const m = minutes[dv.index];
+    const loc = nearLevel(dv.price);
+    alerts.push({
+      t: m.t,
+      kind: dv.kind === "D2" ? "DIVERGENCE_D2" : "DIVERGENCE_D4",
+      price: dv.price,
+      side: null,
+      vwapSide: vwapSide(dv.price),
+      bias: dv.bias,
+      deltaPct: deltaPct(m),
+      message:
+        dv.kind === "D2"
+          ? `price lower low, CVD higher low ${loc ? `at ${loc}` : "(mid-range — weak)"}`
+          : `price higher high, CVD lower high ${loc ? `at ${loc}` : "(mid-range — weak)"}`,
+    });
   }
 
   // absorption events → alerts
