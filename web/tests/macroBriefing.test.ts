@@ -10,7 +10,6 @@ import {
   renderDeterministicBriefing,
   chartLinesOfSnapshot,
   systemVerdictOf,
-  enforceHeadlineBias,
   type BriefingSnapshot,
 } from "../lib/briefingText";
 
@@ -117,14 +116,15 @@ test("payload: JSON-mode shape, thinking disabled, bias enum in prompt", () => {
   const system = p.messages.find((m) => m.role === "system");
   assert.ok(system, "system prompt present");
   assert.match(system!.content.toLowerCase(), /json/i, "JSON mode requires the word json in the prompt");
-  assert.match(system!.content, /bias is pre-decided/i, "bias comes from systemVerdict, not the model");
+  assert.match(system!.content, /historical study signal/i, "the fitted study is advisory input, not a verdict");
+  assert.match(system!.content, /your call from the whole snapshot/i, "the model decides the bias");
   assert.match(system!.content, /never invent other prices/i, "model must not invent prices");
   assert.match(system!.content, /scalper reads your output between ticks/i, "brevity-first framing");
   const user = p.messages.find((m) => m.role === "user");
   const j = JSON.parse(user!.content);
   assert.equal(j.snapshot.kind, "pre-open");
-  assert.equal(j.snapshot.systemVerdict.bias, "up", "verdict rides in the snapshot");
-  assert.ok(!("bias" in j.exampleJsonOutput), "schema example has no bias field — the system decides");
+  assert.equal(j.snapshot.systemVerdict.bias, "up", "advisory score rides in the snapshot");
+  assert.equal(j.exampleJsonOutput.bias, "chop", "schema example includes the bias field");
   assert.ok(Array.isArray(j.exampleJsonOutput.watchFors), "watchFors are in the schema example");
   assert.ok(j.snapshot.nq.levels.length > 0, "snapshot carries the precomputed NQ levels");
 });
@@ -311,11 +311,3 @@ test("biasOf: no current tape → prior session fields feed the fitted score", (
   assert.ok(["up", "down", "chop"].includes(v.bias));
 });
 
-test("enforceHeadlineBias: leading bias word is corrected to the verdict", () => {
-  assert.equal(enforceHeadlineBias("Chop: tape hasn't opened", "up"), "Up: tape hasn't opened");
-  assert.equal(enforceHeadlineBias("Up until GEX flip holds", "up"), "Up until GEX flip holds");
-  assert.equal(enforceHeadlineBias("Down into 30,739", "down"), "Down into 30,739");
-  assert.equal(enforceHeadlineBias("Chop until the flip breaks", "chop"), "Chop until the flip breaks");
-  // non-leading bias words are not touched (avoid mangling prose)
-  assert.equal(enforceHeadlineBias("Range breaks down below 30,739", "up"), "Range breaks down below 30,739");
-});

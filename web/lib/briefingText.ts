@@ -185,11 +185,13 @@ export type BriefingSnapshot = {
  * DeepSeek JSON-mode payload
  * ---------------------------------------------------------------- */
 
-export const BRIEFING_SCHEMA_EXAMPLE: Omit<BriefingContent, "bias" | "vol"> = {
-  headline: "EXAMPLE — one-line bottom line using the systemVerdict bias word (up/down/chop)",
+export const BRIEFING_SCHEMA_EXAMPLE: BriefingContent = {
+  headline: "EXAMPLE — one-line bottom line: the bias + the main why",
+  bias: "chop",
+  vol: "normal",
   read: [
-    "EXAMPLE why — the macro driver behind the verdict, citing the evidence",
-    "EXAMPLE fragility — what is priced in too far",
+    "EXAMPLE — the context we are in: the macro driver(s) behind the bias",
+    "EXAMPLE — what is priced in too far / the fragility",
   ],
   watchFors: [
     "EXAMPLE — a condition reachable today, referencing a level from snapshot.nq.levels by its label and price",
@@ -208,32 +210,36 @@ const SYSTEM_PROMPT = [
   "watch (VIX, DXY, SPX, NDX, SOX, gold, crude, BTC, GEX, HTF swing structure, liquidity,",
   "positioning), and NQ price context from the live 1-minute tape.",
   "",
-  "The user wants exactly two things: (1) the BIAS — up, down or chop, (2) what would change it.",
-  "THE BIAS IS PRE-DECIDED: snapshot.systemVerdict is computed in code from the tape (with its",
-  "evidence listed). Use systemVerdict.bias and systemVerdict.vol VERBATIM — do not output bias or",
-  "vol fields (they are ignored), and never argue for a different bias. If the macro genuinely",
-  "contradicts the verdict, say so inside read[0] while keeping the verdict.",
+  "The user wants the OVERALL BIAS — up, down or chop — the context we are in, and why.",
+  "snapshot.systemVerdict is a HISTORICAL STUDY signal (649 archived sessions, 60-min forward",
+  "direction; overall accuracy is coin-flip, the strongest ~10% of signals hit ~56%). It is ONE",
+  "advisory input among many — weigh it, then make your own call from the whole snapshot.",
   "Key levels are ALREADY computed for you in snapshot.nq.levels as NQ prices (GEX walls/flip are",
   "converted QQQ→NQ in code) — reference them by label and price, never invent other prices.",
   "",
   "Rules:",
-  "1. The headline is the bottom line, ≤15 words, and MUST contain the systemVerdict.bias word",
-  "(up/down/chop) — it must not contradict it.",
-  "2. read: ≤2 bullets, each ≤18 words: why the verdict (cite systemVerdict.evidence + the macro",
-  "driver) and the fragility (what is priced in too far). Cite numbers only to support the conclusion.",
-  "3. watchFors: ≤3 conditions that would change the bias TODAY, each referencing a level from",
+  "1. bias is exactly one of: up | down | chop — YOUR call from the whole snapshot: the tape first",
+  "(changePct, closePosPct, cumulative delta, realized 1σ, HTF), then the macro (curve, breadth,",
+  "VIX percentile, GEX, positioning, the calendar). If the evidence is genuinely mixed, chop is",
+  "the honest answer — do not force a direction.",
+  "2. vol is exactly one of: compressed | normal | elevated | extreme.",
+  "3. headline: the bottom line, ≤15 words — the bias + the main why.",
+  "4. read: ≤3 bullets, each ≤18 words — the context we are in and why: the macro driver(s)",
+  "behind the bias, what is priced in, and the fragility. Cite numbers only to support the",
+  "conclusion.",
+  "5. watchFors: ≤3 conditions that would change the bias TODAY, each referencing a level from",
   "snapshot.nq.levels (by label AND its NQ price) or a quote, each ≤20 words. No far-away",
   "hypotheticals.",
-  "4. caveats: data-vintage warnings ONLY (delayed/stale/unavailable). ≤2, each ≤10 words.",
-  "5. VINTAGES: daily prints (curve, VIX stats, FRED, COT, HTF) are NOT intraday; CNBC quotes",
+  "6. caveats: data-vintage warnings ONLY (delayed/stale/unavailable). ≤2, each ≤10 words.",
+  "7. VINTAGES: daily prints (curve, VIX stats, FRED, COT, HTF) are NOT intraday; CNBC quotes",
   "are ~20 min delayed; the realized band is live. State the vintage when it changes the meaning.",
-  "6. null means the source is unavailable — say so, never invent a number. If the current NQ",
+  "8. null means the source is unavailable — say so, never invent a number. If the current NQ",
   "session has no bars, use the previous session (prev* fields) and say the tape has not opened.",
-  "7. DISPLAY-ONLY context for the human trader; it never feeds a signal engine. Analysis of the",
+  "9. DISPLAY-ONLY context for the human trader; it never feeds a signal engine. Analysis of the",
   "situation only — no trade instructions, orders, or disclaimers.",
-  "8. JSON GRAMMAR (strict): every string must be a SINGLE line — never a literal newline",
+  "10. JSON GRAMMAR (strict): every string must be a SINGLE line — never a literal newline",
   "inside a string value. Emit ONLY the JSON object, nothing else.",
-  "9. The example shows SHAPE ONLY — its words and prices are placeholders. Every claim and",
+  "11. The example shows SHAPE ONLY — its words and prices are placeholders. Every claim and",
   "number must come from the snapshot; never reuse an example sentence.",
 ].join("\n");
 
@@ -463,12 +469,6 @@ export function systemVerdictOf(s: BriefingSnapshot): SystemVerdict {
   return { bias, vol: volOf(s), evidence, confidencePct };
 }
 
-/** guard: the headline must carry the verdict's word. Replaces a LEADING
- *  "Up/Down/Chop" label (the typical shape) when the model drifts. */
-export function enforceHeadlineBias(headline: string, bias: string): string {
-  return headline.replace(/^(up|down|chop)\b/i, (m) => (m.toLowerCase() === bias ? m : bias === "up" ? "Up" : bias === "down" ? "Down" : "Chop"));
-}
-
 export function renderDeterministicBriefing(s: BriefingSnapshot): BriefingContent {
   const nq = s.nq;
   const bias = biasOf(s);
@@ -552,9 +552,3 @@ export function chartLinesOfSnapshot(snap: unknown): ChartLine[] {
   return out;
 }
 
-/** the fitted confidence for a stored row's snapshot (loose jsonb shape) */
-export function confidenceOfSnapshot(snap: unknown): number | null {
-  const s = (snap ?? {}) as { systemVerdict?: { confidencePct?: unknown } };
-  const c = s?.systemVerdict?.confidencePct;
-  return typeof c === "number" && Number.isFinite(c) ? c : null;
-}

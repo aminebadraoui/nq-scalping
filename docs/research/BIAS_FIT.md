@@ -61,11 +61,11 @@ per-slot numbers: pre-open and post-open carry the biggest forward moves
 
 ## What this means for the card
 
-`systemVerdict` now uses these fitted weights with **τ = 0.10**: the
-bias is **CHOP by default** — the data says there is usually no
-directional edge at this horizon — and up/down only when the fitted
-score clears the band, with the historical confidence shown on the chip
-(e.g. `UP 57%`). The model explains the verdict; it cannot change it.
+The fitted score is **advisory, not binding**: it rides in the snapshot as
+`systemVerdict` (a "historical study signal" the model sees and weighs),
+and the AI makes the final up/down/chop call from the whole macro
+picture. The deterministic fallback (no LLM) still uses the fitted
+verdict with τ = 0.10 — CHOP by default, up/down only on extreme scores.
 
 ## Known limits / honest bounds
 

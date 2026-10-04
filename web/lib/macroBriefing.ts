@@ -27,7 +27,6 @@ import { marketOpenAt } from "./marketHours";
 import { getOptionsFeed } from "./optionsFeed";
 import {
   buildBriefingPayload,
-  enforceHeadlineBias,
   parseBriefingContent,
   renderDeterministicBriefing,
   systemVerdictOf,
@@ -491,8 +490,8 @@ export async function callDeepSeekBriefing(
 /** the full generation path, shared by the CLI and the refresh route.
  *  Never throws: LLM failure degrades to the deterministic renderer,
  *  DB failure returns null (the card shows its own error state).
- *  The bias + vol are ALWAYS the code-decided systemVerdict — the model
- *  only writes prose around it, so reruns can never flip the verdict. */
+ *  The AI decides the bias — systemVerdict rides in the snapshot as an
+ *  advisory historical signal, not a binding verdict. */
 export async function generateBriefing(kind: BriefingKind): Promise<{ row: BriefingRow | null; source: BriefingSource }> {
   const snapshot = await buildBriefingSnapshot(kind);
   const url = process.env.ANALYSIS_LLM_URL;
@@ -503,12 +502,8 @@ export async function generateBriefing(kind: BriefingKind): Promise<{ row: Brief
     content = await callDeepSeekBriefing(buildBriefingPayload(snapshot, model), url, key);
   }
   if (!content) {
-    const det = renderDeterministicBriefing(snapshot);
-    return { row: await persistBriefing(kind, det, snapshot, "deterministic", model), source: "deterministic" };
+    return { row: await persistBriefing(kind, renderDeterministicBriefing(snapshot), snapshot, "deterministic", model), source: "deterministic" };
   }
-  content.bias = snapshot.systemVerdict.bias;
-  content.vol = snapshot.systemVerdict.vol;
-  content.headline = enforceHeadlineBias(content.headline, content.bias);
   return { row: await persistBriefing(kind, content, snapshot, "llm", model), source: "llm" };
 }
 

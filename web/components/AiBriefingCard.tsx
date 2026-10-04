@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BentoCard, TintChip } from "./BentoCard";
 import type { BriefingRow } from "@/lib/macroBriefing";
 import type { BentoTone } from "./BentoCard";
-import { chartLinesOfSnapshot, confidenceOfSnapshot, type ChartLine } from "@/lib/briefingText";
+import { chartLinesOfSnapshot, type ChartLine } from "@/lib/briefingText";
 
 type Load = { row: BriefingRow | null; error: string | null; cooldownMs: number };
 
@@ -126,14 +126,7 @@ export default function AiBriefingCard({ onChartLines }: { onChartLines?: (lines
           <p className="mb-1.5 text-[15px] font-semibold leading-snug tracking-tight text-zinc-50">{row.headline}</p>
 
           <div className="mb-2 flex flex-wrap items-center gap-1">
-            <TintChip
-              label="bias"
-              value={
-                row.bias.toUpperCase() +
-                (confidenceOfSnapshot(row.snapshot) != null ? ` ${confidenceOfSnapshot(row.snapshot)}%` : "")
-              }
-              tone={biasTone(row.bias)}
-            />
+            <TintChip label="bias" value={row.bias.toUpperCase()} tone={biasTone(row.bias)} />
             <TintChip label="vol" value={row.vol} tone={volTone(row.vol)} />
             {row.model && <TintChip label="model" value={row.model} tone="muted" />}
           </div>
