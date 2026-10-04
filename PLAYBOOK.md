@@ -49,6 +49,18 @@ in `docs/research/es-features-study-2026-10-02.md` over all 649 sessions):
 - `RS STRETCH 84%` — NQ stretched against the trade direction over the past
   hour (weak-RS longs / strong-RS shorts).
 
+**Seasonal chips (journal-only labels, never gates)** — calendar facts from
+`web/lib/seasonal.ts`, measured in
+`docs/research/seasonal-almanac-2026-10-05.md` over all 649 sessions
+(3,266 sequential trades, 2026-01-01 split):
+
+- `FOMC DAY 84%` — the session's RTH day is a Fed decision day (n=99:
+  83.8% WR / PF 5.16, train 81.7 / test 89.3 — the best cell in the study).
+- `PRE-FOMC 67%` — the trading day before a decision (n=138: 67.4% WR /
+  PF 1.64, train 71.7 / test 53.1 — the worst cell; stand-aside context).
+- `HOUR 3–7 ET 80%` — entry hour inside the prime window (n=904: 79.8% WR /
+  PF 3.27, train 79.3 / test 81.0 — the overnight-drift leg).
+
 ### Trigger 2 — huge-bar expansion (`EXP_PROD`)
 
 1. Bar range ≥ **1.6 × ATR14**.

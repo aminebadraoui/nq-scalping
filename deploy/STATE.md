@@ -226,18 +226,57 @@
   (`FIXED_CONTRACTS` unset, `$170` risk budget, 30-micro cap). The sweep-reclaim
   and pullback cards remain off (`FEED_*` defaults in lib/signalFeed.ts).
 - **Scale-out + ladder (2026-10-01)**: `CROSSTRADE_SCALEOUT=1` switches the
-  momentum card to the backtested scale-out — `placeCrossTradeScaleOut`
-  places a bank leg (2/3, fixed 1R bracket) and a runner leg (1/3, open
-  target), each with our own `order_id`. `lib/runnerTracker.ts` mirrors the
-  ladder engine on the feed's 30s tick and moves the runner's stop via
-  CrossTrade CHANGE (BE at +1R, +1R at +2R, …), snapshotted to
-  `.runner-state.json` so restarts re-attach. Dry-run unless EXECUTE_LIVE=1;
-  timeouts report UNKNOWN and never auto-retry.
+  momentum card to the backtested scale-out — bank leg (2/3, fixed 1R
+  bracket) + runner leg (1/3, open target), each with our own `order_id`.
+  `lib/runnerTracker.ts` mirrors the ladder engine on the feed's 30s tick
+  and moves the runner's stop via CrossTrade CHANGE (BE at +1R, +1R at
+  +2R, …), snapshotted to `.runner-state.json` so restarts re-attach.
+  Dry-run unless EXECUTE_LIVE=1; timeouts report UNKNOWN and never
+  auto-retry.
+- **Scale-out REST absolute brackets (2026-10-05)**: the scale-out pair
+  now routes through the REST path by default (`placeCrossTradeScaleOutREST`
+  via the `placeScaleOut` router) — bank AND runner stops are the signal's
+  structural ABSOLUTE prices, never quote-anchored ticks. One flat gate per
+  trade (before the bank leg; the runner is never flat-checked separately —
+  a filled bank would refuse its own runner). Fallbacks: bank 401/403 →
+  whole pair to the webhook once (nothing placed); runner 401/403 → runner
+  leg alone to the webhook (bank never re-placed); UNKNOWN → no retry,
+  reconcile. `CROSSTRADE_SCALEOUT_REST=0` (or `CROSSTRADE_REST=0`) returns
+  the pair to the quote-anchored webhook. NOTE: the runner-ladder CHANGE
+  against REST-placed runners addresses by our `orderId` exactly like the
+  webhook path — verify once live (first scale-out after deploy) before
+  trusting ladder moves on REST runners.
 - Orders carry exchange-side brackets (REST: absolute stop/target at the
   signal's structural levels; webhook fallback: computed by CrossTrade from
   the live quote), `require_market_position=flat`, and CrossTrade flags them
   `isAutomated` for Tradovate compliance. No auto-retry on network timeout —
   verify Alert History instead (exactly-once is not guaranteed).
+- **Backtested trade profiles (2026-10-05, `lib/profile.ts`)** — the
+  optimized stop/target/time/size settings are wired into the feed and ON
+  by default:
+  - momentum: 0.35× stop · 2.25R target · 60-bar time exit · size ×1
+    (docs/research/sizing-optimizer-2026-10-04.md). Single-leg by default;
+    the scale-out ladder needs an explicit `CROSSTRADE_SCALEOUT=1` and
+    keeps its own 1R plan (never mixed with the profile).
+  - RTH: 0.45× stop · 1.75R target · 45-bar time exit · size ×1
+    (docs/research/rth-optimizer-2026-10-05.md). Risk-based sizing replaces
+    the old fixed-9 default.
+  - Knobs: `MOM_PROFILE/RTH_PROFILE=0` to disable; `MOM_STOP_MULT`
+    (0.35) · `MOM_TARGET_R` (2.25) · `MOM_SIZE_MULT` (1) ·
+    `MOM_TIME_EXIT_BARS` (60); RTH_ equivalents (0.45 / 1.75 / 1 / 45).
+  - Sizing = the usual $170 budget at the profile stop, 30-micro cap —
+    identical math to the backtest's ×1 cells, so live = backtest exactly:
+    momentum ≈ $180k and RTH ≈ $365k over the history at 0.95pt. (The
+    30-cap binds on most momentum trades even at ×1 — tight stops × $170
+    want >30 micros; that is the backtest ×1 cell itself, not a
+    discrepancy. ×N>1 would need the cap raised — not done.)
+- **Time exits (2026-10-05, `lib/timeExit.ts`)** — profile orders register
+  a bar-based exit on the feed tick: past exitAt with a position still
+  open → bracketless REST market exit (OCO brackets cancel on the
+  flatten). Unreadable book ⇒ keep waiting (never guess); fired exits are
+  removed regardless of outcome, failures alert for manual close.
+  In-memory only — a redeploy drops pending exits (bracket protection
+  remains). Dry-run unless EXECUTE_LIVE=1.
 - **Account guard wired for CrossTrade**: `crossGuardGate()`
   (lib/crossGuard.ts) feeds the CrossTrade account snapshot
   (netLiq/realizedPnl) into the same MFF floor/consistency guard

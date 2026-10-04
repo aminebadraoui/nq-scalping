@@ -62,10 +62,18 @@ web/                 the dashboard + signal engine (Next.js 16, React 19, TS)
   app/               routes: / · /docs · /journal · /backtest · /lab · /dashboard
                      API:  /api/gc /api/live /api/dom /api/signal
                            /api/trades /api/insights /api/lab /api/backtest
-  components/        dashboard panels + the /docs content sections
+                           /api/macro (display-only macro panels)
+  components/        dashboard panels + the /docs content sections + the macro
+                     bento (MacroPulseCard · CrossAssetCard · TreasuriesCard ·
+                     NewsCalendarPanel · EarningsPanel · MacroFooter · BentoCard ·
+                     TickMomentumPanel — live tick-speed read, study aid)
   lib/               the engine (~60 modules, pure functions + live singletons):
       feeds          live.ts · liveStore.ts · dom.ts · domBook.ts · domStore.ts ·
-                     optionsFeed.ts · useLive.ts · useDom.ts
+                     optionsFeed.ts · useLive.ts · useDom.ts · tickMomentum.ts
+                     (velocity/impact/rejection-speed decode of the live tape)
+      macro context  macroFeed.ts · newsCalendar.ts · earnings.ts · bonds.ts ·
+        (display-only — never imported by signals)   macroWatch.ts · macroFmt.ts ·
+                     useMacro.ts
       signals        signalFeed.ts · signalEngine.ts · signals.ts · signalText.ts ·
                      signalHistory.ts · momentum.ts · softMomentum.ts ·
                      openDrive.ts · reclaimSetup.ts · sweepReclaimV2.ts ·
@@ -84,7 +92,7 @@ web/                 the dashboard + signal engine (Next.js 16, React 19, TS)
   scripts/           study CLIs — 4 wired into nightly.sh (reconcileTrades,
                      tradeAnalysis, strategyInsights, riskStackStudy), the rest
                      are ad-hoc research tools matching the docs/research/ notes
-  tests/             361 regression tests (351 pass / 10 skipped, offline ~2.5s)
+  tests/             427 regression tests (420 pass / 7 skipped, offline ~2.5s)
 gcdata/              Python collectors (GoCharting footprint/OHLC/DOM), protobuf
                      schemas, contract calendar, ES twin; venv + .env (gitignored)
 scripts/             ops: nightly.sh (the pipeline), r2_sync.py, es_r2_sync.py,
@@ -92,7 +100,8 @@ scripts/             ops: nightly.sh (the pipeline), r2_sync.py, es_r2_sync.py,
 deploy/              STATE.md (canonical ops record) · setup.sh
 docs/strategy/       signal design docs (momentum, RTH, open, reversal, boxes)
 docs/research/       empirical studies + trade reviews (the measured results)
-docs/data/           data-source audits + macro/PIT methodology
+docs/data/           data-source audits + macro/PIT methodology + the dashboard
+                     macro-panels research (DASHBOARD_MACRO_PANELS.md)
 docs/launchd/        the two launchd job definitions (collect + domprobe)
 PLAYBOOK.md          the canonical strategy reference · DOCS.md the corpus index
 ```
@@ -102,7 +111,7 @@ PLAYBOOK.md          the canonical strategy reference · DOCS.md the corpus inde
 ```bash
 cd web
 npm run dev      # dashboard on http://localhost:3000 (EXECUTE_LIVE=0 locally)
-npm test         # 361 tests, no network
+npm test         # 427 tests, no network
 npm run build && npm start          # production standalone (what the VPS runs)
 ```
 

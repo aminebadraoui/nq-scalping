@@ -47,6 +47,7 @@ checklist, sources) and `web/tests/README.md` (what the 361 tests pin down).
 | `docs/strategy/MOMENTUM_SIGNAL.md` | **active** (gates/sizing now live in PLAYBOOK) | The momentum card's design narrative: trigger specs, the fire-point ladder (why flush-alone = 29.5% WR / PF 0.26), per-year validation, account sim. Best read for *why* the gates are what they are. |
 | `docs/strategy/OPTIONS_SIGNAL.md` | **active** | Gamma/dealer-positioning regime box (CBOE QQQ chain). Context only, never a trigger — explicitly an unvalidated hypothesis. |
 | `docs/strategy/PRICE_ACTION_SIGNAL.md` | **active** | Discount/premium location filter across 6 timeframes; exact weights and thresholds; also explicitly unvalidated. |
+| `docs/strategy/TICK_MOMENTUM.md` | **active** (study aid, not a signal) | The objective decode of "the candle is pushing more up than down": velocity/leg/arrival/impact/rejection-speed metrics from the live tick tape (`web/lib/tickMomentum.ts` → dashboard panel). A path property the footprint cannot see; forward logging + MBO are the backtest paths. |
 | `docs/strategy/STRATEGY.md` | **superseded** (archived) | The retired LVN-reversal playbook (its own banner says RETIRED). Archived reference for the reversal family. |
 | `docs/strategy/NQ_ALERT_SYSTEM_DESIGN.md` | **superseded** (appendices still useful) | v1 screening design (P0–P5 profiles, LVN/CVD/absorption). Appendices 0–0v hold the engine's numerical audit + ten-fixed-defects log — unique infra history. |
 | `docs/strategy/scalping-reversal-strategies-report.md` | **historical** | Third-party per-setup playbooks (sweep, Wyckoff, VWAP, absorption…) + the 18-step desk checklist. Background for the reversal family. |
@@ -58,6 +59,10 @@ checklist, sources) and `web/tests/README.md` (what the 361 tests pin down).
 | File | Status | Headline numbers (all lookahead-free replays) |
 |---|---|---|
 | `docs/research/FOOTPRINT_CANDLE_RESEARCH.md` | **active** (provenance) | 781,537 bars: >1.6×ATR + one-sided → 86% next-bar direction; gate sweep table; rejected-gates ledger. Origin of the breakout gate + expansion trigger. |
+| `docs/research/tick-momentum-proxy-2026-10-03.md` | **active** (negative result) | 16,536 bars (12 OHLC-twin sessions): close position / wick asymmetry / body fraction are FLAT for next-minute direction — the rejection "feel" does not survive minute aggregation. Motivates the live tick-momentum engine + forward logging / MBO. |
+| `docs/research/sizing-optimizer-2026-10-04.md` | **active** | The full optimization campaign: 1620+ configs (stop × target × time × size) + refined grid + conditional layers, tuned on train / verified on test. Winner: **stop 0.4×, target 2R, 60-bar exit, max size** — test PF 4.41, $252,675 (4.8× base), plateau-verified; every macro-conditional layer rejected. |
+| `docs/research/overfit-validation-pipeline-2026-10-04.md` | **active** | The audit layer over every grid: `web/scripts/exportSweep.ts` → `gcdata/validate_sweep.py` (purgedcv DSR/PBO/PSR/MinTRL, frozen single-use holdout) → `gcdata/optuna_view.py` (viewer-only) + trials ledger + `/backtest` UI. All three families DSR 1.000 and holdout PASS: momentum PBO 0.242 (selection gray — plateau-pick), expansion PBO 0.001, RTH PBO 0.003 (selection rock-stable). |
+| `docs/research/vol-sizing-study-2026-10-04.md` | **active** | 649-session stop×size sweep (zero vetoes): tighter stops (s0.75) win (PF 2.86→3.53, +$17.5k, maxDD −35%); vol/VIX/structure-conditional sizing loses because the regime buckets are flat or inverted (HIGH-vol + counter-structure are the BEST cells). |
 | `docs/research/quality-filter-sweep-2026-10-02.md` | **active** | ATR vs footprint gates head-to-head; **rr1.0 beats rr0.85** on WR/PF/net → adopted (`minBreakRangeR: 1.0`). |
 | `docs/research/context-veto-stoprun-2026-10-02.md` | **active** | Every expansion context veto (cumD/VWAP/swing) **degrades** the edge; stop-runs = 5% of stops, no hour clustering; pads degrade monotonically. Defends the current prod config. |
 | `docs/research/es-features-study-2026-10-02.md` | **active** | ES twin study (649 sessions): BROAD CONFIRM chip 85.2% WR / PF 4.84 (test 87.4%); ES-delta-negative shorts = worst cell. |
@@ -93,6 +98,13 @@ checklist, sources) and `web/tests/README.md` (what the 361 tests pin down).
 | `docs/data/macro_context_layer_report.md` | **active** | The complete point-in-time implementation spec: ALFRED as-of joins, release calendars with exact ET times, DuckDB SQL, no-lookahead validation battery. |
 | `docs/data/us-macro-data-sources-pit.md` | **active** | US source audit: FRED/ALFRED/BLS/Census/Treasury/Fed — vintage mechanics, rate limits, per-series times. |
 | `docs/data/global-macro-data-sources.md` | **active** | Global source audit: DBnomics (no vintages), IMF WEO (only aggregator with true vintages), ECB/BIS/OECD, VIX/COT/DXY. |
+| `docs/data/DASHBOARD_MACRO_PANELS.md` | **active** | The dashboard's three display-only macro panels (news / earnings / bonds): sources, fallback chains, TTLs, the display-only boundary, caveats. |
+| `docs/data/MACRO_DASHBOARD_USEFULNESS.md` | **active** | Evidence-ranked research on what macro/market data is actually useful for a 1-min NQ scalper: GEX sign, VIX range band, auctions, leadership strip, liquidity — plus the anti-recommendation list and the verified free source stack. |
+| `docs/data/macro-watch-panel-ui-research.md` | **active** | The MACRO WATCH panel design spec: pattern inventory (Bloomberg/TradingView/CNBC/Finviz/CMC), cognitive-load literature, 17-row tile spec, per-class polling + per-tile staleness, 10 anti-patterns. |
+| `docs/data/bento-dashboard-spec.md` | **active** | The bento-grid redesign spec (Oct 2026): 3/6/3 + 8/4 wireframe, Linear-style dark tokens, full type ramp, accent rules, 10 beauty upgrades, sacred trade-surface list. |
+| `docs/data/DATA_SOURCE_AUDIT_2026-10-03.md` | **active** | ~80 live-probed endpoints for the macro watch layer: CNBC pipe batches, CBOE history CSVs, FRED keyless CSV, TreasuryDirect auctions JSON, CFTC Socrata, Yahoo server-side — working vs dead lists. |
+| `docs/data/economic-calendar-source-research-2026-10.md` | **active** | Live-verified audit of news-calendar sources (Finnhub/FMP/FF mirror/Nasdaq/…) — endpoints, limits, what died 2024→2026. |
+| `docs/data/MACRO_PANELS_UI_RESEARCH.md` | **active** | UI/UX pattern inventory + the design spec behind the macro strip and the three panels, with evidence links. |
 
 ---
 

@@ -11,7 +11,21 @@ Two surfaces, nothing else:
   **price-action panel** (discount/premium across all six timeframes with OTE
   bands). The **sweep-reclaim panel** shows the 67%-win @ 1R setup forming in
   real time: swing levels, the reclaim bar's one-sidedness (≥65% buy/sell),
-  and unusual volume vs the time-of-day norm (≥2× = UNUSUAL).
+  and unusual volume vs the time-of-day norm (≥2× = UNUSUAL). The **tick
+  momentum panel** (study aid, not a signal) decodes "the candle is pushing
+  more up than down" from the live tick tape — velocity asymmetry, leg
+  amplitude, arrival rate, price-impact λ ratio, probe rejection speed and
+  acceleration (5 s metrics / 60 s probes, computed client-side from the
+  feed's last 2,000 prints; `../docs/strategy/TICK_MOMENTUM.md`).
+- **The macro context layer** (display-only — never touches signals): an
+  always-visible macro strip under the live strip (next high-impact US
+  release with countdown · next NQ earnings · 10Y/2s10s · freshness stamp)
+  and a collapsible three-panel section below the grid: the **week-ahead
+  high-impact news calendar**, the **NQ earnings radar** (top-30 NDX
+  names, last EPS vs consensus + next date), and the **US Treasury curve**
+  (spreads, real yield, breakeven, delayed intraday row). Sources,
+  fallback chains and the design rationale:
+  `../docs/data/DASHBOARD_MACRO_PANELS.md`.
 - **`/docs` — the documentation** (the reference): the consolidated research —
   overview, evidence, tool stack, strategies, the interactive checklist with its
   expectancy math, and every source. Anchor links: `/docs#evidence`,
@@ -42,7 +56,7 @@ The chart can show three windows (toolbar buttons); the profile level stack
 npm install   # uses a local npm cache if system cache is broken:
               # npm_config_cache="$PWD/../.npm-cache" npm install
 npm run dev   # http://localhost:3000  (dashboard)
-npm test      # 361 regression tests over every calculation (~2.5 s, no network)
+npm test      # 427 regression tests over every calculation (~2.5 s, no network)
 npm run build && npm start
 ```
 
