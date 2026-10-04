@@ -8,11 +8,20 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const dir = path.join(process.cwd(), "data", "validation");
   const ledgerPath = path.join(dir, "trials.json");
-  const diag: { cwd: string; dir: string; dirExists: boolean; files: string[] } = {
+  const listDir = (p: string): string[] => {
+    try {
+      return readdirSync(p).sort();
+    } catch {
+      return [];
+    }
+  };
+  const diag: { cwd: string; dir: string; dirExists: boolean; files: string[]; root: string[]; data: string[] } = {
     cwd: process.cwd(),
     dir,
     dirExists: existsSync(dir),
     files: [],
+    root: listDir(process.cwd()),
+    data: listDir(path.join(process.cwd(), "data")),
   };
   try {
     if (diag.dirExists) {
@@ -39,7 +48,7 @@ export async function GET() {
         /* stale ledger — treat as empty */
       }
     }
-    return Response.json({ ok: true, version: 3, diag, reports, ledger });
+    return Response.json({ ok: true, version: 4, diag, reports, ledger });
   } catch (e) {
     return Response.json({ ok: false, status: "error", message: String(e), diag });
   }
