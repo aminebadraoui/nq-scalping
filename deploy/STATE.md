@@ -321,11 +321,13 @@ was not the signal. The expectancy ranking was:
   MOM (2.25R/60-bar): 0.35× TEST 1,122 · 0.55× 1,555 · 0.8× 1,618 —
   left unchanged for now (one knob at a time).
 
-Action: `RTH_STOP_MULT=0.65` set in the Coolify app env (2026-10-05
-12:25 ET, redeployed). Monitor the next RTH cards' stop distances
-(≈0.65 × base risk) and the family's live stop-out rate. Scratch
-studies (uncommitted): scripts/stopMultCalibration.ts,
-scripts/sessionPostmortem.ts.
+Action: **REVERTED — no live change.** The 0.65× env set was rolled back
+to `RTH_STOP_MULT=0.45` (2026-10-05 12:30 ET) the same day: the sweep
+above is pts-only and lacks the full methodology (account sim, dollar
+sizing, drawdown bounds) that originally selected 0.45×. Any knob
+change waits for the complete rthOptimizer-style campaign with the
+wider stop grid and the user's approval. Scratch studies
+(uncommitted): scripts/stopMultCalibration.ts, scripts/sessionPostmortem.ts.
 
 ## Trade execution (2026-10-01)
 
