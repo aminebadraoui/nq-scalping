@@ -68,6 +68,14 @@ if [ -z "${DATABASE_URL:-}" ]; then
   exit 1
 fi
 
+log "--- tape parity: snapshot live-written bars (before ingest overwrites them) ---"
+# The live feed persists its tick-built minutes into candles_1m as bars
+# close; ingest overwrites those rows with the vendor's collected candles.
+# Snapshot first so the live-vs-archive divergence is measurable tonight.
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/tapeParity.ts snapshot "$TO" 2>&1
+TAPE_SNAP_RC=$?
+log "tapeParity snapshot exit=$TAPE_SNAP_RC"
+
 log "--- ingest into Neon ---"
 # Neon Free caps storage at 512 MB; the 2.5-year history stays in
 # gcdata/data JSON (the lab/study read those files directly). Ingest a rolling
@@ -78,6 +86,13 @@ log "ingest window: $SINCE .. $TO"
 "$NODE_BIN" --import ../scripts/ts-loader.mjs ./db/ingest.ts --since "$SINCE" --profiles --events 2>&1
 INGEST_RC=$?
 log "ingest exit=$INGEST_RC"
+
+log "--- tape parity: compare live-written vs archived bars ---"
+# candles_1m now holds the vendor candles — diff the pre-ingest snapshot
+# against them and record one tape_parity row (observational only).
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/tapeParity.ts compare "$TO" 2>&1
+TAPE_CMP_RC=$?
+log "tapeParity compare exit=$TAPE_CMP_RC"
 
 log "--- divergence store refresh (progressive, backtest-grade) ---"
 # Canonical per-session D2/D4 artifacts the backtest engine reads
