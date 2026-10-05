@@ -7,13 +7,18 @@
  * the same second. Order type cannot fully prevent that class of
  * failure — only price agreement can.
  *
- * Before any live entry the gate reads CrossTrade's quote for the
- * mapped instrument and refuses when |quote − signal entry| exceeds
- * QUOTE_AGREE_MAX_PTS (default 3 pts — normal tape noise is well
- * under that; the reopen divergence was 14.75).
+ * Before any live entry the gate reads a broker-side MNQ price — the
+ * CrossTrade quote routes when they serve (market data is NT8-add-on
+ * only per CrossTrade's docs; Tradovate-linked accounts never get
+ * quotes from them) and Yahoo's CME MNQ continuous otherwise — and
+ * refuses when |quote − signal entry| exceeds QUOTE_AGREE_MAX_PTS
+ * (default 3 pts — normal tape noise is well under that; the reopen
+ * divergence was 14.75). Yahoo prints are accepted up to 10 minutes
+ * old: a stale-ish CME print still catches the persistent tape/broker
+ * divergence this gate exists for.
  *
- * The quote routes need CrossTrade's streaming client; when the quote
- * is unreadable the gate follows QUOTE_AGREE_NODATA:
+ * When no source yields a fresh quote the gate follows
+ * QUOTE_AGREE_NODATA:
  *   "allow"  (default) — fail OPEN with a warning: a down quote client
  *            never halts live execution, but the protection is skipped
  *            (the skip is visible in the order's exec_log reason)
@@ -30,9 +35,31 @@ export function quoteAgreeDecision(
   return Math.abs(quote - entry) > maxPts ? "diverge" : "ok";
 }
 
-/** read a broker mid/last for the instrument from CrossTrade's quote
- *  routes (defensive parsing — the response shape is not contractual).
- *  Returns null when every route fails or no price field is present. */
+/** parse Yahoo's chart response for the MNQ continuous front month
+ *  (pure + unit-tested). Returns null when the payload has no fresh
+ *  price; MAX_AGE_MS bounds how stale a quote may be for gate purposes —
+ *  a 10-minute-old CME print still catches the persistent tape/broker
+ *  divergence this gate exists for, but nothing older is trusted. */
+export function parseYahooChartQuote(raw: unknown, nowMs: number, maxAgeMs = 600_000): number | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = (raw as { chart?: { result?: Array<{ meta?: Record<string, unknown> }> } }).chart?.result?.[0];
+  const m = r?.meta;
+  if (!m || typeof m !== "object") return null;
+  const price = Number(m.regularMarketPrice);
+  const t = Number(m.regularMarketTime);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  if (!Number.isFinite(t) || nowMs - t * 1000 > maxAgeMs) return null;
+  return price;
+}
+
+/** read a broker-side MNQ price for the agreement gate, best source
+ *  first:
+ *   1. CrossTrade's quote routes — NT8-only per their docs (market data
+ *      is never served for Tradovate-linked accounts, so these fail
+ *      closed with "Client not ready" here; kept for NT8 setups)
+ *   2. Yahoo's CME MNQ continuous (MNQ=F) — free, ~real-time-ish, the
+ *      practical source for a Tradovate account.
+ *  Returns null when every source fails or no fresh price is present. */
 export async function fetchBrokerQuote(
   instrument: string,
   account: string,
@@ -72,6 +99,20 @@ export async function fetchBrokerQuote(
     } catch {
       /* try the next route */
     }
+  }
+  // CrossTrade serves no market data for Tradovate accounts (NT8-only per
+  // their docs) — fall back to Yahoo's CME MNQ continuous front month.
+  try {
+    const res = await fetch("https://query1.finance.yahoo.com/v8/finance/chart/MNQ%3DF?interval=1m&range=1d", {
+      headers: { "User-Agent": "Mozilla/5.0 (nq-scalping quote gate)" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) {
+      const price = parseYahooChartQuote(await res.json(), Date.now());
+      if (price !== null && price > 0) return price;
+    }
+  } catch {
+    /* no fresh quote — nodata policy decides */
   }
   return null;
 }
