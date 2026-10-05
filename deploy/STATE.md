@@ -270,6 +270,13 @@ ABOVE the take-profit and the OCO closed it instantly.
   in `/v1/api/tv/accounts/{account}/orders`, then cancel it via
   `POST /v1/api/tv/accounts/{account}/orders/{orderId}/cancel` with our
   user-assigned id. Never enable while a verify is pending.
+  **Why limits matter here (measured):** the retrace edge is priced at
+  the limit — a 0.5-pt adverse entry slip flips the strategy from
+  +$18.8K / PF 1.05 to −$115.9K / PF 0.77 over the archive
+  (`web/scripts/retraceSlippageStudy.ts`,
+  docs/research/retrace-slippage-2026-10-04.md). The market-order path
+  was leaking the whole edge; drift-blocking alone only cuts the >3-pt
+  tail, not the normal sub-point slip.
 
 ## Trade execution (2026-10-01)
 
