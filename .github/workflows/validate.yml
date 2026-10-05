@@ -1,0 +1,38 @@
+name: validate
+
+# Second net behind scripts/git-hooks/pre-push: re-runs types, the full
+# offline test suite, and the live-execution change gate on every push
+# to main (every push auto-deploys the VPS executor). Protect `main`
+# and mark this check required to turn it into a pre-merge hard gate.
+# Policy: web/EXEC_CHANGE_POLICY.md
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: install
+        working-directory: web
+        run: npm ci
+      - name: typecheck
+        working-directory: web
+        run: npx tsc --noEmit
+      - name: tests
+        working-directory: web
+        run: npm test
+      - name: live-execution change gate
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: bash scripts/exec-gate.sh "$BEFORE" "$GITHUB_SHA"

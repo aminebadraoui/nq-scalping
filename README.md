@@ -127,6 +127,10 @@ Manual pieces are documented in `deploy/STATE.md` §Operate.
 - **Nothing secret is committed** — creds live in gitignored files
   (`gcdata/.env`, `web/.env.local`, `.agents/skills/coolify-deploy/`, Coolify
   env). If a secret ever lands in git: rotate AND rewrite history.
+- **Live-execution changes are gated** — every push to `main` deploys the
+  live executor, so execution-code and Coolify-env changes follow
+  `web/EXEC_CHANGE_POLICY.md` (backtest → `[backtested:]` tag → tests),
+  enforced by `scripts/git-hooks/pre-push` + `.github/workflows/validate.yml`.
 - **`lib/marketHours.ts` is the single market calendar**; `deploy/STATE.md`
   is the single ops record; `PLAYBOOK.md` is the single strategy record —
   update them when behavior changes.
