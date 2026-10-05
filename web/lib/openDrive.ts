@@ -342,7 +342,11 @@ export function detectOpenDrive(minutes: MomMinute[], cfg: OpenDriveConfig = OPE
     let cumS = 0;
     let winHi = -Infinity;
     let winLo = Infinity;
-    for (let k = i0; k < Math.min(n - 1, i0 + cfg.windowMin); k++) {
+    // INCLUSIVE of the last bar: the live feed cards only when the trigger
+    // bar IS the buffer tail (breakIdx === fp.length - 1) — the exclusive
+    // bound evaluated the trigger one tick late and the freshness gate
+    // discarded it forever (the "zero live open cards" bug, 2026-10-05).
+    for (let k = i0; k <= Math.min(n - 1, i0 + cfg.windowMin); k++) {
       const m = minutes[k];
       const vol = m.buy + m.sell;
       const frac = vol > 0 ? m.buy / vol : 0.5;

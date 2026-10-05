@@ -303,6 +303,29 @@ test("open drive: cumulative delta + huge bar through the opening high fires lon
   assert.ok(Math.abs(s.risk - 35) < 0.01, `risk ${s.risk}`);
 });
 
+test("open drive scan: fires when the qualifying bar IS the buffer tail (inclusive bound)", () => {
+  // the live feed only cards when the trigger bar is the last bar of the
+  // buffer — the exclusive bound (k < n-1) made that unreachable and the
+  // open card never fired live (2026-10-05 diag: cumS=511, zero cards)
+  const quiet: [string, number, number, number, number][] = [];
+  for (let i = 0; i < 58; i++) {
+    const t = `06:${String(i % 60).padStart(2, "0")}`;
+    quiet.push([t, 100.25, 99.75, 50, 50]);
+  }
+  const m = bars([
+    ...quiet,
+    ["08:30", 101.5, 99.75, 200, 100], // 9:30 open bar, +100 delta
+    ["08:31", 101.0, 100.25, 60, 60], // two quiet bars (the scan needs 3 bars after the open)
+    ["08:32", 101.25, 100.5, 60, 60],
+    ["08:33", 110.5, 100.0, 1200, 800], // drive bar is the LAST bar: 60% buy, cumD 500
+  ]);
+  const sigs = detectOpenDrive(m, OPEN_PROD);
+  assert.equal(sigs.length, 1);
+  assert.equal(sigs[0].dir, "long");
+  assert.equal(sigs[0].t, "08:33");
+  assert.equal(sigs[0].breakIdx, m.length - 1, "the trigger bar is the buffer tail — cardable");
+});
+
 test("pullback mode: trend + exhausted pullback + reclaim fires the morning entry", () => {
   const quiet: [string, number, number, number, number][] = [];
   for (let i = 0; i < 58; i++) {

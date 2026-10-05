@@ -1394,7 +1394,11 @@ class SignalFeed {
     if (nb) console.log(`[news] ${nb} blackout — skipping open cards (candidates recorded)`);
     for (const job of jobs) {
     for (const s of job.sigs) {
-      if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
+      // the open detectors evaluate COMPLETED bars; accept the trigger bar
+      // when it is the buffer tail or the just-closed bar (a tick race must
+      // not lose the card — openSent dedupes; momentum/RTH keep the strict
+      // gate because they fire on the in-progress bar)
+      if (s.breakIdx < fp.length - 2) continue;
       const family = job.key === "sniper" ? "open_sniper" : job.key === "pullback" ? "open_pullback" : "open_drive";
       const verdict = job.key === "sniper" ? "open sniper (experimental)" : job.key === "pullback" ? "open pullback (experimental)" : "open drive (experimental)";
       const headline = `NQ ${job.key === "sniper" ? "open sniper" : job.key === "pullback" ? "open pullback" : "open drive"} ${s.dir}`;

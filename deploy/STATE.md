@@ -277,6 +277,33 @@ ABOVE the take-profit and the OCO closed it instantly.
   was leaking the whole edge; drift-blocking alone only cuts the >3-pt
   tail, not the normal sub-point slip.
 
+## Open-drive live fix (2026-10-05) — the card could never fire live
+
+The 09:30 open drive (tape 31004 → 31229, +225 pts by 09:45) was missed
+live: the VPS diag showed the exact trigger numbers (`cumS=511`,
+`lastFrac=0.59` at the 09:41 bar) but no card. Root cause, two coupled
+off-by-ones:
+
+1. `detectOpenDrive` scan mode looped `k < min(n−1, …)` — it never
+   evaluated the buffer's last bar.
+2. The feed's freshness gate required `breakIdx === fp.length − 1`
+   (the trigger bar must be the buffer tail).
+
+Together they were unsatisfiable: the trigger was evaluated one tick
+late, at which point the tail had moved on, and the gate discarded the
+re-emitted signal on every tick forever. That is also why the live
+record had zero open cards while the archive study fires ~87% of days.
+
+Fixed: the scan loop is now inclusive of the last bar
+(`k <= min(n−1, …)`), and the open family's freshness gate accepts the
+buffer tail OR the just-closed bar (`breakIdx < fp.length − 2` drops;
+openSent dedupes). Momentum/RTH keep the strict gate (they fire on the
+in-progress bar). Regression test: the scan fires when the qualifying
+bar IS the buffer tail (tests/momentum.test.ts).
+Replay tool for post-mortems: `web/scripts/morningReplay.ts` rebuilds
+the live buffer from Neon (candles_1m + footprint_ticks) and runs the
+production detectors over it.
+
 ## Trade execution (2026-10-01)
 
 - **CrossTrade is the ONLY execution backend**: `web/lib/crossTrade.ts` places
