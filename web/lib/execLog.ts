@@ -43,7 +43,11 @@ export type ExecLogEntry = {
     | "resend_failed"
     | "resend_failed_retrying"
     | "resend_gave_up"
-    | "resend_aborted";
+    | "resend_aborted"
+    | "limit_filled"
+    | "limit_expired"
+    | "limit_cancel_failed"
+    | "limit_cancelled_giveup";
   reason: string;
   meta?: Record<string, unknown>;
 };

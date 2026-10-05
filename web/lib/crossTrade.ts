@@ -51,6 +51,7 @@
 
 import type { OrderIntent } from "./executor";
 import { crossGuardGate } from "./crossGuard";
+import { quoteAgreeGate } from "./quoteGate";
 
 export type CrossTradeConfig = {
   url: string;
@@ -454,31 +455,49 @@ export function stackGuardDecision(
   return "confirm_flat";
 }
 
-/** place a bracketed market order with ABSOLUTE stop/target prices */
+/** place a bracketed entry with ABSOLUTE stop/target prices. Default is a
+ *  market entry; opts.limitPrice switches to a resting LIMIT at that price
+ *  (with our own orderId so a later cancel can address it — the CrossTrade
+ *  cancel route accepts the user-assigned orderId). */
 export async function placeCrossTradeOrderREST(
   intent: OrderIntent,
-): Promise<{ ok: boolean; reason: string }> {
+  opts: { limitPrice?: number } = {},
+): Promise<{ ok: boolean; reason: string; orderId?: string }> {
   const guard = await crossGuardGate();
   if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
-  if (!live) {
-    console.log(`[crossTrade] DRY-RUN(REST) ${describeIntent(intent)}`);
-    return { ok: true, reason: "dry-run (logged only)" };
+  const instrument = mapInstrument(intent.symbol, cfg.instrument);
+  if (!instrument) {
+    return { ok: false, reason: `crossTrade: cannot map symbol "${intent.symbol}" to a Tradovate instrument` };
   }
+  const orderId = opts.limitPrice !== undefined ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-lmt` : undefined;
+  if (!live) {
+    console.log(
+      `[crossTrade] DRY-RUN(REST) ${opts.limitPrice !== undefined ? "LIMIT" : ""} ${describeIntent(intent)}` +
+        (opts.limitPrice !== undefined ? ` @ ${opts.limitPrice.toFixed(2)}` : ""),
+    );
+    return { ok: true, reason: "dry-run (logged only)", orderId };
+  }
+
+  // broker quote agreement — the tape can lag the real market (2026-10-04:
+  // tape 31141 vs broker 31155 → market fill above the take-profit → instant
+  // OCO close). Refuse when the broker quote disagrees with the signal.
+  const qg = await quoteAgreeGate(cfg, intent.entry, instrument);
+  if (!qg.ok) return { ok: false, reason: qg.reason };
 
   const flat = await restFlatGate(cfg);
   if (!flat.ok) return { ok: false, reason: flat.reason };
 
   let payload: RESTPlacePayload;
   try {
-    payload = buildRESTPlacePayload(intent, cfg);
+    payload = buildRESTPlacePayload(intent, cfg, { orderId, limitPrice: opts.limitPrice });
   } catch (e) {
     return { ok: false, reason: String(e) };
   }
 
   console.log(
-    `[crossTrade] LIVE(REST) ${intent.dir.toUpperCase()} ${payload.qty} ${payload.instrument} ` +
+    `[crossTrade] LIVE(REST) ${payload.orderType === "limit" ? "LIMIT" : ""} ${intent.dir.toUpperCase()} ${payload.qty} ${payload.instrument} ` +
       `entry ${intent.entry.toFixed(2)} · stop ${intent.stop.toFixed(2)} · target ${intent.target.toFixed(2)} · ${intent.timeET} NY`,
   );
   const leg = await postRESTLeg(payload, cfg);
@@ -490,7 +509,7 @@ export async function placeCrossTradeOrderREST(
   }
   if (leg.kind !== "ok") return { ok: false, reason: leg.reason };
   markEntryPlaced();
-  return { ok: true, reason: `REST placed ${payload.orderId ?? ""}` };
+  return { ok: true, reason: `REST placed ${payload.orderId ?? ""}`, orderId };
 }
 
 /* ------------------------------------------------------------------ *
@@ -503,17 +522,18 @@ export type RESTPlacePayload = {
   instrument: string;
   action: "buy" | "sell";
   qty: number;
-  orderType: "market";
+  orderType: "market" | "limit";
   tif: "day";
+  limitPrice?: number; // the resting limit price (limit entries only)
   stopLoss: string; // ABSOLUTE — the signal's structural stop
   takeProfit?: string; // ABSOLUTE — omitted on runner legs (no fixed target)
-  orderId?: string; // ours, so a later CHANGE can address this order
+  orderId?: string; // ours, so a later cancel/CHANGE can address this order
 };
 
 export function buildRESTPlacePayload(
   intent: OrderIntent,
   cfg: CrossTradeConfig,
-  opts: { orderId?: string; withTarget?: boolean } = {},
+  opts: { orderId?: string; withTarget?: boolean; limitPrice?: number } = {},
 ): RESTPlacePayload {
   const instrument = mapInstrument(intent.symbol, cfg.instrument);
   if (!instrument) {
@@ -522,15 +542,20 @@ export function buildRESTPlacePayload(
   if (!Number.isFinite(intent.stop)) {
     throw new Error(`crossTrade: invalid stop — entry ${intent.entry} stop ${intent.stop}`);
   }
+  if (opts.limitPrice !== undefined && !Number.isFinite(opts.limitPrice)) {
+    throw new Error(`crossTrade: invalid limit price — ${opts.limitPrice}`);
+  }
   const qty = Math.max(1, Math.min(30, Math.floor(intent.contracts)));
+  const isLimit = opts.limitPrice !== undefined;
   const payload: RESTPlacePayload = {
     instrument,
     action: intent.dir === "long" ? "buy" : "sell",
     qty,
-    orderType: "market",
+    orderType: isLimit ? "limit" : "market",
     tif: "day",
     stopLoss: intent.stop.toFixed(2),
   };
+  if (isLimit) payload.limitPrice = opts.limitPrice;
   if (opts.withTarget ?? true) {
     if (!Number.isFinite(intent.target)) {
       throw new Error(`crossTrade: invalid target — entry ${intent.entry} target ${intent.target}`);
@@ -665,6 +690,13 @@ export async function placeCrossTradeScaleOutREST(
     return { ok: true, reason: "dry-run (logged only)", bankOrderId, runnerOrderId, runnerQty: runner.contracts };
   }
 
+  const instrument = mapInstrument(intent.symbol, cfg.instrument);
+  if (!instrument) {
+    return { ok: false, reason: `crossTrade: cannot map symbol "${intent.symbol}" to a Tradovate instrument` };
+  }
+  const qg = await quoteAgreeGate(cfg, intent.entry, instrument);
+  if (!qg.ok) return { ok: false, reason: qg.reason };
+
   const flat = await restFlatGate(cfg);
   if (!flat.ok) return { ok: false, reason: flat.reason };
 
@@ -769,6 +801,51 @@ export async function placeCrossTradeExitREST(
   console.log(`[crossTrade] LIVE(REST) EXIT ${payload.action.toUpperCase()} ${qty} ${instrument} (time exit)`);
   const leg = await postRESTLeg(payload, cfg);
   return leg.kind === "ok" ? { ok: true, reason: `REST exit placed ${payload.orderId}` } : { ok: false, reason: leg.reason };
+}
+
+/* ------------------------------------------------------------------ *
+ * REST cancel — the resting-limit expiry path. Addresses the order by
+ * OUR user-assigned orderId (the CrossTrade cancel route accepts either
+ * the Tradovate numeric id or the user-assigned one). Dry-run unless
+ * EXECUTE_LIVE=1; a failed cancel ALERTS the caller — a resting limit
+ * that outlives its expiry must be cancelled by hand.
+ * ------------------------------------------------------------------ */
+
+export async function cancelCrossTradeOrderREST(orderId: string): Promise<{ ok: boolean; reason: string }> {
+  const cfg = loadConfig();
+  const live = process.env.EXECUTE_LIVE === "1";
+  if (!live) {
+    console.log(`[crossTrade] DRY-RUN(REST) CANCEL ${orderId}`);
+    return { ok: true, reason: "dry-run (logged only)" };
+  }
+  try {
+    const res = await fetch(
+      `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/orders/${encodeURIComponent(orderId)}/cancel`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
+        body: "{}",
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    const bodyText = await res.text();
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, reason: `cancel auth failure (${res.status})` };
+    }
+    let j: Record<string, unknown> | null = null;
+    try {
+      j = JSON.parse(bodyText);
+    } catch {
+      /* plain text */
+    }
+    if (!res.ok) return { ok: false, reason: `cancel rejected (${res.status}) ${bodyText.slice(0, 160)}` };
+    if (j && j.success === false) {
+      return { ok: false, reason: `cancel rejected: ${String(j.error ?? bodyText).slice(0, 160)}` };
+    }
+    return { ok: true, reason: `cancelled ${orderId}` };
+  } catch (e) {
+    return { ok: false, reason: `cancel UNKNOWN (network: ${String(e)}) — verify the order list manually` };
+  }
 }
 
 /** TEST ONLY: reset the flat-entry latch. */

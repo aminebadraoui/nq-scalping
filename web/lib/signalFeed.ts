@@ -58,7 +58,7 @@ import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
 import { crossGuardDayPnl } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
-import { registerExpectation, registerSendFailure, checkExpectations } from "./execWatch";
+import { registerExpectation, registerSendFailure, checkExpectations, attachLimitOrderId } from "./execWatch";
 import { momentumProfile, rthProfile, applyProfile, timeExitAt } from "./profile";
 import { registerTimeExit, checkTimeExits } from "./timeExit";
 import { logExec } from "./execLog";
@@ -118,6 +118,11 @@ export const FEED_PULLBACK_TICKET = feedFlag("FEED_PULLBACK_TICKET", false);
  *  card (lib/momentum.ts, MOM_PROD). THE single active strategy. 77.5% win /
  *  PF 2.98 in the 568-session replay — joins the one-sided run. */
 export const FEED_MOMENTUM = feedFlag("FEED_MOMENTUM", true);
+
+/** broker resting-limit entry TTL — the expansion-retrace window is 5 bars;
+ *  the broker limit mirrors it and is cancelled by the watcher at expiry
+ *  (CROSSTRADE_LIMIT_ENTRIES=1). */
+const LIMIT_ENTRY_TTL_MS = 5 * 60_000;
 /** FEED_RTH — the RTH soft-continuation card (lib/softMomentum.ts).
  *  ON: footprint-proven continuation — 10,325 trades, 82.2% win, PF 3.47,
  *  every year ≥ 77.7%, account sim never breaches (see PLAYBOOK.md). */
@@ -911,7 +916,8 @@ class SignalFeed {
     scaleOut: boolean,
     et: string,
     suffix = "",
-  ): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
+    limitPrice?: number,
+  ): Promise<{ ok: boolean; reason: string; orderId?: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
     if (scaleOut) {
       try {
         const res = await placeScaleOut(intent);
@@ -933,16 +939,17 @@ class SignalFeed {
       }
     }
     try {
-      const res = await placeOrder(intent);
+      const limitTag = limitPrice !== undefined ? " (limit)" : "";
+      const res = await placeOrder(intent, limitPrice !== undefined ? { limitPrice } : {});
       void logExec({
         key: `mom|${key}`,
-        label: `momentum ${intent.dir} ${et}${suffix}`,
+        label: `momentum ${intent.dir} ${et}${suffix}${limitTag}`,
         attempt: "initial",
         outcome: res.ok ? "ok" : "failed",
         reason: res.reason,
       });
-      if (!res.ok) registerSendFailure(`mom|${key}`, `momentum ${intent.dir} ${et}${suffix}`, res.reason);
-      if (res.ok && !scaleOut) {
+      if (!res.ok) registerSendFailure(`mom|${key}`, `momentum ${intent.dir} ${et}${suffix}${limitTag}`, res.reason);
+      if (res.ok && !scaleOut && limitPrice === undefined) {
         const prof = momentumProfile();
         if (prof.enabled) {
           registerTimeExit({
@@ -1125,16 +1132,26 @@ class SignalFeed {
       reason: pushRes.reason,
       features: { ...p.features, retrace: "filled", drift },
     });
+    // CROSSTRADE_LIMIT_ENTRIES=1 mirrors the tape-side resting limit at the
+    // BROKER as a resting limit at the same price (single-leg only) — the
+    // watcher cancels it when the retrace window expires unfilled.
+    const useLimit = process.env.CROSSTRADE_LIMIT_ENTRIES === "1" && !p.scaleOut;
+    const limitExpireAtMs = useLimit ? Date.now() + LIMIT_ENTRY_TTL_MS : undefined;
     registerExpectation({
       key: `mom|${p.key}`,
       ts: Date.now(),
-      label: `momentum ${p.dir} (retrace)`,
+      label: `momentum ${p.dir} (retrace${useLimit ? " limit" : ""})`,
       intent,
       scaleOut: p.scaleOut,
+      limit: useLimit ? { price: entry, expireAtMs: limitExpireAtMs! } : undefined,
     });
-    console.log(`[expRetrace] filled ${p.dir} @ ${fmtPx(entry)} (drift ${drift >= 0 ? "+" : ""}${drift.toFixed(2)}) · ${et} NY`);
+    console.log(
+      `[expRetrace] filled ${p.dir} @ ${fmtPx(entry)} (drift ${drift >= 0 ? "+" : ""}${drift.toFixed(2)}) · ${et} NY` +
+        (useLimit ? ` · broker limit ${LIMIT_ENTRY_TTL_MS / 60_000}min TTL` : ""),
+    );
 
-    void this.placeMomentumOrder(p.key, intent, p.scaleOut, et, " (retrace)").then((res) => {
+    void this.placeMomentumOrder(p.key, intent, p.scaleOut, et, " (retrace)", useLimit ? entry : undefined).then((res) => {
+      if (useLimit && res.ok && res.orderId) attachLimitOrderId(`mom|${p.key}`, res.orderId);
       if (p.scaleOut && res.runnerOrderId) {
         runnerTracker.register({
           id: res.runnerOrderId.replace(/-run$/, ""),

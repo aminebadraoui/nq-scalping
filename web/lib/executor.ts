@@ -15,7 +15,7 @@
  * Credentials come from env (gitignored), never logged.
  * ------------------------------------------------------------------ */
 
-import { crossTradeEnabled, placeCrossTradeOrder, placeCrossTradeOrderREST, placeCrossTradeScaleOut, placeCrossTradeScaleOutREST } from "./crossTrade";
+import { cancelCrossTradeOrderREST, crossTradeEnabled, placeCrossTradeOrder, placeCrossTradeOrderREST, placeCrossTradeScaleOut, placeCrossTradeScaleOutREST } from "./crossTrade";
 
 export type OrderIntent = {
   symbol: string;
@@ -27,16 +27,33 @@ export type OrderIntent = {
   timeET: string;
 };
 
+export type PlaceOpts = {
+  /** resting LIMIT entry at this price (with our own orderId so a later
+   *  cancel can address it) instead of the default market entry */
+  limitPrice?: number;
+};
+
 /** Place a bracketed entry through CrossTrade. The REST path (ABSOLUTE
  *  stop/target at the signal's structural levels) is the default;
- *  CROSSTRADE_REST=0 falls back to the quote-anchored webhook. */
-export async function placeOrder(intent: OrderIntent): Promise<{ ok: boolean; reason: string }> {
+ *  CROSSTRADE_REST=0 falls back to the quote-anchored webhook.
+ *  opts.limitPrice switches the entry to a resting limit. */
+export async function placeOrder(
+  intent: OrderIntent,
+  opts: PlaceOpts = {},
+): Promise<{ ok: boolean; reason: string; orderId?: string }> {
   if (crossTradeEnabled()) {
     return process.env.CROSSTRADE_REST === "0"
       ? placeCrossTradeOrder(intent)
-      : placeCrossTradeOrderREST(intent);
+      : placeCrossTradeOrderREST(intent, opts);
   }
   return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
+}
+
+/** Cancel a resting order by our user-assigned orderId (the limit-entry
+ *  expiry path). No-op when CrossTrade is off. */
+export async function cancelOrder(orderId: string): Promise<{ ok: boolean; reason: string }> {
+  if (!crossTradeEnabled()) return { ok: false, reason: "CrossTrade not configured" };
+  return cancelCrossTradeOrderREST(orderId);
 }
 
 /** Place the scale-out pair (bank 2/3 + runner 1/3). REST absolute

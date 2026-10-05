@@ -240,6 +240,37 @@ confirms flat` (exec_log rows 23/25). Root cause + fix:
    apart, stale-checked each time, news-blackout deferred).
    (A redeploy resets the in-memory latch — do it while the book is flat.)
 
+## Quote-agreement gate + broker limit entries (2026-10-04)
+
+Same incident, second layer. The 18:31 entry filled 14.75 pts above the
+signal because the GoCharting tape lagged the real MNQZ6 market on the
+Sunday reopen (tape 31141 vs broker 31155) — the market order filled
+ABOVE the take-profit and the OCO closed it instantly.
+
+- **Quote-agreement gate** (`lib/quoteGate.ts`, wired into both REST
+  placement paths): before any live entry the gate reads the CrossTrade
+  quote for the mapped instrument and refuses when |quote − signal
+  entry| > `QUOTE_AGREE_MAX_PTS` (default 3). `QUOTE_AGREE_CHECK=0`
+  disables. The quote routes need CrossTrade's streaming client; when
+  the quote is unreadable the gate follows `QUOTE_AGREE_NODATA`:
+  `allow` (default — fail open, the skip is visible in the exec_log
+  reason) or `refuse` (fail closed).
+- **Broker resting-limit entries** (`CROSSTRADE_LIMIT_ENTRIES=1`,
+  default OFF until verified live): the expansion-retrace fill mirrors
+  its tape-side resting limit at the BROKER as a resting limit at the
+  same price (single-leg only), carrying our own orderId (the CrossTrade
+  cancel route accepts the user-assigned id). The watcher treats it as
+  a limit card: wait for the fill (time exit registers at FILL time) or
+  CANCEL at expiry (5 min TTL ≈ the 5-bar retrace window), at signal-
+  window close, and at the 10-min give-up — a limit never outlives its
+  card. Limit placements that fail fall into the standard verified
+  re-send loop (re-placed with the same limit price).
+- **Before turning limit entries ON**: verify once against the live
+  account — place a 1-lot limit FAR from the market, confirm it appears
+  in `/v1/api/tv/accounts/{account}/orders`, then cancel it via
+  `POST /v1/api/tv/accounts/{account}/orders/{orderId}/cancel` with our
+  user-assigned id. Never enable while a verify is pending.
+
 ## Trade execution (2026-10-01)
 
 - **CrossTrade is the ONLY execution backend**: `web/lib/crossTrade.ts` places

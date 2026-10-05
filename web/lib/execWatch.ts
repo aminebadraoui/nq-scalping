@@ -26,7 +26,7 @@
  * ------------------------------------------------------------------ */
 
 import { sendTelegram } from "./notify";
-import { placeOrder, placeScaleOut, type OrderIntent } from "./executor";
+import { placeOrder, placeScaleOut, cancelOrder, type OrderIntent } from "./executor";
 import { momentumProfile, timeExitAt } from "./profile";
 import { registerTimeExit } from "./timeExit";
 import { getLive } from "./live";
@@ -49,6 +49,11 @@ export type Expectation = {
   attempts: number;
   /** epoch ms of the last re-send attempt (throttled by RETRY_INTERVAL_MS) */
   lastAttemptAt: number;
+  /** resting-LIMIT entry: the watcher waits for the fill instead of the
+   *  resend flow, and CANCELS the order when the window closes, the
+   *  expiry passes, or the give-up clock fires — a limit must never
+   *  outlive the card that placed it. */
+  limit?: { orderId?: string; price: number; expireAtMs: number };
 };
 
 const CHECK_AFTER_MS = 90_000;
@@ -180,6 +185,15 @@ export function registerExpectation(e: Omit<Expectation, "sendFailed" | "attempt
   pending.set(e.key, { ...e, sendFailed: failedKeys.has(e.key), attempts: 0, lastAttemptAt: 0 });
 }
 
+/** attach the broker-facing order id to a pending limit card after its
+ *  placement returns (the id is ours by construction, so this is how the
+ *  expiry cancel addresses the order). No-op when not live. */
+export function attachLimitOrderId(key: string, orderId: string) {
+  if (!enabled()) return;
+  const e = pending.get(key);
+  if (e?.limit) e.limit.orderId = orderId;
+}
+
 /** pure decision helper (unit-tested): what to do when the 90s check
  *  finds no fill for a card. Only a FAILED send may be re-sent, and
  *  only when the broker verifies absent. */
@@ -235,9 +249,21 @@ export async function checkExpectations(): Promise<void> {
     // Sunday 18:00 ET → Friday 16:00 ET (daily 16:00–18:00 halt Mon–Thu) —
     // entries stay pending and are dropped by the give-up clock once it
     // expires (no weekend re-send).
-    if (!signalWindowOpen(now)) continue;
+    if (!signalWindowOpen(now)) {
+      // a resting limit must never survive the signal window closing —
+      // cancel it (the give-up clock no longer runs while closed)
+      if (e.limit?.orderId) {
+        const c = await cancelOrder(e.limit.orderId);
+        void logExec({ key, label: e.label, attempt: "watch", outcome: c.ok ? "limit_expired" : "limit_cancel_failed", reason: `window closed — ${c.reason}` });
+      }
+      continue;
+    }
     if (now - e.ts < CHECK_AFTER_MS) continue;
     if (now - e.ts > GIVE_UP_MS) {
+      if (e.limit?.orderId) {
+        const c = await cancelOrder(e.limit.orderId);
+        void logExec({ key, label: e.label, attempt: "watch", outcome: c.ok ? "limit_cancelled_giveup" : "limit_cancel_failed", reason: c.reason });
+      }
       pending.delete(key);
       if (!alerted.has(key) || e.sendFailed) {
         alerted.add(key);
@@ -248,12 +274,52 @@ export async function checkExpectations(): Promise<void> {
     fills = fills ?? (await fetchFills());
     if (fillMatches(e, fills, now)) {
       pending.delete(key);
+      if (e.limit) {
+        // the resting limit filled — the position exists, brackets are
+        // exchange-side; register the profile time exit from the FILL time
+        if (!e.scaleOut) {
+          const prof = momentumProfile();
+          if (prof.enabled) {
+            registerTimeExit({
+              key,
+              label: e.label,
+              symbol: e.intent.symbol,
+              dir: e.intent.dir,
+              exitAtMs: timeExitAt(now, prof),
+            });
+          }
+        }
+        void logExec({ key, label: e.label, attempt: "watch", outcome: "limit_filled", reason: "resting limit filled" });
+        void alert(`✅ <b>LIMIT FILLED</b> — <code>${e.label}</code> resting limit entered`);
+      }
+      continue;
+    }
+
+    // resting-limit lifecycle: a limit card whose send succeeded waits for
+    // the fill (no verify, no resend — the working order IS the intended
+    // state) and is CANCELLED at its expiry. A limit must never outlive
+    // the card that placed it.
+    if (e.limit && !e.sendFailed) {
+      if (now >= e.limit.expireAtMs) {
+        pending.delete(key);
+        const c = e.limit.orderId ? await cancelOrder(e.limit.orderId) : { ok: false, reason: "no order id — cannot cancel" };
+        void logExec({ key, label: e.label, attempt: "watch", outcome: c.ok ? "limit_expired" : "limit_cancel_failed", reason: c.reason });
+        void alert(
+          c.ok
+            ? `⏱ <b>LIMIT EXPIRED — cancelled</b> — <code>${e.label}</code> rested unfilled for ${Math.round((now - e.ts) / 1000)}s`
+            : `🚨 <b>LIMIT EXPIRED BUT CANCEL FAILED</b> — <code>${e.label}</code> — ${c.reason} — cancel it manually NOW`,
+        );
+      }
       continue;
     }
 
     if (!autoRetry()) {
       if (!alerted.has(key)) {
         alerted.add(key);
+        if (e.limit?.orderId) {
+          const c = await cancelOrder(e.limit.orderId);
+          void logExec({ key, label: e.label, attempt: "watch", outcome: c.ok ? "limit_expired" : "limit_cancel_failed", reason: `auto-retry off — ${c.reason}` });
+        }
         pending.delete(key);
         void alert(`🚨 <b>EXECUTION CHECK — no fill found</b> — <code>${e.label}</code>`);
       }
@@ -313,9 +379,24 @@ export async function checkExpectations(): Promise<void> {
       );
       continue;
     }
-    const res = e.scaleOut ? await placeScaleOut(e.intent) : await placeOrder(e.intent);
+    const res = e.scaleOut ? await placeScaleOut(e.intent) : await placeOrder(e.intent, e.limit ? { limitPrice: e.limit.price } : {});
     e.attempts += 1;
     e.lastAttemptAt = now;
+    if (res.ok && e.limit) {
+      // limit re-placed — the resting-limit lifecycle takes over: wait for
+      // the fill (time exit registers on fill, not on placement) or cancel
+      // at expiry. The card stays pending.
+      if ("orderId" in res && res.orderId) e.limit.orderId = res.orderId;
+      void logExec({
+        key,
+        label: e.label,
+        attempt: "resend",
+        outcome: "resend_ok",
+        reason: res.reason,
+      });
+      void alert(`🔁 <b>AUTO RE-SENT — limit resting</b> — <code>${e.label}</code> verified absent, re-sent (attempt ${e.attempts}/${MAX_RESEND_ATTEMPTS}): ${res.reason}`);
+      continue;
+    }
     if (res.ok) {
       if (!e.scaleOut) {
         const prof = momentumProfile();

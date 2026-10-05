@@ -207,6 +207,15 @@ test("REST payload: runner leg omits takeProfit, keeps absolute stop", () => {
   assert.equal(p.orderId, "abc-run");
 });
 
+test("REST payload: limit entry carries limitPrice + our order id", () => {
+  const p = buildRESTPlacePayload(intent(), CFG, { orderId: "abc-lmt", limitPrice: 21846.5 });
+  assert.equal(p.orderType, "limit");
+  assert.equal(p.limitPrice, 21846.5);
+  assert.equal(p.orderId, "abc-lmt"); // cancel later addresses OUR id
+  assert.equal(p.takeProfit, "21860.00"); // brackets still exchange-side
+  assert.throws(() => buildRESTPlacePayload(intent(), CFG, { limitPrice: Number.NaN }));
+});
+
 test("REST payload: qty floored/capped, throws on garbage", () => {
   assert.equal(buildRESTPlacePayload(intent({ contracts: 0 }), CFG).qty, 1);
   assert.equal(buildRESTPlacePayload(intent({ contracts: 500 }), CFG).qty, 30);
