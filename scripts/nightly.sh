@@ -127,6 +127,14 @@ log "--- analyze trades (win/loss framework) ---"
 ANALYSIS_RC=$?
 log "tradeAnalysis exit=$ANALYSIS_RC"
 
+log "--- friction report (loser entry drift + realized cost per day) ---"
+# The two numbers that gate the momentum re-enable (fix-plan Phase 2):
+# median adverse entry drift on losing fills + all-in round-trip cost.
+# Writes one friction_daily row per day + prints the restore decision.
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/frictionReport.ts 2>&1
+FRICTION_RC=$?
+log "frictionReport exit=$FRICTION_RC"
+
 log "--- mine strategy insights (self-improvement) ---"
 # Pattern-mines the trade record into `insights` (proposals + AI review).
 # With SELF_IMPROVE=1 strong proposals auto-apply into `strategy_overrides`;
