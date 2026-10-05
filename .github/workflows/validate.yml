@@ -33,14 +33,14 @@ jobs:
         run: npx tsc --noEmit
       - name: tests
         working-directory: web
-        # The fixture-backed golden suites (analysis/imbalance/ohlc/profiles
-        # .test.mjs) read gitignored gcdata/data/*.json and are local-only;
-        # local `npm test` keeps full coverage, CI runs the offline unit
-        # suite without them.
+        # The golden suites below read the local gcdata/data session fixture
+        # (gitignored) directly or via lib/gcdata analyze/extractFootprint —
+        # they are dev-machine-only. Local `npm test` keeps the full
+        # 530-test coverage; CI runs the offline unit suite without them.
         run: |
           node --import ./tests/ts-loader.mjs --test \
             $(find tests -maxdepth 1 -name '*.test.ts') \
-            $(find tests -maxdepth 1 -name '*.test.mjs' | grep -vE '/(analysis|imbalance|ohlc|profiles)\.test\.mjs$')
+            $(find tests -maxdepth 1 -name '*.test.mjs' | grep -vE '/(analysis|api|db|imbalance|mechanism|ohlc|priceaction|profiles|signalEngine|story)\.test\.mjs$')
       - name: live-execution change gate
         env:
           BEFORE: ${{ github.event.before }}
