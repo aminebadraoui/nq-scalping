@@ -3,7 +3,8 @@
 > **Status: RETIRED (single-strategy focus)** — as of 2026-09-30 the one
 > active TRADE signal is the **momentum card** (`FEED_MOMENTUM=1`); see
 > **`MOMENTUM_SIGNAL.md`** for the playbook and the validation. The
-> unusual-volume heads-up alert remains on as context. The reversal card
+> unusual-volume heads-up is off (`FEED_UNUSUAL_VOLUME=0` — Telegram gets
+> trade-signal cards only). The reversal card
 > is off (`FEED_REVERSAL=0`) and so are the sweep-reclaim and pullback
 > tickets (`FEED_SWEEP_RECLAIM=0`, `FEED_PULLBACK_TICKET=0`). This page
 > stays as the archived reference for the reversal strategy.

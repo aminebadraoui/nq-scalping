@@ -6,11 +6,12 @@
  * signal from the LIVE GoCharting feed + collected levels and pushes the
  * cards below when their sequence completes.
  *
- * SINGLE-STRATEGY MODE: the momentum card (FEED_MOMENTUM) is the one
- * TRADE signal. The unusual-volume heads-up alert stays on as context
- * (FEED_UNUSUAL_VOLUME, informational only); the reversal, sweep-reclaim
- * and pullback-ticket cards are off by default (set their FEED_* flags
- * to 1 to re-enable).
+ * TELEGRAM-SIGNALS-ONLY MODE (owner rule, 2026-10-05): Telegram receives
+ * ONLY the trade-signal cards (momentum, RTH, open drive). The
+ * unusual-volume heads-up and its pullback watch (FEED_UNUSUAL_VOLUME)
+ * and the feed-gap operational alert (FEED_GAP_ALERTS) are OFF by
+ * default; the reversal, sweep-reclaim and pullback-ticket cards are
+ * also off. Set the FEED_* flags to 1 to re-enable any of them.
  *
  * It is started from instrumentation.ts so it runs without any browser
  * being open. It is deliberately LIVE-ONLY: if the tick feed is not
@@ -106,10 +107,10 @@ export const FEED_REVERSAL = feedFlag("FEED_REVERSAL", false);
  *  shorts into one-sided runs — the momentum card is the one live product. */
 export const FEED_SWEEP_RECLAIM = feedFlag("FEED_SWEEP_RECLAIM", false);
 /** FEED_UNUSUAL_VOLUME — the volume-footprint heads-up alert + its pullback
- *  watch context. ON: the alert is informational only ("heads-up only — not
- *  a trade signal"); the pullback trade ticket is gated separately by
- *  FEED_PULLBACK_TICKET so the momentum card stays the ONLY trade signal. */
-export const FEED_UNUSUAL_VOLUME = feedFlag("FEED_UNUSUAL_VOLUME", true);
+ *  watch context. OFF by default (owner rule: Telegram gets trade signals
+ *  only, no volume heads-ups, no pullback watch messages). The pullback
+ *  trade ticket is gated separately by FEED_PULLBACK_TICKET. */
+export const FEED_UNUSUAL_VOLUME = feedFlag("FEED_UNUSUAL_VOLUME", false);
 /** FEED_PULLBACK_TICKET — the pullback-exhausted 1R trade ticket. OFF by
  *  default: single-strategy focus means the momentum card is the only
  *  trade signal; the pullback watch still prints its context messages. */
@@ -140,6 +141,11 @@ export const FEED_OPEN_PULLBACK = feedFlag("FEED_OPEN_PULLBACK", false);
  *  anchor, resting limit, flush-high target. 55.8% win, +6.5 pts,
  *  ~1 day in 11. OFF until requested. */
 export const FEED_OPEN_SNIPER = feedFlag("FEED_OPEN_SNIPER", false);
+/** FEED_GAP_ALERTS — the feed-gap operational alert ("possible missed
+ *  signal"). OFF by default (owner rule: Telegram gets trade signals
+ *  only). The gap detector still runs for the logs; only the push is
+ *  silenced. */
+export const FEED_GAP_ALERTS = feedFlag("FEED_GAP_ALERTS", false);
 
 /** fixed contracts per card family: the sizing study optimum is 9 for the
  *  momentum + RTH cards (median day +$347, 0% annual breach); the open
@@ -1696,10 +1702,13 @@ class SignalFeed {
   /** feed-gap watch: completed minutes that never reached us while the
    *  feed was connected = bars the detectors could not see (possible
    *  missed signals). Alert once per gap. Session-boundary gaps are
-   *  ignored (du change or >10h). */
+   *  ignored (du change or >10h). The push is gated by FEED_GAP_ALERTS
+   *  (off by default — Telegram gets trade signals only); the detector
+   *  itself keeps running. */
   private gapAlerted = new Set<string>();
 
   private feedGapCheck(): void {
+    if (!FEED_GAP_ALERTS) return;
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 2) return;
     const mins = live.minutes;

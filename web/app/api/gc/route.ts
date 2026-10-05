@@ -22,6 +22,7 @@ import {
   FEED_SWEEP_RECLAIM,
   FEED_PULLBACK_TICKET,
   FEED_UNUSUAL_VOLUME,
+  FEED_GAP_ALERTS,
 } from "@/lib/signalFeed";
 
 const SESSIONS: Session[] = ["RTH", "ETH"];
@@ -136,6 +137,7 @@ export async function GET(req: NextRequest) {
               sweepReclaim: FEED_SWEEP_RECLAIM,
               pullbackTicket: FEED_PULLBACK_TICKET,
               unusualVolume: FEED_UNUSUAL_VOLUME,
+              gapAlerts: FEED_GAP_ALERTS,
             },
             // live-feed volume parity: accumulated per-minute buy+sell vs
             // the vendor's own day volume — the ratio shows whether the

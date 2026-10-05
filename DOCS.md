@@ -130,7 +130,7 @@ checklist, sources) and `web/tests/README.md` (what the 361 tests pin down).
 | RTH breakout card | `FEED_RTH=1` **LIVE** | `PLAYBOOK.md` | `PLAYBOOK.md` (rthImpact) | 10,325 trades · 82.2% WR · PF 3.47 · +3.13 pts/trade |
 | Open drive | `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` **LIVE** | `PLAYBOOK.md` | `PLAYBOOK.md` | 493 trades (87% of days) · 96% hit TP10/SL30 |
 | Open pullback / sniper | OFF | `PLAYBOOK.md` | `PLAYBOOK.md` | 69.8% WR +5.2 pts / 55.8% +6.5 pts (small n) |
-| Unusual-volume alert | ON, context only | `PLAYBOOK.md`, `web/README.md` | — | never a trade signal |
+| Unusual-volume alert | OFF (`FEED_UNUSUAL_VOLUME=0` — Telegram = trade signals only) | `PLAYBOOK.md`, `web/README.md` | — | never a trade signal |
 | Reversal (LVN) | `FEED_REVERSAL=0` retired | `docs/strategy/STRATEGY.md` (archive) | `docs/research/FOOTPRINT_REVERSAL_RESEARCH.md` | 5,104 signals · 37% WR · PF 2.16 · +27,424 pts (had ~2-bar lookahead) |
 | Sweep-reclaim | retired | code + `PLAYBOOK.md` archive | `docs/research/sweep-reclaim-v2-atr-confirmation-2026-10-03.md` | 80/80 variants breach — closed |
 | Pullback-exhausted ticket | OFF | `PLAYBOOK.md` | — | off by default |

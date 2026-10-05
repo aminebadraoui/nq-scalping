@@ -29,8 +29,9 @@ first two sections of `deploy/STATE.md`.
   auto-deployed on every push to `main`)
 - **Feed toggles (deployed VPS, verified via `/api/gc?action=health`):**
   `FEED_MOMENTUM=1` · `FEED_RTH=1` · `FEED_OPEN_DRIVE=1` · `FEED_OPEN=1` ·
-  unusual-volume alerts ON (context only) · reversal, sweep-reclaim,
-  pullback-ticket, open-pullback, open-sniper OFF
+  everything else OFF — unusual-volume alerts, pullback watch, feed-gap
+  alerts, reversal, sweep-reclaim, pullback-ticket, open-pullback,
+  open-sniper (Telegram gets the trade-signal cards only)
 - **Execution:** the VPS is the single live executor (`EXECUTE_LIVE=1` only
   there; the Mac keeps `EXECUTE_LIVE=0`)
 - **Nightly pipeline:** runs on the VPS (`nq-jobs` Coolify app, cron 17:45 ET

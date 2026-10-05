@@ -36,7 +36,7 @@
 | **RTH soft card** (`SOFT_PROD`) | ✅ **LIVE** (`FEED_RTH=1` — code default on; still labelled experimental, journaled separately) | RTH continuation: ≥60% one-sided bar + ≥3 dominant footprint clusters + ≥1.0×ATR, 0.75R target. | 10,325 trades · 82.2% WR · PF 3.47 |
 | **Open drive** (`OPEN_PROD`) | ✅ **LIVE** (`FEED_OPEN=1` + `FEED_OPEN_DRIVE=1`) | 9:30–9:59 opening-range break backed by cum-delta ≥300 and ≥55% one-sided bar; fixed TP +15 / SL −35. | 493 trades · 96% hit TP10/SL30; scaling it breaches the account |
 | **Open pullback / sniper** | ❌ off (`FEED_OPEN_PULLBACK=0`, `FEED_OPEN_SNIPER=0`) | 9:30–10:30 pullback exhaustion; 9:36 resting-limit sniper. | 69.8% / 55.8% WR |
-| **Unusual-volume alert** | ✅ **LIVE**, alert only (`FEED_UNUSUAL_VOLUME=1`) | Volume ≥2× hourly norm + ≥70% one-sided = "go look", not a trade; arms the failed-flush watch. | — |
+| **Unusual-volume alert** | ❌ off (`FEED_UNUSUAL_VOLUME=0` — Telegram gets trade-signal cards only, 2026-10-05) | Volume ≥2× hourly norm + ≥70% one-sided = "go look", not a trade; arms the failed-flush watch. | — |
 | **LVN reversal** | ❌ off (`FEED_REVERSAL=0`, retired) | Fade failed break at an LVN back to POC. | was PF 2.16 (see `docs/strategy/STRATEGY.md`) |
 | **Sweep-reclaim / pullback ticket** | ❌ off (`FEED_SWEEP_RECLAIM=0`, `FEED_PULLBACK_TICKET=0`) | Session-extreme fade; pullback-exhausted 1R. | fired shorts into one-sided runs — retired |
 | **Context boxes** | live | Options/GEX regime (CHOP vs TREND), price-action discount/premium across 6 TF, news stand-aside veto (hardcoded 8:30/10:00/14:00 ±5 min). | GEX gate is a **hypothesis** — never backtested (no historical options data) |

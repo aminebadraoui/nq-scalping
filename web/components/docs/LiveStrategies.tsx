@@ -12,6 +12,7 @@ export type FeedFlags = {
   sweepReclaim?: boolean;
   pullbackTicket?: boolean;
   unusualVolume?: boolean;
+  gapAlerts?: boolean;
 };
 
 type Strategy = {
@@ -152,7 +153,7 @@ const STRATEGIES: Strategy[] = [
   {
     emoji: "⚠",
     name: "UNUSUAL VOLUME — heads-up, never a trade",
-    status: "LIVE (context only)",
+    status: "OFF (owner: Telegram = trade signals only)",
     feeds: ["unusualVolume"],
     window: "all hours",
     conditions: [
@@ -161,7 +162,7 @@ const STRATEGIES: Strategy[] = [
       "Footer lists every strategy's win rate: momentum 77.5% · RTH 82.2% · drive 96% · pullback 69.8% · sniper 55.8%",
     ],
     mechanics: { entry: "—", stop: "—", target: "—", risk: "no trade ticket attached" },
-    stats: [{ label: "Status", value: "FEED_UNUSUAL_VOLUME=1 · FEED_PULLBACK_TICKET=0" }],
+    stats: [{ label: "Status", value: "FEED_UNUSUAL_VOLUME=0 · FEED_PULLBACK_TICKET=0" }],
   },
 ];
 
@@ -188,8 +189,8 @@ function statusFor(s: Strategy, feeds: FeedFlags | null): { text: string; cls: s
 
 export function LiveStrategiesSection({ feeds = null }: { feeds?: FeedFlags | null }) {
   const callout = feeds
-    ? `⚡ momentum ${feeds.momentum ? "ON" : "OFF"} · 🟦 RTH ${feeds.rth ? "ON" : "OFF"} · 🔔 open master ${feeds.open ? "ON" : "OFF"} (drive ${feeds.openDrive ? "ON" : "OFF"}, pullback ${feeds.openPullback ? "ON" : "OFF"}, sniper ${feeds.openSniper ? "ON" : "OFF"}) · ⚠ unusual volume ${feeds.unusualVolume ? "ON" : "OFF"} · reversal ${feeds.reversal ? "ON" : "OFF"} / sweep-reclaim ${feeds.sweepReclaim ? "ON" : "OFF"} / pullback ticket ${feeds.pullbackTicket ? "ON" : "OFF"} — read live from this server's environment.`
-    : "⚡ momentum ON · 🟦 RTH ON · 🔔 open master ON (drive ON, pullback/sniper OFF) · ⚠ unusual volume ON · reversal / sweep-reclaim / pullback ticket OFF.";
+    ? `⚡ momentum ${feeds.momentum ? "ON" : "OFF"} · 🟦 RTH ${feeds.rth ? "ON" : "OFF"} · 🔔 open master ${feeds.open ? "ON" : "OFF"} (drive ${feeds.openDrive ? "ON" : "OFF"}, pullback ${feeds.openPullback ? "ON" : "OFF"}, sniper ${feeds.openSniper ? "ON" : "OFF"}) · ⚠ unusual volume ${feeds.unusualVolume ? "ON" : "OFF"} · gap alerts ${feeds.gapAlerts ? "ON" : "OFF"} · reversal ${feeds.reversal ? "ON" : "OFF"} / sweep-reclaim ${feeds.sweepReclaim ? "ON" : "OFF"} / pullback ticket ${feeds.pullbackTicket ? "ON" : "OFF"} — read live from this server's environment.`
+    : "⚡ momentum ON · 🟦 RTH ON · 🔔 open master ON (drive ON, pullback/sniper OFF) · ⚠ unusual volume OFF · gap alerts OFF · reversal / sweep-reclaim / pullback ticket OFF.";
 
   return (
     <>

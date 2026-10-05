@@ -92,11 +92,13 @@ executor (`db/local_executor.ts`) idles.
    session extreme reclaimed one-sidedly (≥65% on the entry side,
    session-median volume): a 1R ticket with stop 0.5 pt beyond the swept
    extreme. Fires once per distinct reclaim bar (`lib/reclaimSetup.ts`).
-3. **Unusual-volume heads-up** (`FEED_UNUSUAL_VOLUME=1`) — a completed minute
+3. **Unusual-volume heads-up** (`FEED_UNUSUAL_VOLUME=0` — off by default since
+   2026-10-05: Telegram gets the trade-signal cards only) — a completed minute
    at ≥2× its hour's norm with a one-sided print (≥70% buy/sell), carrying the
    bar's POC + migration, close position, imbalance stack and nearest level.
    Not a trade signal.
 4. **Pullback watch** (stage 2 of the volume alert, 6-minute window) —
+   silenced with `FEED_UNUSUAL_VOLUME=0`; when enabled it prints
    `pullback starting` on the first aggressive counter-side bar, then
    `pullback exhausted` with a full 1R ENTRY/STOP/TARGET ticket when the
    pullback extreme is flushed and reclaimed one-sidedly, or `watch off` when

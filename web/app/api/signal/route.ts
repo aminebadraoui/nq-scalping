@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { getSignalFeed, FEED_REVERSAL, FEED_SWEEP_RECLAIM, FEED_UNUSUAL_VOLUME, FEED_PULLBACK_TICKET, FEED_MOMENTUM, FEED_OPEN, FEED_OPEN_DRIVE, FEED_OPEN_PULLBACK, FEED_OPEN_SNIPER, FEED_RTH } from "@/lib/signalFeed";
+import { getSignalFeed, FEED_REVERSAL, FEED_SWEEP_RECLAIM, FEED_UNUSUAL_VOLUME, FEED_PULLBACK_TICKET, FEED_MOMENTUM, FEED_OPEN, FEED_OPEN_DRIVE, FEED_OPEN_PULLBACK, FEED_OPEN_SNIPER, FEED_RTH, FEED_GAP_ALERTS } from "@/lib/signalFeed";
 import { getSignalHistory } from "@/lib/signalHistory";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +23,7 @@ export async function GET() {
       openPullback: FEED_OPEN_PULLBACK,
       openSniper: FEED_OPEN_SNIPER,
       rth: FEED_RTH,
+      gapAlerts: FEED_GAP_ALERTS,
     },
     lastRun: feed.lastRun,
     lastError: feed.lastError,

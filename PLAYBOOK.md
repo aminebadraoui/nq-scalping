@@ -7,9 +7,10 @@ tested (207 tests), and measured over the same 568-session archive
 first-touch scoring, sequential one-trade-at-a-time replay).
 
 **Feed status (live VPS, matches the code defaults):** `FEED_MOMENTUM=1` ·
-`FEED_RTH=1` · `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` · `FEED_UNUSUAL_VOLUME=1`
-(alerts only) · everything else 0 (reversal, sweep-reclaim, pullback ticket,
-open pullback, open sniper). Verify any time via
+`FEED_RTH=1` · `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` · everything else 0
+(reversal, sweep-reclaim, pullback ticket, open pullback, open sniper,
+unusual-volume heads-up, feed-gap alert — Telegram gets the trade-signal
+cards only). Verify any time via
 `/api/gc?action=health` → `execution.feeds`.
 
 ---
@@ -78,7 +79,11 @@ Long 78.5% (PF 3.08) / short 76.4% (PF 2.88). First card of the day alone:
 
 ---
 
-## ⚠ THE UNUSUAL-VOLUME ALERT — context, never a trade
+## ⚠ THE UNUSUAL-VOLUME ALERT — context, never a trade (SILENT: `FEED_UNUSUAL_VOLUME=0`)
+
+Off by default since 2026-10-05 (owner rule: Telegram gets trade-signal cards
+only — no volume heads-ups, no pullback-watch messages). The detector itself
+is unchanged; set `FEED_UNUSUAL_VOLUME=1` to bring the cards back.
 
 - A completed minute with volume ≥ **2× its hour's median** AND ≥70%
   one-sided (buy-frac ≥0.70 or ≤0.30).

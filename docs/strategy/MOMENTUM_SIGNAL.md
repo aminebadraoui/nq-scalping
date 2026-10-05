@@ -1,10 +1,11 @@
 # The momentum signal — join the one-sided run
 
 > **Status: THE single active strategy** — `FEED_MOMENTUM=1` is the only
-> TRADE signal (2026-09-30). The unusual-volume heads-up alert stays on as
-> context (`FEED_UNUSUAL_VOLUME=1`, informational only). The reversal,
-> sweep-reclaim and pullback-ticket cards are off (`FEED_* = 0` in
-> `web/lib/signalFeed.ts`). The card has **two triggers, one ticket**:
+> TRADE signal (2026-09-30). Telegram carries the trade-signal cards ONLY
+> (owner rule, 2026-10-05): the unusual-volume heads-up (`FEED_UNUSUAL_VOLUME=0`),
+> its pullback watch, and the feed-gap alert (`FEED_GAP_ALERTS=0`) are silent.
+> The reversal, sweep-reclaim and pullback-ticket cards are off (`FEED_* = 0`
+> in `web/lib/signalFeed.ts`). The card has **two triggers, one ticket**:
 > the failed-flush breakout and the huge-bar expansion scalp. Validation:
 > **4,822 trades, 77.5% win, PF 2.98**, positive in every full year of the
 > 568-session replay (sequential, one trade at a time).
