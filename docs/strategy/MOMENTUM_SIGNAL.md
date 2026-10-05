@@ -109,7 +109,8 @@ The merged mode (breakout within 10 bars of the flush, no separate response
 bar) also covers flush → immediate breakout sequences at the same win rate —
 that is why it is the production config.
 
-Live integration: when the unusual-volume heads-up fires and the bar fails
+Live integration (when `FEED_UNUSUAL_VOLUME=1` is re-enabled): when the
+unusual-volume heads-up fires and the bar fails
 to make a new extreme, the alert card prints the watch line —
 `failed flush (no new session low) — momentum watch for a buy breakout
 above X` (mirrored for failed rallies) — so the alert doubles as the
