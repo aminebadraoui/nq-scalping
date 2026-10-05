@@ -248,16 +248,14 @@ Sunday reopen (tape 31141 vs broker 31155) — the market order filled
 ABOVE the take-profit and the OCO closed it instantly.
 
 - **Quote-agreement gate** (`lib/quoteGate.ts`, wired into both REST
-  placement paths): before any live entry the gate reads a broker-side
-  MNQ price and refuses when |quote − signal entry| >
-  `QUOTE_AGREE_MAX_PTS` (default 3). `QUOTE_AGREE_CHECK=0` disables.
-  **Source (2026-10-05):** CrossTrade serves NO market data for
-  Tradovate-linked accounts (their docs: quotes are NT8-add-on only —
-  the routes always answer "Client not ready" for us), so the gate
-  falls back to Yahoo's CME MNQ continuous (MNQ=F), accepting prints up
-  to 10 minutes old. When no fresh quote is available the gate follows
-  `QUOTE_AGREE_NODATA`: `allow` (default — fail open, the skip is
-  visible in the exec_log reason) or `refuse` (fail closed).
+  placement paths): before any live entry the gate reads the CME MNQ
+  price (Yahoo MNQ=F — CrossTrade serves no market data for
+  Tradovate-linked accounts, NT8-add-on only per their docs) and
+  refuses when |quote − signal entry| > `QUOTE_AGREE_MAX_PTS`
+  (default 3), accepting prints up to 10 minutes old.
+  `QUOTE_AGREE_CHECK=0` disables. When no fresh quote is available the
+  gate follows `QUOTE_AGREE_NODATA`: `allow` (default — fail open, the
+  skip is visible in the exec_log reason) or `refuse` (fail closed).
 - **Broker resting-limit entries** (`CROSSTRADE_LIMIT_ENTRIES=1`,
   default OFF until verified live): the expansion-retrace fill mirrors
   its tape-side resting limit at the BROKER as a resting limit at the

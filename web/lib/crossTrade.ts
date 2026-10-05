@@ -467,10 +467,6 @@ export async function placeCrossTradeOrderREST(
   if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
-  const instrument = mapInstrument(intent.symbol, cfg.instrument);
-  if (!instrument) {
-    return { ok: false, reason: `crossTrade: cannot map symbol "${intent.symbol}" to a Tradovate instrument` };
-  }
   const orderId = opts.limitPrice !== undefined ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-lmt` : undefined;
   if (!live) {
     console.log(
@@ -480,10 +476,10 @@ export async function placeCrossTradeOrderREST(
     return { ok: true, reason: "dry-run (logged only)", orderId };
   }
 
-  // broker quote agreement — the tape can lag the real market (2026-10-04:
+  // broker price agreement — the tape can lag the real market (2026-10-04:
   // tape 31141 vs broker 31155 → market fill above the take-profit → instant
-  // OCO close). Refuse when the broker quote disagrees with the signal.
-  const qg = await quoteAgreeGate(cfg, intent.entry, instrument);
+  // OCO close). Refuse when the CME MNQ price disagrees with the signal.
+  const qg = await quoteAgreeGate(intent.entry);
   if (!qg.ok) return { ok: false, reason: qg.reason };
 
   const flat = await restFlatGate(cfg);
@@ -690,11 +686,7 @@ export async function placeCrossTradeScaleOutREST(
     return { ok: true, reason: "dry-run (logged only)", bankOrderId, runnerOrderId, runnerQty: runner.contracts };
   }
 
-  const instrument = mapInstrument(intent.symbol, cfg.instrument);
-  if (!instrument) {
-    return { ok: false, reason: `crossTrade: cannot map symbol "${intent.symbol}" to a Tradovate instrument` };
-  }
-  const qg = await quoteAgreeGate(cfg, intent.entry, instrument);
+  const qg = await quoteAgreeGate(intent.entry);
   if (!qg.ok) return { ok: false, reason: qg.reason };
 
   const flat = await restFlatGate(cfg);
