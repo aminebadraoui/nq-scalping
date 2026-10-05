@@ -304,6 +304,29 @@ Replay tool for post-mortems: `web/scripts/morningReplay.ts` rebuilds
 the live buffer from Neon (candles_1m + footprint_ticks) and runs the
 production detectors over it.
 
+## RTH stop recalibration (2026-10-05) — 0.45× → 0.65×
+
+Session postmortem (15 round trips, 2026-10-04/05): gross −$387.50,
+net −$773.20. RTH family: 2W/5L, −$369 gross, all 5 losses stopped
+within a minute and all "recovered" within 10 bars — but the archive
+sweep shows the 10-bar stop-run proxy is ~99% at EVERY stop width (it
+does not discriminate; near-universal in 1-min tape), so the run count
+was not the signal. The expectancy ranking was:
+
+  RTH stop mult (1.75R/45-bar): 0.45× 11,477 pts (TEST 3,394) ·
+  0.55× 13,213 (3,983) · 0.65× 14,131 (4,257) · 0.75× 14,572 (4,460) ·
+  0.9× 15,013 (4,502) — the 0.45× stop is strictly dominated in both
+  splits. The 9-contract cap binds at all these multiples, so dollars
+  scale with points.
+  MOM (2.25R/60-bar): 0.35× TEST 1,122 · 0.55× 1,555 · 0.8× 1,618 —
+  left unchanged for now (one knob at a time).
+
+Action: `RTH_STOP_MULT=0.65` set in the Coolify app env (2026-10-05
+12:25 ET, redeployed). Monitor the next RTH cards' stop distances
+(≈0.65 × base risk) and the family's live stop-out rate. Scratch
+studies (uncommitted): scripts/stopMultCalibration.ts,
+scripts/sessionPostmortem.ts.
+
 ## Trade execution (2026-10-01)
 
 - **CrossTrade is the ONLY execution backend**: `web/lib/crossTrade.ts` places
