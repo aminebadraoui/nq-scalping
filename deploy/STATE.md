@@ -247,15 +247,13 @@ signal because the GoCharting tape lagged the real MNQZ6 market on the
 Sunday reopen (tape 31141 vs broker 31155) — the market order filled
 ABOVE the take-profit and the OCO closed it instantly.
 
-- **Quote-agreement gate** (`lib/quoteGate.ts`, wired into both REST
-  placement paths): before any live entry the gate reads the CME MNQ
-  price (Yahoo MNQ=F — CrossTrade serves no market data for
-  Tradovate-linked accounts, NT8-add-on only per their docs) and
-  refuses when |quote − signal entry| > `QUOTE_AGREE_MAX_PTS`
-  (default 3), accepting prints up to 10 minutes old.
-  `QUOTE_AGREE_CHECK=0` disables. When no fresh quote is available the
-  gate follows `QUOTE_AGREE_NODATA`: `allow` (default — fail open, the
-  skip is visible in the exec_log reason) or `refuse` (fail closed).
+- **Quote-agreement gate — REMOVED (2026-10-05).** A pre-trade
+  divergence check needs a real-time broker-side price, and none
+  exists: CrossTrade serves no market data for Tradovate-linked
+  accounts (NT8-add-on only per their docs), and the free external
+  feeds are delayed. Divergence protection now comes from the broker
+  resting-limit entries below (a limit can never fill above its
+  target) and the watcher's fill verification.
 - **Broker resting-limit entries** (`CROSSTRADE_LIMIT_ENTRIES=1`,
   default OFF until verified live): the expansion-retrace fill mirrors
   its tape-side resting limit at the BROKER as a resting limit at the

@@ -57,8 +57,10 @@ slip does not, in either split.
 
 ## Action taken (2026-10-04)
 
-Quote-agreement gate ON for all families (refuses broker-vs-signal divergence
-> `QUOTE_AGREE_MAX_PTS`, default 3) and the retrace limit mode shipped behind
-`CROSSTRADE_LIMIT_ENTRIES=1` (default OFF pending the one-lot place+cancel
-verification). Given these numbers, enable limit entries once that
-verification passes.
+The retrace limit mode shipped behind `CROSSTRADE_LIMIT_ENTRIES=1` (default
+OFF pending the one-lot place+cancel verification). A quote-agreement gate
+was built and then removed (2026-10-05): no real-time broker-side price
+source exists for a Tradovate account (CrossTrade market data is NT8-only;
+free external feeds are delayed), so the divergence protection rests on the
+limit entries themselves — a resting limit can never fill above its target.
+Given these numbers, enable limit entries once that verification passes.

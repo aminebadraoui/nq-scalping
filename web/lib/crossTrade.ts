@@ -51,7 +51,6 @@
 
 import type { OrderIntent } from "./executor";
 import { crossGuardGate } from "./crossGuard";
-import { quoteAgreeGate } from "./quoteGate";
 
 export type CrossTradeConfig = {
   url: string;
@@ -478,9 +477,10 @@ export async function placeCrossTradeOrderREST(
 
   // broker price agreement — the tape can lag the real market (2026-10-04:
   // tape 31141 vs broker 31155 → market fill above the take-profit → instant
-  // OCO close). Refuse when the CME MNQ price disagrees with the signal.
-  const qg = await quoteAgreeGate(intent.entry);
-  if (!qg.ok) return { ok: false, reason: qg.reason };
+  // OCO close). No real-time quote source exists for a Tradovate account
+  // (CrossTrade market data is NT8-only), so this is enforced by the
+  // broker resting-limit entries (CROSSTRADE_LIMIT_ENTRIES) and the
+  // watcher's fill verification instead of a pre-trade quote check.
 
   const flat = await restFlatGate(cfg);
   if (!flat.ok) return { ok: false, reason: flat.reason };
@@ -685,9 +685,6 @@ export async function placeCrossTradeScaleOutREST(
     );
     return { ok: true, reason: "dry-run (logged only)", bankOrderId, runnerOrderId, runnerQty: runner.contracts };
   }
-
-  const qg = await quoteAgreeGate(intent.entry);
-  if (!qg.ok) return { ok: false, reason: qg.reason };
 
   const flat = await restFlatGate(cfg);
   if (!flat.ok) return { ok: false, reason: flat.reason };
