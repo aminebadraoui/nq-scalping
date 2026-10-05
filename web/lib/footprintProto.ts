@@ -22,11 +22,16 @@ export type BootCandle = {
   buy: number;
   /** aggressive-sell volume for the minute. */
   sell: number;
+  /** per-price footprint rows (price × 100 → buy/sell volumes) — the same
+   *  clusters the archive and the backtests use. Absent when the feed
+   *  returns no per-level data. */
+  levels?: { level: number; buy: number; sell: number }[];
 };
 
 export type FootprintResponse = {
   requestDate?: string;
   session?: string;
+  symbol?: string;
   isComplete?: boolean;
   candles: BootCandle[];
 };
@@ -82,11 +87,12 @@ class Reader {
   }
 }
 
-function decodeRequest(r: Reader): { date?: string; session?: string } {
-  const out: { date?: string; session?: string } = {};
+function decodeRequest(r: Reader): { date?: string; session?: string; symbol?: string } {
+  const out: { date?: string; session?: string; symbol?: string } = {};
   while (!r.eof()) {
     const [field, wire] = r.readTag();
-    if (field === 5 && wire === 2) out.session = r.readString();
+    if (field === 3 && wire === 2) out.symbol = r.readString();
+    else if (field === 5 && wire === 2) out.session = r.readString();
     else if (field === 6 && wire === 2) out.date = r.readString();
     else r.skip(wire);
   }
@@ -129,12 +135,27 @@ function decodeLevels(r: Reader): { buy: number; sell: number } {
   return { buy, sell };
 }
 
+function decodeFootprint(r: Reader): { level: number; buy: number; sell: number } {
+  let level = 0;
+  let buy = 0;
+  let sell = 0;
+  while (!r.eof()) {
+    const [field, wire] = r.readTag();
+    if (field === 1 && wire === 0) level = r.readVarint();
+    else if (field === 2 && wire === 2) buy = decodeCluster(new Reader(r.readBytes())).volume;
+    else if (field === 3 && wire === 2) sell = decodeCluster(new Reader(r.readBytes())).volume;
+    else r.skip(wire);
+  }
+  return { level, buy, sell };
+}
+
 function decodeCandle(r: Reader): BootCandle | null {
   let t = "";
   let high = 0;
   let low = 0;
   let buy = 0;
   let sell = 0;
+  const levels: { level: number; buy: number; sell: number }[] = [];
   while (!r.eof()) {
     const [field, wire] = r.readTag();
     if (field === 1 && wire === 2) t = r.readString();
@@ -146,12 +167,14 @@ function decodeCandle(r: Reader): BootCandle | null {
       const lv = decodeLevels(new Reader(r.readBytes()));
       buy = lv.buy;
       sell = lv.sell;
+    } else if (field === 6 && wire === 2) {
+      levels.push(decodeFootprint(new Reader(r.readBytes())));
     } else {
       r.skip(wire);
     }
   }
   if (!t) return null;
-  return { t, high, low, buy, sell };
+  return levels.length ? { t, high, low, buy, sell, levels } : { t, high, low, buy, sell };
 }
 
 export function decodeFootprintForDateResponse(buf: Uint8Array): FootprintResponse {
@@ -163,6 +186,7 @@ export function decodeFootprintForDateResponse(buf: Uint8Array): FootprintRespon
       const req = decodeRequest(new Reader(r.readBytes()));
       if (req.date) out.requestDate = req.date;
       if (req.session) out.session = req.session;
+      if (req.symbol) out.symbol = req.symbol;
     } else if (field === 2 && wire === 2) {
       const c = decodeCandle(new Reader(r.readBytes()));
       if (c) out.candles.push(c);

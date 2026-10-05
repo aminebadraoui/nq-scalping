@@ -521,6 +521,10 @@ export type FootprintMinute = {
   vwap: number; // single-print VWAP of the minute (Σ price x vol / Σ vol)
   levels: FPLevel[];
   imb: ImbSummary;
+  /** live-only: the bar's data source. "candle" = the vendor footprint
+   *  candle (the archive's source); "tick" = lossy tick-stream aggregate.
+   *  Cards may only fire on candle-source bars. */
+  src?: "tick" | "candle";
 };
 
 export async function extractFootprint(

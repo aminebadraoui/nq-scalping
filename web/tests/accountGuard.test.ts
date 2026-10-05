@@ -223,3 +223,26 @@ test("tradingDayKey: before 18:00 belongs to yesterday's session", () => {
   // 18:30 ET Oct 2 = 22:30Z Oct 2 → session key 2026-10-02
   assert.equal(tradingDayKey(new Date("2026-10-02T22:30:00Z")), "2026-10-02");
 });
+
+test("daily loss floor (DAILY_LOSS_FLOOR) halts once the day crosses it", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  process.env.DAILY_LOSS_FLOOR = "400";
+  // first observation establishes the day-start realized baseline
+  assert.equal(guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z")).verdict, "ok");
+  // still above the floor
+  assert.equal(guardCheck(snap(49_800), new Date("2026-10-05T17:01:00Z")).verdict, "ok");
+  // −$400 → halt
+  assert.equal(guardCheck(snap(49_600), new Date("2026-10-05T17:02:00Z")).verdict, "halt-daily-floor");
+  delete process.env.DAILY_LOSS_FLOOR;
+  __resetGuardForTest();
+});
+
+test("daily loss floor is inert without the env knob", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  delete process.env.DAILY_LOSS_FLOOR;
+  guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
+  assert.equal(guardCheck(snap(49_600), new Date("2026-10-05T17:02:00Z")).verdict, "ok");
+  __resetGuardForTest();
+});

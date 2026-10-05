@@ -147,7 +147,13 @@ export async function GET(req: NextRequest) {
               try {
                 const st = getLive().state;
                 let acc = 0;
+                let candleBars = 0;
+                let tickBars = 0;
                 for (const m of st.minutes) acc += m.buy + m.sell;
+                for (const m of st.minutes.slice(-120)) {
+                  if (m.source === "candle") candleBars++;
+                  else tickBars++;
+                }
                 const snapVol = Number(st.snapshot?.volume ?? 0);
                 const now = Date.now();
                 return {
@@ -159,6 +165,11 @@ export async function GET(req: NextRequest) {
                   accumulatedVol: acc,
                   snapshotVol: snapVol,
                   ratio: snapVol > 0 ? +(acc / snapVol).toFixed(2) : null,
+                  // bar-source mix over the last 120 bars: "candle" = the
+                  // vendor footprint candles (what backtests use); "tick" =
+                  // the lossy tick aggregate. Cards only fire on candle bars.
+                  barSource: { candle: candleBars, tick: tickBars },
+                  lastCandleRefreshAt: st.lastCandleRefreshAt ?? 0,
                 };
               } catch (e) {
                 console.error("[health] liveFeed error:", e);

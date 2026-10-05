@@ -159,6 +159,7 @@ export function liveMinutesToFootprint(mins: LiveMinute[]): FootprintMinute[] {
       vwap: den > 0 ? num / den : (m.h + m.l) / 2,
       levels,
       imb: summarizeImb(levels),
+      src: m.source ?? "tick",
     });
   }
   return out;

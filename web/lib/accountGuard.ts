@@ -35,6 +35,7 @@ export type GuardDecision =
   | { verdict: "halt-consistency"; reason: string }
   | { verdict: "halt-news"; reason: string }
   | { verdict: "halt-giveback"; reason: string }
+  | { verdict: "halt-daily-floor"; reason: string }
   | { verdict: "no-data"; reason: string };
 
 export type GuardState = {
@@ -340,6 +341,18 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
     return {
       verdict: "halt-consistency",
       reason: `today's realized P&L $${s.dayPnl.toFixed(0)} ≥ consistency cap $${s.consistencyCap} — stop for the day`,
+    };
+  }
+
+  // daily loss floor (opt-in via DAILY_LOSS_FLOOR, e.g. 400 = halt at −$400):
+  // the give-back guard only protects GREEN days (it needs a peak above its
+  // floor) — a red day bleeds with no intraday floor. The 2026-10-04/05
+  // session (−$1,405) is the case that motivated it.
+  const dailyFloor = num(process.env.DAILY_LOSS_FLOOR, 0);
+  if (dailyFloor > 0 && s.dayPnl <= -dailyFloor) {
+    return {
+      verdict: "halt-daily-floor",
+      reason: `day P&L $${s.dayPnl.toFixed(0)} ≤ −$${dailyFloor.toFixed(0)} (DAILY_LOSS_FLOOR) — halt new entries for the day`,
     };
   }
 

@@ -45,6 +45,10 @@ export type LiveMinute = {
   buy: number;
   sell: number;
   live: boolean; // built from ticks vs bootstrapped
+  /** where the bar came from: the vendor footprint candle (the archive's
+   *  source — what every backtest was computed on) or the tick stream (a
+   *  lossy ~7%-of-volume sample). Cards must only fire on "candle". */
+  source?: "tick" | "candle";
   /** price (0.25-tick) -> [buy, sell] contracts — only kept for the recent minutes */
   levels?: Record<string, [number, number]>;
 };
@@ -56,6 +60,9 @@ export type LiveState = {
    *  so the health endpoint can distinguish a dead feed from a closed market */
   lastTradeMs: number;
   lastVolChangeMs: number;
+  /** last successful candle refresh (ms; 0 = never) — the health endpoint
+   *  reports it alongside the bar-source mix so a stalled refresh is visible */
+  lastCandleRefreshAt: number;
   snapshot: Snapshot | null;
   ticks: Tick[];
   minutes: LiveMinute[];
@@ -126,7 +133,7 @@ function globexOpen(now = new Date()): boolean {
  * own socket so it can never disturb the live trade channel. Returns the raw
  * candles (feed-clock ISO timestamps + high/low/buy/sell in cents).
  */
-function fetchFootprintBars(dates: string[], env: Record<string, string>): Promise<BootCandle[]> {
+function fetchFootprintBars(dates: string[], env: Record<string, string>, tokenOverride?: string): Promise<BootCandle[]> {
   return new Promise((resolve) => {
     const out: BootCandle[] = [];
     let ws: WebSocket | null = null;
@@ -146,7 +153,7 @@ function fetchFootprintBars(dates: string[], env: Record<string, string>): Promi
     void (async () => {
       let token: string;
       try {
-        token = await cognitoIdToken(env);
+        token = tokenOverride ?? (await cognitoIdToken(env));
       } catch {
         return finish();
       }
@@ -254,12 +261,54 @@ class LiveFeed {
   /** the Globex session day the buffer currently belongs to — crossing it
    *  (18:00 ET rollover) clears the buffer and re-subscribes */
   private lastSessionDay = "";
+  /** rolling candle-refresh throttle (attempt clock — health reports the
+   *  SUCCESS clock separately via state.lastCandleRefreshAt) */
+  private candleRefreshAttemptAt = 0;
+  private candleRefreshing = false;
+
+  /** Replace the completed tick-built bars with the vendor footprint
+   *  candles every 60s (the same feed the archive is built from). The tick
+   *  stream holds ~7% of true volume — cards must never evaluate it.
+   *  Fire-and-forget; a failed fetch leaves bars tick-built and the
+   *  candle-source card gate simply holds. */
+  private refreshCandles() {
+    const now = Date.now();
+    if (this.candleRefreshing || now - this.candleRefreshAttemptAt < 60_000) return;
+    this.candleRefreshAttemptAt = now;
+    this.candleRefreshing = true;
+    // reuse the cached IdToken — a fresh Cognito auth on every refresh cycle
+    // is what tripped the vendor's password-attempt lockout before
+    const tokenP =
+      this.token && now - this.tokenFetchedAt < TOKEN_REFRESH_MS
+        ? Promise.resolve(this.token)
+        : cognitoIdToken(this.env)
+            .then((t) => {
+              this.token = t;
+              this.tokenFetchedAt = now;
+              return t;
+            })
+            .catch(() => null as string | null);
+    void tokenP
+      .then((token) => (token ? fetchFootprintBars([nyDate(0), nyDate(1)], this.env, token) : Promise.resolve([])))
+      .then((candles) => {
+        if (!candles.length) return;
+        const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|");
+        const r = mergeCandleMinutes(this.state.minutes, candles, nowKey);
+        this.state.lastCandleRefreshAt = Date.now();
+        if (r.replaced || r.added) this.emit();
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.candleRefreshing = false;
+      });
+  }
 
   state: LiveState = {
     connected: false,
     lastMessage: 0,
     lastTradeMs: 0,
     lastVolChangeMs: 0,
+    lastCandleRefreshAt: 0,
     snapshot: null,
     ticks: [],
     minutes: [],
@@ -288,7 +337,12 @@ class LiveFeed {
    *  so the existing blend + chart treat them like ordinary live minutes.
    *  The still-developing current minute is left to live ticks. */
   private seedFromFootprint(candles: BootCandle[]) {
-    const nowKey = new Date().toISOString().slice(0, 16); // "YYYY-MM-DDTHH:mm" UTC
+    // NOTE: the now-key uses the SAME "|" separator as the buffer keys —
+    // comparing "YYYY-MM-DD|HH:mm" against the ISO "T" form made every
+    // current-day candle sort AFTER now, so the seed silently skipped the
+    // whole in-progress session (the live buffer was tick-only — the 7%-of-
+    // volume tape behind the 2026-10-05 live-vs-backtest divergence).
+    const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|"); // "YYYY-MM-DD|HH:mm" UTC
     const have = new Set(this.state.minutes.map((m) => `${m.du ?? ""}|${m.t}`));
     // the developing minute (still `cur`, not yet in `minutes`) must win over a
     // seeded candle for the same minute, or it gets duplicated on rollover
@@ -320,6 +374,7 @@ class LiveFeed {
         buy: c.buy,
         sell: c.sell,
         live: true,
+        source: "candle",
       });
       added++;
     }
@@ -332,7 +387,7 @@ class LiveFeed {
    *  so the cross-asset context has the whole session, not just the bars
    *  since this process started. No persist, no levels. */
   private seedEsFromFootprint(candles: BootCandle[]) {
-    const nowKey = new Date().toISOString().slice(0, 16);
+    const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|");
     const buf = this.state.es;
     const have = new Set(buf.minutes.map((m) => `${m.du ?? ""}|${m.t}`));
     const cur = buf.cur;
@@ -349,7 +404,7 @@ class LiveFeed {
       if (have.has(key)) continue;
       if (!(c.high > 0) || !(c.low > 0)) continue;
       have.add(key);
-      buf.minutes.push({ t: hhmm, du, o: 0, h: c.high / 100, l: c.low / 100, c: 0, vol: c.buy + c.sell, buy: c.buy, sell: c.sell, live: true });
+      buf.minutes.push({ t: hhmm, du, o: 0, h: c.high / 100, l: c.low / 100, c: 0, vol: c.buy + c.sell, buy: c.buy, sell: c.sell, live: true, source: "candle" });
       added++;
     }
     if (!added) return;
@@ -430,7 +485,7 @@ class LiveFeed {
       if (buf.minutes.length > MAX_MINUTES) buf.minutes = buf.minutes.slice(-MAX_MINUTES);
       // levels are only meaningful for the recent window — drop the rest
       for (let i = 0; i < buf.minutes.length - 30; i++) delete buf.minutes[i].levels;
-      cur = { t: hhmm, du: key.slice(0, 10), o: t.ltp, h: t.ltp, l: t.ltp, c: t.ltp, vol: 0, buy: 0, sell: 0, live: true };
+      cur = { t: hhmm, du: key.slice(0, 10), o: t.ltp, h: t.ltp, l: t.ltp, c: t.ltp, vol: 0, buy: 0, sell: 0, live: true, source: "tick" };
       buf.cur = cur;
     }
     cur.h = Math.max(cur.h, t.ltp);
@@ -484,14 +539,17 @@ class LiveFeed {
       // 2026-09-28 session capture) — sizing every tick as 1 contract by
       // default would silently corrupt live volume and delta
       const size = Number(d.l_sz ?? d.quantity ?? d.qty ?? d.size ?? d.volume ?? d.last_qty ?? d.vol ?? 1);
-      let side: 1 | -1;
+      let side: 1 | -1 | null = null;
       if (typeof d.side === "number") side = d.side >= 0 ? 1 : -1;
       else if (typeof d.side === "string") side = d.side.toLowerCase().startsWith("b") ? 1 : -1;
       else if (typeof d.aggressor_side === "string") side = d.aggressor_side.toLowerCase().startsWith("b") ? 1 : -1;
       else if (typeof d.buy !== "undefined") side = d.buy ? 1 : -1;
-      else side = ltp >= (isEs ? this.lastEsLtp : this.lastLtp) ? 1 : -1;
+      else if (isEs) side = ltp >= this.lastEsLtp ? 1 : -1; // ES twin is labels-only — the guess stays
+      // update the last-price reference before any early-out so the ES guess
+      // never compares against a stale print
       if (isEs) this.lastEsLtp = ltp;
       else this.lastLtp = ltp;
+      if (side === null) continue; // NQ: never guess a side — tick-direction guesses corrupt buy/sell
       const tick: Tick = { ms: Date.parse(d.date ?? d.date_str ?? d.time ?? "") || Date.now(), ltp, size, side };
       if (isEs) this.applyEsTick(tick);
       else this.applyTick(tick);
@@ -589,13 +647,29 @@ class LiveFeed {
       this.ws.onmessage = (ev) => {
         if (typeof ev.data === "string") this.handleText(ev.data);
         else if (ev.data instanceof ArrayBuffer) {
-          const b = new Uint8Array(ev.data);
           try {
-            const f = b[4];
-            const txt = new TextDecoder().decode(b.subarray(5, 5 + f));
-            const body = b.subarray(5 + f);
-            if (txt.startsWith("FOOTPRINT/V2")) {
-              // live-developing footprint frames: body is protobuf — skip in v1
+            const fr = splitFrame(new Uint8Array(ev.data));
+            if (fr && fr.header.startsWith("FOOTPRINT/V2")) {
+              // live-developing footprint frames carry the vendor's candles
+              // (the archive's source) as minutes complete — decode and merge
+              // them so the just-closed bar is candle-confirmed in real time
+              // (the rolling refresh is the recovery path when frames stop).
+              const r = decodeFootprintForDateResponse(fr.body);
+              if (r.candles.length) {
+                // symbol guard: the socket is subscribed to NQ + the ES twin;
+                // an ES footprint frame must never pollute the NQ buffer.
+                const sym = r.symbol ? r.symbol.toUpperCase() : "";
+                const nq = this.nqSymbol().toUpperCase();
+                const ltp = this.state.snapshot?.ltp ?? 0;
+                const lastHigh = r.candles[r.candles.length - 1]?.high ?? 0;
+                const pricePlausible = ltp > 0 && lastHigh > 0 ? Math.abs(lastHigh / 100 - ltp) / ltp < 0.2 : sym === nq;
+                if ((!sym || sym === nq) && pricePlausible) {
+                  const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|");
+                  const merged = mergeCandleMinutes(this.state.minutes, r.candles, nowKey);
+                  this.state.lastCandleRefreshAt = Date.now();
+                  if (merged.replaced || merged.added) this.emit();
+                }
+              }
             }
             this.state.lastMessage = Date.now();
           } catch {
@@ -685,9 +759,67 @@ class LiveFeed {
         }
       }
       void this.bootstrap();
+      if (globexOpen()) this.refreshCandles();
       this.emit();
     }, 5000);
   }
+}
+
+/** Replace completed tick-built minutes with the vendor's footprint candles
+ * (totals AND per-price levels) so the signal engine evaluates exactly the
+ * bars the archive — and every backtest — was computed on. The developing
+ * minute (key >= nowKey) is left to live ticks. Pure — unit-tested. */
+export function mergeCandleMinutes(
+  minutes: LiveMinute[],
+  candles: BootCandle[],
+  nowKey: string,
+): { replaced: number; added: number } {
+  const byKey = new Map(minutes.map((m) => [`${m.du ?? ""}|${m.t}`, m]));
+  let replaced = 0;
+  let added = 0;
+  for (const c of candles) {
+    const ms = Date.parse(c.t);
+    if (!Number.isFinite(ms)) continue;
+    const iso = new Date(ms).toISOString();
+    const du = iso.slice(0, 10);
+    const hhmm = iso.slice(11, 16);
+    const key = `${du}|${hhmm}`;
+    if (key >= nowKey) continue; // developing minute — ticks own it
+    if (!(c.high > 0) || !(c.low > 0)) continue;
+    const levels: Record<string, [number, number]> | undefined = c.levels?.length
+      ? Object.fromEntries(c.levels.map((l) => [(l.level / 100).toFixed(2), [l.buy, l.sell]]))
+      : undefined;
+    const bar: LiveMinute = {
+      t: hhmm,
+      du,
+      o: 0, // footprint candles carry no open/close — mid fallback, same as the archive
+      h: c.high / 100,
+      l: c.low / 100,
+      c: 0,
+      vol: c.buy + c.sell,
+      buy: c.buy,
+      sell: c.sell,
+      live: true,
+      source: "candle",
+      levels,
+    };
+    const prev = byKey.get(key);
+    if (prev) {
+      // the candle is authoritative; keep tick-built levels only when the
+      // candle carried none (defensive — never blank a usable footprint)
+      Object.assign(prev, bar, { levels: levels ?? prev.levels });
+      replaced++;
+    } else {
+      byKey.set(key, bar);
+      minutes.push(bar);
+      added++;
+    }
+  }
+  if (added) {
+    minutes.sort((a, b) => `${a.du ?? ""}|${a.t}`.localeCompare(`${b.du ?? ""}|${b.t}`));
+    if (minutes.length > MAX_MINUTES) minutes.splice(0, minutes.length - MAX_MINUTES);
+  }
+  return { replaced, added };
 }
 
 const g = globalThis as unknown as { __gcLive?: LiveFeed };

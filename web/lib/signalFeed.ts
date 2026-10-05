@@ -27,7 +27,10 @@ import type { FootprintMinute } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, midOf, type MomentumSignal } from "./momentum";
 import { buildEsContext, esCardChips, type EsContext, type EsMinute } from "./esJoin";
 import { seasonalChips } from "./seasonal";
-import { readOptionsFromSnapshot, wallsFromRead } from "./options";
+import { roundNumberChips } from "./roundNumbers";
+import { gapInventory, gapChips } from "./gapTracker";
+import { wallProxChips } from "./wallProx";
+import { readOptionsFromSnapshot, wallsFromRead, type OptionsRead } from "./options";
 import { applyWallStop } from "./wallStop";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
 import { detectSoftMomentum, SOFT_PROD } from "./softMomentum";
@@ -64,6 +67,8 @@ import { momentumProfile, rthProfile, applyProfile, timeExitAt } from "./profile
 import { registerTimeExit, checkTimeExits } from "./timeExit";
 import { logExec } from "./execLog";
 import { signalWindowOpen } from "./marketHours";
+import { ticketVetoDecision, ticketVetoBar } from "./ticketVeto";
+import { hourBucketOf } from "./tradeStats";
 
 function refreshSeconds(): number {
   // 15s default (was 30): the momentum/RTH triggers fire only on the
@@ -119,7 +124,6 @@ export const FEED_PULLBACK_TICKET = feedFlag("FEED_PULLBACK_TICKET", false);
  *  card (lib/momentum.ts, MOM_PROD). THE single active strategy. 77.5% win /
  *  PF 2.98 in the 568-session replay — joins the one-sided run. */
 export const FEED_MOMENTUM = feedFlag("FEED_MOMENTUM", true);
-
 /** broker resting-limit entry TTL — the expansion-retrace window is 5 bars;
  *  the broker limit mirrors it and is cancelled by the watcher at expiry
  *  (CROSSTRADE_LIMIT_ENTRIES=1). */
@@ -128,6 +132,14 @@ const LIMIT_ENTRY_TTL_MS = 5 * 60_000;
  *  ON: footprint-proven continuation — 10,325 trades, 82.2% win, PF 3.47,
  *  every year ≥ 77.7%, account sim never breaches (see PLAYBOOK.md). */
 export const FEED_RTH = feedFlag("FEED_RTH", true);
+/** RTH daily card cap — the gap-only validation (scripts/gapOnlyValidation.ts,
+ *  docs/research/fix-plan-2026-10-05.md) found the first-N RTH cards keep
+ *  the eval consistency cap safe at real frictions (first-3 structural:
+ *  +4.28 pts/trade, eval PASS). 0 = off. */
+export const rthMaxCardsPerDay = (): number => {
+  const v = Number(process.env.RTH_MAX_CARDS_PER_DAY);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+};
 /** FEED_OPEN — master switch for the 9:30-10:30 open family. */
 export const FEED_OPEN = feedFlag("FEED_OPEN", true);
 /** FEED_OPEN_DRIVE — the scan: first new opening extreme backed by
@@ -180,6 +192,20 @@ const UV_WATCH_MS = 6 * 60 * 1000;
 const EXP_RETRACE_PTS = 1.0;
 const EXP_RETRACE_BARS = 5;
 const expRetraceEnabled = (): boolean => feedFlag("EXP_RETRACE", true);
+
+/**
+ * Broker leg of a filled expansion retrace: a RESTING LIMIT at the tape
+ * fill price by default. Backtested: scripts/retraceSlippageStudy.ts
+ * (649 sessions, --offline) — the market-order path loses −$49/trade at
+ * just 0.5 pt of adverse slip (162 W→L flips, zero L→W), while a
+ * resting limit can only fill AT or better. CROSSTRADE_LIMIT_ENTRIES=0
+ * restores the old market entry as an explicit escape hatch; scale-out
+ * pairs (bank + runner) keep the market path because the REST pair has
+ * no resting-limit leg.
+ */
+export function retraceUseLimit(scaleOut: boolean): boolean {
+  return process.env.CROSSTRADE_LIMIT_ENTRIES !== "0" && !scaleOut;
+}
 
 export type RetraceDecision =
   | { status: "fill"; fill: number; barIdx: number }
@@ -279,6 +305,8 @@ class SignalFeed {
   private reclaimSent = new Set<string>();
   private volumeAlerted = new Set<string>();
   private momentumSent = new Set<string>();
+  /** RTH cards already emitted per session day (the RTH_MAX_CARDS_PER_DAY cap) */
+  private rthDayCount = new Map<string, number>();
   /** days that already got a momentum card — the first card of the day is
    *  the best one (77.2% win / PF 3.15 vs 2.96 for the rest), so it gets a
    *  "1st today" marker for the one-trade-per-day discipline. */
@@ -289,6 +317,28 @@ class SignalFeed {
   private expRetracePending: PendingRetrace | null = null;
   /** open-window diagnostic minutes already logged (once per bar) */
   private openDiagLogged = new Set<string>();
+
+  /** per-scan throttle for the tape-gate log (one line per minute max) */
+  private tapeGateLoggedAt = new Map<string, number>();
+
+  /** Cards may only fire on a bar confirmed by the vendor footprint candle.
+   *  The tick-built tape undercounts volume (~7% of true volume measured
+   *  2026-10-05) and produces signals the archive would never generate —
+   *  the live-vs-backtest divergence that drove the 2026-10 bleed. The
+   *  rolling candle refresh replaces completed bars within a minute or two,
+   *  so a lagged fetch DELAYS the card; it never degrades it. */
+  private lastBarCandleConfirmed(fp: FootprintMinute[]): boolean {
+    const last = fp[fp.length - 1];
+    return !!last && (last.src ?? "tick") === "candle";
+  }
+
+  private logTapeGate(scan: string) {
+    const now = Date.now();
+    const prev = this.tapeGateLoggedAt.get(scan) ?? 0;
+    if (now - prev < 60_000) return;
+    this.tapeGateLoggedAt.set(scan, now);
+    console.log(`[tape-gate] ${scan}: last completed bar not candle-confirmed — card deferred`);
+  }
 
   lastSnapshot: SignalSnapshot | null = null;
   lastError: string | null = null;
@@ -326,6 +376,15 @@ class SignalFeed {
       fp.map((x) => ({ t: x.t, d: x.d, high: x.high, low: x.low })),
       esArr,
     );
+  }
+
+  /** the options snapshot mapped to NQ points at the given last price —
+   *  in-memory only (no network): the wall chips degrade silently while
+   *  the options feed has no snapshot yet (journal-only context). */
+  private wallReadFor(ltp: number): OptionsRead | null {
+    const g = getOptionsFeed().snapshot();
+    if (!g || !Number.isFinite(ltp) || ltp <= 0) return null;
+    return readOptionsFromSnapshot(g, ltp);
   }
 
   /** build the current signal — from LIVE data only, or null when closed/stale */
@@ -637,10 +696,16 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
+    if (!this.lastBarCandleConfirmed(fp)) {
+      this.logTapeGate("momentum");
+      return;
+    }
     // cross-asset context for the measured ES chips (null while the twin
     // buffer is too young — chips simply don't print)
     const esCtx = this.esContext(fp);
     const nqMid = fp.map((m) => (m.high + m.low) / 2);
+    // price-gap inventory for the journal-only gap chips (Naso hypotheses)
+    const gaps = gapInventory(fp);
     // ladder management for open scale-out runners (CrossTrade backend only,
     // no new polling — reuses this tick's completed minutes)
     if (crossTradeEnabled()) void runnerTracker.evaluate(fp).catch(() => {});
@@ -661,6 +726,9 @@ class SignalFeed {
         const fam = s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
         const es = esCardChips(esCtx, nqMid, s, true);
         const seasonal = seasonalChips(s);
+        const rn = roundNumberChips(s);
+        const gch = gapChips(fp, s, gaps);
+        const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
         await this.recordSkip({
           timeET: cdtToET(s.t),
           day: s.d,
@@ -672,7 +740,7 @@ class SignalFeed {
           verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
           headline: `NQ momentum ${s.dir}`,
           reason: `news blackout — ${nb}`,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features, ...seasonal.features }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features, ...seasonal.features, ...rn.features, ...gch.features, ...wall.features }),
         });
       }
       console.log(`[news] ${nb} blackout — skipping momentum card (${sigs.filter((s) => s.breakIdx === fp.length - 1).length} candidates recorded)`);
@@ -687,7 +755,14 @@ class SignalFeed {
       const firstToday = !this.cardedDays.has(s.d);
       const es = esCardChips(esCtx, nqMid, s, true);
       const seasonal = seasonalChips(s);
-      const chipLine = [...seasonal.labels, ...es.labels].length ? `${[...seasonal.labels, ...es.labels].join(" · ")} · ` : "";
+      // journal-only context chips (Naso hypotheses — labels only, no gates):
+      // round numbers, price gaps, gamma-wall proximity
+      const rn = roundNumberChips(s);
+      const gch = gapChips(fp, s, gaps);
+      const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
+      const chipLine = [...seasonal.labels, ...es.labels, ...rn.labels, ...gch.labels, ...wall.labels].length
+        ? `${[...seasonal.labels, ...es.labels, ...rn.labels, ...gch.labels, ...wall.labels].join(" · ")} · `
+        : "";
 
       // ---- self-improvement gates (strategy_overrides) — the approved
       //      insight loop filters the card BEFORE anything is sent ----
@@ -721,6 +796,51 @@ class SignalFeed {
             firstToday,
             family,
             rejectedBy: dec.reasons,
+            gates: this.gateSnapshot(ov),
+            ...es.features,
+            ...seasonal.features,
+            ...rn.features,
+            ...gch.features,
+            ...wall.features,
+          }),
+        });
+        continue;
+      }
+
+      // ---- cost-adjusted ticket veto (TICKET_MIN_EXP_PTS, OFF by default).
+      //      Vetoes tickets whose measured cell expectancy cannot pay the
+      //      live costs (~0.65 pt commissions before slippage). Research
+      //      input: hourExpectancyStudy + expansionStudy sweeps — enabling
+      //      the bar is a rule-4 env approval, not this code path.
+      const vet = ticketVetoDecision(
+        {
+          family,
+          hourBucket: hourBucketOf(`${String(s.hourET).padStart(2, "0")}:${s.t.slice(3, 5)}`),
+          dir: s.dir,
+        },
+        ticketVetoBar(),
+      );
+      if (vet.veto) {
+        console.log(`[ticketVeto] momentum ${s.dir} ${et} SKIPPED — ${vet.reason}`);
+        await this.recordSkip({
+          timeET: et,
+          day: s.d,
+          side: s.dir,
+          price: s.entry,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          verdict:
+            s.kind === "expansion"
+              ? "momentum (huge-bar expansion · ticket veto)"
+              : "momentum (failed-flush breakout · ticket veto)",
+          headline: `NQ momentum ${s.dir}`,
+          reason: vet.reason,
+          features: signalFeatures(s as unknown as Record<string, unknown>, {
+            aPlus,
+            firstToday,
+            family,
+            vetoedBy: "ticket-min-exp",
             gates: this.gateSnapshot(ov),
             ...es.features,
             ...seasonal.features,
@@ -811,7 +931,7 @@ class SignalFeed {
           aPlus,
           firstToday,
           et,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true, gates: this.gateSnapshot(ov), ...es.features }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true, gates: this.gateSnapshot(ov), ...es.features, ...rn.features, ...gch.features, ...wall.features }),
         };
         const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
         const armText = [
@@ -893,7 +1013,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, gates: this.gateSnapshot(ov), wallStop: wallNote || undefined, ...es.features, ...seasonal.features }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, gates: this.gateSnapshot(ov), wallStop: wallNote || undefined, ...es.features, ...seasonal.features, ...rn.features, ...gch.features, ...wall.features }),
       });
       registerExpectation({
         key: `mom|${key}`,
@@ -1138,10 +1258,10 @@ class SignalFeed {
       reason: pushRes.reason,
       features: { ...p.features, retrace: "filled", drift },
     });
-    // CROSSTRADE_LIMIT_ENTRIES=1 mirrors the tape-side resting limit at the
-    // BROKER as a resting limit at the same price (single-leg only) — the
-    // watcher cancels it when the retrace window expires unfilled.
-    const useLimit = process.env.CROSSTRADE_LIMIT_ENTRIES === "1" && !p.scaleOut;
+    // CROSSTRADE_LIMIT_ENTRIES=0 opts back OUT of the broker resting
+    // limit (market entry at the tape fill — the slippage-exposed path
+    // the backtest rejects); see retraceUseLimit().
+    const useLimit = retraceUseLimit(p.scaleOut);
     const limitExpireAtMs = useLimit ? Date.now() + LIMIT_ENTRY_TTL_MS : undefined;
     registerExpectation({
       key: `mom|${p.key}`,
@@ -1187,13 +1307,22 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
+    if (!this.lastBarCandleConfirmed(fp)) {
+      this.logTapeGate("rth");
+      return;
+    }
     const esCtx = this.esContext(fp);
     const nqMid = fp.map((m) => (m.high + m.low) / 2);
+    // price-gap inventory for the journal-only gap chips (Naso hypotheses)
+    const gaps = gapInventory(fp);
     if (nb) console.log(`[news] ${nb} blackout — skipping RTH cards (candidates recorded)`);
     for (const s of detectSoftMomentum(fp, SOFT_PROD)) {
       if (s.breakIdx !== fp.length - 1) continue;
       if (nb) {
         const es = esCardChips(esCtx, nqMid, s, false);
+        const rn = roundNumberChips(s);
+        const gch = gapChips(fp, s, gaps);
+        const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
         await this.recordSkip({
           timeET: cdtToET(s.t),
           day: s.d,
@@ -1205,7 +1334,7 @@ class SignalFeed {
           verdict: "rth soft-continuation (experimental)",
           headline: `NQ RTH ${s.dir}`,
           reason: `news blackout — ${nb}`,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { family: "rth", newsBlocked: nb, ...es.features }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { family: "rth", newsBlocked: nb, ...es.features, ...rn.features, ...gch.features, ...wall.features }),
         });
         continue;
       }
@@ -1224,6 +1353,9 @@ class SignalFeed {
       });
       if (!dec.allow) {
         const es = esCardChips(esCtx, nqMid, s, false);
+        const rn = roundNumberChips(s);
+        const gch = gapChips(fp, s, gaps);
+        const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
         console.log(`[overrides] rth ${s.dir} SKIPPED — ${dec.reasons.join("; ")}`);
         await this.recordSkip({
           timeET: cdtToET(s.t),
@@ -1241,11 +1373,47 @@ class SignalFeed {
             rejectedBy: dec.reasons,
             gates: this.gateSnapshot(ov),
             ...es.features,
+            ...rn.features,
+            ...gch.features,
+            ...wall.features,
           }),
         });
         continue;
       }
       this.rthSent.add(key);
+      const rthCap = rthMaxCardsPerDay();
+      if (rthCap > 0) {
+        const sent = (this.rthDayCount.get(s.d) ?? 0) + 1;
+        this.rthDayCount.set(s.d, sent);
+        if (sent > rthCap) {
+          const es = esCardChips(esCtx, nqMid, s, false);
+          const rn = roundNumberChips(s);
+          const gch = gapChips(fp, s, gaps);
+          const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
+          console.log(`[rth] daily card cap ${rthCap} reached — skipping ${key}`);
+          await this.recordSkip({
+            timeET: cdtToET(s.t),
+            day: s.d,
+            side: s.dir,
+            price: s.entry,
+            entry: s.entry,
+            stop: s.stop,
+            target: s.target,
+            verdict: "rth soft-continuation (experimental)",
+            headline: `NQ RTH ${s.dir}`,
+            reason: `daily card cap ${rthCap}`,
+            features: signalFeatures(s as unknown as Record<string, unknown>, {
+              family: "rth",
+              rejectedBy: [`daily card cap ${rthCap}`],
+              ...es.features,
+              ...rn.features,
+              ...gch.features,
+              ...wall.features,
+            }),
+          });
+          continue;
+        }
+      }
       if (this.rthSent.size > 200) this.rthSent = new Set([...this.rthSent].slice(-100));
 
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
@@ -1299,7 +1467,13 @@ class SignalFeed {
 
       const aPlus = s.breakFrac >= 0.65 || s.breakFrac <= 0.35;
       const es = esCardChips(esCtx, nqMid, s, false);
-      const chipLine = es.labels.length ? `${es.labels.join(" · ")} · ` : "";
+      // journal-only context chips (Naso hypotheses — labels only, no gates)
+      const rn = roundNumberChips(s);
+      const gch = gapChips(fp, s, gaps);
+      const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
+      const chipLine = [...es.labels, ...rn.labels, ...gch.labels, ...wall.labels].length
+        ? `${[...es.labels, ...rn.labels, ...gch.labels, ...wall.labels].join(" · ")} · `
+        : "";
       const text = [
         `🟦 <b>${STATS.rth.name} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
@@ -1329,7 +1503,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, gates: this.gateSnapshot(ov), ...es.features }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, gates: this.gateSnapshot(ov), ...es.features, ...rn.features, ...gch.features, ...wall.features }),
       });
       registerExpectation({
         key: `rth|${key}`,
@@ -1360,6 +1534,12 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 60) return;
     const fp = liveMinutesToFootprint(live.minutes);
+    if (!this.lastBarCandleConfirmed(fp)) {
+      this.logTapeGate("open");
+      return;
+    }
+    // price-gap inventory for the journal-only gap chips (Naso hypotheses)
+    const gaps = gapInventory(fp);
 
     // ---- open-window diagnostic: the archive says the drive fires ~87% of
     //      days, but the live record has zero open cards — log the scan's
@@ -1408,6 +1588,11 @@ class SignalFeed {
       const family = job.key === "sniper" ? "open_sniper" : job.key === "pullback" ? "open_pullback" : "open_drive";
       const verdict = job.key === "sniper" ? "open sniper (experimental)" : job.key === "pullback" ? "open pullback (experimental)" : "open drive (experimental)";
       const headline = `NQ ${job.key === "sniper" ? "open sniper" : job.key === "pullback" ? "open pullback" : "open drive"} ${s.dir}`;
+      // journal-only context features (Naso hypotheses — features only on
+      // these experimental cards, no labels)
+      const rn = roundNumberChips(s);
+      const gch = gapChips(fp, s, gaps);
+      const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
       if (nb) {
         await this.recordSkip({
           timeET: cdtToET(s.t),
@@ -1420,7 +1605,7 @@ class SignalFeed {
           verdict,
           headline,
           reason: `news blackout — ${nb}`,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { kind: family, newsBlocked: nb }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { kind: family, newsBlocked: nb, ...rn.features, ...gch.features, ...wall.features }),
         });
         continue;
       }
@@ -1454,6 +1639,9 @@ class SignalFeed {
             kind: family,
             rejectedBy: dec.reasons,
             gates: this.gateSnapshot(ov),
+            ...rn.features,
+            ...gch.features,
+            ...wall.features,
           }),
         });
         continue;
@@ -1529,7 +1717,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { kind: family, gates: this.gateSnapshot(ov) }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { kind: family, gates: this.gateSnapshot(ov), ...rn.features, ...gch.features, ...wall.features }),
       });
       registerExpectation({
         key: `open|${key}`,
