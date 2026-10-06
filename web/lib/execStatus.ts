@@ -25,6 +25,9 @@ export type ExecProtections = {
   ddHi: number;
   ddLo: number;
   ddHalved: boolean;
+  /** false = a hydration attempt hit an unreachable DB (definite); the
+   *  status bar only halts on a definite failure, never on "not tried" */
+  dayBaselineOk?: boolean;
   giveback: { armed: boolean; pct: number; floor: number; haltAt: number };
 };
 
@@ -80,6 +83,12 @@ export function deriveExecStatus(
     if (p.dayPnl <= p.dayPeak - limit) {
       halts.push(`give-back: day $${p.dayPnl.toFixed(0)} gave back ≥ $${limit.toFixed(0)} from peak $${p.dayPeak.toFixed(0)}`);
     }
+  }
+  // fail-closed day baseline: hydration DEFINITELY failed (not merely
+  // untried) and the account has realized P&L — the gate refuses to
+  // re-baseline mid-day
+  if (p.dayBaselineOk === false && !p.dayKey && snap.realized !== 0) {
+    halts.push("baseline: day reference unrestorable (guard_state) with realized ≠ 0 — fail-closed halt");
   }
 
   if (halts.length > 0) {

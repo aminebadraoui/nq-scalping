@@ -39,6 +39,7 @@ export type GuardDecision =
   | { verdict: "halt-giveback"; reason: string }
   | { verdict: "halt-daily-floor"; reason: string }
   | { verdict: "halt-profit-arm"; reason: string }
+  | { verdict: "halt-baseline"; reason: string }
   | { verdict: "no-data"; reason: string };
 
 export type GuardState = {
@@ -75,6 +76,11 @@ export type GuardState = {
   /** day-plan drawdown halving: true while the challenge drawdown from the
    *  trailing reference is >= DD_HALF_AT (sizing halves until DD_FULL_AT) */
   ddHalved: boolean;
+  /** runtime flag (not persisted semantics): false once a hydration
+   *  attempt hit an unreachable DB; true after a successful round-trip.
+   *  Undefined before the first attempt — the display only halts on a
+   *  DEFINITE failure, never on "not tried yet". */
+  dayBaselineOk?: boolean;
 };
 
 /* ── config (env overrides the Rapid EOD 50k defaults) ─────────────── */
@@ -186,15 +192,22 @@ export async function persistGuardToDb(state: GuardState): Promise<void> {
 /** restore the persisted state after a restart (called by crossGuard
  *  before the first gate check). Floor/high-water take the MAX of the
  *  persisted and the freshly bootstrapped values; the day reference is
- *  restored only when it still matches (preserves the $900 counter). */
-export async function hydrateGuardFromDb(): Promise<void> {
-  if (!dbEnabled()) return;
+ *  restored only when it still matches (preserves the $900 counter).
+ *  Returns TRUE when the DB round-trip succeeded (row applied, or a
+ *  fresh account with no row yet) and FALSE when the DB was configured
+ *  but unreachable — the caller treats a FALSE mid-day (realized ≠ 0)
+ *  as a fail-closed halt instead of silently re-baselining the day. */
+export async function hydrateGuardFromDb(): Promise<boolean> {
+  if (!dbEnabled()) return true;
   try {
     await getDb().unsafe(GUARD_DB_SQL);
     const rows = (await getDb()`select state from guard_state where id = 1`) as unknown as Array<{
       state: unknown;
     }>;
-    if (!rows.length) return;
+    if (!rows.length) {
+      mem().dayBaselineOk = true; // fresh account — an empty baseline is legitimate
+      return true;
+    }
     const raw = rows[0].state;
     const db = (typeof raw === "string" ? JSON.parse(raw) : raw) as Partial<GuardState>;
     const s = mem();
@@ -218,8 +231,13 @@ export async function hydrateGuardFromDb(): Promise<void> {
     if (db.lastDayPnl !== undefined && db.lastDayPnl !== null) s.lastDayPnl = Number(db.lastDayPnl);
     if (db.ddHalved !== undefined) s.ddHalved = db.ddHalved;
     s.dayPnl = 0; // recomputed by guardCheck from dayStartRealized
+    s.dayBaselineOk = true;
+    return true;
   } catch {
-    /* best-effort — the bootstrapped state still governs */
+    // best-effort — the bootstrapped state still governs; the caller
+    // decides whether a missing day baseline is safe
+    mem().dayBaselineOk = false;
+    return false;
   }
 }
 

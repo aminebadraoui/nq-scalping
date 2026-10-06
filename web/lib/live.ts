@@ -265,6 +265,17 @@ class LiveFeed {
    *  SUCCESS clock separately via state.lastCandleRefreshAt) */
   private candleRefreshAttemptAt = 0;
   private candleRefreshing = false;
+  /** per-minute throttle for the FOOTPRINT/V2 frame-path diagnostic line */
+  private candleFrameLoggedAt = 0;
+
+  private tickTail(): number {
+    let n = 0;
+    for (let i = this.state.minutes.length - 1; i >= 0; i--) {
+      if ((this.state.minutes[i].source ?? "tick") === "candle") break;
+      n++;
+    }
+    return n;
+  }
 
   /** Replace the completed tick-built bars with the vendor footprint
    *  candles every 60s (the same feed the archive is built from). The tick
@@ -291,13 +302,22 @@ class LiveFeed {
     void tokenP
       .then((token) => (token ? fetchFootprintBars([nyDate(0), nyDate(1)], this.env, token) : Promise.resolve([])))
       .then((candles) => {
-        if (!candles.length) return;
+        if (!candles.length) {
+          console.log("[candles] refresh: fetch returned 0 candles (token/socket issue?)");
+          return;
+        }
         const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|");
         const r = mergeCandleMinutes(this.state.minutes, candles, nowKey);
         this.state.lastCandleRefreshAt = Date.now();
+        const newest = candles.map((c) => c.t).sort().at(-1) ?? "";
+        console.log(
+          `[candles] refresh: ${candles.length} candles (newest ${newest}) · merged ${r.replaced}R/${r.added}A · tail ${this.tickTail()} tick`,
+        );
         if (r.replaced || r.added) this.emit();
       })
-      .catch(() => {})
+      .catch((e) => {
+        console.log("[candles] refresh failed:", (e as Error)?.message ?? e);
+      })
       .finally(() => {
         this.candleRefreshing = false;
       });
@@ -668,6 +688,17 @@ class LiveFeed {
                   const merged = mergeCandleMinutes(this.state.minutes, r.candles, nowKey);
                   this.state.lastCandleRefreshAt = Date.now();
                   if (merged.replaced || merged.added) this.emit();
+                  // one diagnostic line per minute max — the frame path is
+                  // the real-time confirmation channel; its silence (or a
+                  // growing tail) is the tape-gap signature
+                  const now = Date.now();
+                  if (now - this.candleFrameLoggedAt >= 60_000) {
+                    this.candleFrameLoggedAt = now;
+                    const newest = r.candles.map((c) => c.t).sort().at(-1) ?? "";
+                    console.log(
+                      `[candles] frame: ${r.candles.length} candles (newest ${newest}) · merged ${merged.replaced}R/${merged.added}A · tail ${this.tickTail()} tick`,
+                    );
+                  }
                 }
               }
             }

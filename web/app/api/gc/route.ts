@@ -138,6 +138,7 @@ export async function GET(req: NextRequest) {
                     ddHi,
                     ddLo,
                     ddHalved: s.ddHalved,
+                    dayBaselineOk: s.dayBaselineOk,
                     giveback: { armed: gbPct > 0, pct: gbPct, floor: gbFloor, haltAt: Math.round(s.dayPeak - limit) },
                   },
                   snap,

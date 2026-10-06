@@ -94,3 +94,22 @@ test("funded: target is measured from zero, not the nominal start", () => {
   const t = deriveExecStatus(P(funded), { equity: 3_100, realized: 3_100 }, OPTS);
   assert.equal(t.state, "halted");
 });
+
+test("halted: a DEFINITE hydration failure with realized ≠ 0 fails closed", () => {
+  const s = deriveExecStatus(P({ dayKey: "", dayBaselineOk: false }), { equity: 50_300, realized: 300 }, OPTS);
+  assert.equal(s.state, "halted");
+  assert.ok(s.halts.some((x) => x.startsWith("baseline:")));
+});
+
+test("live: dayKey empty BEFORE the first hydration attempt is not a halt", () => {
+  // boot race: the seed has no day reference yet and hydration has not
+  // run — the status bar must not false-alarm; the GATE is the real
+  // fail-closed check, applied only after a failed hydration attempt
+  const s = deriveExecStatus(P({ dayKey: "" }), { equity: 50_300, realized: 300 }, OPTS);
+  assert.equal(s.state, "live");
+});
+
+test("live: hydration success with an empty dayKey (fresh account) stays live", () => {
+  const s = deriveExecStatus(P({ dayKey: "", dayBaselineOk: true }), { equity: 50_300, realized: 300 }, OPTS);
+  assert.equal(s.state, "live");
+});

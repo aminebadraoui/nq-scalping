@@ -177,43 +177,52 @@ const MIN_LIVE_MINUTES = 5;
 const UV_WATCH_MS = 6 * 60 * 1000;
 
 /* ------------------------------------------------------------------ *
- * Tape-gate watchdog (2026-10-05 outage): the candle-confirmation gate
- * held every card family for hours when the VPS candle merge stalled —
- * the vendor was fine (fresh candles verified from the Mac), the 60s
- * rolling refresh returned only stale data, and the only trace was a
- * throttled console line. Cards keep HOLDING on unconfirmed bars (the
- * owner chose hold+alert, not fail-open); this watchdog pages the
- * operator on Telegram so a stalled merge can never again look like
- * "a quiet market".
+ * Tape-gate watchdog (2026-10-05/06 outage): the candle-confirmation
+ * gate held every card family when the vendor's candle data stopped
+ * reaching the VPS (intermittent gaps — the tail sometimes recovered,
+ * so a wall-clock stall detector never armed while cards stayed held).
+ * Cards keep HOLDING on unconfirmed bars (the owner chose hold+alert,
+ * not fail-open); this watchdog pages the operator on Telegram when the
+ * tail of consecutive unconfirmed completed bars grows past the alert
+ * threshold, so a gap pattern can never again look like "a quiet
+ * market".
  * ------------------------------------------------------------------ */
 
-/** how long the last completed bar may stay tick-source before the
- *  operator is paged (healthy merges confirm within ~1–2 minutes). */
-export const TAPE_GATE_STALL_MS = 8 * 60_000;
-/** while a stall persists, re-page at most this often. */
+/** consecutive trailing tick-source bars needed to page the operator
+ *  (healthy merges leave a tail of 1–2). */
+export const TAPE_GATE_TAIL_ALERT = 8;
+/** while the tail stays above the alert threshold, re-page at most this
+ *  often. */
 export const TAPE_GATE_REALERT_MS = 30 * 60_000;
 
+/** consecutive trailing bars that are NOT candle-confirmed (the "hole"
+ *  at the buffer tail). Pure — unit-tested. */
+export function tapeTailCount(fp: FootprintMinute[]): number {
+  let n = 0;
+  for (let i = fp.length - 1; i >= 0; i--) {
+    if ((fp[i].src ?? "tick") === "candle") break;
+    n++;
+  }
+  return n;
+}
+
 /**
- * Pure hold/alert decision for the tape gate. `lastConfirmedAt = 0`
- * means "never confirmed yet" (fresh boot before the seed landed) — the
- * clock arms silently instead of paging on the first unconfirmed scan.
- * Unit-tested (tests/liveTapeGate.test.ts).
+ * Pure hold/alert decision for the tape gate. `tail < fp.length` guards
+ * the fresh-boot case (a buffer that has never seen a candle yet is a
+ * seed-in-flight, not a stall). Unit-tested (tests/liveTapeGate.test.ts).
  */
 export function tapeGateDecision(
-  confirmed: boolean,
-  lastConfirmedAt: number,
+  tailTicks: number,
+  totalBars: number,
   now: number,
   lastAlertAt: number,
-): { hold: boolean; alert: boolean; lastConfirmedAt: number } {
-  if (confirmed) return { hold: false, alert: false, lastConfirmedAt: now };
-  const armed = lastConfirmedAt === 0 ? now : lastConfirmedAt;
-  const stalled = now - armed;
-  // never-alerted (0) must page at the threshold — the re-alert window
-  // only throttles REPEAT pages of a persistent stall
+): { hold: boolean; alert: boolean } {
+  const hold = tailTicks >= 1;
   const alert =
-    stalled >= TAPE_GATE_STALL_MS &&
+    tailTicks >= TAPE_GATE_TAIL_ALERT &&
+    tailTicks < totalBars &&
     (lastAlertAt === 0 || now - lastAlertAt >= TAPE_GATE_REALERT_MS);
-  return { hold: true, alert, lastConfirmedAt: armed };
+  return { hold, alert };
 }
 
 /* ------------------------------------------------------------------ *
@@ -361,10 +370,8 @@ class SignalFeed {
   /** per-scan throttle for the tape-gate log (one line per minute max) */
   private tapeGateLoggedAt = new Map<string, number>();
 
-  /** last time the tail bar was candle-confirmed (0 = never yet) */
-  private lastBarConfirmedAt = 0;
   /** last stall Telegram alert (ms) — one per episode, re-paged every
-   *  TAPE_GATE_REALERT_MS while the stall persists */
+   *  TAPE_GATE_REALERT_MS while the tail stays unconfirmed */
   private tapeGateAlertedAt = 0;
 
   /** Cards may only fire on a bar confirmed by the vendor footprint candle.
@@ -373,10 +380,6 @@ class SignalFeed {
    *  the live-vs-backtest divergence that drove the 2026-10 bleed. The
    *  rolling candle refresh replaces completed bars within a minute or two,
    *  so a lagged fetch DELAYS the card; it never degrades it. */
-  private lastBarCandleConfirmed(fp: FootprintMinute[]): boolean {
-    const last = fp[fp.length - 1];
-    return !!last && (last.src ?? "tick") === "candle";
-  }
 
   private logTapeGate(scan: string) {
     const now = Date.now();
@@ -387,28 +390,27 @@ class SignalFeed {
   }
 
   /** Shared gate for every card family: hold while the last completed
-   *  bar is tick-source, and page the operator when confirmation has
-   *  stalled for TAPE_GATE_STALL_MS (see tapeGateDecision). */
+   *  bar is tick-source, and page the operator when the tail of
+   *  unconfirmed bars grows past TAPE_GATE_TAIL_ALERT (see
+   *  tapeGateDecision). */
   private tapeGateHolds(fp: FootprintMinute[], scan: string): boolean {
-    const confirmed = this.lastBarCandleConfirmed(fp);
+    const tail = tapeTailCount(fp);
     const now = Date.now();
-    const d = tapeGateDecision(confirmed, this.lastBarConfirmedAt, now, this.tapeGateAlertedAt);
-    this.lastBarConfirmedAt = d.lastConfirmedAt;
+    const d = tapeGateDecision(tail, fp.length, now, this.tapeGateAlertedAt);
     if (!d.hold) return false;
     this.logTapeGate(scan);
     if (d.alert) {
       this.tapeGateAlertedAt = now;
-      const stallMin = Math.round((now - (this.lastBarConfirmedAt || now)) / 60_000);
       const et = new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" });
       void this.push(
         [
-          `⚠ <b>TAPE-GATE STALL — every card family held</b>`,
+          `⚠ <b>TAPE-GATE GAP — every card family held</b>`,
           `<code>${symbol()} · ${et} ET</code>`,
-          `Candle confirmation of the last completed bar has been stuck for ${stallMin} min while the signal window is open — momentum/open/rth cards are all deferred.`,
+          `The last ${tail} completed bars are not candle-confirmed (vendor candle data gap) — momentum/open/rth cards are all deferred.`,
           `Check /api/gc?action=health → barSource; restart the dashboard container to re-seed the confirmed bars.`,
         ].join("\n"),
       );
-      console.log(`[tape-gate] ${scan}: stall ${stallMin} min — operator alerted via Telegram`);
+      console.log(`[tape-gate] ${scan}: ${tail} unconfirmed bars — operator alerted via Telegram`);
     }
     return true;
   }

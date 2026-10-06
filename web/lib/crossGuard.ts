@@ -95,7 +95,18 @@ export async function crossGuardGate(): Promise<GuardDecision> {
   const snap = await fetchSnapshot();
   if (!snap) return { verdict: "no-data", reason: "crossGuard: account snapshot unreadable — halting" };
   bootstrap(snap);
-  await hydrateGuardFromDb(); // restore the persisted floor/day counter (redeploy-safe)
+  // restore the persisted floor/day counter (redeploy-safe). Fail closed
+  // when the day baseline cannot be restored mid-day: re-baselining at the
+  // current realized would undercount the $900 consistency day.
+  const hydrated = await hydrateGuardFromDb();
+  const s = guardState();
+  if (!hydrated && s.dayKey === "" && snap.realized !== 0) {
+    return {
+      verdict: "halt-baseline",
+      reason:
+        "day baseline unrestorable (guard_state DB unreachable) with realized ≠ 0 — refusing to re-baseline mid-day (consistency counter)",
+    };
+  }
   return guardCheck(snap);
 }
 
