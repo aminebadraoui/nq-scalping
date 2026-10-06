@@ -102,7 +102,7 @@ export async function GET(req: NextRequest) {
             protections: await (async () => {
               try {
                 const { guardState } = await import("@/lib/accountGuard");
-                const { crossGuardSnapshot } = await import("@/lib/crossGuard");
+                const { crossGuardSnapshot, crossGuardLiveSnapshot } = await import("@/lib/crossGuard");
                 const { deriveExecStatus } = await import("@/lib/execStatus");
                 const { daySizeMultiplier, parseSizeTiers, DEFAULT_SIZE_TIERS } = await import("@/lib/propRules");
                 const s = guardState();
@@ -114,7 +114,10 @@ export async function GET(req: NextRequest) {
                 const profitArm = Number(process.env.PROFIT_ARM ?? "400");
                 const ddHi = Number(process.env.DD_HALF_AT ?? "600");
                 const ddLo = Number(process.env.DD_FULL_AT ?? "300");
-                const snap = crossGuardSnapshot();
+                // display-only read: cached when the gate polled recently,
+                // a fresh fetch otherwise (the gate itself still fetches
+                // through crossGuardGate before every order)
+                const snap = crossGuardSnapshot() ?? (await crossGuardLiveSnapshot());
                 const margin = Number(process.env.MFF_GUARD_MARGIN ?? "500");
                 const status = deriveExecStatus(
                   {

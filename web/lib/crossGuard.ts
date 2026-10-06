@@ -30,6 +30,14 @@ export function crossGuardSnapshot(): Snapshot | null {
   return cache?.snap ?? null;
 }
 
+/** DISPLAY-ONLY: the snapshot for the status bar — the cached read when
+ *  one exists, otherwise a fresh fetch (the gate path itself is
+ *  unaffected; it always fetches through crossGuardGate). */
+export async function crossGuardLiveSnapshot(): Promise<Snapshot | null> {
+  if (cache?.snap) return cache.snap;
+  return fetchSnapshot();
+}
+
 function enabled(): boolean {
   return !!process.env.CROSSTRADE_URL && !!process.env.CROSSTRADE_KEY && !!process.env.CROSSTRADE_ACCOUNT;
 }
