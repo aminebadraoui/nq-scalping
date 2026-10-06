@@ -393,7 +393,9 @@ wider stop grid and the user's approval. Scratch studies
   the live defaults with the profiles off: structural stops, momentum 1R ·
   RTH 0.75R · open TP15/SL35, **$100 risk budget** (`PROP_RISK_PER_TRADE`
   default 100; RTH/OPEN caps default $100), **daily −$250 floor**
-  (`DAILY_LOSS_FLOOR` 250) · **+$400 one-more-trade arm** (`PROFIT_ARM`
+  (`DAILY_LOSS_FLOOR` 250 — set explicitly in the Coolify app env
+  2026-10-06, was 400; verified via `/api/gc?action=health`) ·
+  **+$400 one-more-trade arm** (`PROFIT_ARM`
   400) · **dd600→half sizing** (`DD_HALF_AT` 600 / `DD_FULL_AT` 300 /
   `DD_HALF_MULT` 0.5) · green-day tiers off (`SIZE_TIERS=""` default) ·
   scale-out opt-in (`CROSSTRADE_SCALEOUT=1`). Validated by
