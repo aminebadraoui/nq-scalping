@@ -66,7 +66,7 @@ import { registerExpectation, registerSendFailure, checkExpectations, attachLimi
 import { momentumProfile, rthProfile, applyProfile, timeExitAt, type FamilyProfile } from "./profile";
 import { registerTimeExit, checkTimeExits } from "./timeExit";
 import { logExec } from "./execLog";
-import { signalWindowOpen } from "./marketHours";
+import { signalWindowOpen, marketOpenAt } from "./marketHours";
 import { ticketVetoDecision, ticketVetoBar } from "./ticketVeto";
 import { hourBucketOf } from "./tradeStats";
 
@@ -427,16 +427,23 @@ class SignalFeed {
     this.logTapeGate(scan);
     if (d.alert) {
       this.tapeGateAlertedAt = now;
-      const et = new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" });
-      void this.push(
-        [
-          `⚠ <b>TAPE-GATE GAP — every card family held</b>`,
-          `<code>${symbol()} · ${et} ET</code>`,
-          `The last ${tail} completed bars are not candle-confirmed (vendor candle data gap) — momentum/open/rth cards are all deferred.`,
-          `Check /api/gc?action=health → barSource; restart the dashboard container to re-seed the confirmed bars.`,
-        ].join("\n"),
-      );
-      console.log(`[tape-gate] ${scan}: ${tail} unconfirmed bars — operator alerted via Telegram`);
+      if (marketOpenAt(now)) {
+        const et = new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" });
+        void this.push(
+          [
+            `⚠ <b>TAPE-GATE GAP — every card family held</b>`,
+            `<code>${symbol()} · ${et} ET</code>`,
+            `The last ${tail} completed bars are not candle-confirmed (vendor candle data gap) — momentum/open/rth cards are all deferred.`,
+            `Check /api/gc?action=health → barSource; restart the dashboard container to re-seed the confirmed bars.`,
+          ].join("\n"),
+        );
+        console.log(`[tape-gate] ${scan}: ${tail} unconfirmed bars — operator alerted via Telegram`);
+      } else {
+        // market closed (weekend / daily 17:00–18:00 halt): no candles can
+        // complete, so the tail cannot confirm and re-paging is pure noise —
+        // the self-heal ladder pauses too; the pager re-arms after reopen
+        console.log(`[tape-gate] ${scan}: ${tail} unconfirmed bars while the market is closed — paging suspended`);
+      }
     }
     return true;
   }

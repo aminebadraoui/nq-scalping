@@ -75,7 +75,93 @@ export type LiveState = {
     minutes: LiveMinute[];
     cur: LiveMinute | null;
   };
+  /** tape-gap self-heal ladder state (the live.ts recovery machine) */
+  heal: TapeHealState;
 };
+
+/* ------------------------------------------------------------------ *
+ * Tape-gap self-heal ladder (2026-10-06): when the vendor candle path
+ * dies while ticks keep flowing (the "tape-gate gap" that pages the
+ * operator), the feed heals ITSELF before asking a human:
+ *   1. force a candle fetch with a FRESH Cognito token (a quietly dead
+ *      cached token is a prime suspect for "fetch returned 0");
+ *   2. force a WS reconnect + re-subscribe (re-seeds the FOOTPRINT/V2
+ *      frame channel);
+ *   3. soft re-seed: clear the buffer and re-bootstrap from the vendor's
+ *      footprint history (the programmatic version of the manual
+ *      "restart the container" advice).
+ * The gate itself keeps holding throughout — this recovers the DATA
+ * path, never fails the card gate open. Gated by marketOpenAt so the
+ * daily 17:00–18:00 halt (no candles can complete) never trips it.
+ * ------------------------------------------------------------------ */
+
+export const TAPE_HEAL_TAIL_ALERT = 8; // same threshold as signalFeed's pager
+export const TAPE_HEAL_FETCH_INTERVAL_MS = 60_000;
+export const TAPE_HEAL_MAX_FORCED_FETCHES = 2;
+export const TAPE_HEAL_STEP2_MS = 120_000; // two fetches failed → reconnect
+export const TAPE_HEAL_STEP3_MS = 300_000; // reconnect didn't fix → re-seed
+
+export type TapeHealState = {
+  /** episode start (ms; 0 = no active stall) */
+  sinceAt: number;
+  /** 1 = forced fetches · 2 = forced reconnect · 3 = soft re-seed */
+  step: 0 | 1 | 2 | 3;
+  /** when the current step last acted */
+  stepAt: number;
+  forcedFetches: number;
+  reconnects: number;
+  reseeds: number;
+  /** last episode end (ms; 0 = never healed) */
+  healedAt: number;
+  /** total episodes closed */
+  episodes: number;
+};
+
+export function seedTapeHeal(): TapeHealState {
+  return { sinceAt: 0, step: 0, stepAt: 0, forcedFetches: 0, reconnects: 0, reseeds: 0, healedAt: 0, episodes: 0 };
+}
+
+export type TapeHealAction = "none" | "force-fetch" | "force-reconnect" | "force-reseed";
+
+/** Pure ladder decision (unit-tested): a stall = trailing unconfirmed tail
+ *  ≥ TAPE_HEAL_TAIL_ALERT on a buffer that HAS seen candles (a fresh boot
+ *  with an all-tick buffer is a seed-in-flight, not a stall). */
+export function tapeHealDecision(
+  h: TapeHealState,
+  now: number,
+  tail: number,
+  total: number,
+): { next: TapeHealState; action: TapeHealAction } {
+  const stall = tail >= TAPE_HEAL_TAIL_ALERT && tail < total;
+  if (!stall) {
+    if (h.sinceAt !== 0) {
+      return {
+        next: { ...seedTapeHeal(), healedAt: now, episodes: h.episodes + 1 },
+        action: "none",
+      };
+    }
+    return { next: h, action: "none" };
+  }
+  let next = h;
+  if (h.sinceAt === 0) {
+    next = { ...seedTapeHeal(), sinceAt: now, step: 1 }; // stepAt 0 → first fetch fires immediately
+  }
+  const episodeMs = now - next.sinceAt;
+  const stepMs = now - next.stepAt;
+  if (next.forcedFetches < TAPE_HEAL_MAX_FORCED_FETCHES && stepMs >= TAPE_HEAL_FETCH_INTERVAL_MS) {
+    return {
+      next: { ...next, step: 1, stepAt: now, forcedFetches: next.forcedFetches + 1 },
+      action: "force-fetch",
+    };
+  }
+  if (next.forcedFetches >= TAPE_HEAL_MAX_FORCED_FETCHES && next.reconnects < 1 && episodeMs >= TAPE_HEAL_STEP2_MS) {
+    return { next: { ...next, step: 2, stepAt: now, reconnects: 1 }, action: "force-reconnect" };
+  }
+  if (next.reconnects >= 1 && next.reseeds < 1 && episodeMs >= TAPE_HEAL_STEP3_MS) {
+    return { next: { ...next, step: 3, stepAt: now, reseeds: 1 }, action: "force-reseed" };
+  }
+  return { next, action: "none" };
+}
 
 const TICK = 0.25;
 
@@ -267,6 +353,8 @@ class LiveFeed {
   private candleRefreshing = false;
   /** per-minute throttle for the FOOTPRINT/V2 frame-path diagnostic line */
   private candleFrameLoggedAt = 0;
+  /** last healed-episode timestamp already logged (dedup for the heal log) */
+  private healLoggedAt = 0;
 
   private tickTail(): number {
     let n = 0;
@@ -281,16 +369,20 @@ class LiveFeed {
    *  candles every 60s (the same feed the archive is built from). The tick
    *  stream holds ~7% of true volume — cards must never evaluate it.
    *  Fire-and-forget; a failed fetch leaves bars tick-built and the
-   *  candle-source card gate simply holds. */
-  private refreshCandles() {
+   *  candle-source card gate simply holds. `force` (the self-heal ladder)
+   *  bypasses the throttle AND the cached token — a quietly dead token is
+   *  a prime suspect for "fetch returned 0". */
+  private refreshCandles(force = false) {
     const now = Date.now();
-    if (this.candleRefreshing || now - this.candleRefreshAttemptAt < 60_000) return;
+    if (this.candleRefreshing) return;
+    if (!force && now - this.candleRefreshAttemptAt < 60_000) return;
     this.candleRefreshAttemptAt = now;
     this.candleRefreshing = true;
     // reuse the cached IdToken — a fresh Cognito auth on every refresh cycle
-    // is what tripped the vendor's password-attempt lockout before
+    // is what tripped the vendor's password-attempt lockout before (forced
+    // fetches are rare: max 2 per stall episode)
     const tokenP =
-      this.token && now - this.tokenFetchedAt < TOKEN_REFRESH_MS
+      this.token && !force && now - this.tokenFetchedAt < TOKEN_REFRESH_MS
         ? Promise.resolve(this.token)
         : cognitoIdToken(this.env)
             .then((t) => {
@@ -334,6 +426,7 @@ class LiveFeed {
     minutes: [],
     cur: null,
     es: { lastTradeMs: 0, minutes: [], cur: null },
+    heal: seedTapeHeal(),
   };
 
   constructor() {
@@ -787,6 +880,37 @@ class LiveFeed {
           } catch {
             /* ignore */
           }
+        }
+      }
+      // ---- tape-gap self-heal ladder (market-open only: the 17:00–18:00
+      //      halt can never confirm candles and must not trip it) ----
+      if (marketOpenAt(now)) {
+        const tail = this.tickTail();
+        const total = this.state.minutes.length;
+        const { next, action } = tapeHealDecision(this.state.heal, now, tail, total);
+        this.state.heal = next;
+        if (action === "force-fetch") {
+          console.log(`[heal] unconfirmed tail ${tail} — forced candle fetch (${next.forcedFetches}/${TAPE_HEAL_MAX_FORCED_FETCHES})`);
+          this.refreshCandles(true);
+        } else if (action === "force-reconnect") {
+          console.log(`[heal] unconfirmed tail ${tail} — forced reconnect to re-seed the FOOTPRINT/V2 frame channel`);
+          try {
+            this.ws?.close(); // onclose → backoff reconnect → subscribeChannels
+          } catch {
+            /* ignore */
+          }
+        } else if (action === "force-reseed") {
+          console.log(`[heal] unconfirmed tail ${tail} — soft re-seed: clearing the buffer and re-bootstrapping`);
+          this.state.minutes = [];
+          this.state.cur = null;
+          this.state.ticks = [];
+          this.state.es.minutes = [];
+          this.state.es.cur = null;
+          this.bootstrapped = false;
+          void this.bootstrap();
+        } else if (next.healedAt > 0 && next.healedAt !== this.healLoggedAt) {
+          this.healLoggedAt = next.healedAt;
+          console.log(`[heal] tail confirmed — episode ${next.episodes} closed`);
         }
       }
       void this.bootstrap();

@@ -220,6 +220,9 @@ export async function GET(req: NextRequest) {
                   // the lossy tick aggregate. Cards only fire on candle bars.
                   barSource: { candle: candleBars, tick: tickBars },
                   lastCandleRefreshAt: st.lastCandleRefreshAt ?? 0,
+                  // tape-gap self-heal ladder (lib/live.ts): episode clock,
+                  // current step, and the recovery actions taken so far
+                  heal: st.heal ?? null,
                 };
               } catch (e) {
                 console.error("[health] liveFeed error:", e);
