@@ -406,6 +406,13 @@ wider stop grid and the user's approval. Scratch studies
   removed regardless of outcome, failures alert for manual close.
   In-memory only — a redeploy drops pending exits (bracket protection
   remains). Dry-run unless EXECUTE_LIVE=1.
+- **Live exec status bar (2026-10-06)**: the dashboard's top strip polls
+  `/api/gc?action=health` every 20s and shows the executor state
+  (LIVE/dry/halted), account snapshot, day P&L + floor margin, the
+  day-plan knobs' live state (daily floor / profit arm / dd halving),
+  feed toggles, and the tape. Derived by `lib/execStatus.ts`
+  (display-only — the real gate is `crossGuardGate()`); the health
+  payload's `protections` block carries the full guard snapshot.
 - **Account guard wired for CrossTrade**: `crossGuardGate()`
   (lib/crossGuard.ts) feeds the CrossTrade account snapshot
   (netLiq/realizedPnl) into the same MFF floor/consistency guard

@@ -102,16 +102,62 @@ export async function GET(req: NextRequest) {
             protections: await (async () => {
               try {
                 const { guardState } = await import("@/lib/accountGuard");
+                const { crossGuardSnapshot } = await import("@/lib/crossGuard");
+                const { deriveExecStatus } = await import("@/lib/execStatus");
                 const { daySizeMultiplier, parseSizeTiers, DEFAULT_SIZE_TIERS } = await import("@/lib/propRules");
                 const s = guardState();
                 const gbPct = Number(process.env.GUARD_GIVEBACK_PCT ?? "0.5");
                 const gbFloor = Number(process.env.GUARD_GIVEBACK_FLOOR ?? "250");
                 const limit = Math.max(gbFloor, gbPct * s.dayPeak);
                 const tiers = process.env.SIZE_TIERS !== undefined ? parseSizeTiers(process.env.SIZE_TIERS) : DEFAULT_SIZE_TIERS;
+                const dailyFloor = Number(process.env.DAILY_LOSS_FLOOR ?? "250");
+                const profitArm = Number(process.env.PROFIT_ARM ?? "400");
+                const ddHi = Number(process.env.DD_HALF_AT ?? "600");
+                const ddLo = Number(process.env.DD_FULL_AT ?? "300");
+                const snap = crossGuardSnapshot();
+                const margin = Number(process.env.MFF_GUARD_MARGIN ?? "500");
+                const status = deriveExecStatus(
+                  {
+                    stage: s.stage,
+                    startBalance: s.startBalance,
+                    profitTarget: s.profitTarget,
+                    floor: s.floor,
+                    highWater: s.highWater,
+                    locked: s.locked,
+                    dayKey: s.dayKey,
+                    dayPnl: Math.round(s.dayPnl),
+                    dayPeak: Math.round(s.dayPeak),
+                    consistencyCap: s.consistencyCap,
+                    dailyFloor,
+                    profitArm,
+                    profitArmed: s.profitArmed,
+                    lastDayPnl: s.lastDayPnl === null ? null : Math.round(s.lastDayPnl),
+                    ddHi,
+                    ddLo,
+                    ddHalved: s.ddHalved,
+                    giveback: { armed: gbPct > 0, pct: gbPct, floor: gbFloor, haltAt: Math.round(s.dayPeak - limit) },
+                  },
+                  snap,
+                  { executeLive: process.env.EXECUTE_LIVE === "1", crosstradeConfigured: crossTradeEnabled(), guardMargin: margin },
+                );
                 return {
+                  status,
+                  stage: s.stage,
+                  startBalance: s.startBalance,
+                  profitTarget: s.profitTarget,
+                  floor: s.floor,
+                  highWater: s.highWater,
+                  locked: s.locked,
+                  lastCommitDay: s.lastCommitDay,
                   dayKey: s.dayKey,
                   dayPnl: Math.round(s.dayPnl),
                   dayPeak: Math.round(s.dayPeak),
+                  consistencyCap: s.consistencyCap,
+                  dailyFloor,
+                  profitArm,
+                  profitArmed: s.profitArmed,
+                  lastDayPnl: s.lastDayPnl === null ? null : Math.round(s.lastDayPnl),
+                  dd: { hi: ddHi, lo: ddLo, halved: s.ddHalved },
                   giveback: {
                     armed: gbPct > 0,
                     pct: gbPct,
@@ -120,7 +166,7 @@ export async function GET(req: NextRequest) {
                   },
                   tier: daySizeMultiplier(s.dayPnl, tiers),
                   tiers,
-                  consistencyCap: s.consistencyCap,
+                  account: snap,
                 };
               } catch {
                 return null;

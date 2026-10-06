@@ -15,6 +15,7 @@ import NewsCalendarPanel from "@/components/NewsCalendarPanel";
 import EarningsPanel from "@/components/EarningsPanel";
 import MacroFooter from "@/components/MacroFooter";
 import AiBriefingCard from "@/components/AiBriefingCard";
+import ExecStatusBar from "@/components/ExecStatusBar";
 import SessionPicker, { type DatasetInfo } from "@/components/SessionPicker";
 import { useMacro } from "@/lib/useMacro";
 import { blendLiveMinutes, type FPMinute } from "@/lib/footprint";
@@ -255,6 +256,11 @@ export default function DashboardPage() {
           {live?.connected ? "connected" : "reconnecting…"}
         </span>
       </div>
+
+      {/* LIVE EXEC STATUS — the operator strip: guard state, account
+          snapshot, day-plan rules, feeds, tape. Polls /api/gc?action=health
+          every 20s. Display-only — the real gate is crossGuardGate(). */}
+      <ExecStatusBar />
 
       {/* AI MACRO BRIEFING — DeepSeek's situation analysis over all the
           macro-context data (top of the page, above the live strip;

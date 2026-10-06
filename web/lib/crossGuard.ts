@@ -23,6 +23,13 @@ type Snapshot = { equity: number; realized: number };
 let cache: { at: number; snap: Snapshot | null } | null = null;
 const CACHE_MS = 30_000;
 
+/** DISPLAY-ONLY read of the last cached account snapshot (no fetch, no
+ *  state mutation) — the dashboard's status bar mirrors what the gate
+ *  saw. Never used by the gate or sizing. */
+export function crossGuardSnapshot(): Snapshot | null {
+  return cache?.snap ?? null;
+}
+
 function enabled(): boolean {
   return !!process.env.CROSSTRADE_URL && !!process.env.CROSSTRADE_KEY && !!process.env.CROSSTRADE_ACCOUNT;
 }
