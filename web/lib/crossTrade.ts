@@ -479,8 +479,9 @@ export async function placeCrossTradeOrderREST(
   // tape 31141 vs broker 31155 → market fill above the take-profit → instant
   // OCO close). No real-time quote source exists for a Tradovate account
   // (CrossTrade market data is NT8-only), so this is enforced by the
-  // broker resting-limit entries (CROSSTRADE_LIMIT_ENTRIES) and the
-  // watcher's fill verification instead of a pre-trade quote check.
+  // broker resting-limit entries — the retrace path's DEFAULT
+  // (signalFeed.retraceUseLimit; CROSSTRADE_LIMIT_ENTRIES=0 opts out) —
+  // and the watcher's fill verification instead of a pre-trade quote check.
 
   const flat = await restFlatGate(cfg);
   if (!flat.ok) return { ok: false, reason: flat.reason };

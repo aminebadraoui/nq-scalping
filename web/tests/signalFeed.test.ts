@@ -2,7 +2,7 @@
  * the pure fill/expire/wait decision + the feed-clock gap helper. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { resolveRetrace, feedMinutesGap } from "../lib/signalFeed";
+import { resolveRetrace, feedMinutesGap, retraceUseLimit } from "../lib/signalFeed";
 
 const bar = (o: number, high: number, low: number) => ({ o, high, low });
 
@@ -37,4 +37,30 @@ test("feedMinutesGap: adjacent, wrap, garbage", () => {
   assert.equal(feedMinutesGap("09:30", "09:32"), 2);
   assert.equal(feedMinutesGap("9:30", "09:31"), null);
   assert.equal(feedMinutesGap("", "09:31"), null);
+});
+
+test("retraceUseLimit: resting broker limit is the default; 0 opts out", () => {
+  const saved = process.env.CROSSTRADE_LIMIT_ENTRIES;
+  try {
+    delete process.env.CROSSTRADE_LIMIT_ENTRIES;
+    assert.equal(retraceUseLimit(false), true); // default = limit-only
+    process.env.CROSSTRADE_LIMIT_ENTRIES = "1";
+    assert.equal(retraceUseLimit(false), true);
+    process.env.CROSSTRADE_LIMIT_ENTRIES = "0"; // explicit escape hatch
+    assert.equal(retraceUseLimit(false), false);
+  } finally {
+    if (saved === undefined) delete process.env.CROSSTRADE_LIMIT_ENTRIES;
+    else process.env.CROSSTRADE_LIMIT_ENTRIES = saved;
+  }
+});
+
+test("retraceUseLimit: scale-out pairs keep the market path (no limit leg)", () => {
+  const saved = process.env.CROSSTRADE_LIMIT_ENTRIES;
+  try {
+    delete process.env.CROSSTRADE_LIMIT_ENTRIES;
+    assert.equal(retraceUseLimit(true), false);
+  } finally {
+    if (saved === undefined) delete process.env.CROSSTRADE_LIMIT_ENTRIES;
+    else process.env.CROSSTRADE_LIMIT_ENTRIES = saved;
+  }
 });
