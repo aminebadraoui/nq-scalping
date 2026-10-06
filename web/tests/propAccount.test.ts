@@ -118,9 +118,9 @@ test("dollarize sizes every trade under the plan and converts at $2/pt", () => {
     { date: "2026-09-01", pnlPts: -4.0, riskPts: 3.5 }, // stop + 0.5 cost
     { date: "2026-09-01", pnlPts: -0.75, riskPts: 0.25 }, // 30-micro cap binds
   ]);
-  assert.equal(tr[0].contracts, 24); // floor(170 / 7)
-  assert.equal(tr[0].pnl, 168); // 3.5 × $2 × 24
-  assert.equal(tr[1].pnl, -192); // -4.0 × $2 × 24
+  assert.equal(tr[0].contracts, 14); // floor(100 / 7)
+  assert.equal(tr[0].pnl, 98); // 3.5 × $2 × 14
+  assert.equal(tr[1].pnl, -112); // -4.0 × $2 × 14
   assert.equal(tr[2].contracts, 30); // capped at 30 micros
   assert.equal(tr[2].pnl, -45); // -0.75 × $2 × 30
   // every size stays inside the plan's contract cap

@@ -15,28 +15,29 @@ import {
   timeExitDecision,
 } from "../lib/profile";
 
-test("momentumProfile defaults are the validated pick (0.35× / 2.25R / ×1 / 60-bar)", () => {
+test("profiles are OFF by default (the day plan); knobs still carry the validated values", () => {
   const p = momentumProfile({});
-  assert.equal(p.enabled, true);
+  assert.equal(p.enabled, false); // day plan: structural stops, native targets
   assert.equal(p.stopMult, 0.35);
   assert.equal(p.targetR, 2.25);
   assert.equal(p.sizeMult, 1);
   assert.equal(p.timeExitBars, 60);
 });
 
-test("rthProfile defaults are the validated pick (0.45× / 1.75R / ×1 / 45-bar)", () => {
+test("rthProfile knobs carry the validated values (0.45× / 1.75R / ×1 / 45-bar)", () => {
   const p = rthProfile({});
+  assert.equal(p.enabled, false);
   assert.equal(p.stopMult, 0.45);
   assert.equal(p.targetR, 1.75);
   assert.equal(p.sizeMult, 1);
   assert.equal(p.timeExitBars, 45);
 });
 
-test("profiles read env overrides and disable on *_PROFILE=0", () => {
-  const p = momentumProfile({ MOM_PROFILE: "0", MOM_STOP_MULT: "0.5", MOM_TARGET_R: "2" });
-  assert.equal(p.enabled, false);
+test("profiles read env overrides and enable on *_PROFILE=1", () => {
+  const p = momentumProfile({ MOM_PROFILE: "1", MOM_STOP_MULT: "0.5", MOM_TARGET_R: "2" });
+  assert.equal(p.enabled, true);
   assert.equal(p.stopMult, 0.5); // knobs still parsed
-  assert.equal(rthProfile({ RTH_PROFILE: "0" }).enabled, false);
+  assert.equal(rthProfile({ RTH_PROFILE: "1" }).enabled, true);
 });
 
 test("applyProfile: long stop/target distances match the backtest scorer", () => {

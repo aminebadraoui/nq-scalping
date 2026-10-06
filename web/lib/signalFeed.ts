@@ -60,7 +60,7 @@ import { recordSignal } from "./signalHistory";
 import { domContextForSignal } from "./dom";
 import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
-import { crossGuardDayPnl } from "./crossGuard";
+import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations, attachLimitOrderId } from "./execWatch";
 import { momentumProfile, rthProfile, applyProfile, timeExitAt } from "./profile";
@@ -446,13 +446,17 @@ class SignalFeed {
     ].join("|");
   }
 
-  /** shrink contracts as the day's profit climbs (tiered sizing) */
+  /** shrink contracts as the day's profit climbs (tiered sizing) and halve
+   *  them while the challenge drawdown from the trailing reference is deep
+   *  (the dd600→half rule — apPlan sweep 2026-10-05: funded blow 0.0%) */
   private async applyDayTier(
     size: { contracts: number; dollarRisk: number; capped: boolean },
     riskPts: number,
   ): Promise<{ contracts: number; dollarRisk: number; capped: boolean; mult: number }> {
-    const dayPnl = crossTradeEnabled() ? await crossGuardDayPnl() : 0;
-    const mult = daySizeMultiplier(dayPnl, sizeTiers);
+    const [dayPnl, ddMult] = crossTradeEnabled()
+      ? await Promise.all([crossGuardDayPnl(), crossGuardSizeMult()])
+      : [0, 1];
+    const mult = daySizeMultiplier(dayPnl, sizeTiers) * ddMult;
     const contracts = Math.max(1, Math.round(size.contracts * mult));
     return { contracts, dollarRisk: contracts * riskPts * 2, capped: size.capped, mult };
   }
@@ -873,18 +877,15 @@ class SignalFeed {
       }
 
       // position size grounded in the Rapid EOD 50k rules (lib/propRules.ts):
-      // fixed $170 risk, 30-micro cap, $2/pt MNQ. FIXED_CONTRACTS overrides
-      // with an exact contract count (the sizing study optimum: 9).
-      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+      // the day plan: $100 risk budget, 30-micro cap, $2/pt MNQ.
+      // FIXED_CONTRACTS overrides with an exact contract count.
+      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 100;
       const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
       const prof = momentumProfile();
       const profBracket = prof.enabled ? applyProfile(s.dir, s.entry, s.risk, prof) : null;
-      // the optimized profile (0.35× stop / 2.25R / 60-bar) is single-leg;
-      // the validated scale-out keeps its own 1R ladder and needs an
-      // explicit CROSSTRADE_SCALEOUT=1 opt-in when the profile is on
-      const scaleOut = prof.enabled
-        ? process.env.CROSSTRADE_SCALEOUT === "1"
-        : process.env.CROSSTRADE_SCALEOUT !== "0" && crossTradeEnabled();
+      // the day plan is single-leg (1R, structural stop); the validated
+      // scale-out ladder stays available behind an explicit opt-in
+      const scaleOut = process.env.CROSSTRADE_SCALEOUT === "1" && crossTradeEnabled();
       const stop = scaleOut ? s.stop : profBracket ? profBracket.stop : s.stop;
       const target = scaleOut ? s.target : profBracket ? profBracket.target : s.target;
       const riskPts = scaleOut ? s.risk : profBracket ? profBracket.riskPts : s.risk;
@@ -1416,23 +1417,25 @@ class SignalFeed {
       }
       if (this.rthSent.size > 200) this.rthSent = new Set([...this.rthSent].slice(-100));
 
-      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
-      const cap = Number(process.env.RTH_RISK_CAP ?? "200");
+      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 100;
+      const cap = Number(process.env.RTH_RISK_CAP ?? "100");
       const prof = rthProfile();
       const profBracket = prof.enabled ? applyProfile(s.dir, s.entry, s.risk, prof) : null;
-      const fixed = prof.enabled ? fixedContracts(0) : fixedContracts(9);
+      // the day plan: budget sizing (floor($100 ÷ stop$)), no fixed count
+      const fixed = fixedContracts(0);
       const stop = profBracket ? profBracket.stop : s.stop;
       const target = profBracket ? profBracket.target : s.target;
       const riskPts = profBracket ? profBracket.riskPts : s.risk;
+      const budget = cap > 0 ? Math.min(riskBudget, cap) : riskBudget;
       const contracts =
         fixed > 0
           ? cappedContracts(fixed, riskPts, cap)
-          : momentumSize(riskPts, riskBudget * (prof.enabled ? prof.sizeMult : 1)).contracts;
+          : momentumSize(riskPts, budget * (prof.enabled ? prof.sizeMult : 1)).contracts;
       const size = await this.applyDayTier(
         { contracts, dollarRisk: contracts * riskPts * 2, capped: fixed > 0 && cap > 0 && fixed > contracts },
         riskPts,
       );
-      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (size ×${Math.round(size.mult * 100)}%)` : ""}`;
 
       const et = cdtToET(s.t);
       void placeOrder({
@@ -1649,16 +1652,17 @@ class SignalFeed {
       this.openSent.add(key);
       if (this.openSent.size > 200) this.openSent = new Set([...this.openSent].slice(-100));
 
-      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 170;
-      const cap = Number(process.env.OPEN_RISK_CAP ?? "200");
-      const fixed = fixedContracts(9);
+      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 100;
+      const cap = Number(process.env.OPEN_RISK_CAP ?? "100");
+      const fixed = fixedContracts(0);
+      const budget = cap > 0 ? Math.min(riskBudget, cap) : riskBudget;
       const contracts =
-        fixed > 0 ? cappedContracts(fixed, s.risk, cap) : momentumSize(s.risk, riskBudget).contracts;
+        fixed > 0 ? cappedContracts(fixed, s.risk, cap) : momentumSize(s.risk, budget).contracts;
       const size = await this.applyDayTier(
         { contracts, dollarRisk: contracts * s.risk * 2, capped: fixed > 0 && cap > 0 && fixed > contracts },
         s.risk,
       );
-      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (size ×${Math.round(size.mult * 100)}%)` : ""}`;
 
       const et = cdtToET(s.t);
       void placeOrder({

@@ -32,21 +32,21 @@ test("Rapid EOD 50k constants match the official plan rules", () => {
   assert.equal(RAPID_EOD_50K.split, 0.9, "90/10 split");
 });
 
-test("momentumSize: $170 budget at the median 3.5 pt momentum risk → 24 MNQ, $168 risk", () => {
+test("momentumSize: $100 budget at the median 3.5 pt momentum risk → 14 MNQ, $98 risk", () => {
   const s = momentumSize(3.5);
-  assert.equal(s.contracts, 24); // floor(170 / (3.5 × $2)) = 24
-  assert.equal(s.dollarRisk, 168);
+  assert.equal(s.contracts, 14); // floor(100 / (3.5 × $2)) = 14
+  assert.equal(s.dollarRisk, 98);
   assert.equal(s.capped, false);
   assert.ok(s.dollarRisk <= PROP_RISK_PER_TRADE, "never exceeds the risk budget");
 });
 
 test("momentumSize: risk budget grounds every contract in $2 per point", () => {
-  // $170 ÷ (2.0 pts × $2) = 42.5 raw → the 30-micro cap binds → 30 contracts, $120
+  // $100 ÷ (2.0 pts × $2) = 25 raw → 25 contracts, exactly $100 risk
   const s = momentumSize(2.0);
-  assert.equal(s.contracts, RAPID_EOD_50K.maxMicro);
-  assert.equal(s.dollarRisk, 120);
-  assert.equal(s.capped, true);
-  // and the per-contract math is exact: 30 × 2.0 pts × $2 = $120
+  assert.equal(s.contracts, 25);
+  assert.equal(s.dollarRisk, 100);
+  assert.equal(s.capped, false);
+  // and the per-contract math is exact: 25 × 2.0 pts × $2 = $100
   assert.equal(s.contracts * 2.0 * RAPID_EOD_50K.pointValue, s.dollarRisk);
 });
 
@@ -58,26 +58,24 @@ test("momentumSize: caps at the plan's 30-micro contract limit", () => {
 });
 
 test("momentumSize: floors at 1 contract even when the stop is wider than the budget", () => {
-  const s = momentumSize(100); // $200/contract > $170 budget
+  const s = momentumSize(100); // $200/contract > $100 budget
   assert.equal(s.contracts, 1);
   assert.equal(s.dollarRisk, 200);
   assert.equal(s.capped, false);
 });
 
-test("ten consecutive full losses fit inside the $2,000 Max Loss Limit", () => {
-  // EOD trailing MLL = $2,000, no daily loss limit: the risk budget must let a
-  // realistic losing streak survive. 10 × $170 = $1,700 < $2,000 ✓
-  const streakLoss = 10 * PROP_RISK_PER_TRADE;
-  assert.ok(streakLoss <= RAPID_EOD_50K.maxLoss, `10-loss streak = $${streakLoss}`);
-  // 11 losses = $1,870 still inside; 12 breaches — know where the line is
-  assert.ok(11 * PROP_RISK_PER_TRADE <= RAPID_EOD_50K.maxLoss);
-  assert.ok(12 * PROP_RISK_PER_TRADE > RAPID_EOD_50K.maxLoss);
+test("twenty consecutive full losses fit inside the $2,000 Max Loss Limit", () => {
+  // EOD trailing MLL = $2,000: the $100 budget must let a realistic losing
+  // streak survive. 20 × $100 = $2,000 ≤ MLL ✓ — the 21st breaches
+  const streakLoss = 20 * PROP_RISK_PER_TRADE;
+  assert.ok(streakLoss <= RAPID_EOD_50K.maxLoss, `20-loss streak = $${streakLoss}`);
+  assert.ok(21 * PROP_RISK_PER_TRADE > RAPID_EOD_50K.maxLoss);
 });
 
 test("contractsForRisk agrees with momentumSize (same $2/pt MNQ math)", () => {
   // risk 7 pts → 12 contracts: below the 30-micro cap, so the raw helper and
   // the capped sizer agree
-  const c = contractsForRisk(170, 7);
+  const c = contractsForRisk(100, 7);
   assert.equal(Math.floor(c), momentumSize(7).contracts);
 });
 

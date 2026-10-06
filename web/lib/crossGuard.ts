@@ -94,3 +94,15 @@ export async function crossGuardDayPnl(): Promise<number> {
   if (s.dayKey !== tradingDayKey()) return 0;
   return snap.realized - s.dayStartRealized;
 }
+
+/** the day-plan drawdown multiplier (dd600→half): 0.5 while the challenge
+ *  drawdown from the trailing reference is >= DD_HALF_AT, back to 1 at
+ *  DD_FULL_AT. The hysteresis flag lives in the guard state (updated on
+ *  every gate check); this read is pure. DD_HALF_AT=0 disables. */
+export async function crossGuardSizeMult(): Promise<number> {
+  if (!enabled()) return 1;
+  const ddHi = Number(process.env.DD_HALF_AT ?? "600");
+  if (!Number.isFinite(ddHi) || ddHi <= 0) return 1;
+  const s = guardState();
+  return s.ddHalved ? Number(process.env.DD_HALF_MULT ?? "0.5") : 1;
+}

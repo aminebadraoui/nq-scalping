@@ -158,6 +158,7 @@ test("give-back protection: halts after giving back more than max(floor, pct × 
   const oldFloor = process.env.GUARD_GIVEBACK_FLOOR;
   process.env.GUARD_GIVEBACK_PCT = "0.5";
   process.env.GUARD_GIVEBACK_FLOOR = "250";
+  process.env.PROFIT_ARM = "0"; // isolate give-back from the day-plan arm
   try {
     // day baseline first, then climb to a $600 day profit
     guardCheck({ equity: 50_000, realized: 0 }, new Date("2026-10-02T16:00:00-04:00"));
@@ -170,6 +171,8 @@ test("give-back protection: halts after giving back more than max(floor, pct × 
     else process.env.GUARD_GIVEBACK_PCT = oldPct;
     if (oldFloor === undefined) delete process.env.GUARD_GIVEBACK_FLOOR;
     else process.env.GUARD_GIVEBACK_FLOOR = oldFloor;
+    delete process.env.PROFIT_ARM;
+    delete process.env.DAILY_LOSS_FLOOR;
     __resetGuardForTest();
   }
 });
@@ -181,6 +184,8 @@ test("give-back protection: the floor guards small peaks; pct=0 disables", () =>
   try {
     process.env.GUARD_GIVEBACK_PCT = "0.5";
     process.env.GUARD_GIVEBACK_FLOOR = "250";
+    process.env.PROFIT_ARM = "0"; // isolate give-back from the day-plan arm
+    process.env.DAILY_LOSS_FLOOR = "0"; // isolate give-back from the daily floor
     // small day: peak 200 <= floor 250 → no halt even at $0
     guardCheck({ equity: 50_000, realized: 0 }, new Date("2026-10-02T16:00:00-04:00"));
     assert.equal(guardCheck({ equity: 50_200, realized: 200 }, new Date("2026-10-02T17:00:00-04:00")).verdict, "ok");
@@ -195,6 +200,8 @@ test("give-back protection: the floor guards small peaks; pct=0 disables", () =>
     else process.env.GUARD_GIVEBACK_PCT = oldPct;
     if (oldFloor === undefined) delete process.env.GUARD_GIVEBACK_FLOOR;
     else process.env.GUARD_GIVEBACK_FLOOR = oldFloor;
+    delete process.env.PROFIT_ARM;
+    delete process.env.DAILY_LOSS_FLOOR;
     __resetGuardForTest();
   }
 });
@@ -238,11 +245,74 @@ test("daily loss floor (DAILY_LOSS_FLOOR) halts once the day crosses it", () => 
   __resetGuardForTest();
 });
 
-test("daily loss floor is inert without the env knob", () => {
+test("daily loss floor defaults to −$250 (the day plan); DAILY_LOSS_FLOOR=0 disables", () => {
   __resetGuardForTest();
   setStage("eval");
   delete process.env.DAILY_LOSS_FLOOR;
   guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
+  // −$250 is the default: crossing it halts
+  assert.equal(guardCheck(snap(49_740), new Date("2026-10-05T17:02:00Z")).verdict, "halt-daily-floor");
+  __resetGuardForTest();
+  process.env.DAILY_LOSS_FLOOR = "0";
+  guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
   assert.equal(guardCheck(snap(49_600), new Date("2026-10-05T17:02:00Z")).verdict, "ok");
+  delete process.env.DAILY_LOSS_FLOOR;
+  __resetGuardForTest();
+});
+
+test("profit arm: crossing +$400 arms; a win after arming keeps trading", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
+  assert.equal(guardCheck(snap(50_420), new Date("2026-10-05T17:05:00Z")).verdict, "ok");
+  assert.equal(guardState().profitArmed, true);
+  // a WIN after arming grants one more
+  assert.equal(guardCheck(snap(50_700), new Date("2026-10-05T17:06:00Z")).verdict, "ok");
+});
+
+test("profit arm: the first LOSS after arming halts the day", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
+  guardCheck(snap(50_420), new Date("2026-10-05T17:05:00Z"));
+  assert.equal(guardCheck(snap(50_250), new Date("2026-10-05T17:06:00Z")).verdict, "halt-profit-arm");
+});
+
+test("profit arm resets on a new trading day", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
+  guardCheck(snap(50_420), new Date("2026-10-05T17:05:00Z"));
+  assert.equal(guardState().profitArmed, true);
+  // next calendar day: arm resets, no halt on the new baseline
+  const d = guardCheck(snap(50_250), new Date("2026-10-06T17:00:00Z"));
+  assert.equal(d.verdict, "ok");
+  assert.equal(guardState().profitArmed, false);
+  __resetGuardForTest();
+});
+
+test("dd600→half: deep drawdown from the trailing reference sets ddHalved; recovery clears it", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  // day 1: EOD commit at 51_000 → highWater 51_000, floor 49_000
+  guardCheck(snap(51_000), at(17 * 60 + 5));
+  assert.equal(guardState().highWater, 51_000);
+  // day 2 opens flat at 50_000: $1,000 below the reference → ddHalved
+  guardCheck(snap(50_000), new Date(Date.UTC(2026, 9, 1, 9 + 4, 30, 0)));
+  assert.equal(guardState().ddHalved, true);
+  // recovers to $200 below the reference → cleared
+  guardCheck(snap(50_800), new Date(Date.UTC(2026, 9, 1, 12 + 4, 0, 0)));
+  assert.equal(guardState().ddHalved, false);
+  __resetGuardForTest();
+});
+
+test("dd halving is inert when DD_HALF_AT=0", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  process.env.DD_HALF_AT = "0";
+  guardCheck(snap(51_000), at(17 * 60 + 5));
+  guardCheck(snap(50_000), new Date(Date.UTC(2026, 9, 1, 9 + 4, 30, 0)));
+  assert.equal(guardState().ddHalved, false);
+  delete process.env.DD_HALF_AT;
   __resetGuardForTest();
 });

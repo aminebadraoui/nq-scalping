@@ -122,17 +122,17 @@ test("the 18:16 bar is under the 1.0×ATR floor — prod skips it (quality-filte
 
 test("the 18:16 long is sized inside the Rapid EOD 50k rules", () => {
   const s = detectMomentum(bars(TAPE), { ...MOM_PROD, minBreakRangeR: 0.85 })[0];
-  // 3.5 pt stop × $2/MNQ = $7 per contract → $170 budget = 24 MNQ, $168 risk
+  // 3.5 pt stop × $2/MNQ = $7 per contract → $100 budget = 14 MNQ, $98 risk
   const size = momentumSize(s.risk);
-  assert.equal(size.contracts, 24);
-  assert.equal(size.dollarRisk, 168);
+  assert.equal(size.contracts, 14);
+  assert.equal(size.dollarRisk, 98);
   assert.equal(size.capped, false);
   assert.ok(size.contracts <= RAPID_EOD_50K.maxMicro, "inside the plan micro cap");
-  assert.ok(size.dollarRisk <= 170, "inside the $170 risk budget");
-  assert.ok(size.contracts * s.risk * RAPID_EOD_50K.pointValue <= 170);
-  // and the 1R target pays 24 × 3.5 × $2 = $168 when it wins
+  assert.ok(size.dollarRisk <= 100, "inside the $100 risk budget");
+  assert.ok(size.contracts * s.risk * RAPID_EOD_50K.pointValue <= 100);
+  // and the 1R target pays 14 × 3.5 × $2 = $98 when it wins
   const winDollars = size.contracts * (s.target - s.entry) * RAPID_EOD_50K.pointValue;
-  assert.equal(winDollars, 168);
+  assert.equal(winDollars, 98);
 });
 
 test("production config does NOT fire fade shorts on the same tape", () => {

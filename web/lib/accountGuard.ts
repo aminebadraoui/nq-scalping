@@ -13,7 +13,9 @@
  *   4. T1 news window ban (funded stage only) — MFF disallows T1 news
  *      trading on the Sim Funded account.
  *
- * There is NO daily loss limit on this plan (correctly not enforced here).
+ * There is NO MFF daily loss limit on this plan — the day-plan layers
+ * here (daily −$250 floor, +$400 profit arm, dd600→half sizing) are OUR
+ * rules, measured in docs/research/ap-full-pool-2026-10-05.md.
  *
  * Persists EOD high-water mark + the day's realized-P&L reference to a local
  * JSON file so a process restart never forgets the trailing floor or the
@@ -36,6 +38,7 @@ export type GuardDecision =
   | { verdict: "halt-news"; reason: string }
   | { verdict: "halt-giveback"; reason: string }
   | { verdict: "halt-daily-floor"; reason: string }
+  | { verdict: "halt-profit-arm"; reason: string }
   | { verdict: "no-data"; reason: string };
 
 export type GuardState = {
@@ -65,6 +68,13 @@ export type GuardState = {
   bestDayPnl: number;
   /** today's peak realized P&L (the give-back protection reference) */
   dayPeak: number;
+  /** day-plan profit arm: true once today's P&L crossed PROFIT_ARM */
+  profitArmed: boolean;
+  /** the last observed day P&L (the arm halts on the first LOSS after arming) */
+  lastDayPnl: number | null;
+  /** day-plan drawdown halving: true while the challenge drawdown from the
+   *  trailing reference is >= DD_HALF_AT (sizing halves until DD_FULL_AT) */
+  ddHalved: boolean;
 };
 
 /* ── config (env overrides the Rapid EOD 50k defaults) ─────────────── */
@@ -114,6 +124,9 @@ function seed(): GuardState {
     dayPnl: 0,
     bestDayPnl: 0,
     dayPeak: 0,
+    profitArmed: false,
+    lastDayPnl: null,
+    ddHalved: false,
   };
 }
 
@@ -201,6 +214,9 @@ export async function hydrateGuardFromDb(): Promise<void> {
     }
     s.bestDayPnl = Math.max(Number(db.bestDayPnl ?? 0), s.bestDayPnl);
     s.dayPeak = Math.max(Number(db.dayPeak ?? 0), s.dayPeak);
+    if (db.profitArmed !== undefined) s.profitArmed = db.profitArmed;
+    if (db.lastDayPnl !== undefined && db.lastDayPnl !== null) s.lastDayPnl = Number(db.lastDayPnl);
+    if (db.ddHalved !== undefined) s.ddHalved = db.ddHalved;
     s.dayPnl = 0; // recomputed by guardCheck from dayStartRealized
   } catch {
     /* best-effort — the bootstrapped state still governs */
@@ -272,6 +288,8 @@ function maybeRolloverDay(state: GuardState, realized: number, now = new Date())
   state.dayStartRealized = realized;
   state.dayPnl = 0;
   state.dayPeak = 0; // the give-back reference belongs to the new day only
+  state.profitArmed = false; // the profit arm re-arms each day from zero
+  state.lastDayPnl = null;
   save(); // the day reference must survive a restart (consistency counter)
 }
 
@@ -344,16 +362,37 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
     };
   }
 
-  // daily loss floor (opt-in via DAILY_LOSS_FLOOR, e.g. 400 = halt at −$400):
-  // the give-back guard only protects GREEN days (it needs a peak above its
-  // floor) — a red day bleeds with no intraday floor. The 2026-10-04/05
-  // session (−$1,405) is the case that motivated it.
-  const dailyFloor = num(process.env.DAILY_LOSS_FLOOR, 0);
+  // daily loss floor (the day plan's −$250 stop; env DAILY_LOSS_FLOOR
+  // overrides, 0 = off): the give-back guard only protects GREEN days
+  // (it needs a peak above its floor) — a red day bleeds with no
+  // intraday floor. The 2026-10-04/05 session (−$1,405) motivated it;
+  // the apPlan sweep (2026-10-05) made −$250 the measured default.
+  const dailyFloor = num(process.env.DAILY_LOSS_FLOOR, 250);
   if (dailyFloor > 0 && s.dayPnl <= -dailyFloor) {
     return {
       verdict: "halt-daily-floor",
       reason: `day P&L $${s.dayPnl.toFixed(0)} ≤ −$${dailyFloor.toFixed(0)} (DAILY_LOSS_FLOOR) — halt new entries for the day`,
     };
+  }
+
+  // day-plan profit arm (+$400): once today's P&L crosses the arm, ONE
+  // more trade is allowed — a win grants another, the FIRST loss after
+  // arming ends the day (apPlan full-pool study 2026-10-05). Realized P&L
+  // only moves on fills, so a drop = a losing close (one position at a time).
+  const arm = num(process.env.PROFIT_ARM, 400);
+  if (arm > 0) {
+    if (!s.profitArmed && s.dayPnl >= arm) {
+      s.profitArmed = true;
+      save();
+    }
+    if (s.profitArmed && s.lastDayPnl !== null && s.dayPnl < s.lastDayPnl) {
+      return {
+        verdict: "halt-profit-arm",
+        reason:
+          `day P&L $${s.dayPnl.toFixed(0)} — first loss after arming at +$${arm.toFixed(0)} (peak since arm $${s.lastDayPnl.toFixed(0)}) — stop for the day`,
+      };
+    }
+    s.lastDayPnl = s.dayPnl;
   }
 
   // give-back protection: halt new entries once today's P&L has given back
@@ -377,6 +416,22 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
 
   if (s.stage === "funded" && isNews) {
     return { verdict: "halt-news", reason: "T1 news window — no trading on funded (MFF rule)" };
+  }
+
+  // day-plan drawdown halving (dd600→half): while the challenge drawdown
+  // from the trailing reference is >= DD_HALF_AT, sizing halves (crossGuard
+  // reads this flag); restored at DD_FULL_AT (hysteresis). DD_HALF_AT=0 off.
+  const ddHi = num(process.env.DD_HALF_AT, 600);
+  const ddLo = num(process.env.DD_FULL_AT, 300);
+  if (ddHi > 0) {
+    const dd = Math.max(0, s.highWater - equity);
+    if (!s.ddHalved && dd >= ddHi) {
+      s.ddHalved = true;
+      save();
+    } else if (s.ddHalved && dd <= ddLo) {
+      s.ddHalved = false;
+      save();
+    }
   }
 
   return {

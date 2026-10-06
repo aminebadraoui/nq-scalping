@@ -1,11 +1,14 @@
 /* ------------------------------------------------------------------ *
- * Trade profiles — the backtested stop/target/time/size settings per
+ * Trade profiles — the optimized stop/target/time/size settings per
  * strategy family (docs/research/sizing-optimizer-2026-10-04.md for
  * momentum, rth-optimizer-2026-10-05.md for RTH). PURE — no I/O — so
  * the math is unit-testable and the feed applies it identically.
  *
- * Env knobs (defaults = the validated picks):
- *   MOM_PROFILE=0  / RTH_PROFILE=0            disable the profile
+ * OFF BY DEFAULT since the 2026-10-05 day-plan adoption (apPlan full-pool
+ * study): the live plan trades the DETECTORS' structural stops and native
+ * targets (momentum 1R, RTH 0.75R, open TP15/SL35) at the $100 budget.
+ * Set MOM_PROFILE=1 / RTH_PROFILE=1 to re-enable a profile:
+ *
  *   MOM_STOP_MULT (0.35) · MOM_TARGET_R (2.25)
  *   MOM_SIZE_MULT (1)   · MOM_TIME_EXIT_BARS (60)
  *   RTH_STOP_MULT (0.45) · RTH_TARGET_R (1.75)
@@ -16,10 +19,8 @@
  * targetR × THAT distance from the entry — i.e. target distance =
  * stopMult × targetR × risk.
  *
- * Sizing: ×1 (the default) = the usual $170 per-trade risk budget at
- * the profile stop, 30-micro cap — this matches the backtest's ×1 cells
- * EXACTLY (same momentumSize math). ×N>1 would need the 30-micro cap
- * raised (account-limit decision, not made here).
+ * Sizing: ×1 (the default) = the $100 per-trade risk budget at the
+ * profile stop, 30-micro cap.
  * ------------------------------------------------------------------ */
 
 import { momentumSize } from "./propRules";
@@ -39,7 +40,7 @@ function num(v: string | undefined, dflt: number): number {
 
 export function momentumProfile(env: Record<string, string | undefined> = process.env): FamilyProfile {
   return {
-    enabled: (env.MOM_PROFILE ?? "1") !== "0",
+    enabled: (env.MOM_PROFILE ?? "0") === "1",
     stopMult: num(env.MOM_STOP_MULT, 0.35),
     targetR: num(env.MOM_TARGET_R, 2.25),
     sizeMult: num(env.MOM_SIZE_MULT, 1),
@@ -49,7 +50,7 @@ export function momentumProfile(env: Record<string, string | undefined> = proces
 
 export function rthProfile(env: Record<string, string | undefined> = process.env): FamilyProfile {
   return {
-    enabled: (env.RTH_PROFILE ?? "1") !== "0",
+    enabled: (env.RTH_PROFILE ?? "0") === "1",
     stopMult: num(env.RTH_STOP_MULT, 0.45),
     targetR: num(env.RTH_TARGET_R, 1.75),
     sizeMult: num(env.RTH_SIZE_MULT, 1),

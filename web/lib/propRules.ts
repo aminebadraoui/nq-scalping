@@ -60,9 +60,10 @@ export function contractsForRisk(riskDollars: number, rPts = STRATEGY.rPts, poin
   return riskDollars / (rPts * pointValue);
 }
 
-/** Fixed dollar risk per trade. $170 ≈ 8.5% of the $2,000 Max Loss Limit —
- *  ten consecutive full losses still leaves $300 of drawdown headroom. */
-export const PROP_RISK_PER_TRADE = 170;
+/** Fixed dollar risk per trade. The day plan (apPlan study, 2026-10-05)
+ *  sizes every family at $100: at 3.5-pt stops that's 14 micros — a win
+ *  is ~$160, a stop-out ~$120, and 16 consecutive losers ≈ $1,920 < MLL. */
+export const PROP_RISK_PER_TRADE = 100;
 
 export type MomentumSize = {
   contracts: number;
@@ -133,8 +134,9 @@ export function parseSizeTiers(raw: string): SizeTier[] {
 }
 
 export const DEFAULT_SIZE_TIERS: SizeTier[] = [
-  { threshold: 600, multiplier: 1 / 3 },
-  { threshold: 300, multiplier: 2 / 3 },
+  // The day plan trades FLAT $100 sizing all day (apPlan sweep 2026-10-05:
+  // the backtested config has no green-day shrink; the +$400 one-more-trade
+  // arm ends green days instead). SIZE_TIERS env re-enables tiered sizing.
 ];
 
 /** contracts multiplier for the current day P&L (1 = full size) */
