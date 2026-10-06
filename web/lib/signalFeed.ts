@@ -177,6 +177,46 @@ const MIN_LIVE_MINUTES = 5;
 const UV_WATCH_MS = 6 * 60 * 1000;
 
 /* ------------------------------------------------------------------ *
+ * Tape-gate watchdog (2026-10-05 outage): the candle-confirmation gate
+ * held every card family for hours when the VPS candle merge stalled —
+ * the vendor was fine (fresh candles verified from the Mac), the 60s
+ * rolling refresh returned only stale data, and the only trace was a
+ * throttled console line. Cards keep HOLDING on unconfirmed bars (the
+ * owner chose hold+alert, not fail-open); this watchdog pages the
+ * operator on Telegram so a stalled merge can never again look like
+ * "a quiet market".
+ * ------------------------------------------------------------------ */
+
+/** how long the last completed bar may stay tick-source before the
+ *  operator is paged (healthy merges confirm within ~1–2 minutes). */
+export const TAPE_GATE_STALL_MS = 8 * 60_000;
+/** while a stall persists, re-page at most this often. */
+export const TAPE_GATE_REALERT_MS = 30 * 60_000;
+
+/**
+ * Pure hold/alert decision for the tape gate. `lastConfirmedAt = 0`
+ * means "never confirmed yet" (fresh boot before the seed landed) — the
+ * clock arms silently instead of paging on the first unconfirmed scan.
+ * Unit-tested (tests/liveTapeGate.test.ts).
+ */
+export function tapeGateDecision(
+  confirmed: boolean,
+  lastConfirmedAt: number,
+  now: number,
+  lastAlertAt: number,
+): { hold: boolean; alert: boolean; lastConfirmedAt: number } {
+  if (confirmed) return { hold: false, alert: false, lastConfirmedAt: now };
+  const armed = lastConfirmedAt === 0 ? now : lastConfirmedAt;
+  const stalled = now - armed;
+  // never-alerted (0) must page at the threshold — the re-alert window
+  // only throttles REPEAT pages of a persistent stall
+  const alert =
+    stalled >= TAPE_GATE_STALL_MS &&
+    (lastAlertAt === 0 || now - lastAlertAt >= TAPE_GATE_REALERT_MS);
+  return { hold: true, alert, lastConfirmedAt: armed };
+}
+
+/* ------------------------------------------------------------------ *
  * Expansion retrace entry — the 2026-10-02 trade review's fix for the
  * huge-bar expansion family, validated on 649 sessions (entryQuality
  * study: 44% → 68% WR, −$299K → +$58K, PF 0.57 → 1.29, train+test).
@@ -321,6 +361,12 @@ class SignalFeed {
   /** per-scan throttle for the tape-gate log (one line per minute max) */
   private tapeGateLoggedAt = new Map<string, number>();
 
+  /** last time the tail bar was candle-confirmed (0 = never yet) */
+  private lastBarConfirmedAt = 0;
+  /** last stall Telegram alert (ms) — one per episode, re-paged every
+   *  TAPE_GATE_REALERT_MS while the stall persists */
+  private tapeGateAlertedAt = 0;
+
   /** Cards may only fire on a bar confirmed by the vendor footprint candle.
    *  The tick-built tape undercounts volume (~7% of true volume measured
    *  2026-10-05) and produces signals the archive would never generate —
@@ -338,6 +384,33 @@ class SignalFeed {
     if (now - prev < 60_000) return;
     this.tapeGateLoggedAt.set(scan, now);
     console.log(`[tape-gate] ${scan}: last completed bar not candle-confirmed — card deferred`);
+  }
+
+  /** Shared gate for every card family: hold while the last completed
+   *  bar is tick-source, and page the operator when confirmation has
+   *  stalled for TAPE_GATE_STALL_MS (see tapeGateDecision). */
+  private tapeGateHolds(fp: FootprintMinute[], scan: string): boolean {
+    const confirmed = this.lastBarCandleConfirmed(fp);
+    const now = Date.now();
+    const d = tapeGateDecision(confirmed, this.lastBarConfirmedAt, now, this.tapeGateAlertedAt);
+    this.lastBarConfirmedAt = d.lastConfirmedAt;
+    if (!d.hold) return false;
+    this.logTapeGate(scan);
+    if (d.alert) {
+      this.tapeGateAlertedAt = now;
+      const stallMin = Math.round((now - (this.lastBarConfirmedAt || now)) / 60_000);
+      const et = new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" });
+      void this.push(
+        [
+          `⚠ <b>TAPE-GATE STALL — every card family held</b>`,
+          `<code>${symbol()} · ${et} ET</code>`,
+          `Candle confirmation of the last completed bar has been stuck for ${stallMin} min while the signal window is open — momentum/open/rth cards are all deferred.`,
+          `Check /api/gc?action=health → barSource; restart the dashboard container to re-seed the confirmed bars.`,
+        ].join("\n"),
+      );
+      console.log(`[tape-gate] ${scan}: stall ${stallMin} min — operator alerted via Telegram`);
+    }
+    return true;
   }
 
   lastSnapshot: SignalSnapshot | null = null;
@@ -700,10 +773,7 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
-    if (!this.lastBarCandleConfirmed(fp)) {
-      this.logTapeGate("momentum");
-      return;
-    }
+    if (this.tapeGateHolds(fp, "momentum")) return;
     // cross-asset context for the measured ES chips (null while the twin
     // buffer is too young — chips simply don't print)
     const esCtx = this.esContext(fp);
@@ -1308,10 +1378,7 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = liveMinutesToFootprint(live.minutes);
-    if (!this.lastBarCandleConfirmed(fp)) {
-      this.logTapeGate("rth");
-      return;
-    }
+    if (this.tapeGateHolds(fp, "rth")) return;
     const esCtx = this.esContext(fp);
     const nqMid = fp.map((m) => (m.high + m.low) / 2);
     // price-gap inventory for the journal-only gap chips (Naso hypotheses)
@@ -1537,10 +1604,7 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 60) return;
     const fp = liveMinutesToFootprint(live.minutes);
-    if (!this.lastBarCandleConfirmed(fp)) {
-      this.logTapeGate("open");
-      return;
-    }
+    if (this.tapeGateHolds(fp, "open")) return;
     // price-gap inventory for the journal-only gap chips (Naso hypotheses)
     const gaps = gapInventory(fp);
 

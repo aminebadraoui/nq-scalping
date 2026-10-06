@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeCandleMinutes, type LiveMinute } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
+import { tapeGateDecision, TAPE_GATE_STALL_MS, TAPE_GATE_REALERT_MS } from "../lib/signalFeed";
 import type { BootCandle } from "../lib/footprintProto";
 
 const nowKey = "2026-10-05|18:00";
@@ -100,4 +101,42 @@ test("liveMinutesToFootprint defaults missing source to tick (fail closed)", () 
   ];
   const fp = liveMinutesToFootprint(mins);
   assert.equal(fp[0].src, "tick");
+});
+
+/* ------------------------------------------------------------------ *
+ * Tape-gate watchdog (tapeGateDecision — pure): cards hold on
+ * unconfirmed bars and the operator is paged only after a real stall,
+ * never on the boot-time arm or the normal 1–2 min merge lag.
+ * ------------------------------------------------------------------ */
+
+test("tapeGateDecision: confirmed bar releases and refreshes the clock", () => {
+  const d = tapeGateDecision(true, 1_000, 20_000, 0);
+  assert.deepEqual(d, { hold: false, alert: false, lastConfirmedAt: 20_000 });
+});
+
+test("tapeGateDecision: never-confirmed boot arms the clock silently (no alert)", () => {
+  const d = tapeGateDecision(false, 0, 20_000, 0);
+  assert.deepEqual(d, { hold: true, alert: false, lastConfirmedAt: 20_000 });
+});
+
+test("tapeGateDecision: short lag holds without paging", () => {
+  const d = tapeGateDecision(false, 10_000, 10_000 + TAPE_GATE_STALL_MS - 1, 0);
+  assert.deepEqual(d, { hold: true, alert: false, lastConfirmedAt: 10_000 });
+});
+
+test("tapeGateDecision: past the stall threshold the operator is paged", () => {
+  const d = tapeGateDecision(false, 10_000, 10_000 + TAPE_GATE_STALL_MS, 0);
+  assert.deepEqual(d, { hold: true, alert: true, lastConfirmedAt: 10_000 });
+});
+
+test("tapeGateDecision: a persistent stall re-pages only after the re-alert window", () => {
+  const now = 10_000 + TAPE_GATE_STALL_MS;
+  assert.equal(tapeGateDecision(false, 10_000, now + TAPE_GATE_REALERT_MS - 1, now).alert, false);
+  assert.equal(tapeGateDecision(false, 10_000, now + TAPE_GATE_REALERT_MS, now).alert, true);
+});
+
+test("tapeGateDecision: recovery clears the stall and the alert cadence", () => {
+  const d = tapeGateDecision(true, 10_000, 10_000 + TAPE_GATE_STALL_MS + 60_000, 10_000);
+  assert.equal(d.hold, false);
+  assert.equal(d.alert, false);
 });
