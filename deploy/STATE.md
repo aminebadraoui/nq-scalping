@@ -186,12 +186,12 @@
 
 ## Risk caps + persistent guard (2026-10-02)
 
-- **Per-family dollar risk caps**: RTH and the open family keep their
-  fixed-9 sizing but now resize DOWN on wide stops — `cappedContracts`
-  (lib/propRules.ts) with `RTH_RISK_CAP` / `OPEN_RISK_CAP` (default $200
-  each). Open drive's 35-pt stop now risks ~$140 (2 contracts) instead
-  of $630 (9); RTH's 12.5-pt stop risks $200 (8) instead of $225.
-  `FIXED_CONTRACTS` still acts as the max count; cap=0 disables.
+- **Per-family dollar risk caps (day plan: $100 budget)**: RTH and the
+  open family size by budget now — `momentumSize` at
+  `min(PROP_RISK_PER_TRADE, RTH_RISK_CAP|OPEN_RISK_CAP)` (default $100
+  each). Open drive's 35-pt stop risks ~$70 (1 contract); RTH's 12.5-pt
+  stop risks ~$100 (4). `FIXED_CONTRACTS` still acts as the max count;
+  cap=0 disables.
 - **Guard state persists to Neon** (`guard_state` table): the MFF
   floor/high-water AND the $900 consistency day-counter survive VPS
   redeploys — `hydrateGuardFromDb()` restores them before the first
@@ -333,7 +333,10 @@ wider stop grid and the user's approval. Scratch studies
 
 - **CrossTrade is the ONLY execution backend**: `web/lib/crossTrade.ts` places
   bracketed market orders on the MFF Tradovate account (eval,
-  `MFFUEVREOD706880006`) via the CrossTrade cloud REST API / webhook — no
+  `MFFUEVREOD706880007` — reset 2026-10-05 after the previous account
+  `MFFUEVREOD706880006` blew up; every `CROSSTRADE_ACCOUNT` reference was
+  re-pointed at the new account and the Neon `guard_state` row was cleared)
+  via the CrossTrade cloud REST API / webhook — no
   Tradovate API key, no browser, no VPS. The former Playwright browser path
   was removed (2026-10): `placeOrder()` (lib/executor.ts) now routes
   exclusively to CrossTrade — REST absolute brackets by default,
@@ -342,9 +345,10 @@ wider stop grid and the user's approval. Scratch studies
   Coolify app env. Local `web/.env.local` keeps `EXECUTE_LIVE=0` so the Mac
   never double-executes. Coolify env: `CROSSTRADE_URL`, `CROSSTRADE_KEY`,
   `CROSSTRADE_ACCOUNT`, `EXECUTE_LIVE=1` (plain vars, not shown-once).
-- Feed defaults trade momentum + RTH + open-drive at normal sizing
-  (`FIXED_CONTRACTS` unset, `$170` risk budget, 30-micro cap). The sweep-reclaim
-  and pullback cards remain off (`FEED_*` defaults in lib/signalFeed.ts).
+- Feed defaults trade momentum + RTH + open-drive under the day plan
+  (`FIXED_CONTRACTS` unset, `$100` risk budget, 30-micro cap, profiles off,
+  −$250 daily floor, +$400 arm, dd600→half). The sweep-reclaim and pullback
+  cards remain off (`FEED_*` defaults in lib/signalFeed.ts).
 - **Scale-out + ladder (2026-10-01)**: `CROSSTRADE_SCALEOUT=1` switches the
   momentum card to the backtested scale-out — bank leg (2/3, fixed 1R
   bracket) + runner leg (1/3, open target), each with our own `order_id`.
@@ -372,8 +376,9 @@ wider stop grid and the user's approval. Scratch studies
   `isAutomated` for Tradovate compliance. No auto-retry on network timeout —
   verify Alert History instead (exactly-once is not guaranteed).
 - **Backtested trade profiles (2026-10-05, `lib/profile.ts`)** — the
-  optimized stop/target/time/size settings are wired into the feed and ON
-  by default:
+  optimized stop/target/time/size settings are wired into the feed and
+  **OFF by default since the day plan** (`MOM_PROFILE`/`RTH_PROFILE`
+  default off; set `=1` to re-enable):
   - momentum: 0.35× stop · 2.25R target · 60-bar time exit · size ×1
     (docs/research/sizing-optimizer-2026-10-04.md). Single-leg by default;
     the scale-out ladder needs an explicit `CROSSTRADE_SCALEOUT=1` and
@@ -381,15 +386,19 @@ wider stop grid and the user's approval. Scratch studies
   - RTH: 0.45× stop · 1.75R target · 45-bar time exit · size ×1
     (docs/research/rth-optimizer-2026-10-05.md). Risk-based sizing replaces
     the old fixed-9 default.
-  - Knobs: `MOM_PROFILE/RTH_PROFILE=0` to disable; `MOM_STOP_MULT`
+  - Knobs: `MOM_PROFILE/RTH_PROFILE=1` to enable; `MOM_STOP_MULT`
     (0.35) · `MOM_TARGET_R` (2.25) · `MOM_SIZE_MULT` (1) ·
     `MOM_TIME_EXIT_BARS` (60); RTH_ equivalents (0.45 / 1.75 / 1 / 45).
-  - Sizing = the usual $170 budget at the profile stop, 30-micro cap —
-    identical math to the backtest's ×1 cells, so live = backtest exactly:
-    momentum ≈ $180k and RTH ≈ $365k over the history at 0.95pt. (The
-    30-cap binds on most momentum trades even at ×1 — tight stops × $170
-    want >30 micros; that is the backtest ×1 cell itself, not a
-    discrepancy. ×N>1 would need the cap raised — not done.)
+- **The day plan (adopted 2026-10-05, docs/research/ap-full-pool-2026-10-05.md)** —
+  the live defaults with the profiles off: structural stops, momentum 1R ·
+  RTH 0.75R · open TP15/SL35, **$100 risk budget** (`PROP_RISK_PER_TRADE`
+  default 100; RTH/OPEN caps default $100), **daily −$250 floor**
+  (`DAILY_LOSS_FLOOR` 250) · **+$400 one-more-trade arm** (`PROFIT_ARM`
+  400) · **dd600→half sizing** (`DD_HALF_AT` 600 / `DD_FULL_AT` 300 /
+  `DD_HALF_MULT` 0.5) · green-day tiers off (`SIZE_TIERS=""` default) ·
+  scale-out opt-in (`CROSSTRADE_SCALEOUT=1`). Validated by
+  `scripts/apPlanSweep.ts --pool all` (eval pass ~10 trading days, funded
+  blow 0.3% vs 73.9% at the 2R plan).
 - **Time exits (2026-10-05, `lib/timeExit.ts`)** — profile orders register
   a bar-based exit on the feed tick: past exitAt with a position still
   open → bracketless REST market exit (OCO brackets cancel on the

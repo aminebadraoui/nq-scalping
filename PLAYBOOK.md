@@ -62,6 +62,25 @@ in `docs/research/es-features-study-2026-10-02.md` over all 649 sessions):
 - `HOUR 3–7 ET 80%` — entry hour inside the prime window (n=904: 79.8% WR /
   PF 3.27, train 79.3 / test 81.0 — the overnight-drift leg).
 
+**Naso-hypothesis chips (journal-only labels, never gates)** — Richie
+Naso's tape-read claims (Words of Rizdom, 2024-12), logged as falsifiable
+per-trade features since 2026-10-04 (`web/lib/roundNumbers.ts` ·
+`gapTracker.ts` · `wallProx.ts`; the backtesting plan and acceptance
+criteria live in `docs/research/naso-hypotheses-backtest-plan-2026-10-04.md`):
+
+- `STOP @ROUND` — the structural stop sits within 1 pt of a 50-handle
+  (Naso: stops parked on the number get swept). Study:
+  `web/scripts/roundNumberStopStudy.ts`.
+- `TARGET CROSSES 50` / `ENTRY @ROUND` — a handle lies in the profit path
+  / the entry printed on a handle (the "algos print the number" test).
+- `GAP IN PATH` / `GAP FILLED 30m` — an unfilled price gap intersects the
+  entry→target window / a gap half-filled in the last 30 bars. Study:
+  `web/scripts/gapProximityStudy.ts`.
+- `WALL IN PATH` / `WALL nPT` / `PAST WALL` — the nearest QQQ gamma wall
+  (NQ points) sits inside the target window / within 20 pt / already
+  printed behind the entry. Forward-logging only — no historical options
+  archive exists (same limitation as `wall-aware-stop-proxy-2026-10-03.md`).
+
 ### Trigger 2 — huge-bar expansion (`EXP_PROD`)
 
 1. Bar range ≥ **1.6 × ATR14**.
@@ -98,7 +117,7 @@ is unchanged; set `FEED_UNUSUAL_VOLUME=1` to bring the cards back.
 
 ## 🔔 THE OPEN FAMILY (9:30–10:30 ET) — `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` (live)
 
-All sized like the momentum card ($170 budget, 30-micro cap) and journaled
+All sized like the momentum card ($100 budget, 30-micro cap) and journaled
 separately.
 
 ### 🔔 OPEN DRIVE — scan mode (`OPEN_PROD`)
@@ -206,7 +225,32 @@ real sequences through the account sim):
 | momentum 1R | 9 | 30% | 9% | none |
 | open drive | 4+ | — | — | BREACHES |
 
-**The balance, adopted:**
+### DAY PLAN (adopted 2026-10-05) — supersedes the balance bullets below
+
+The live plan, measured in `docs/research/ap-full-pool-2026-10-05.md`
+(`web/scripts/apPlanSweep.ts --pool all`, 650 sessions, exact MFF gates):
+
+- **All live strategies, regular + A+** — momentum, expansion, RTH, open
+  drive; no A+-only filter (A+ stays a card label, not a gate).
+- **$100 risk/trade** → `contracts = floor(100 ÷ (risk pts × $2))`, min 1,
+  30-micro cap. Structural stops; momentum 1R · RTH 0.75R · open TP15/SL35.
+  The profile layer (`MOM_PROFILE`/`RTH_PROFILE`) is **OFF by default** —
+  set `MOM_PROFILE=1` / `RTH_PROFILE=1` to re-enable it.
+- **Daily −$250 floor** (`DAILY_LOSS_FLOOR` default 250, 0 = off) — halt
+  new entries once the day's realized P&L crosses it.
+- **+$400 one-more-trade arm** (`PROFIT_ARM` default 400, 0 = off) — once
+  the day reaches +$400, ONE more trade; a win grants another; the first
+  LOSS after arming ends the day.
+- **dd600→half sizing** (`DD_HALF_AT` 600 / `DD_FULL_AT` 300,
+  `DD_HALF_MULT` 0.5) — trade at half size while the challenge drawdown
+  from the trailing reference is ≥ $600, back to full at $300.
+- Green-day tier shrinking is **OFF by default** (`SIZE_TIERS` env
+  re-enables); the scale-out ladder is opt-in (`CROSSTRADE_SCALEOUT=1`).
+- Measured: eval pass **median 10 trading days (~2 wks)**, funded blow
+  **0.3%** at 1R (the 2R plan was 73.9% — the 2R target is the funded
+  killer); with the dd rule: **0.0%** in 10,000 orderings.
+
+**The balance, adopted (pre-10-05 baseline):**
 - Structural stops everywhere (the bar's own low — "safe ticks" comes from
   the 80%+ hit rates, not from widening) — with ONE measured exception: stops
   tighter than 3.5 pts widen to entry ∓ 3.5 (the widen floor — the sweep peaks
@@ -246,16 +290,21 @@ real sequences through the account sim):
 MyFundedFutures **Rapid EOD 50k** (`web/lib/propRules.ts`,
 `web/lib/propAccount.ts`):
 
-- Risk budget **$170/trade** → `contracts = floor(170 ÷ (risk pts × $2))`,
+- Risk budget **$100/trade** → `contracts = floor(100 ÷ (risk pts × $2))`,
   floored at 1, **capped at 30 micros**; card prints dollar risk and a
   cap note when bound.
-- **MLL $2,000, EOD trailing, locks at $100** — every backtest replays the
-  account: breach on a close below the floor, floor trails up only at
-  closes, locks forever at $100.
+- **MLL $2,000, EOD trailing** — every backtest replays the account:
+  breach on a close below the floor, floor trails up only at closes.
+  FUNDED only: the floor locks at **$100** once it reaches there (the
+  moment the $2,100 first-payout buffer clears — the lock is a
+  funded-stage feature, not an eval one); the EVAL floor locks at the
+  starting balance.
 - Eval: $3,000 target, 4 trading days, **30% consistency** — checked per run.
 - Funded: $2,100 first-payout buffer, +$500 per payout, 90/10 — computed per run.
-- Sizing sanity: 14 consecutive momentum losers ≈ $1,960 < MLL; the 15th
-  breaches — the budget is set with that line in view.
+- Sizing sanity: 20 consecutive momentum losers ≈ $2,000 = MLL; the 21st
+  breaches — the budget is set with that line in view (plus the −$250
+  daily floor and the dd600→half rule, which cut the streak before it
+  compounds).
 
 ---
 
