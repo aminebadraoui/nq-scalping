@@ -63,7 +63,7 @@ import { getOverrides, decideSignal } from "./strategyOverrides";
 import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations, attachLimitOrderId } from "./execWatch";
-import { momentumProfile, rthProfile, applyProfile, timeExitAt } from "./profile";
+import { momentumProfile, rthProfile, applyProfile, timeExitAt, type FamilyProfile } from "./profile";
 import { registerTimeExit, checkTimeExits } from "./timeExit";
 import { logExec } from "./execLog";
 import { signalWindowOpen } from "./marketHours";
@@ -254,6 +254,32 @@ const expRetraceEnabled = (): boolean => feedFlag("EXP_RETRACE", true);
  */
 export function retraceUseLimit(scaleOut: boolean): boolean {
   return process.env.CROSSTRADE_LIMIT_ENTRIES !== "0" && !scaleOut;
+}
+
+/** RTH limit-entry redesign (validated by scripts/rthLimitValidation.ts,
+ *  2026-10-06): the drift-aware replay showed market entries with absolute
+ *  brackets are unfundable (PF 0.50 across 650 sessions) while RESTING-
+ *  LIMIT entries at the signal price with a half structural stop and a
+ *  2.5R target pass train/OOS/year checks (+$13.8k at $1.90/RT, all years
+ *  PASS). OFF by default — RTH_LIMIT_ENTRIES=1 enables; the validated
+ *  knobs are the defaults. The TTL default stays under the exec-watch
+ *  give-up clock (10 min) so expiry takes the clean limit_expired path. */
+export function rthLimitParams(env: Record<string, string | undefined> = process.env): {
+  enabled: boolean;
+  stopMult: number;
+  targetR: number;
+  ttlMs: number;
+} {
+  const num = (v: string | undefined, dflt: number): number => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : dflt;
+  };
+  return {
+    enabled: env.RTH_LIMIT_ENTRIES === "1",
+    stopMult: num(env.RTH_LIMIT_STOP_MULT, 0.5),
+    targetR: num(env.RTH_LIMIT_TARGET_R, 2.5),
+    ttlMs: num(env.RTH_LIMIT_TTL_MS, 9 * 60_000),
+  };
 }
 
 export type RetraceDecision =
@@ -1489,7 +1515,15 @@ class SignalFeed {
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 100;
       const cap = Number(process.env.RTH_RISK_CAP ?? "100");
       const prof = rthProfile();
-      const profBracket = prof.enabled ? applyProfile(s.dir, s.entry, s.risk, prof) : null;
+      const lim = rthLimitParams();
+      const useLimitEntry = lim.enabled;
+      // the limit-entry redesign reuses the profile bracket math with its
+      // validated knobs (half stop, 2.5R target); the classic profile wins
+      // when both are enabled (explicit knob discipline, one plan at a time)
+      const bracket: FamilyProfile = useLimitEntry
+        ? { enabled: true, stopMult: lim.stopMult, targetR: lim.targetR, sizeMult: 1, timeExitBars: 0 }
+        : prof;
+      const profBracket = bracket.enabled ? applyProfile(s.dir, s.entry, s.risk, bracket) : null;
       // the day plan: budget sizing (floor($100 ÷ stop$)), no fixed count
       const fixed = fixedContracts(0);
       const stop = profBracket ? profBracket.stop : s.stop;
@@ -1499,7 +1533,7 @@ class SignalFeed {
       const contracts =
         fixed > 0
           ? cappedContracts(fixed, riskPts, cap)
-          : momentumSize(riskPts, budget * (prof.enabled ? prof.sizeMult : 1)).contracts;
+          : momentumSize(riskPts, budget * (bracket.enabled ? bracket.sizeMult : 1)).contracts;
       const size = await this.applyDayTier(
         { contracts, dollarRisk: contracts * riskPts * 2, capped: fixed > 0 && cap > 0 && fixed > contracts },
         riskPts,
@@ -1507,24 +1541,28 @@ class SignalFeed {
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (size ×${Math.round(size.mult * 100)}%)` : ""}`;
 
       const et = cdtToET(s.t);
-      void placeOrder({
-        symbol: symbol(),
-        dir: s.dir,
-        contracts: size.contracts,
-        entry: s.entry,
-        stop,
-        target,
-        timeET: et,
-      })
+      void placeOrder(
+        {
+          symbol: symbol(),
+          dir: s.dir,
+          contracts: size.contracts,
+          entry: s.entry,
+          stop,
+          target,
+          timeET: et,
+        },
+        useLimitEntry ? { limitPrice: s.entry } : {},
+      )
         .then((res) => {
           void logExec({
             key: `rth|${key}`,
-            label: `rth ${s.dir} ${et}`,
+            label: `rth ${s.dir} ${et}${useLimitEntry ? " (limit)" : ""}`,
             attempt: "initial",
             outcome: res.ok ? "ok" : "failed",
             reason: res.reason,
           });
           if (!res.ok) registerSendFailure(`rth|${key}`, `rth ${s.dir} ${et}`, res.reason);
+          if (res.ok && useLimitEntry && res.orderId) attachLimitOrderId(`rth|${key}`, res.orderId);
           if (res.ok && prof.enabled) {
             registerTimeExit({
               key: `rth|${key}`,
@@ -1549,13 +1587,13 @@ class SignalFeed {
       const text = [
         `🟦 <b>${STATS.rth.name} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
-        `<code>ENTRY   ${fmtPx(s.entry)}</code>`,
+        `<code>ENTRY   ${useLimitEntry ? "LIMIT " : ""}${fmtPx(s.entry)}</code>`,
         `<code>STOP    ${fmtPx(stop)}   ${distTxt(s.entry, stop)}</code>`,
-        `<code>TARGET  ${fmtPx(target)}   ${distTxt(s.entry, target)}${profBracket ? ` (${prof.targetR}R @ ${prof.stopMult}× stop)` : ""}</code>`,
+        `<code>TARGET  ${fmtPx(target)}   ${distTxt(s.entry, target)}${profBracket ? ` (${bracket.targetR}R @ ${bracket.stopMult}× stop)` : ""}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
         `${aPlus ? `A+ (${STATS.rth.aPlus}) · ` : ""}${chipLine}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
-        `<i>${STATS.rth.stat}${profBracket ? ` · ${prof.targetR}R @ ${prof.stopMult}× profile` : " · 0.75R plan — journal separately"}</i>`,
+        `<i>${STATS.rth.stat}${profBracket ? ` · ${bracket.targetR}R @ ${bracket.stopMult}× stop · ${useLimitEntry ? "limit entry (validated redesign)" : "profile"}` : " · 0.75R plan — journal separately"}</i>`,
       ].join("\n");
       const res = await this.push(text);
       if (!res.sent) this.lastError = res.reason;
@@ -1586,11 +1624,12 @@ class SignalFeed {
           dir: s.dir,
           contracts: size.contracts,
           entry: s.entry,
-          stop: s.stop,
-          target: s.target,
+          stop,
+          target,
           timeET: et,
         },
         scaleOut: false,
+        limit: useLimitEntry ? { price: s.entry, expireAtMs: Date.now() + lim.ttlMs } : undefined,
       });
     }
   }
