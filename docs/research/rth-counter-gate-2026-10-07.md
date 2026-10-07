@@ -69,6 +69,14 @@ set both envs to `0` on the Coolify app (owner approval required to change).
 
 ### Full-archive validation (651 sessions, 9,009 cards — 2026-10-08)
 
+> **Sequenced-replay nuance (2026-10-08, docs/research/full-gates-replay-2026-10-08.md):**
+> under one-position-at-a-time sequencing the counter-gate is structurally
+> inert (0 drops in every config — no card can land within 15/30 min of a
+> winner's exit because winners never hold ≥45 bars and successors fire ≥60
+> bars after a filled entry). LIVE has no one-at-a-time block in checkRth, so
+> live sits in the no-block regime where the gate's measured effect lives.
+> The gate-ON decision stands; its benefit is live-path only.
+
 Live-style no-block replay (limit TTL 9m, 0.5× stop, 2.5R target, HORIZON 60,
 no cap). TRAIN = 2023-12-18..2026-05-31 (565 sessions), OOS = 2026-06-01..10-06
 (86 sessions).
