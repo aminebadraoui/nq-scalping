@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-/* Four surfaces: the working dashboard, the trade journal (the
- * self-improving loop), the theory lab, and the research. */
+/* Five surfaces: the working dashboard, the trade journal (the
+ * self-improving loop), the live rules board, the theory lab, and the
+ * research. */
 const links = [
   { href: "/", label: "Dashboard", note: "live working surface" },
+  { href: "/rules", label: "Rules", note: "every live halt/veto with its current state" },
   { href: "/strategies", label: "Strategies", note: "how the live signal feed works, condition by condition" },
   { href: "/journal", label: "Journal", note: "trades, win/loss analysis, AI review + gates" },
   { href: "/lab", label: "Lab", note: "test entry theories against the collected sessions" },

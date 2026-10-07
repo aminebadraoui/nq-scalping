@@ -7,6 +7,7 @@ import { EvidenceSection } from "@/components/docs/Evidence";
 import { ToolsSection } from "@/components/docs/Tools";
 import { StrategiesSection } from "@/components/docs/Strategies";
 import { ChecklistSection } from "@/components/docs/Checklist";
+import { RulesSection } from "@/components/docs/Rules";
 import { SourcesSection } from "@/components/docs/Sources";
 
 export const metadata: Metadata = {
@@ -23,7 +24,8 @@ const TOC = [
   { id: "tools", n: "04", label: "Tool stack", note: "ranked, with each tool's tell" },
   { id: "strategies", n: "05", label: "Strategies studied", note: "the generic research plays" },
   { id: "checklist", n: "06", label: "Checklist & math", note: "desk tools + expectancy" },
-  { id: "sources", n: "07", label: "Sources", note: "everything cited" },
+  { id: "rules", n: "07", label: "Trading rules", note: "everything that stops trading during a day" },
+  { id: "sources", n: "08", label: "Sources", note: "everything cited" },
 ];
 
 export default function DocsPage() {
@@ -90,6 +92,9 @@ export default function DocsPage() {
         </section>
         <section id="checklist" className="scroll-mt-20">
           <ChecklistSection />
+        </section>
+        <section id="rules" className="scroll-mt-20">
+          <RulesSection />
         </section>
         <section id="sources" className="scroll-mt-20">
           <SourcesSection />

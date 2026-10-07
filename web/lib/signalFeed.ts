@@ -407,6 +407,19 @@ class SignalFeed {
   private momentumSent = new Set<string>();
   /** RTH cards already emitted per session day (the RTH_MAX_CARDS_PER_DAY cap) */
   private rthDayCount = new Map<string, number>();
+
+  /** the RTH daily-cap counters for the rules board (display-only) */
+  rthCapStats(): { day: string; count: number; cap: number } {
+    let day = "";
+    let count = 0;
+    for (const [k, v] of this.rthDayCount) {
+      if (k >= day) {
+        day = k;
+        count = v;
+      }
+    }
+    return { day, count, cap: rthMaxCardsPerDay() };
+  }
   /** days that already got a momentum card — the first card of the day is
    *  the best one (77.2% win / PF 3.15 vs 2.96 for the rest), so it gets a
    *  "1st today" marker for the one-trade-per-day discipline. */

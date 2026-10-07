@@ -47,6 +47,11 @@ export function recentRthExits(now: number, minMs: number): RthExit[] {
   return m.filter((e) => now - e.exitAt <= minMs);
 }
 
+/** how many winner exits are currently visible to the gate (display) */
+export function recentWinnerCount(now: number, minMs: number): number {
+  return recentRthExits(now, minMs).length;
+}
+
 export type CounterGateDecision = { block: boolean; winner: RthExit | null };
 
 /**

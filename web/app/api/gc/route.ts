@@ -248,6 +248,85 @@ export async function GET(req: NextRequest) {
                 return null;
               }
             })(),
+            // the rules board — EVERY live rule that can stop/restrict
+            // trading today, with threshold, live metric, and state
+            rules: await (async () => {
+              try {
+                const { guardState } = await import("@/lib/accountGuard");
+                const { crossGuardSnapshot, crossGuardLiveSnapshot } = await import("@/lib/crossGuard");
+                const { deriveRulesView } = await import("@/lib/execStatus");
+                const { signalWindowOpen } = await import("@/lib/marketHours");
+                const { newsBlockedNow } = await import("@/lib/newsGate");
+                const { counterGateParams, recentWinnerCount } = await import("@/lib/rthExitLog");
+                const { getSignalFeed } = await import("@/lib/signalFeed");
+                const s = guardState();
+                const snap = crossGuardSnapshot() ?? (await crossGuardLiveSnapshot());
+                const now = Date.now();
+                const liveSt = getLive().state;
+                const gate = counterGateParams();
+                const feed = getSignalFeed();
+                // trailing unconfirmed bars on the live buffer (the tape gate)
+                let tail = 0;
+                for (let i = liveSt.minutes.length - 1; i >= 0; i--) {
+                  if (liveSt.minutes[i].source === "candle") break;
+                  tail++;
+                }
+                return deriveRulesView(
+                  {
+                    stage: s.stage,
+                    startBalance: s.startBalance,
+                    profitTarget: s.profitTarget,
+                    floor: s.floor,
+                    highWater: s.highWater,
+                    locked: s.locked,
+                    dayKey: s.dayKey,
+                    dayPnl: s.dayPnl,
+                    dayPeak: s.dayPeak,
+                    consistencyCap: s.consistencyCap,
+                    dailyFloor: Number(process.env.DAILY_LOSS_FLOOR ?? "250"),
+                    profitArm: Number(process.env.PROFIT_ARM ?? "400"),
+                    profitArmed: s.profitArmed,
+                    lastDayPnl: s.lastDayPnl,
+                    ddHi: Number(process.env.DD_HALF_AT ?? "600"),
+                    ddLo: Number(process.env.DD_FULL_AT ?? "300"),
+                    ddHalved: s.ddHalved,
+                    dayBaselineOk: s.dayBaselineOk,
+                    giveback: {
+                      armed: Number(process.env.GUARD_GIVEBACK_PCT ?? "0.5") > 0,
+                      pct: Number(process.env.GUARD_GIVEBACK_PCT ?? "0.5"),
+                      floor: Number(process.env.GUARD_GIVEBACK_FLOOR ?? "250"),
+                      haltAt: Math.round(s.dayPeak - Math.max(Number(process.env.GUARD_GIVEBACK_FLOOR ?? "250"), Number(process.env.GUARD_GIVEBACK_PCT ?? "0.5") * s.dayPeak)),
+                    },
+                  },
+                  snap,
+                  {
+                    executeLive: process.env.EXECUTE_LIVE === "1",
+                    crosstradeConfigured: !!process.env.CROSSTRADE_URL && !!process.env.CROSSTRADE_KEY && !!process.env.CROSSTRADE_ACCOUNT,
+                    guardMargin: Number(process.env.MFF_GUARD_MARGIN ?? "500"),
+                  },
+                  {
+                    windowOpen: signalWindowOpen(now),
+                    windowLabel: "Sun 18:00 ET → Fri 16:00 ET · Mon–Thu 16:00–18:00 halt",
+                    newsNow: newsBlockedNow(now),
+                    newsNote: "all stages · funded adds a T1 ±3 min compliance ban",
+                    tapeTail: tail,
+                    tapeHolding: tail >= 1,
+                    healStep: liveSt.heal?.step ?? 0,
+                    healEpisodes: liveSt.heal?.episodes ?? 0,
+                    rthCap: feed.rthCapStats(),
+                    counterGate: {
+                      enabled: gate.enabled,
+                      min: gate.minMs / 60_000,
+                      pts: gate.pts,
+                      recentWinners: gate.enabled ? recentWinnerCount(now, gate.minMs) : 0,
+                    },
+                  },
+                );
+              } catch (e) {
+                console.error("[health] rules error:", e);
+                return null;
+              }
+            })(),
             // the calendar's view of the market — "open per calendar but no
             // prints arriving" is the dead-feed signature
             market: await (async () => {
