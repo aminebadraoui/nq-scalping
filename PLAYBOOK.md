@@ -91,10 +91,16 @@ criteria live in `docs/research/naso-hypotheses-backtest-plan-2026-10-04.md`):
 
 Validation (expansion trigger): 4,152 sequential trades, 78.4% WR, PF 3.14.
 
-**Combined card:** 4,822 trades, **77.5% WR, PF 2.98, +11,680 pts**.
+**Combined card:** 4,822 trades, **77.5% WR, PF 2.98, +11,680 pts** (market-entry replay).
 Per year: 2024 80.0% · 2025 75.3% · 2026 (out-of-sample) 77.9%.
 Long 78.5% (PF 3.08) / short 76.4% (PF 2.88). First card of the day alone:
 77.2% WR, **PF 3.15**.
+
+> **LIVE expansion path:** the huge-bar expansion card no longer market-fills —
+> it rests a 1-pt limit behind the close for up to 5 bars and rebuilds the
+> brackets from the fill (`EXP_RETRACE`): **68% WR, PF 1.29** (entryQuality
+> study, 649 sessions, train+test). The market-entry 77.5% numbers above are
+> research context for the flush trigger only.
 
 ---
 
@@ -180,6 +186,15 @@ eval PASS, consistency ✓, never breaches. (The 1R version: 73.9%; the
 0.75R target is the measured optimum for the small-win RTH tape. The
 interaction cell "≥5 clusters + ≥65% + big" shows 84.8% next-bar accuracy
 but converts worse in 1R mechanics.)
+
+> **LIVE bracket (2026-10-06 redesign):** the 0.75R market entry above is the
+> RESEARCH optimum — it does not survive drift-aware live fills. The live
+> card trades `RTH_LIMIT_ENTRIES=1`: resting limit at the signal price
+> (TTL 9 min), **0.5× structural stop, 2.5R target** — measured on the
+> 651-session live-style replay: **WR 37.7%, PF 1.49, 9,009 trades**
+> (train PF 1.51 · OOS PF 1.36; rthLimitValidation: train/OOS/year PASS).
+> The lower win rate is the 2.5R payout, not a weaker signal. Telegram
+> cards quote these live-bracket numbers.
 
 **A+ tier (rerun flow, second pattern):** the same setup at **≥65%
 one-sidedness** — 1,699 trades, **80.1% WR, PF 3.07**, per year

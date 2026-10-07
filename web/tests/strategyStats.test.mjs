@@ -12,12 +12,16 @@ test("every strategy has a name and a stat line", () => {
   }
 });
 
-test("stat lines match the PLAYBOOK.md baselines", () => {
-  assert.equal(STATS.momentum.stat, "WR 77.5% · PF 2.98 · 4,822 replay trades");
-  assert.equal(STATS.momentum.aPlus, "78.9% WR");
-  assert.equal(STATS.momentum.firstOfDay, "77.2% WR · PF 3.15");
-  assert.equal(STATS.rth.stat, "WR 82.2% · PF 3.47 · 10,325 replay trades");
-  assert.equal(STATS.rth.aPlus, "80.1% WR · PF 3.07");
+test("stat lines match the measured live-bracket baselines", () => {
+  // LIVE brackets (651-session live-style replay / entryQuality study);
+  // the market-entry replay numbers are kept only where the card still
+  // trades that bracket, and are marked (research)
+  assert.equal(STATS.momentum.stat, "WR 77.5% · PF 2.98 · 4,822 replay trades (market-entry research)");
+  assert.equal(STATS.momentum.aPlus, "78.9% WR (research bracket)");
+  assert.equal(STATS.momentum.firstOfDay, "77.2% WR · PF 3.15 (research bracket)");
+  assert.equal(STATS.momentum.expRetrace, "WR 68% · PF 1.29 · 649-session entryQuality redesign");
+  assert.equal(STATS.rth.stat, "WR 37.7% · PF 1.49 · 9,009 replay trades · 2.5R limit bracket");
+  assert.equal(STATS.rth.aPlus, "80.1% WR · PF 3.07 (0.75R research)");
   assert.equal(STATS.openDrive.stat, "93% hit @ TP15/SL35 · 87% of days");
   assert.equal(STATS.openPullback.stat, "69.8% WR · +5.2 pts net · 440 trades");
   assert.equal(STATS.openSniper.stat, "55.8% WR · +6.5 pts net (longs)");
@@ -27,5 +31,5 @@ test("stat lines match the PLAYBOOK.md baselines", () => {
 
 test("heads-up summary lists every active strategy with its win rate", () => {
   const line = headsUpWrLine();
-  assert.match(line, /WR: momentum 77\.5% · RTH 82\.2% · drive 93% · pullback 69\.8% · sniper 55\.8%/);
+  assert.match(line, /WR: momentum 68% · RTH 37\.7% · drive 93% · pullback 69\.8% · sniper 55\.8%/);
 });
