@@ -63,6 +63,17 @@ if [ -z "${DATABASE_URL:-}" ]; then
     set +a
   fi
 fi
+
+log "--- daybook consolidation (DB-less trades + settings journal) ---"
+# Reconstructs the session's trades from CrossTrade fills (no Neon needed),
+# labels them from the dashboard's live daybook, replays the RTH cap skips
+# against the just-collected tape, and writes the daybook summary + dayend
+# record (r2_sync uploads the daybook dir to R2 afterwards). Runs BEFORE
+# the DB steps so the journal exists even when Neon is down.
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/daybookConsolidate.ts 2>&1
+DAYBOOK_RC=$?
+log "daybookConsolidate exit=$DAYBOOK_RC"
+
 if [ -z "${DATABASE_URL:-}" ]; then
   log "ERROR: DATABASE_URL is not set (launchd env or web/.env.local) — skipping ingest"
   exit 1
@@ -201,6 +212,7 @@ else
 fi
 
 FINAL_RC=$INGEST_RC
+if [ "$DAYBOOK_RC" -ne 0 ]; then FINAL_RC=$DAYBOOK_RC; fi
 if [ "$DIVSTORE_RC" -ne 0 ]; then FINAL_RC=$DIVSTORE_RC; fi
 if [ "$RECONCILE_RC" -ne 0 ]; then FINAL_RC=$RECONCILE_RC; fi
 if [ "$SCORESIG_RC" -ne 0 ]; then FINAL_RC=$SCORESIG_RC; fi

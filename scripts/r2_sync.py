@@ -137,7 +137,7 @@ def request(method: str, key: str, body: bytes = b"", headers: dict | None = Non
 def files_to_upload():
     """(local_path, object_key) for everything worth archiving."""
     out = []
-    for sub in ("", "ohlc", "options"):
+    for sub in ("", "ohlc", "options", "daybook"):
         base = os.path.join(DATA, sub) if sub else DATA
         if not os.path.isdir(base):
             continue
@@ -147,6 +147,9 @@ def files_to_upload():
             if name.startswith("."):
                 continue
             if sub == "" and not (name.endswith("_ETH.json") or name.endswith("_RTH.json")):
+                continue
+            # the daybook (JSONL journal + summary JSON) archives as-is
+            if sub == "daybook" and not (name.endswith(".jsonl") or name.endswith(".json")):
                 continue
             p = os.path.join(base, name)
             if not os.path.isfile(p):
@@ -199,6 +202,18 @@ def eth_usable(candles: list) -> bool:
 def manifest_entry(path: str, key: str):
     raw = open(path, "rb").read()
     gz = gzip.compress(raw, 6)
+    # the daybook JSONL is not a single JSON object — index it by sha only
+    if "/daybook/" in key and key.endswith(".jsonl"):
+        return {
+            "key": key,
+            "date": os.path.basename(key)[:10],
+            "session": None,
+            "candles": None,
+            "usable": None,
+            "size_raw": len(raw),
+            "size_gz": len(gz),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
     j = json.loads(raw)
     candles = len(j.get("candles", [])) if key.startswith("data/") and key.endswith(".json") else None
     if candles is None:

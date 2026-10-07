@@ -259,6 +259,8 @@ async function fetchOrders(): Promise<OrderRow[]> {
           id: String(o.id),
           ts,
           action: String(o.action) === "Buy" ? "Buy" : "Sell",
+          // exit legs carry parentId → the entry order; ocoId links the
+          // SIBLING leg (stop↔target), not the parent — never map it here
           parentId: o.parentId !== null && o.parentId !== undefined ? String(o.parentId) : null,
         });
       }

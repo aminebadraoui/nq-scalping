@@ -58,6 +58,13 @@ export type DomSymbolState = {
 export type DomState = {
   connected: boolean;
   lastMessage: number;
+  /** decoded DOM_V2 frames received in this process lifetime */
+  frames: number;
+  /** consecutive connections that delivered ZERO DOM_V2 frames — the
+   *  vendor-dead detector (2026-10-07: the raw probe also gets nothing,
+   *  so the feed stops reconnecting instead of flapping every ~4 min) */
+  silentConnects: number;
+  lastReconnectAt: number;
   nq: DomSymbolState;
   es: DomSymbolState;
 };
@@ -186,10 +193,17 @@ class DomFeed {
   private books: { nq: DomBook; es: DomBook };
   private symbols: { nq: string; es: string | null };
   private warnUnrouted = false;
+  /** DOM_V2 frames on the CURRENT connection (reset every connect) */
+  private framesThisConn = 0;
+  /** last "vendor channel silent" console line (hourly throttle) */
+  private lastSilentLog = 0;
 
   state: DomState = {
     connected: false,
     lastMessage: 0,
+    frames: 0,
+    silentConnects: 0,
+    lastReconnectAt: 0,
     nq: { symbol: "", snapshots: 0, increments: 0, lastSeq: 0, book: { bids: [], asks: [] }, icebergs: [] },
     es: { symbol: "", snapshots: 0, increments: 0, lastSeq: 0, book: { bids: [], asks: [] }, icebergs: [] },
   };
@@ -290,6 +304,8 @@ class DomFeed {
     this.state.lastMessage = Date.now();
     const msg = decodeDomFrame(buf);
     if (!msg || msg.channel !== "DOM_V2") return;
+    this.framesThisConn += 1;
+    this.state.frames += 1;
     // payload and data can arrive double-encoded as JSON strings (the
     // terminal worker JSON.parses each layer separately — mirror it)
     let p: unknown = msg.payload;
@@ -334,6 +350,7 @@ class DomFeed {
         this.token = await cognitoIdToken(this.env);
         this.tokenFetchedAt = Date.now();
       }
+      this.framesThisConn = 0;
       const dc = this.env.GOCHARTING_DC || "nyc1";
       // dedicated DOM socket: origin.ws. -> origin.wsdom. (keeps .prodb)
       const url = `wss://origin.wsdom.prodb.${dc}.gocharting.com/${dc}/ws?token=${this.token}&tag=${Date.now()}`;
@@ -351,6 +368,8 @@ class DomFeed {
       };
       this.ws.onclose = () => {
         this.state.connected = false;
+        if (this.framesThisConn === 0) this.state.silentConnects += 1;
+        else this.state.silentConnects = 0;
         this.emitNow();
         this.retryMs = Math.min(120_000, Math.max(10_000, this.retryMs * 2));
         setTimeout(() => this.connect(), this.retryMs);
@@ -384,11 +403,24 @@ class DomFeed {
         marketOpenAt(now) &&
         now - this.state.lastMessage > STALE_RECONNECT_MS;
       if (stale) {
-        console.log("[dom] forced reconnect — no DOM_V2 frames while market open");
-        try {
-          this.ws?.close(); // onclose → backoff reconnect → resubscribe
-        } catch {
-          /* ignore */
+        // vendor-dead detector (2026-10-07): a raw probe gets ZERO frames
+        // from the wsdom DOM_V2 channel too — after 3 silent connections,
+        // stop reconnecting (the every-4-min flap is pure noise) and say
+        // so once an hour. The reconnect resumes automatically the moment
+        // a connection ever delivers a frame again.
+        if (this.framesThisConn === 0 && this.state.silentConnects >= 3) {
+          if (now - this.lastSilentLog >= 3_600_000) {
+            this.lastSilentLog = now;
+            console.log("[dom] vendor DOM_V2 channel silent — reconnect suspended (check /api/gc?action=health → dom)");
+          }
+        } else {
+          this.state.lastReconnectAt = now;
+          console.log("[dom] forced reconnect — no DOM_V2 frames while market open");
+          try {
+            this.ws?.close(); // onclose → backoff reconnect → resubscribe
+          } catch {
+            /* ignore */
+          }
         }
       }
       this.emitNow();

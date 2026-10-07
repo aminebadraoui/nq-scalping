@@ -89,7 +89,7 @@ export async function GET(req: NextRequest) {
         const masked = acct.length > 8 ? `${acct.slice(0, 4)}…${acct.slice(-4)}` : acct || null;
         return Response.json({
           ok: true,
-          buildId: "readthrough-v3",
+          buildId: process.env.BUILD_SHA || "dev",
           sessions: sessionsInfo,
           hasDbUrl: !!process.env.DATABASE_URL,
           dbUrlHost: process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : null,
@@ -226,6 +226,25 @@ export async function GET(req: NextRequest) {
                 };
               } catch (e) {
                 console.error("[health] liveFeed error:", e);
+                return null;
+              }
+            })(),
+            // DOM_V2 L2 feed health — frames/decoded/silent-connects so a
+            // dead vendor channel is visible instead of a reconnect flap
+            domFeed: await (async () => {
+              try {
+                const { getDom } = await import("@/lib/dom");
+                const d = getDom().state;
+                return {
+                  connected: d.connected,
+                  frames: d.frames,
+                  silentConnects: d.silentConnects,
+                  lastReconnectAt: d.lastReconnectAt ?? 0,
+                  nqSnapshots: d.nq.snapshots,
+                  nqIncrements: d.nq.increments,
+                };
+              } catch (e) {
+                console.error("[health] domFeed error:", e);
                 return null;
               }
             })(),
