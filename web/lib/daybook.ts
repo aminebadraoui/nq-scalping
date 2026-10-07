@@ -398,3 +398,56 @@ export function readDaybookDay(day: string, env: Record<string, string | undefin
     return [];
   }
 }
+
+/* ---- R2 readthrough (the archived variation log) --------------------- */
+
+/** the public R2 base (the same bucket r2_sync.py archives the daybook to) */
+export function daybookR2Base(env: Record<string, string | undefined> = process.env): string {
+  return (env.GC_REMOTE_URL || "https://pub-d68008dba02c4ad190e9814f6c41cbef.r2.dev").replace(/\/+$/, "");
+}
+
+function parseJsonl(text: string): DaybookRecord[] {
+  return text
+    .split("\n")
+    .filter((l) => l.trim().length > 0)
+    .map((l) => {
+      try {
+        return JSON.parse(l) as DaybookRecord;
+      } catch {
+        return null;
+      }
+    })
+    .filter((r): r is DaybookRecord => r !== null);
+}
+
+/** local days ∪ R2 days (via the manifest) — the journal spans container
+ *  redeploys: the volume holds the live day, R2 holds the archive. */
+export async function listDaybookDaysRemote(env: Record<string, string | undefined> = process.env): Promise<string[]> {
+  const local = listDaybookDays(env);
+  try {
+    const res = await fetch(`${daybookR2Base(env)}/manifest.json`, { signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return local;
+    const m = (await res.json()) as { files?: Array<{ key: string }> };
+    const remote = (m.files ?? [])
+      .map((f) => f.key)
+      .filter((k) => /^data\/daybook\/\d{4}-\d{2}-\d{2}\.jsonl$/.test(k))
+      .map((k) => k.slice(13, 23));
+    return [...new Set([...local, ...remote])].sort();
+  } catch {
+    return local;
+  }
+}
+
+/** local file first; falls back to the R2 archive for days that predate
+ *  this container (or were consolidated on another machine). */
+export async function readDaybookDayRemote(day: string, env: Record<string, string | undefined> = process.env): Promise<DaybookRecord[]> {
+  const local = readDaybookDay(day, env);
+  if (local.length) return local;
+  try {
+    const res = await fetch(`${daybookR2Base(env)}/data/daybook/${day}.jsonl`, { signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return [];
+    return parseJsonl(await res.text());
+  } catch {
+    return [];
+  }
+}

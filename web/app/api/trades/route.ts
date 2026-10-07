@@ -2,22 +2,25 @@ import { dbEnabled, getDb } from "@/lib/gcdb";
 import { familyOf } from "@/lib/tradeStats";
 import { edgeStatuses, REPLAY_EXPR_BASELINES } from "@/lib/edgeMonitor";
 import { streakTable, drawdownTable, hourMatrix, hourTable } from "@/lib/journalMetrics";
-import { listDaybookDays, readDaybookDay, type DaybookDaySummary, type DaybookRecord } from "@/lib/daybook";
+import { listDaybookDaysRemote, readDaybookDayRemote, type DaybookDaySummary, type DaybookRecord } from "@/lib/daybook";
 
 export const dynamic = "force-dynamic";
 
 /** DB-less fallback (2026-10-07): when Neon is unreachable the journal is
- *  served from the daybook consolidation summaries — per-day headline +
- *  trades. The richer analytics (equity curve, scoreboard, analysis) are
- *  DB-only and come back the moment DATABASE_URL returns. */
-function daybookPayload() {
-  const days = listDaybookDays().map((d) => {
-    const rows = readDaybookDay(d);
-    const summaries = rows
-      .filter((r): r is Extract<DaybookRecord, { t: "dayend" }> => r.t === "dayend")
-      .map((r) => r.summary as unknown as DaybookDaySummary);
-    return { day: d, rows, summaries };
-  });
+ *  served from the daybook consolidation summaries (local volume ∪ R2
+ *  archive) — per-day headline + trades. The richer analytics (equity
+ *  curve, scoreboard, analysis) are DB-only and come back the moment
+ *  DATABASE_URL works again. */
+async function daybookPayload() {
+  const days = await Promise.all(
+    (await listDaybookDaysRemote()).map(async (d) => {
+      const rows = await readDaybookDayRemote(d);
+      const summaries = rows
+        .filter((r): r is Extract<DaybookRecord, { t: "dayend" }> => r.t === "dayend")
+        .map((r) => r.summary as unknown as DaybookDaySummary);
+      return { day: d, rows, summaries };
+    }),
+  );
   const sum = (f: (s: DaybookDaySummary) => number) => days.reduce((acc, d) => acc + d.summaries.reduce((a, s) => a + f(s), 0), 0);
 
   const allTrades = days.flatMap((d) => d.summaries.flatMap((s) => s.trades ?? []));
@@ -101,7 +104,7 @@ function daybookPayload() {
  *  month → all-time. Data-only: no live feed, no execution state. */
 export async function GET(request: Request) {
   if (!dbEnabled()) {
-    return Response.json(daybookPayload());
+    return Response.json(await daybookPayload());
   }
   const db = getDb();
   try {
@@ -386,7 +389,7 @@ export async function GET(request: Request) {
     // DB configured but unreachable (Neon quota etc.) — serve the daybook
     // journal instead of an error page
     try {
-      return Response.json(daybookPayload());
+      return Response.json(await daybookPayload());
     } catch {
       return Response.json({ ok: false, reason: String(e) });
     }

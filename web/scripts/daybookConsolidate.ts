@@ -29,7 +29,7 @@ import {
   type FillRow,
 } from "../lib/reconcile";
 import { familyOf } from "../lib/tradeStats";
-import { daybookDayKey, type DaybookDaySummary, type DaybookTradeSummary } from "../lib/daybook";
+import { daybookDayKey, daybookR2Base, type DaybookDaySummary, type DaybookTradeSummary } from "../lib/daybook";
 
 /* ---- env ------------------------------------------------------------ */
 function loadEnvLocal() {
@@ -103,13 +103,8 @@ async function fetchDaybook(): Promise<AnyRecord[]> {
       return [];
     }
   }
-  try {
-    const res = await fetch(`${DASHBOARD}/api/daybook?day=${day}&format=jsonl`, {
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) throw new Error(`daybook HTTP ${res.status}`);
-    const text = await res.text();
-    return text
+  const parse = (text: string): AnyRecord[] =>
+    text
       .split("\n")
       .filter((l) => l.trim())
       .map((l) => {
@@ -120,7 +115,30 @@ async function fetchDaybook(): Promise<AnyRecord[]> {
         }
       })
       .filter((r): r is AnyRecord => r !== null);
+
+  const fromR2 = async (): Promise<AnyRecord[]> => {
+    const res = await fetch(`${daybookR2Base()}/data/daybook/${day}.jsonl`, { signal: AbortSignal.timeout(30_000) });
+    return res.ok ? parse(await res.text()) : [];
+  };
+
+  try {
+    const res = await fetch(`${DASHBOARD}/api/daybook?day=${day}&format=jsonl`, {
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) throw new Error(`daybook HTTP ${res.status}`);
+    const rows = parse(await res.text());
+    // the dashboard only has days this container lived through — for older
+    // days (and redeploy gaps) the R2 archive is the source of truth
+    if (rows.length === 0) return fromR2();
+    return rows;
   } catch (e) {
+    // dashboard down → try the R2 archive directly
+    try {
+      const rows = await fromR2();
+      if (rows.length) return rows;
+    } catch {
+      /* fall through to the warning */
+    }
     // non-fatal: trades still reconstruct from CrossTrade alone — only the
     // signal labels / cap replay lose data (console warning)
     console.warn(`[consolidate] daybook pull unavailable (${String(e)}) — trades unlabeled`);
@@ -553,7 +571,14 @@ async function main() {
   const dir = path.join(DATA_DIR, "daybook");
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, `${day}.summary.json`), JSON.stringify(summary, null, 2));
-  appendFileSync(path.join(dir, `${day}.jsonl`), JSON.stringify({ t: "dayend", at: Date.now(), summary }) + "\n");
+  // rewrite the day file as: the pulled live records (minus any previous
+  // dayend) + exactly one fresh dayend — re-runs never double-count and
+  // the R2 copy always mirrors the full record
+  const base = records
+    .filter((r) => r.t !== "dayend")
+    .map((r) => JSON.stringify(r))
+    .join("\n");
+  writeFileSync(path.join(dir, `${day}.jsonl`), (base ? base + "\n" : "") + JSON.stringify({ t: "dayend", at: Date.now(), summary }) + "\n");
 
   // ---- report ---------------------------------------------------------
   const f = (n: number, dp = 0) => `${n >= 0 ? "+" : "−"}$${Math.abs(n).toFixed(dp)}`;
