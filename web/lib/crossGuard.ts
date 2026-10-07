@@ -103,18 +103,21 @@ export async function crossGuardGate(): Promise<GuardDecision> {
   if (!snap) return { verdict: "no-data", reason: "crossGuard: account snapshot unreadable — halting" };
   bootstrap(snap);
   // restore the persisted floor/day counter (redeploy-safe). Fail closed
-  // when the day baseline cannot be restored mid-day: re-baselining at the
+  // when the day baseline cannot be restored MID-DAY: re-baselining at the
   // current realized would undercount the $900 consistency day. BOTH the
-  // DB and the guard state file count as a restorable source — with
-  // neither (2026-10-07: no DATABASE_URL + ephemeral cwd on redeploy) a
-  // mid-day restart must halt, never silently re-baseline.
+  // DB and the guard state file count as a restorable source. The first
+  // 120 min of a trading day are exempt — a deploy around the 18:00 ET
+  // reopen has no prior day P&L to lose (2026-10-07 08:37 redeploy: 14h
+  // into the day, no DB, no file → halt, never silently re-baseline).
   const hydrated = await hydrateGuardFromDb();
   const s = guardState();
-  if (!hydrated && !guardRestoredFromFile() && s.dayKey === "" && snap.realized !== 0) {
+  const dayStartMs = Date.parse(`${tradingDayKey()}T22:00:00Z`); // day key 18:00 ET (EDT)
+  const midDay = Date.now() - dayStartMs > 120 * 60_000;
+  if (!hydrated && !guardRestoredFromFile() && s.dayKey === "" && midDay && snap.realized !== 0) {
     return {
       verdict: "halt-baseline",
       reason:
-        "day baseline unrestorable (guard_state DB unreachable AND no state file) with realized ≠ 0 — refusing to re-baseline mid-day (consistency counter)",
+        "day baseline unrestorable (guard_state DB unreachable AND no state file) with realized ≠ 0 mid-day — refusing to re-baseline (consistency counter)",
     };
   }
   return guardCheck(snap);
