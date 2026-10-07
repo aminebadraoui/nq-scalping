@@ -27,6 +27,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
 import { RAPID_EOD_50K } from "./propRules";
 import { dbEnabled, getDb } from "./gcdb";
+import { appendDaybook } from "./daybook";
 
 export type GuardStage = "eval" | "funded";
 
@@ -102,7 +103,16 @@ const GUARD_MARGIN = () => num(process.env.MFF_GUARD_MARGIN, 500);
 /** eval consistency cap = 30% of the profit target (default $900). Env override. */
 const CONSISTENCY_CAP = () => num(process.env.MFF_CONSISTENCY_CAP, Math.round(RAPID_EOD_50K.profitTarget * RAPID_EOD_50K.consistency));
 
-const STATE_FILE = () => path.join(process.cwd(), ".executor-guard.json");
+const STATE_FILE = () => guardStateFile();
+
+/** the guard state file lives in GC_DATA_DIR (a persistent volume on the
+ *  VPS) so container REDEPLOYS keep the trailing floor + day reference —
+ *  the old cwd path died with every replaced container, which silently
+ *  re-baselined the day mid-session (2026-10-07 08:37 redeploy). */
+export function guardStateFile(env: Record<string, string | undefined> = process.env): string {
+  const data = env.GC_DATA_DIR || path.join(process.cwd(), "..", "gcdata", "data");
+  return path.join(data, ".executor-guard.json");
+}
 
 function seed(): GuardState {
   const stage = guardStage();
@@ -143,6 +153,8 @@ function mem(): GuardState {
   return g.__gcGuard;
 }
 
+let restoredFromFile = false;
+
 function load() {
   try {
     const p = STATE_FILE();
@@ -150,6 +162,7 @@ function load() {
       const j = JSON.parse(readFileSync(p, "utf8"));
       const s = seed();
       g.__gcGuard = { ...s, ...j };
+      restoredFromFile = true;
     }
   } catch {
     /* corrupt/absent state — fall back to a fresh seed */
@@ -157,11 +170,40 @@ function load() {
 }
 load();
 
+/** did the in-memory state come from a persisted file at boot? The entry
+ *  gate uses this to refuse a silent mid-day re-baseline when BOTH the DB
+ *  and the file are gone (fail closed — the consistency counter is the
+ *  thing being protected). */
+export function guardRestoredFromFile(): boolean {
+  return restoredFromFile;
+}
+
 function save() {
   try {
     writeFileSync(STATE_FILE(), JSON.stringify(mem(), null, 2));
   } catch {
     /* best-effort — the in-memory state still governs */
+  }
+  // daybook hook: protection-state events (rollover, arm, dd flag) become
+  // answerable from the journal — "was the day-P&L protection blind?"
+  try {
+    const s = mem();
+    appendDaybook({
+      t: "guard",
+      at: Date.now(),
+      dayKey: s.dayKey,
+      dayPnl: Math.round(s.dayPnl * 100) / 100,
+      dayPeak: Math.round(s.dayPeak * 100) / 100,
+      dayStartRealized: Math.round(s.dayStartRealized * 100) / 100,
+      bestDayPnl: Math.round(s.bestDayPnl * 100) / 100,
+      profitArmed: s.profitArmed,
+      lastDayPnl: s.lastDayPnl === null ? null : Math.round(s.lastDayPnl * 100) / 100,
+      floor: Math.round(s.floor * 100) / 100,
+      locked: s.locked,
+      stage: s.stage,
+    });
+  } catch {
+    /* journaling is best-effort */
   }
   void persistGuardToDb(mem());
 }

@@ -5,6 +5,7 @@ import { persistLiveMinute } from "./liveStore";
 import { marketOpenAt } from "./marketHours";
 import { sessionDayOf } from "./times";
 import { esFrontMonth } from "./esJoin";
+import { appendDaybook } from "./daybook";
 
 /* ------------------------------------------------------------------ */
 /* Live GoCharting feed (server-side singleton)                        */
@@ -144,7 +145,11 @@ export function tapeHealDecision(
   }
   let next = h;
   if (h.sinceAt === 0) {
-    next = { ...seedTapeHeal(), sinceAt: now, step: 1 }; // stepAt 0 → first fetch fires immediately
+    // new episode: reset the per-episode counters and step clock, but KEEP
+    // `episodes` (the cumulative close count) and `healedAt` (last close).
+    // The old code re-seeded here, which wiped episodes every time — every
+    // close logged "episode 1" and the health counter could never grow.
+    next = { ...h, sinceAt: now, step: 1, stepAt: 0, forcedFetches: 0, reconnects: 0, reseeds: 0 };
   }
   const episodeMs = now - next.sinceAt;
   const stepMs = now - next.stepAt;
@@ -887,7 +892,8 @@ class LiveFeed {
       if (marketOpenAt(now)) {
         const tail = this.tickTail();
         const total = this.state.minutes.length;
-        const { next, action } = tapeHealDecision(this.state.heal, now, tail, total);
+        const prev = this.state.heal; // pre-decision state carries the episode's ladder usage
+        const { next, action } = tapeHealDecision(prev, now, tail, total);
         this.state.heal = next;
         if (action === "force-fetch") {
           console.log(`[heal] unconfirmed tail ${tail} — forced candle fetch (${next.forcedFetches}/${TAPE_HEAL_MAX_FORCED_FETCHES})`);
@@ -910,7 +916,26 @@ class LiveFeed {
           void this.bootstrap();
         } else if (next.healedAt > 0 && next.healedAt !== this.healLoggedAt) {
           this.healLoggedAt = next.healedAt;
-          console.log(`[heal] tail confirmed — episode ${next.episodes} closed`);
+          console.log(
+            `[heal] tail confirmed — episode ${next.episodes} closed (fetches ${prev.forcedFetches} · reconnects ${prev.reconnects} · re-seeds ${prev.reseeds} · ${Math.round((next.healedAt - prev.sinceAt) / 1000)}s)`,
+          );
+          // daybook hook: the durable per-day stall log (episode counter,
+          // ladder steps, duration) — survives redeploys and feeds the
+          // post-session report even with no DATABASE_URL.
+          try {
+            appendDaybook({
+              t: "heal",
+              at: next.healedAt,
+              episode: next.episodes,
+              sinceAt: prev.sinceAt,
+              closedAt: next.healedAt,
+              forcedFetches: prev.forcedFetches,
+              reconnects: prev.reconnects,
+              reseeds: prev.reseeds,
+            });
+          } catch {
+            /* journaling is best-effort */
+          }
         }
       }
       void this.bootstrap();

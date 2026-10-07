@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeCandleMinutes, type LiveMinute } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
-import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS } from "../lib/signalFeed";
+import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS } from "../lib/signalFeed";
 import type { BootCandle } from "../lib/footprintProto";
 
 const nowKey = "2026-10-05|18:00";
@@ -157,4 +157,29 @@ test("tapeGateDecision: recovery releases; re-page follows the wall-clock cadenc
   assert.equal(tapeGateDecision(9, 120, 60_000, 10_000).alert, false);
   // past the window it pages again
   assert.equal(tapeGateDecision(9, 120, 10_000 + TAPE_GATE_REALERT_MS + 1, 10_000).alert, true);
+});
+
+/* ---- pager + self-heal ladder coordination (tapePageDecision) ------- */
+
+test("tapePageDecision: no ladder (blind gate) always pages", () => {
+  assert.equal(tapePageDecision(null, 100_000), true);
+  assert.equal(tapePageDecision({ sinceAt: 0, step: 0 }, 100_000), true);
+});
+
+test("tapePageDecision: a young episode holds the page", () => {
+  const now = 100_000;
+  const heal = { sinceAt: now - 30_000, step: 1 };
+  assert.equal(tapePageDecision(heal, now), false);
+});
+
+test("tapePageDecision: an episode that outlives the delay pages", () => {
+  const now = 100_000;
+  const heal = { sinceAt: now - TAPE_PAGE_DELAY_MS - 1, step: 1 };
+  assert.equal(tapePageDecision(heal, now), true);
+});
+
+test("tapePageDecision: a ladder escalation pages immediately", () => {
+  const now = 100_000;
+  assert.equal(tapePageDecision({ sinceAt: now - 10_000, step: 2 }, now), true);
+  assert.equal(tapePageDecision({ sinceAt: now - 10_000, step: 3 }, now), true);
 });

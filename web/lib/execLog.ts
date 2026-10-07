@@ -10,6 +10,7 @@
  * ------------------------------------------------------------------ */
 
 import { dbEnabled, getDb } from "./gcdb";
+import { appendDaybook } from "./daybook";
 
 const TABLE_SQL = `
 create table if not exists exec_log (
@@ -53,6 +54,18 @@ export type ExecLogEntry = {
 };
 
 export async function logExec(e: ExecLogEntry): Promise<void> {
+  // daybook hook: the DB-less exec journal — container redeploys can no
+  // longer destroy the evidence (the 12:18 / 12:39 investigations both
+  // died on the lost stdout of the replaced container). Best-effort.
+  appendDaybook({
+    t: "exec",
+    at: Date.now(),
+    key: e.key,
+    label: e.label,
+    attempt: e.attempt,
+    outcome: e.outcome,
+    reason: e.reason,
+  });
   if (!dbEnabled()) return;
   if (!ready) {
     try {

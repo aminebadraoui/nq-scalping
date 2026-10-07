@@ -15,8 +15,15 @@
  * ------------------------------------------------------------------ */
 
 import { existsSync } from "fs";
-import path from "path";
-import { guardCheck, guardState, hydrateGuardFromDb, tradingDayKey, type GuardDecision } from "./accountGuard";
+import {
+  guardCheck,
+  guardState,
+  guardStateFile,
+  guardRestoredFromFile,
+  hydrateGuardFromDb,
+  tradingDayKey,
+  type GuardDecision,
+} from "./accountGuard";
 
 type Snapshot = { equity: number; realized: number };
 
@@ -75,7 +82,7 @@ async function fetchSnapshot(): Promise<Snapshot | null> {
 let bootstrapped = false;
 function bootstrap(snap: Snapshot) {
   if (bootstrapped) return;
-  const stateFile = path.join(process.cwd(), ".executor-guard.json");
+  const stateFile = guardStateFile();
   if (existsSync(stateFile)) {
     bootstrapped = true;
     return;
@@ -97,14 +104,17 @@ export async function crossGuardGate(): Promise<GuardDecision> {
   bootstrap(snap);
   // restore the persisted floor/day counter (redeploy-safe). Fail closed
   // when the day baseline cannot be restored mid-day: re-baselining at the
-  // current realized would undercount the $900 consistency day.
+  // current realized would undercount the $900 consistency day. BOTH the
+  // DB and the guard state file count as a restorable source — with
+  // neither (2026-10-07: no DATABASE_URL + ephemeral cwd on redeploy) a
+  // mid-day restart must halt, never silently re-baseline.
   const hydrated = await hydrateGuardFromDb();
   const s = guardState();
-  if (!hydrated && s.dayKey === "" && snap.realized !== 0) {
+  if (!hydrated && !guardRestoredFromFile() && s.dayKey === "" && snap.realized !== 0) {
     return {
       verdict: "halt-baseline",
       reason:
-        "day baseline unrestorable (guard_state DB unreachable) with realized ≠ 0 — refusing to re-baseline mid-day (consistency counter)",
+        "day baseline unrestorable (guard_state DB unreachable AND no state file) with realized ≠ 0 — refusing to re-baseline mid-day (consistency counter)",
     };
   }
   return guardCheck(snap);
@@ -131,4 +141,35 @@ export async function crossGuardSizeMult(): Promise<number> {
   if (!Number.isFinite(ddHi) || ddHi <= 0) return 1;
   const s = guardState();
   return s.ddHalved ? Number(process.env.DD_HALF_MULT ?? "0.5") : 1;
+}
+
+/* ------------------------------------------------------------------ *
+ * Day-P&L keep-alive poll (2026-10-07 fix): guardCheck used to run ONLY
+ * on entry attempts, so dayPnl/dayPeak froze whenever nothing entered
+ * (the RTH cap skips cards feed-side, before the gate — the 2026-10-07
+ * afternoon showed dayPnl 0 with +$500.9 realized). This timer runs the
+ * SAME guardCheck on the cached snapshot every minute: the day tracking
+ * (rollover, dayPeak, profit arm, give-back reference) stays live
+ * between entries. The entry gate itself is unchanged — the poll's
+ * verdict is logged, never acted on.
+ * ------------------------------------------------------------------ */
+
+let pollStarted = false;
+
+export function startCrossGuardPoll(intervalMs = 60_000): void {
+  if (pollStarted || !enabled()) return;
+  pollStarted = true;
+  setInterval(() => {
+    void (async () => {
+      try {
+        const snap = await fetchSnapshot();
+        if (!snap) return; // unreadable account — the gate still fails closed at entry
+        bootstrap(snap);
+        const d = guardCheck(snap);
+        if (d.verdict !== "ok") console.log(`[guard] poll: ${d.verdict} — ${d.reason}`);
+      } catch {
+        /* the poll is best-effort — never crash the server on it */
+      }
+    })();
+  }, intervalMs);
 }

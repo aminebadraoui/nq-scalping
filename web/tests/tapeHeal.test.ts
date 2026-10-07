@@ -85,4 +85,29 @@ test("the next stall after a heal restarts the ladder from step 1", () => {
   assert.equal(r.action, "force-fetch");
   assert.equal(r.next.forcedFetches, 1);
   assert.equal(r.next.sinceAt, T + 3_600_000);
+  assert.equal(r.next.healedAt, T); // last close survives the new episode
+  assert.equal(r.next.episodes, 1); // cumulative count is NOT wiped (the 2026-10-07 "episode 1 ×8" bug)
+});
+
+test("episode counter accumulates across multiple stalls (the episode-1-always bug)", () => {
+  // episode 1: starts, one fetch, closes
+  let r = tapeHealDecision(seedTapeHeal(), T, TAPE_HEAL_TAIL_ALERT, 100);
+  assert.equal(r.next.episodes, 0);
+  r = tapeHealDecision(r.next, T + 90_000, 1, 100); // tail confirms
+  assert.equal(r.next.episodes, 1);
+  assert.equal(r.next.healedAt, T + 90_000);
+  // episode 2: starts again, one fetch, closes
+  r = tapeHealDecision(r.next, T + 3_600_000, TAPE_HEAL_TAIL_ALERT, 100);
+  assert.equal(r.action, "force-fetch");
+  assert.equal(r.next.episodes, 1); // still 1 while the new episode is open
+  assert.equal(r.next.forcedFetches, 1); // per-episode counters reset
+  r = tapeHealDecision(r.next, T + 3_660_000, 2, 100); // tail confirms
+  assert.equal(r.next.episodes, 2); // the SECOND close must say episode 2
+  // episode 3: full ladder (2 fetches + reconnect) then closes
+  r = tapeHealDecision(r.next, T + 7_200_000, TAPE_HEAL_TAIL_ALERT, 100);
+  r = tapeHealDecision(r.next, T + 7_260_000, TAPE_HEAL_TAIL_ALERT, 100);
+  r = tapeHealDecision(r.next, T + 7_320_000, TAPE_HEAL_TAIL_ALERT, 100);
+  assert.equal(r.action, "force-reconnect");
+  r = tapeHealDecision(r.next, T + 7_350_000, 3, 100);
+  assert.equal(r.next.episodes, 3);
 });

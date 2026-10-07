@@ -225,6 +225,30 @@ export function tapeGateDecision(
   return { hold, alert };
 }
 
+/** How long the self-heal ladder may work an episode before the operator
+ *  page fires (2026-10-07: 8 stalls, 8 auto-heals, 8 noisy pages — most
+ *  episodes closed within ~1 min via the first forced fetch). */
+export const TAPE_PAGE_DELAY_MS = 120_000;
+
+/**
+ * Should the operator actually be paged, given the self-heal ladder's
+ * live state? Pure — unit-tested (tests/liveTapeGate.test.ts).
+ *   - ladder absent or not in an episode  → page (a blind gate must never
+ *     be silenced: tail ≥ 8 with no ladder running is itself the alarm)
+ *   - ladder escalated (step ≥ 2: forced fetches failed → reconnect/
+ *     re-seed) → page
+ *   - episode younger than TAPE_PAGE_DELAY_MS → hold the page (the
+ *     ladder's first forced fetch usually confirms the tail in seconds)
+ */
+export function tapePageDecision(
+  heal: { sinceAt: number; step: number } | null,
+  now: number,
+): boolean {
+  if (!heal || heal.sinceAt === 0) return true;
+  if (heal.step >= 2) return true;
+  return now - heal.sinceAt >= TAPE_PAGE_DELAY_MS;
+}
+
 /* ------------------------------------------------------------------ *
  * Expansion retrace entry — the 2026-10-02 trade review's fix for the
  * huge-bar expansion family, validated on 649 sessions (entryQuality
@@ -399,6 +423,9 @@ class SignalFeed {
   /** last stall Telegram alert (ms) — one per episode, re-paged every
    *  TAPE_GATE_REALERT_MS while the tail stays unconfirmed */
   private tapeGateAlertedAt = 0;
+  /** last console line for a HELD page (throttle — the alert re-evaluates
+   *  every scan while the ladder works the episode) */
+  private tapeGateHeldLoggedAt = 0;
 
   /** Cards may only fire on a bar confirmed by the vendor footprint candle.
    *  The tick-built tape undercounts volume (~7% of true volume measured
@@ -426,8 +453,25 @@ class SignalFeed {
     if (!d.hold) return false;
     this.logTapeGate(scan);
     if (d.alert) {
-      this.tapeGateAlertedAt = now;
       if (marketOpenAt(now)) {
+        // the self-heal ladder (lib/live.ts) works the same stall the
+        // pager sees: hold the page while an episode is young and the
+        // ladder hasn't escalated — 8 pages for 8 self-healed stalls on
+        // 2026-10-07 was pure noise. A blind gate (no ladder) still pages.
+        const heal = getLive().state.heal ?? null;
+        if (!tapePageDecision(heal ? { sinceAt: heal.sinceAt, step: heal.step } : null, now)) {
+          // keep alertedAt stale so the page still fires the moment the
+          // ladder escalates or the episode outlives the delay; throttle
+          // the console line so a long episode doesn't spam the log
+          if (now - this.tapeGateHeldLoggedAt >= 60_000) {
+            this.tapeGateHeldLoggedAt = now;
+            console.log(
+              `[tape-gate] ${scan}: ${tail} unconfirmed bars — paging held, self-heal ladder active (step ${heal?.step ?? "-"} · ${Math.round((now - (heal?.sinceAt ?? now)) / 1000)}s)`,
+            );
+          }
+          return true;
+        }
+        this.tapeGateAlertedAt = now;
         const et = new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" });
         void this.push(
           [
@@ -442,6 +486,7 @@ class SignalFeed {
         // market closed (weekend / daily 17:00–18:00 halt): no candles can
         // complete, so the tail cannot confirm and re-paging is pure noise —
         // the self-heal ladder pauses too; the pager re-arms after reopen
+        this.tapeGateAlertedAt = now;
         console.log(`[tape-gate] ${scan}: ${tail} unconfirmed bars while the market is closed — paging suspended`);
       }
     }

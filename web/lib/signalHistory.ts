@@ -15,6 +15,7 @@
  * ------------------------------------------------------------------ */
 
 import { dbEnabled, getDb } from "./gcdb";
+import { appendDaybook } from "./daybook";
 
 export type SignalSide = "long" | "short" | "none";
 
@@ -176,6 +177,28 @@ export async function recordSignal(input: SignalHistoryInput): Promise<SignalHis
   const mem = getMemory();
   mem.unshift(entry);
   if (mem.length > MAX_MEMORY) mem.length = MAX_MEMORY;
+  // daybook hook: the DB-less journal gets the FULL decision set (cards AND
+  // vetoes/skips) — the insight loop must not learn from a biased sample
+  // when Neon is unreachable. Best-effort, never blocks a card.
+  appendDaybook({
+    t: "signal",
+    at: entry.ts,
+    day: entry.day,
+    timeET: entry.timeET,
+    symbol: entry.symbol,
+    side: entry.side,
+    price: entry.price,
+    entry: entry.entry,
+    stop: entry.stop,
+    target: entry.target,
+    size: entry.size,
+    verdict: entry.verdict,
+    headline: entry.headline,
+    source: entry.source,
+    sent: entry.sent,
+    reason: entry.reason,
+    features: entry.features,
+  });
   await persist(entry);
   return entry;
 }
