@@ -16,12 +16,18 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+# Coolify passes SOURCE_COMMIT (the deployed git SHA) as a build arg — the
+# daybook variation fingerprint uses it (empty → fingerprint falls back to
+# the settings hash alone).
+ARG SOURCE_COMMIT
+ENV BUILD_SHA=${SOURCE_COMMIT}
 
 COPY --from=build /app/public ./public
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 
-# collected feed data can be mounted here (GC_DATA_DIR=/app/data)
+# collected feed data can be mounted here (GC_DATA_DIR=/app/data) — the
+# daybook journal + guard state file live on this volume
 RUN mkdir -p /app/data
 
 EXPOSE 3000

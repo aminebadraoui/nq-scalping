@@ -2,8 +2,94 @@ import { dbEnabled, getDb } from "@/lib/gcdb";
 import { familyOf } from "@/lib/tradeStats";
 import { edgeStatuses, REPLAY_EXPR_BASELINES } from "@/lib/edgeMonitor";
 import { streakTable, drawdownTable, hourMatrix, hourTable } from "@/lib/journalMetrics";
+import { listDaybookDays, readDaybookDay, type DaybookDaySummary, type DaybookRecord } from "@/lib/daybook";
 
 export const dynamic = "force-dynamic";
+
+/** DB-less fallback (2026-10-07): when Neon is unreachable the journal is
+ *  served from the daybook consolidation summaries — per-day headline +
+ *  trades. The richer analytics (equity curve, scoreboard, analysis) are
+ *  DB-only and come back the moment DATABASE_URL returns. */
+function daybookPayload() {
+  const days = listDaybookDays().map((d) => {
+    const rows = readDaybookDay(d);
+    const summaries = rows
+      .filter((r): r is Extract<DaybookRecord, { t: "dayend" }> => r.t === "dayend")
+      .map((r) => r.summary as unknown as DaybookDaySummary);
+    return { day: d, rows, summaries };
+  });
+  const sum = (f: (s: DaybookDaySummary) => number) => days.reduce((acc, d) => acc + d.summaries.reduce((a, s) => a + f(s), 0), 0);
+
+  const allTrades = days.flatMap((d) => d.summaries.flatMap((s) => s.trades ?? []));
+  const matched = sum((s) => s.tradesN);
+  const wins = sum((s) => s.wins);
+  const losses = sum((s) => s.losses);
+  const flats = sum((s) => s.flats);
+  const grossUsd = Math.round(sum((s) => s.grossUsd) * 100) / 100;
+  const netUsd = Math.round(sum((s) => s.netUsd) * 100) / 100;
+  const commissions = Math.round(sum((s) => s.commissions) * 100) / 100;
+  const dayList = days
+    .map((d) => ({
+      day: d.day,
+      n: d.summaries.reduce((a, s) => a + s.tradesN, 0),
+      wins: d.summaries.reduce((a, s) => a + s.wins, 0),
+      losses: d.summaries.reduce((a, s) => a + s.losses, 0),
+      grossUsd: Math.round(d.summaries.reduce((a, s) => a + s.grossUsd, 0) * 100) / 100,
+      netUsd: Math.round(d.summaries.reduce((a, s) => a + s.netUsd, 0) * 100) / 100,
+      commissions: Math.round(d.summaries.reduce((a, s) => a + s.commissions, 0) * 100) / 100,
+    }))
+    .filter((d) => d.n > 0)
+    .sort((a, b) => (a.day < b.day ? 1 : -1));
+  const nets = dayList.map((d) => d.netUsd);
+  const trades = allTrades.map((t) => ({
+    signal_key: `${t.day}|${t.timeET}|${t.side}`,
+    day: t.day,
+    time_et: t.timeET,
+    side: t.side,
+    contracts: t.contracts,
+    verdict: t.verdict,
+    family: familyOf(t.verdict),
+    gross_usd: t.grossUsd,
+    net_usd: t.netUsd,
+    commissions: t.commissions,
+    result: t.result,
+    status: "matched",
+    source: "daybook",
+  }));
+  return {
+    ok: true,
+    source: "daybook",
+    runs: [],
+    trades,
+    headline: {
+      netUsd,
+      grossUsd,
+      commissions,
+      matched,
+      wins,
+      losses,
+      flats,
+      winRate: matched > 0 ? wins / matched : null,
+      expectancy: matched > 0 ? netUsd / matched : null,
+      bestDayNet: nets.length ? Math.max(...nets) : null,
+      worstDayNet: nets.length ? Math.min(...nets) : null,
+    },
+    days: dayList,
+    equity: [],
+    ledger: [],
+    account: null,
+    streaks: [],
+    drawdowns: [],
+    matrix: [],
+    hours: [],
+    manual: [],
+    manualDays: [],
+    manualTotal: null,
+    scoreboard: [],
+    scoreRange: "daybook",
+    analysis: null,
+  };
+}
 
 /** Reconciled trades (scripts/reconcileTrades.ts output): the latest run's
  *  summary plus its signal↔fill rows — the dashboard's trade review panel.
@@ -15,7 +101,7 @@ export const dynamic = "force-dynamic";
  *  month → all-time. Data-only: no live feed, no execution state. */
 export async function GET(request: Request) {
   if (!dbEnabled()) {
-    return Response.json({ ok: false, reason: "no DATABASE_URL" });
+    return Response.json(daybookPayload());
   }
   const db = getDb();
   try {
@@ -297,6 +383,12 @@ export async function GET(request: Request) {
         : null,
     });
   } catch (e) {
-    return Response.json({ ok: false, reason: String(e) });
+    // DB configured but unreachable (Neon quota etc.) — serve the daybook
+    // journal instead of an error page
+    try {
+      return Response.json(daybookPayload());
+    } catch {
+      return Response.json({ ok: false, reason: String(e) });
+    }
   }
 }

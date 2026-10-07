@@ -12,6 +12,22 @@
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === "edge") return;
   try {
+    // daybook boot record: the variation fingerprint + full settings
+    // snapshot, written before anything trades (best-effort, never throws)
+    const { bootDaybook } = await import("./lib/daybook");
+    bootDaybook();
+  } catch {
+    /* ignore */
+  }
+  try {
+    // guard day-P&L keep-alive: day tracking stays live between entries
+    // (the entry gate itself is unchanged — the poll's verdict is logged)
+    const { startCrossGuardPoll } = await import("./lib/crossGuard");
+    startCrossGuardPoll();
+  } catch {
+    /* ignore */
+  }
+  try {
     const { getSignalFeed } = await import("./lib/signalFeed");
     getSignalFeed();
   } catch {
