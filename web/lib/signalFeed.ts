@@ -1110,7 +1110,7 @@ class SignalFeed {
           `<code>SIZE    ~${sizeStrArm} at fill</code>`,
           ``,
           `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}no market order — waits up to ${EXP_RETRACE_BARS} min for the retrace, skipped if untraded`,
-          `<i>${STATS.momentum.stat}</i>`,
+          `<i>${STATS.momentum.expRetrace}</i>`,
         ].join("\n");
         const res = await this.push(armText);
         if (!res.sent) this.lastError = res.reason;
