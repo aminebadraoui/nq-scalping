@@ -33,6 +33,7 @@ import { getLive } from "./live";
 import { logExec } from "./execLog";
 import { signalWindowOpen } from "./marketHours";
 import { newsBlockedNow } from "./newsGate";
+import { noteRthExit } from "./rthExitLog";
 
 export type Expectation = {
   key: string;
@@ -67,7 +68,79 @@ const MNQ = "MNQ";
 let pending = new Map<string, Expectation>();
 let alerted = new Set<string>();
 let failedKeys = new Set<string>();
-let fillCache: { at: number; fills: Array<{ ts: number; action: string; qty: number }> } | null = null;
+let fillCache: { at: number; fills: Array<{ ts: number; action: string; qty: number; price: number }> } | null = null;
+
+/* ---- RTH winner-exit tracking (feeds the counter-signal gate) -------- *
+ * Bracket exits are exchange-side — the system never sees the exit fill
+ * directly. This tracker learns exits from the broker: the open RTH
+ * position is noted at fill confirmation, and a 30s poll detects the
+ * flat transition; the opposite-side session fills since the entry are
+ * the exit leg → win/loss → lib/rthExitLog. It can only ever SKIP a
+ * later card via the feed's counter-gate — never place or change one. */
+
+type OpenRthPos = { dir: "long" | "short"; entryPrice: number; at: number };
+
+const gp = globalThis as unknown as { __gcOpenRthPos?: OpenRthPos | null };
+function openRthPos(): OpenRthPos | null {
+  return gp.__gcOpenRthPos ?? null;
+}
+function setOpenRthPos(p: OpenRthPos | null): void {
+  gp.__gcOpenRthPos = p;
+}
+
+async function readMnqHeld(): Promise<number> {
+  const key = process.env.CROSSTRADE_KEY ?? "";
+  const account = process.env.CROSSTRADE_ACCOUNT ?? "";
+  try {
+    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`, {
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
+    if (!j.success) return -1;
+    let held = 0;
+    for (const p of j.data ?? []) {
+      if (String(p.instrument ?? p.contractName ?? "").includes(MNQ)) held += Number(p.qty ?? p.quantity ?? 0);
+    }
+    return held;
+  } catch {
+    return -1; // read failure — retry next poll, never guess
+  }
+}
+
+async function pollRthExit(): Promise<void> {
+  const pos = openRthPos();
+  if (!pos) return;
+  const held = await readMnqHeld();
+  if (held !== 0) return; // still open (or unreadable — retry next poll)
+  // flat transition: the exit just happened — the opposite-side session
+  // fills since the entry ARE the exit leg
+  setOpenRthPos(null);
+  const fills = await fetchFills();
+  const want = pos.dir === "long" ? "Sell" : "Buy";
+  const exits = fills.filter((f) => f.action === want && f.ts > pos.at);
+  if (!exits.length) return;
+  const qty = exits.reduce((s, f) => s + f.qty, 0);
+  if (qty <= 0) return;
+  const exitAvg = exits.reduce((s, f) => s + f.price * f.qty, 0) / qty;
+  const pts = (exitAvg - pos.entryPrice) * (pos.dir === "long" ? 1 : -1);
+  if (pts > 0) {
+    noteRthExit(pos.dir, exitAvg, Date.now());
+    console.log(`[rth-exit] ${pos.dir.toUpperCase()} winner logged — exit ${exitAvg.toFixed(2)} (+${pts.toFixed(1)} pts from signal ${pos.entryPrice.toFixed(2)})`);
+  }
+}
+
+let exitPollStarted = false;
+
+/** 30s broker poll that turns flat transitions into RTH winner-exit
+ *  records for the counter-signal gate. Started from instrumentation. */
+export function startRthExitPoll(intervalMs = 30_000): void {
+  if (exitPollStarted || !enabled()) return;
+  exitPollStarted = true;
+  setInterval(() => {
+    void pollRthExit().catch(() => {});
+  }, intervalMs);
+}
 
 function enabled(): boolean {
   return (
@@ -87,7 +160,7 @@ async function alert(text: string) {
   await sendTelegram(text, { parseMode: "HTML" }).catch(() => {});
 }
 
-async function fetchFills(): Promise<Array<{ ts: number; action: string; qty: number }>> {
+async function fetchFills(): Promise<Array<{ ts: number; action: string; qty: number; price: number }>> {
   if (fillCache && Date.now() - fillCache.at < FILL_CACHE_MS) return fillCache.fills;
   try {
     const res = await fetch("https://app.crosstrade.io/v1/api/tv/fills", {
@@ -98,12 +171,12 @@ async function fetchFills(): Promise<Array<{ ts: number; action: string; qty: nu
       signal: AbortSignal.timeout(15_000),
     });
     const j = (await res.json()) as { data?: Array<{ data?: Array<Record<string, unknown>> }> };
-    const fills: Array<{ ts: number; action: string; qty: number }> = [];
+    const fills: Array<{ ts: number; action: string; qty: number; price: number }> = [];
     for (const env of j.data ?? []) {
       for (const f of env.data ?? []) {
         const ts = Date.parse(String(f.timestamp ?? ""));
         if (!Number.isFinite(ts)) continue;
-        fills.push({ ts, action: String(f.action), qty: Number(f.qty ?? 0) });
+        fills.push({ ts, action: String(f.action), qty: Number(f.qty ?? 0), price: Number(f.price ?? 0) });
       }
     }
     fillCache = { at: Date.now(), fills };
@@ -274,6 +347,11 @@ export async function checkExpectations(): Promise<void> {
     fills = fills ?? (await fetchFills());
     if (fillMatches(e, fills, now)) {
       pending.delete(key);
+      // counter-gate tracking: an RTH entry just filled → note the open
+      // position so the exit poll can log its winning exit on flat
+      if (e.label.startsWith("rth ") && !e.scaleOut) {
+        setOpenRthPos({ dir: e.intent.dir, entryPrice: e.intent.entry, at: now });
+      }
       if (e.limit) {
         // the resting limit filled — the position exists, brackets are
         // exchange-side; register the profile time exit from the FILL time

@@ -63,6 +63,7 @@ import { getOverrides, decideSignal } from "./strategyOverrides";
 import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations, attachLimitOrderId } from "./execWatch";
+import { counterGateDecision, counterGateParams } from "./rthExitLog";
 import { momentumProfile, rthProfile, applyProfile, timeExitAt, type FamilyProfile } from "./profile";
 import { registerTimeExit, checkTimeExits } from "./timeExit";
 import { logExec } from "./execLog";
@@ -1529,12 +1530,54 @@ class SignalFeed {
         continue;
       }
       this.rthSent.add(key);
+      // counter-signal gate (RTH_COUNTER_GATE_MIN / RTH_COUNTER_GATE_PTS,
+      // owner-approved): skip a card whose entry sits within PTS of an
+      // opposite-side RTH card's WINNING exit in the last MIN minutes —
+      // the trade-9 pattern (12:54 short stopped in 6s right after the
+      // 12:44 long hit target in the same zone). A veto only: the skip is
+      // journaled to the daybook like every other decision.
+      const gate = counterGateParams();
+      if (gate.enabled) {
+        const g = counterGateDecision(s.dir, s.entry, Date.now(), gate.minMs, gate.pts);
+        if (g.block && g.winner) {
+          const mins = Math.max(1, Math.round((Date.now() - g.winner.exitAt) / 60_000));
+          const es = esCardChips(esCtx, nqMid, s, false);
+          const rn = roundNumberChips(s);
+          const gch = gapChips(fp, s, gaps);
+          const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
+          console.log(
+            `[rth] counter-gate: skipping ${key} — opposite ${g.winner.dir} winner exited ${g.winner.exitPrice.toFixed(2)} ${mins}m ago within ${gate.pts} pts`,
+          );
+          await this.recordSkip({
+            timeET: cdtToET(s.t),
+            day: s.d,
+            side: s.dir,
+            price: s.entry,
+            entry: s.entry,
+            stop: s.stop,
+            target: s.target,
+            verdict: "rth soft-continuation (experimental)",
+            headline: `NQ RTH ${s.dir}`,
+            reason: `counter-gate (opposite ${g.winner.dir} winner ${mins}m ago within ${gate.pts} pts)`,
+            features: signalFeatures(s as unknown as Record<string, unknown>, {
+              family: "rth",
+              rejectedBy: [
+                `counter-gate min=${process.env.RTH_COUNTER_GATE_MIN ?? "0"} pts=${process.env.RTH_COUNTER_GATE_PTS ?? "0"}`,
+              ],
+              ...es.features,
+              ...rn.features,
+              ...gch.features,
+              ...wall.features,
+            }),
+          });
+          continue;
+        }
+      }
       const rthCap = rthMaxCardsPerDay();
       if (rthCap > 0) {
         const sent = (this.rthDayCount.get(s.d) ?? 0) + 1;
         this.rthDayCount.set(s.d, sent);
-        if (sent > rthCap) {
-          const es = esCardChips(esCtx, nqMid, s, false);
+        if (sent > rthCap) {          const es = esCardChips(esCtx, nqMid, s, false);
           const rn = roundNumberChips(s);
           const gch = gapChips(fp, s, gaps);
           const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);

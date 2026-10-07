@@ -28,6 +28,14 @@ export async function register(): Promise<void> {
     /* ignore */
   }
   try {
+    // RTH winner-exit poll: feeds the counter-signal gate's recent-exit
+    // log (bracket exits are exchange-side; flat transitions reveal them)
+    const { startRthExitPoll } = await import("./lib/execWatch");
+    startRthExitPoll();
+  } catch {
+    /* ignore */
+  }
+  try {
     const { getSignalFeed } = await import("./lib/signalFeed");
     getSignalFeed();
   } catch {
