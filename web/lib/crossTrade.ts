@@ -1253,7 +1253,8 @@ export async function repairNakedPosition(intent: OrderIntent, label: string, ke
   ).catch(() => {});
 }
 
-const BRACKET_VERIFY_DELAY_MS = 4000;
+const BRACKET_VERIFY_FIRST_MS = 1500; // Tradovate's late rejections land ~10ms after accept — 1.5s catches them
+const BRACKET_VERIFY_DELAY_MS = 4000;   // second, backstop check for slower risk-layer rejections
 
 /** the latest entry-side fill since `sinceMs` (the fill-reconciled truth
  *  for where the trade actually got in — the re-anchor anchor). */
@@ -1283,11 +1284,167 @@ async function latestEntryFill(intent: OrderIntent, sinceMs: number): Promise<{ 
   }
 }
 
-/** verify the OSO bracket legs a few seconds after placement — the
- *  executor's global late-rejection check. Tradovate can accept a place
- *  and reject the stop leg ~10ms later (InvalidPrice on a crossed stop);
- *  this cancels a still-working entry before it can fill naked, or
- *  repairs immediately when the entry already filled. */
+/** BURST verifier — the executor's post-placement protection loop.
+ *  A trade is punctual, so the system polls like crazy for its first
+ *  20 seconds: one session-orders read every ~1.5s shows the entry,
+ *  stop and target states together (~13 calls per trade), then the 10s
+ *  watchdog owns the rest of the trade's life. Stops the moment the
+ *  bracket is confirmed (entry Filled + stop Working), acts instantly
+ *  on a rejected/cancelled stop leg (cancel the resting entry, or
+ *  repair the filled position), and runs the fill-anchored re-bracket
+ *  check once the entry fills. Also registers the active bracket so
+ *  the WebSocket order stream (lib/ctStream.ts) can react to pushed
+ *  Rejected events without waiting for a poll. */
+const BURST_FIRST_MS = 500;
+const BURST_INTERVAL_MS = 1500;
+const BURST_MAX_POLLS = 14;
+const BURST_WINDOW_MS = 20_000;
+
+export type ActiveBracket = {
+  label: string;
+  key: string;
+  intent: OrderIntent;
+  entryOrderId?: string;
+  nativeEntryId?: string | number;
+  stopChildId?: string | number;
+  targetChildId?: string | number;
+  placedAt: number;
+};
+
+const gpBracket = globalThis as unknown as { __gcActiveBracket?: ActiveBracket | null };
+export function activeBracket(): ActiveBracket | null {
+  return gpBracket.__gcActiveBracket ?? null;
+}
+export function setActiveBracket(b: ActiveBracket | null): void {
+  gpBracket.__gcActiveBracket = b;
+}
+
+/** one session-orders read: every current-session order (all statuses —
+ *  Rejected and Cancelled rows included) across the linked account. */
+async function readSessionOrdersREST(): Promise<{ ok: boolean; rows: Array<Record<string, unknown>> }> {
+  const cfg = loadConfig();
+  try {
+    const res = await fetch("https://app.crosstrade.io/v1/api/tv/orders", {
+      headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const j = (await res.json()) as { success?: boolean; data?: Array<{ data?: Array<Record<string, unknown>> }> };
+    if (!j.success) return { ok: false, rows: [] };
+    const rows: Array<Record<string, unknown>> = [];
+    for (const env of j.data ?? []) rows.push(...(env.data ?? []));
+    return { ok: true, rows };
+  } catch {
+    return { ok: false, rows: [] };
+  }
+}
+
+function findOrderRow(rows: Array<Record<string, unknown>>, id: string | number | undefined): Record<string, unknown> | null {
+  if (id === undefined) return null;
+  const s = String(id);
+  return rows.find((r) => String(r.id ?? "") === s || String(r.clOrdId ?? "") === s) ?? null;
+}
+
+function rowStatus(r: Record<string, unknown> | null): string {
+  if (!r) return "";
+  return String(r.ordStatus ?? r.orderState ?? "");
+}
+
+const isBad = (s: string) => s === "Rejected" || s === "Canceled";
+const isResting = (s: string) => s === "Working" || s === "OnHold" || s === "Suspended" || s === "";
+
+/** the shared stop-leg-bad reaction (used by the burst poller AND the
+ *  WebSocket stream): cancel a resting entry before it can fill naked,
+ *  or repair the already-filled position. */
+async function reactToBadStopLeg(o: ActiveBracket, entryStatus: string, stopStatus: string): Promise<void> {
+  if (o.entryOrderId && isResting(entryStatus)) {
+    const c = await cancelCrossTradeOrderREST(o.entryOrderId);
+    void logExec({
+      key: o.key,
+      label: o.label,
+      attempt: "watch",
+      outcome: c.ok ? "bracket_rejected_cancel_entry" : "limit_cancel_failed",
+      reason: `stop leg ${stopStatus} (entry ${entryStatus || "unknown"}) — ${c.reason}`,
+    });
+    void sendTelegram(
+      `🚨 <b>STOP LEG ${stopStatus.toUpperCase()} AT PLACEMENT — entry cancelled</b> — <code>${o.label}</code>\n` +
+        `Tradovate rejected the OSO stop (InvalidPrice risk) — the resting entry was cancelled so it cannot fill unprotected.` +
+        (c.ok ? "" : `\n<b>CANCEL FAILED — verify manually NOW:</b> ${c.reason}`),
+      { parseMode: "HTML" },
+    ).catch(() => {});
+    return;
+  }
+  // the entry already filled (or is a market entry we cannot cancel). A
+  // fast full OCO cycle also lands here (target hit within seconds → the
+  // stop shows Canceled with the account flat) — confirm a position
+  // actually exists before repairing.
+  const flat = await readMnqFlatREST();
+  if (flat === true) return; // normal OCO completion, nothing to repair
+  void logExec({ key: o.key, label: o.label, attempt: "watch", outcome: "stop_missing", reason: `stop leg ${stopStatus} after entry ${entryStatus}` });
+  void repairNakedPosition(o.intent, o.label, o.key);
+}
+
+/** one burst poll: reads the session orders, decides, acts. Returns
+ *  "done" when the bracket is confirmed or handled — the loop stops. */
+async function burstPollOnce(o: ActiveBracket): Promise<"done" | "continue"> {
+  const ords = await readSessionOrdersREST();
+  if (!ords.ok) return "continue"; // unreadable — keep polling while the window lasts
+  const entry = findOrderRow(ords.rows, o.nativeEntryId !== undefined ? o.nativeEntryId : o.entryOrderId);
+  const stop = findOrderRow(ords.rows, o.stopChildId);
+  const target = findOrderRow(ords.rows, o.targetChildId);
+  const entryStatus = rowStatus(entry);
+  const stopStatus = rowStatus(stop);
+  const targetStatus = rowStatus(target);
+
+  if (isBad(stopStatus)) {
+    await reactToBadStopLeg(o, entryStatus, stopStatus);
+    return "done";
+  }
+  if (isBad(entryStatus)) return "done"; // entry rejected/cancelled — nothing will fill
+  if (isBad(targetStatus) && !isBad(stopStatus)) {
+    void logExec({ key: o.key, label: o.label, attempt: "watch", outcome: "target_missing", reason: `target leg ${targetStatus} — stop remains working` });
+    void sendTelegram(`⚠️ <b>TARGET LEG ${targetStatus.toUpperCase()}</b> — <code>${o.label}</code>\nstop remains working; the trade will exit at the stop or by time.`, { parseMode: "HTML" }).catch(() => {});
+    return "done";
+  }
+  if (entryStatus === "Filled" && !isBad(stopStatus)) {
+    // healthy bracket, entry filled → fill-anchored re-bracket
+    // (2026-10-08 −$1,056 stop-slippage incident): if the fill drifted
+    // past the signal, the signal-anchored stop is compressed (the 12:16
+    // card's 3.2-pt stop became 0.8 pts) and a flush runs it over with
+    // huge slippage. Re-anchor the bracket to the ACTUAL fill so the
+    // planned risk is the risk the trade carries.
+    const fill = await latestEntryFill(o.intent, Date.now() - 30_000);
+    if (fill) {
+      const reanchor = reanchorBracketForFill(o.intent, fill.price);
+      if (reanchor) {
+        const re = await rearmCrossTradeBracketREST({
+          symbol: o.intent.symbol,
+          dir: o.intent.dir,
+          stopPrice: reanchor.stop,
+          targetPrice: reanchor.target,
+        });
+        void logExec({
+          key: o.key,
+          label: o.label,
+          attempt: "watch",
+          outcome: re.ok ? "bracket_reanchored" : "stop_rearm_failed",
+          reason: re.ok
+            ? `fill ${fill.price.toFixed(2)} drifted past the signal — stop re-anchored ${reanchor.stop.toFixed(2)} · target ${reanchor.target.toFixed(2)} — ${re.reason}`
+            : `re-anchor failed: ${re.reason}`,
+        });
+        void sendTelegram(
+          re.ok
+            ? `⚓ <b>BRACKET RE-ANCHORED TO THE FILL</b> — <code>${o.label}</code>\nfill ${fill.price.toFixed(2)} drifted from the signal ${o.intent.entry.toFixed(2)} — stop moved to ${reanchor.stop.toFixed(2)} · target ${reanchor.target.toFixed(2)} so the planned risk holds.`
+            : `🚨 <b>RE-ANCHOR FAILED</b> — <code>${o.label}</code>\nfill drifted and the compressed bracket could not be re-anchored (${re.reason}) — the watchdog will repair if the stop is missing.`,
+          { parseMode: "HTML" },
+        ).catch(() => {});
+        return "done"; // the bracket ids changed with the re-arm — stop checking the old ones
+      }
+    }
+    return "done"; // confirmed healthy — the 10s watchdog owns the rest of the trade's life
+  }
+  return "continue"; // entry still resting — keep polling within the window
+}
+
 export function verifyBracketsAfterPlace(o: {
   label: string;
   key: string;
@@ -1299,96 +1456,60 @@ export function verifyBracketsAfterPlace(o: {
 }): void {
   if (process.env.EXECUTE_LIVE !== "1") return;
   if (o.stopChildId === undefined && o.targetChildId === undefined && o.nativeEntryId === undefined) return;
-  setTimeout(() => {
-    void (async () => {
-      const cfg = loadConfig();
-      const headers = { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" };
-      const status = async (id: string | number): Promise<string> => {
-        try {
-          const res = await fetch(
-            `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/orders/${encodeURIComponent(String(id))}/status`,
-            { headers, signal: AbortSignal.timeout(15_000) },
-          );
-          const j = (await res.json()) as { success?: boolean; data?: { status?: string } };
-          return j.success ? String(j.data?.status ?? "") : "";
-        } catch {
-          return "";
-        }
-      };
-      const entryStatus = o.nativeEntryId !== undefined ? await status(o.nativeEntryId) : o.entryOrderId ? await status(o.entryOrderId) : "";
-      const stopStatus = o.stopChildId !== undefined ? await status(o.stopChildId) : "";
-      const targetStatus = o.targetChildId !== undefined ? await status(o.targetChildId) : "";
-      const bad = (s: string) => s === "Rejected" || s === "Canceled";
-      const resting = (s: string) => s === "Working" || s === "OnHold" || s === "Suspended" || s === "";
-      if (bad(stopStatus)) {
-        if (o.entryOrderId && resting(entryStatus)) {
-          // entry still resting — cancel it so it can never fill naked
-          const c = await cancelCrossTradeOrderREST(o.entryOrderId);
-          void logExec({
-            key: o.key,
-            label: o.label,
-            attempt: "watch",
-            outcome: c.ok ? "bracket_rejected_cancel_entry" : "limit_cancel_failed",
-            reason: `stop leg ${stopStatus} (entry ${entryStatus || "unknown"}) — ${c.reason}`,
-          });
-          void sendTelegram(
-            `🚨 <b>STOP LEG ${stopStatus.toUpperCase()} AT PLACEMENT — entry cancelled</b> — <code>${o.label}</code>\n` +
-              `Tradovate rejected the OSO stop (InvalidPrice risk) — the resting entry was cancelled so it cannot fill unprotected.` +
-              (c.ok ? "" : `\n<b>CANCEL FAILED — verify manually NOW:</b> ${c.reason}`),
-            { parseMode: "HTML" },
-          ).catch(() => {});
-        } else {
-          // the entry already filled (or is a market entry we cannot
-          // cancel). A fast full OCO cycle also lands here (target hit
-          // within seconds → the stop shows Canceled with the account
-          // flat) — confirm a position actually exists before repairing.
-          const flat = await readMnqFlatREST();
-          if (flat === true) return; // normal OCO completion, nothing to repair
-          void logExec({ key: o.key, label: o.label, attempt: "watch", outcome: "stop_missing", reason: `stop leg ${stopStatus} after entry ${entryStatus}` });
-          void repairNakedPosition(o.intent, o.label, o.key);
-        }
-        return;
-      }
-      if (bad(targetStatus) && !bad(stopStatus)) {
-        void logExec({ key: o.key, label: o.label, attempt: "watch", outcome: "target_missing", reason: `target leg ${targetStatus} — stop remains working` });
-        void sendTelegram(`⚠️ <b>TARGET LEG ${targetStatus.toUpperCase()}</b> — <code>${o.label}</code>\nstop remains working; the trade will exit at the stop or by time.`, { parseMode: "HTML" }).catch(() => {});
-        return;
-      }
-      // healthy bracket, entry filled → fill-anchored re-bracket
-      // (2026-10-08 −$1,056 stop-slippage incident): if the fill drifted
-      // past the signal, the signal-anchored stop is compressed (the 12:16
-      // card's 3.2-pt stop became 0.8 pts) and a flush runs it over with
-      // huge slippage. Re-anchor the bracket to the ACTUAL fill so the
-      // planned risk is the risk the trade carries.
-      if (entryStatus === "Filled" && !bad(stopStatus)) {
-        const fill = await latestEntryFill(o.intent, Date.now() - BRACKET_VERIFY_DELAY_MS - 30_000);
-        if (fill) {
-          const reanchor = reanchorBracketForFill(o.intent, fill.price);
-          if (reanchor) {
-            const re = await rearmCrossTradeBracketREST({
-              symbol: o.intent.symbol,
-              dir: o.intent.dir,
-              stopPrice: reanchor.stop,
-              targetPrice: reanchor.target,
-            });
-            void logExec({
-              key: o.key,
-              label: o.label,
-              attempt: "watch",
-              outcome: re.ok ? "bracket_reanchored" : "stop_rearm_failed",
-              reason: re.ok
-                ? `fill ${fill.price.toFixed(2)} drifted past the signal — stop re-anchored ${reanchor.stop.toFixed(2)} · target ${reanchor.target.toFixed(2)} — ${re.reason}`
-                : `re-anchor failed: ${re.reason}`,
-            });
-            void sendTelegram(
-              re.ok
-                ? `⚓ <b>BRACKET RE-ANCHORED TO THE FILL</b> — <code>${o.label}</code>\nfill ${fill.price.toFixed(2)} drifted from the signal ${o.intent.entry.toFixed(2)} — stop moved to ${reanchor.stop.toFixed(2)} · target ${reanchor.target.toFixed(2)} so the planned risk holds.`
-                : `🚨 <b>RE-ANCHOR FAILED</b> — <code>${o.label}</code>\nfill drifted and the compressed bracket could not be re-anchored (${re.reason}) — the watchdog will repair if the stop is missing.`,
-              { parseMode: "HTML" },
-            ).catch(() => {});
-          }
-        }
+  const b: ActiveBracket = { ...o, placedAt: Date.now() };
+  setActiveBracket(b); // the WebSocket stream reacts to pushed events against this
+  let polls = 0;
+  let started = 0;
+  const run = async () => {
+    if (polls >= BURST_MAX_POLLS || (started && Date.now() - started > BURST_WINDOW_MS)) return;
+    if (!started) started = Date.now();
+    polls += 1;
+    const verdict = await burstPollOnce(b);
+    if (verdict === "continue") setTimeout(() => void run(), BURST_INTERVAL_MS);
+    else setActiveBracket(null); // confirmed or handled — no further checks on these ids
+  };
+  setTimeout(() => void run(), BURST_FIRST_MS);
+}
+
+/** the WebSocket order stream calls this when a Tradovate order event
+ *  reports a stop-leg Rejected — react immediately, without waiting for
+ *  the next poll. Two cases: the active just-placed bracket (burst
+ *  window) and a mid-trade rejection of a tracked position's stop
+ *  (evidence-checked: only acts when no working stop covers the side). */
+export async function reactToPushedStopRejection(stopId: string | number, orderAction?: string): Promise<void> {
+  const b = activeBracket();
+  if (b && b.stopChildId !== undefined && String(b.stopChildId) === String(stopId)) {
+    setActiveBracket(null);
+    const entryStatus = await (async () => {
+      if (b.nativeEntryId === undefined && !b.entryOrderId) return "";
+      try {
+        const ords = await readSessionOrdersREST();
+        if (!ords.ok) return "";
+        return rowStatus(findOrderRow(ords.rows, b.nativeEntryId !== undefined ? b.nativeEntryId : b.entryOrderId));
+      } catch {
+        return "";
       }
     })();
-  }, BRACKET_VERIFY_DELAY_MS);
+    await reactToBadStopLeg(b, entryStatus, "Rejected");
+    return;
+  }
+  // mid-trade: a tracked position exists and the stop-side order was
+  // rejected. Act only when the evidence agrees — the working-stop read
+  // must show nothing covering the position (never trust a stray event).
+  const reg = openProtection();
+  if (!reg) return;
+  const stopSide = reg.intent.dir === "long" ? "Sell" : "Buy";
+  if (orderAction && String(orderAction).toLowerCase() !== stopSide.toLowerCase()) return;
+  const ords = await readSessionOrdersREST();
+  if (!ords.ok) return;
+  const hasStop = ords.rows.some((r) => {
+    const st = rowStatus(r);
+    const isStopRow = r.stopPrice !== undefined || String(r.orderType ?? "").toLowerCase().includes("stop");
+    return (st === "Working" || st === "OnHold" || st === "Suspended") && String(r.action ?? "").toLowerCase() === stopSide.toLowerCase() && isStopRow;
+  });
+  if (hasStop) return; // another stop still covers the position — ignore
+  const flat = await readMnqFlatREST();
+  if (flat !== false) return; // no open position — nothing to repair
+  void logExec({ key: `protect|${Date.now()}`, label: "protection stream", attempt: "watch", outcome: "stop_missing", reason: `stop leg ${stopId} Rejected mid-trade (WS event)` });
+  void repairNakedPosition(reg.intent, "protection stream", `protect|${Date.now()}`);
 }

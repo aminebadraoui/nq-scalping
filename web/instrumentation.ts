@@ -46,8 +46,18 @@ export async function register(): Promise<void> {
   try {
     // RTH winner-exit poll: feeds the counter-signal gate's recent-exit
     // log (bracket exits are exchange-side; flat transitions reveal them)
+    // — also the 10s protection watchdog (working-stop verification +
+    // naked-position repair)
     const { startRthExitPoll } = await import("./lib/execWatch");
     startRthExitPoll();
+  } catch {
+    /* ignore */
+  }
+  try {
+    // CrossTrade WebSocket order-event stream: pushed Rejected/Cancelled
+    // events reach the protection layer in <1s, no polling
+    const { startCtOrderStream } = await import("./lib/ctStream");
+    startCtOrderStream();
   } catch {
     /* ignore */
   }

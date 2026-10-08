@@ -103,7 +103,7 @@ function setNakedSince(t: number | null): void {
  *  the bracket with a 1-pt emergency stop. Evidence-based repairs (the
  *  executor's rejected-leg check) act immediately instead. Failed repairs
  *  are retried on a 2-minute cooldown while the position stays naked. */
-const NAKED_PERSIST_MS = 30_000;
+const NAKED_PERSIST_MS = 10_000; // one poll at the 10s interval — the suspended-stop activation window is sub-second
 const REPAIR_COOLDOWN_MS = 2 * 60_000;
 
 /** pure classifier: does the working-order list contain a working stop
@@ -328,7 +328,7 @@ let exitPollStarted = false;
  *  records for the counter-signal gate, and runs the protection
  *  watchdog (working-stop verification + naked-position repair).
  *  Started from instrumentation. */
-export function startRthExitPoll(intervalMs = 30_000): void {
+export function startRthExitPoll(intervalMs = 10_000): void {
   if (exitPollStarted || !enabled()) return;
   exitPollStarted = true;
   setInterval(() => {
