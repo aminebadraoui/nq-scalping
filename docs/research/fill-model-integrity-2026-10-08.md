@@ -98,6 +98,40 @@ stop-outs of a 3-pt stop inside flush tape. It is structural, not tail.
 4. **Reconcile live vs model continuously** — if live diverges, the model
    is wrong, never the market.
 
+## The fill-model audit — every live family, honest fills (2026-10-08)
+
+`scripts/fillAudit.ts` replays all 652 sessions with each family's LIVE
+mechanics (momentum: market entry, signal-anchored brackets, no time
+exit; expansion: retrace limit 1 pt behind the close, fill-anchored 1R
+brackets; open: market entry, signal brackets) × entry-lag brackets
+(signal close ≈ live dispatch vs next-bar open ≈ 1-min lag) × stop
+slippage off/on. $100 budget, $1.90/RT, eval sim:
+
+| Family | Entry | Stop slip | Net $ | dd $ | Verdict |
+|---|---|---|---|---|---|
+| momentum | ≈live (close) | N | +29,752 | −986 | **PASS** |
+| momentum | ≈live (close) | **Y** | **+21,282** | −1,382 | **PASS** |
+| momentum | 1-min lag (open) | any | ≈ −66k | −23k | BREACH |
+| open drive | ≈live (close) | Y | +6,067 | −291 | **PASS** |
+| open drive | 1-min lag | any | ≈ −2.5k | −1.5k | PASS (negative) |
+| expansion retrace | limit mechanics | N | −53,508 | −7,938 | BREACH |
+| expansion retrace | limit mechanics | Y | −67,543 | −15,000 | BREACH |
+
+Conclusions:
+1. **Momentum and open survive honest fills** — momentum +$21k with stop
+   slippage at live dispatch speed (PASS). Their edges are LAG-SENSITIVE:
+   a ~1-minute entry lag flips momentum to −$66k. Live dispatch is
+   immediate, so they sit in the healthy column — the crossed-limit gate
+   keeps them there.
+2. **Expansion retrace is negative in this audit** (−$53k) and contradicts
+   the published redesign validation (+$58k). The prime suspect: the
+   published number validated the scale-out LADDER (bank 2/3 + runner
+   ladder), while live runs the single-leg 1R path (CROSSTRADE_SCALEOUT
+   is off). This needs a dedicated reconciliation — the live expansion
+   path is NOT validated until then.
+3. The RTH result stands (−$26k, the only family with the tight 0.5× stop
+   inside flush tape).
+
 ## The bounded live experiment (the owner's "keep the config" proposal, done properly)
 
 Keep RTH's config, keep all execution protections, cap size
