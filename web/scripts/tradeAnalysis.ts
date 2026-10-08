@@ -18,6 +18,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import postgres from "postgres";
+import { feedToEpoch } from "../lib/times";
 import {
   computeFeatures,
   aggregateTrades,
@@ -149,6 +150,27 @@ function toAnalysis(row: TradeDbRow): TradeForAnalysis | null {
   };
 }
 
+/** the ARCHIVE session-file day for an instant — named by the NY date the
+ *  ETH session closes on (18:00 ET and later belongs to the next calendar
+ *  day; 16:59 and earlier to the same day). trades.day uses the daybook
+ *  trading-day convention instead, so it cannot address the bar files. */
+function archiveDayOf(tsMs: number): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+  }).formatToParts(new Date(tsMs));
+  const g = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  const day = `${g.year}-${g.month}-${g.day}`;
+  if (Number(g.hour) >= 18) {
+    return new Date(Date.UTC(Number(g.year), Number(g.month) - 1, Number(g.day) + 1)).toISOString().slice(0, 10);
+  }
+  return day;
+}
+
 async function main() {
   await sql.unsafe(SCHEMA_SQL);
 
@@ -160,16 +182,35 @@ async function main() {
   const trades = rows.map(toAnalysis).filter((t): t is TradeForAnalysis => t !== null);
   console.log(`[tradeAnalysis] window since ${since.toISOString()} · ${trades.length} matched trades`);
 
-  // minute bars for the whole covered range (live-written by the VPS; gaps → null MFE/MAE)
+  // minute bars from the ARCHIVE (gcdata JSON / R2) — Neon carries no market
+  // data since the 2026-10-08 transfer-cap fix, so candles_1m is empty on a
+  // rebuilt project. The ETH session files cover the trades' RTH windows.
+  // Dynamic import: lib/archive reads GC_REMOTE_URL at module load, which
+  // must happen AFTER loadEnvLocal() above.
   let bars: { ts: number; high: number; low: number }[] = [];
   if (trades.length) {
-    const minTs = Math.min(...trades.map((t) => t.fillEntryAt));
-    const maxTs = Math.max(...trades.map((t) => t.exitTs)) + 16 * MINUTE;
-    const barRows = (await sql`
-      select ts, h, l from candles_1m
-      where ts >= ${new Date(minTs)} and ts <= ${new Date(maxTs)}
-      order by ts asc`) as unknown as { ts: Date; h: string; l: string }[];
-    bars = barRows.map((b) => ({ ts: new Date(b.ts).getTime(), high: Number(b.h), low: Number(b.l) }));
+    const { loadSessionMinutes } = await import("../lib/archive");
+    // per-trade archive days: the bar files are named by the session's
+    // closing NY date, not by trades.day (the daybook trading-day key)
+    const archiveDays = new Set<string>();
+    for (const t of trades) {
+      archiveDays.add(archiveDayOf(t.fillEntryAt));
+      archiveDays.add(archiveDayOf(t.exitTs));
+    }
+    for (const day of archiveDays) {
+      try {
+        const mins = await loadSessionMinutes(day);
+        if (!mins) continue;
+        for (const m of mins) {
+          const sec = feedToEpoch(m.t, m.d ?? day);
+          if (!Number.isFinite(sec)) continue;
+          bars.push({ ts: sec * 1000, high: m.high, low: m.low });
+        }
+      } catch {
+        /* archive gap → null MFE/MAE, same as a missing day in candles_1m */
+      }
+    }
+    bars.sort((a, b) => a.ts - b.ts);
   }
 
   const firstSet = markFirstOfDay(trades);

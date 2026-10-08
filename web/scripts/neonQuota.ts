@@ -22,7 +22,7 @@
 
 import { sendTelegram, loadEnv } from "../lib/notify";
 
-const PROJECT_ID = process.env.NEON_PROJECT_ID ?? "summer-poetry-26619129";
+const PROJECT_ID = process.env.NEON_PROJECT_ID ?? "proud-waterfall-41356644"; // nq-store2 (nq-store = summer-poetry-26619129)
 const CAP = Number(process.env.NEON_TRANSFER_CAP_BYTES ?? 5 * 1024 * 1024 * 1024);
 const WARN = Number(process.env.NEON_QUOTA_WARN_PCT ?? 60);
 const PAGE = Number(process.env.NEON_QUOTA_PAGE_PCT ?? 80);
