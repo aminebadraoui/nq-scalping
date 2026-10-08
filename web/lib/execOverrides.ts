@@ -35,9 +35,24 @@ import { dbEnabled, getDb } from "./gcdb";
 
 /** the ONLY env keys the override file may set — anything else is
  *  ignored, so a tampered file can never inject arbitrary env */
-export const EXEC_OVERRIDE_KEYS = ["CROSSTRADE_ACCOUNT"] as const;
+export const EXEC_OVERRIDE_KEYS = ["CROSSTRADE_ACCOUNT", "CROSSTRADE_KEY", "CROSSTRADE_URL"] as const;
 
 export type ExecOverrides = Partial<Record<(typeof EXEC_OVERRIDE_KEYS)[number], string>>;
+
+/** per-key value shapes — a value failing its shape is DROPPED by the
+ *  loader (fail-safe: the Coolify base env governs instead) */
+export const ACCOUNT_NAME_RE = /^[A-Za-z0-9_.\- ]{1,64}$/;
+/** CrossTrade secret keys are ~43-char alnum+dash tokens */
+export const CT_KEY_RE = /^[A-Za-z0-9\-]{16,128}$/;
+/** the personal webhook URL — host-locked so a typo can never route
+ *  orders (or the key) to a non-CrossTrade endpoint */
+export const CT_URL_RE = /^https:\/\/app\.crosstrade\.io\/[\w\-.]+[\w\-./]*$/;
+
+const VALUE_RE: Record<(typeof EXEC_OVERRIDE_KEYS)[number], RegExp> = {
+  CROSSTRADE_ACCOUNT: ACCOUNT_NAME_RE,
+  CROSSTRADE_KEY: CT_KEY_RE,
+  CROSSTRADE_URL: CT_URL_RE,
+};
 
 export function execOverridesFile(env: Record<string, string | undefined> = process.env): string {
   const data = env.GC_DATA_DIR || path.join(process.cwd(), "..", "gcdata", "data");
@@ -55,7 +70,7 @@ export function loadExecOverrides(env: Record<string, string | undefined> = proc
     const out: ExecOverrides = {};
     for (const key of EXEC_OVERRIDE_KEYS) {
       const v = (j as Record<string, unknown>)[key];
-      if (typeof v === "string" && v.trim().length > 0 && v.trim().length <= 128) {
+      if (typeof v === "string" && v.trim().length > 0 && v.trim().length <= 256 && VALUE_RE[key].test(v.trim())) {
         out[key] = v.trim();
       }
     }
@@ -97,10 +112,12 @@ export function maskAccount(acct: string): string | null {
   return a.length > 8 ? `${a.slice(0, 4)}…${a.slice(-4)}` : a;
 }
 
-/** the accepted shape of a CrossTrade/Tradovate account name (letters,
- *  digits, underscore, dash, dot, space — bounded so the value stays a
- *  sane JSON/URL fragment, never anything executable). */
-export const ACCOUNT_NAME_RE = /^[A-Za-z0-9_.\- ]{1,64}$/;
+/** secret masking for display — only the tail is ever shown. */
+export function maskSecret(v: string | undefined | null): string | null {
+  const s = (v ?? "").trim();
+  if (!s) return null;
+  return s.length <= 6 ? "••••••" : `••••${s.slice(-4)}`;
+}
 
 /* ---- admin password gate -------------------------------------------- */
 
@@ -282,24 +299,35 @@ export async function detectGuardResetFor(
  * shared secret — both containers already hold it, no new credentials.
  * ---------------------------------------------------------------------- */
 
-export async function resolveEffectiveAccount(env: Record<string, string | undefined> = process.env): Promise<string> {
-  const override = loadExecOverrides(env).CROSSTRADE_ACCOUNT;
-  if (override) return override;
-  const key = (env.CROSSTRADE_KEY ?? "").trim();
-  if (key) {
-    const base = (env.DASHBOARD_URL || "https://nq-dashboard.31.97.138.30.sslip.io").replace(/\/+$/, "");
+export async function resolveEffectiveCredentials(
+  env: Record<string, string | undefined> = process.env,
+): Promise<{ account: string; key: string; url: string }> {
+  const local = loadExecOverrides(env);
+  const account = local.CROSSTRADE_ACCOUNT ?? (env.CROSSTRADE_ACCOUNT ?? "").trim();
+  const key = local.CROSSTRADE_KEY ?? (env.CROSSTRADE_KEY ?? "").trim();
+  const url = local.CROSSTRADE_URL ?? (env.CROSSTRADE_URL ?? "").trim();
+  // the dashboard's overrides win when it can confirm them (the jobs
+  // container shares no volume with the dashboard process)
+  const base = (env.DASHBOARD_URL || "https://nq-dashboard.31.97.138.30.sslip.io").replace(/\/+$/, "");
+  const auth = key || ((env.ADMIN_PASSWORD ?? "").trim() ? (env.ADMIN_PASSWORD ?? "").trim() : "");
+  if (auth) {
     try {
       const res = await fetch(`${base}/api/exec-settings?raw=1`, {
-        headers: { Authorization: `Bearer ${key}` },
+        headers: { Authorization: `Bearer ${auth}` },
         signal: AbortSignal.timeout(15_000),
       });
       if (res.ok) {
-        const j = (await res.json()) as { account?: unknown };
-        if (j && typeof j.account === "string" && j.account.trim()) return j.account.trim();
+        const j = (await res.json()) as { account?: unknown; key?: unknown; url?: unknown };
+        const pick = (v: unknown, fallback: string) => (typeof v === "string" && v.trim() ? v.trim() : fallback);
+        return { account: pick(j.account, account), key: pick(j.key, key), url: pick(j.url, url) };
       }
     } catch {
-      /* dashboard unreachable — fall back to the container's env */
+      /* dashboard unreachable — the container's own env/override governs */
     }
   }
-  return (env.CROSSTRADE_ACCOUNT ?? "").trim();
+  return { account, key, url };
+}
+
+export async function resolveEffectiveAccount(env: Record<string, string | undefined> = process.env): Promise<string> {
+  return (await resolveEffectiveCredentials(env)).account;
 }

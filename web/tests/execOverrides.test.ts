@@ -11,12 +11,16 @@ import path from "node:path";
 import {
   ACCOUNT_NAME_RE,
   applyExecOverrides,
+  CT_KEY_RE,
+  CT_URL_RE,
   detectGuardResetFor,
   execOverridesFile,
   loadExecOverrides,
   maskAccount,
+  maskSecret,
   resetGuardForAccountSwitch,
   resolveEffectiveAccount,
+  resolveEffectiveCredentials,
   verifyAdminPassword,
   writeExecOverride,
 } from "../lib/execOverrides";
@@ -38,7 +42,7 @@ test("loadExecOverrides: missing / corrupt / non-object files → {}", (t) => {
   assert.deepEqual(loadExecOverrides(env), {});
 });
 
-test("loadExecOverrides: whitelist only, non-empty strings only", (t) => {
+test("loadExecOverrides: whitelist only, non-empty valid strings only", (t) => {
   const { env, dir } = tmpEnv();
   t.after(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -46,14 +50,50 @@ test("loadExecOverrides: whitelist only, non-empty strings only", (t) => {
     path.join(dir, "exec-overrides.json"),
     JSON.stringify({
       CROSSTRADE_ACCOUNT: "  MFFUEVREOD706880007  ",
-      CROSSTRADE_KEY: "evil",
+      CROSSTRADE_KEY: "this-key-is-43-characters-long-enough-1234",
+      CROSSTRADE_URL: "https://app.crosstrade.io/v1/send/uid123/channel",
+      CROSSTRADE_KEY_SHORT: "short",
+      CROSSTRADE_URL_EVIL: "https://evil.example.com/v1/send/x/y",
       DATABASE_URL: "postgres://evil",
-      CROSSTRADE_ACCOUNT2: "",
       NUMBER: 123,
     }),
   );
   const out = loadExecOverrides(env);
-  assert.deepEqual(out, { CROSSTRADE_ACCOUNT: "MFFUEVREOD706880007" });
+  assert.deepEqual(out, {
+    CROSSTRADE_ACCOUNT: "MFFUEVREOD706880007",
+    CROSSTRADE_KEY: "this-key-is-43-characters-long-enough-1234",
+    CROSSTRADE_URL: "https://app.crosstrade.io/v1/send/uid123/channel",
+  });
+});
+
+test("loadExecOverrides: out-of-shape key/url values are dropped (fail-safe)", (t) => {
+  const { env, dir } = tmpEnv();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(
+    path.join(dir, "exec-overrides.json"),
+    JSON.stringify({
+      CROSSTRADE_KEY: "too-short",
+      CROSSTRADE_URL: "https://evil.example.com/v1/send/x/y",
+      CROSSTRADE_ACCOUNT: "OK-ACCT",
+    }),
+  );
+  assert.deepEqual(loadExecOverrides(env), { CROSSTRADE_ACCOUNT: "OK-ACCT" });
+});
+
+test("validators: key token + host-locked webhook URL shapes", () => {
+  assert.match("abc123-abc123-abc123-abc123", CT_KEY_RE);
+  assert.doesNotMatch("short", CT_KEY_RE);
+  assert.doesNotMatch("bad;chars!", CT_KEY_RE);
+  assert.match("https://app.crosstrade.io/v1/send/uid123/channel", CT_URL_RE);
+  assert.doesNotMatch("https://evil.example.com/v1/send/x/y", CT_URL_RE);
+  assert.doesNotMatch("http://app.crosstrade.io/v1/send/x/y", CT_URL_RE);
+});
+
+test("maskSecret: only the tail is shown", () => {
+  assert.equal(maskSecret(""), null);
+  assert.equal(maskSecret("short"), "••••••");
+  assert.equal(maskSecret("abcdefghijklmnop"), "••••mnop");
 });
 
 test("writeExecOverride + load round-trip, and it applies to process.env", (t) => {
@@ -73,7 +113,7 @@ test("writeExecOverride + load round-trip, and it applies to process.env", (t) =
   assert.equal(typeof raw.updatedAt, "number");
 
   // non-whitelisted keys are refused loudly
-  assert.throws(() => writeExecOverride("CROSSTRADE_KEY" as never, "x", env));
+  assert.throws(() => writeExecOverride("DATABASE_URL" as never, "x", env));
 });
 
 test("applyExecOverrides: boot hook merges the file into process.env", (t) => {
@@ -154,6 +194,24 @@ test("resolveEffectiveAccount: env fallback when no override and no key", async 
 
   const out = await resolveEffectiveAccount({ ...env, CROSSTRADE_ACCOUNT: "ENV-ACCT" });
   assert.equal(out, "ENV-ACCT");
+});
+
+test("resolveEffectiveCredentials: local overrides win without any fetch", async (t) => {
+  const { env, dir } = tmpEnv();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  writeFileSync(
+    path.join(dir, "exec-overrides.json"),
+    JSON.stringify({
+      CROSSTRADE_ACCOUNT: "OVERRIDE-ACCT",
+      CROSSTRADE_KEY: "override-key-abcdefghijklmnop",
+      CROSSTRADE_URL: "https://app.crosstrade.io/v1/send/u/c",
+    }),
+  );
+  const out = await resolveEffectiveCredentials({ ...env, CROSSTRADE_ACCOUNT: "ENV-ACCT", CROSSTRADE_KEY: "env-key" });
+  assert.equal(out.account, "OVERRIDE-ACCT");
+  assert.equal(out.key, "override-key-abcdefghijklmnop");
+  assert.equal(out.url, "https://app.crosstrade.io/v1/send/u/c");
 });
 
 /* ---- same-account detection ------------------------------------------ */

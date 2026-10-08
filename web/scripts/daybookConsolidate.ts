@@ -30,7 +30,7 @@ import {
 } from "../lib/reconcile";
 import { familyOf } from "../lib/tradeStats";
 import { daybookDayKey, daybookR2Base, type DaybookDaySummary, type DaybookTradeSummary } from "../lib/daybook";
-import { resolveEffectiveAccount } from "../lib/execOverrides";
+import { resolveEffectiveCredentials } from "../lib/execOverrides";
 
 /* ---- env ------------------------------------------------------------ */
 function loadEnvLocal() {
@@ -49,18 +49,13 @@ function loadEnvLocal() {
 }
 loadEnvLocal();
 
-const CT_KEY = process.env.CROSSTRADE_KEY ?? "";
-// the effective account is resolved in main(): the dashboard's password-
-// gated account switch writes a runtime override the jobs container can't
-// see locally, so it asks the dashboard (key-authenticated) first.
+let CT_KEY = process.env.CROSSTRADE_KEY ?? "";
+// the effective credentials are resolved in main(): the dashboard's
+// password-gated switch writes runtime overrides the jobs container
+// can't see locally, so it asks the dashboard (key/password-auth) first.
 let CT_ACCOUNT = process.env.CROSSTRADE_ACCOUNT ?? "";
 const DASHBOARD = process.env.DASHBOARD_URL ?? "https://nq-dashboard.31.97.138.30.sslip.io";
 const DATA_DIR = process.env.GC_DATA_DIR || path.join(process.cwd(), "..", "gcdata", "data");
-
-if (!CT_KEY) {
-  console.error("daybookConsolidate: need CROSSTRADE_KEY");
-  process.exit(1);
-}
 
 const sinceArg = process.argv.indexOf("--day");
 const day = sinceArg >= 0 && process.argv[sinceArg + 1] ? process.argv[sinceArg + 1] : daybookDayKey(new Date(Date.now() - 45 * 60_000));
@@ -484,9 +479,11 @@ function replayCard(s: SignalRec, bars: Bar[]): { wouldHave: "win" | "loss" | "f
 /* ---- main ------------------------------------------------------------ */
 
 async function main() {
-  CT_ACCOUNT = await resolveEffectiveAccount(process.env);
-  if (!CT_ACCOUNT) {
-    console.error("[consolidate] no effective CROSSTRADE_ACCOUNT (env, override file, or dashboard)");
+  const eff = await resolveEffectiveCredentials(process.env);
+  CT_ACCOUNT = eff.account;
+  CT_KEY = eff.key;
+  if (!CT_ACCOUNT || !CT_KEY) {
+    console.error("[consolidate] no effective CROSSTRADE_ACCOUNT/CROSSTRADE_KEY (env, override file, or dashboard)");
     process.exit(1);
   }
   console.log(`[consolidate] effective account ${CT_ACCOUNT}`);

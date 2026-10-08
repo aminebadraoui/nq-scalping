@@ -3,25 +3,30 @@
 import { useCallback, useEffect, useState } from "react";
 
 /* ------------------------------------------------------------------ *
- * AccountSettings — the password-gated account switch on the
+ * AccountSettings — the password-gated execution switch on the
  * dashboard. Sits in the ExecStatusBar next to the masked account
- * name. One click → modal → account name + password → applied
- * INSTANTLY server-side (runtime override on the data volume; no
- * redeploy), guard state reset to a fresh start by default, and the
- * change is audited in the daybook.
+ * name. One click → modal → linked account name / CrossTrade secret
+ * key / webhook URL + password → applied INSTANTLY server-side
+ * (runtime overrides on the data volume; no redeploy), guard reset
+ * decided from the live snapshot (same Tradovate account under a new
+ * label → protections kept), audited in the daybook.
  * ------------------------------------------------------------------ */
 
 type SettingsState = {
   ok: boolean;
   passwordSet: boolean;
   account: string | null;
-  override: string | null;
+  key: string | null;
+  url: string | null;
+  override: { CROSSTRADE_ACCOUNT?: string | null; CROSSTRADE_KEY?: string | null; CROSSTRADE_URL?: string | null } | null;
 };
 
 export default function AccountSettings() {
   const [open, setOpen] = useState(false);
   const [st, setSt] = useState<SettingsState | null>(null);
   const [account, setAccount] = useState("");
+  const [key, setKey] = useState("");
+  const [url, setUrl] = useState("");
   const [password, setPassword] = useState("");
   const [forceReset, setForceReset] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -47,12 +52,19 @@ export default function AccountSettings() {
       const r = await fetch("/api/exec-settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password, account, resetGuard: forceReset }),
+        body: JSON.stringify({ password, account, key, url, resetGuard: forceReset }),
       });
-      const j = (await r.json()) as { ok: boolean; account?: string; guard?: string; guardReason?: string; error?: string };
+      const j = (await r.json()) as { ok: boolean; account?: string; key?: string | null; url?: string | null; guard?: string; guardReason?: string; error?: string };
       if (r.ok && j.ok) {
-        setDone(`account switched to ${j.account} — guard ${j.guard === "reset" ? "reset" : "kept"}. ${j.guardReason ?? ""}`);
+        const parts = [
+          j.account ? `account ${j.account}` : "",
+          j.key ? `key ${j.key}` : "",
+          j.url ? "webhook URL" : "",
+        ].filter(Boolean);
+        setDone(`${parts.join(" · ")} applied — guard ${j.guard === "reset" ? "reset" : "kept"}. ${j.guardReason ?? ""}`);
         setAccount("");
+        setKey("");
+        setUrl("");
         setPassword("");
         setForceReset(false);
         load();
@@ -79,7 +91,7 @@ export default function AccountSettings() {
           load();
         }}
         className="rounded border border-zinc-700 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400 transition-colors hover:border-zinc-500 hover:text-zinc-200"
-        title="change the linked CrossTrade/Tradovate account (password required)"
+        title="change the CrossTrade account / key / webhook URL (password required)"
       >
         change…
       </button>
@@ -91,7 +103,7 @@ export default function AccountSettings() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between gap-2">
-              <h3 className="font-mono text-xs font-bold uppercase tracking-[0.15em] text-zinc-200">switch trading account</h3>
+              <h3 className="font-mono text-xs font-bold uppercase tracking-[0.15em] text-zinc-200">switch execution account</h3>
               <button
                 onClick={() => setOpen(false)}
                 disabled={busy}
@@ -103,7 +115,11 @@ export default function AccountSettings() {
 
             <p className="mb-3 font-mono text-[10px] leading-relaxed text-zinc-500">
               current: <span className="text-zinc-300">{st?.account ?? "…"}</span>
-              {st?.override && <span className="text-amber-400"> · runtime override active</span>}
+              {" · "}key <span className="text-zinc-300">{st?.key ?? "—"}</span>
+              {" · "}webhook <span className="text-zinc-300">{st?.url ?? "—"}</span>
+              {st?.override && (st.override.CROSSTRADE_ACCOUNT || st.override.CROSSTRADE_KEY || st.override.CROSSTRADE_URL) && (
+                <span className="text-amber-400"> · runtime override active</span>
+              )}
             </p>
 
             <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
@@ -113,6 +129,31 @@ export default function AccountSettings() {
               value={account}
               onChange={(e) => setAccount(e.target.value)}
               placeholder="e.g. MFFUEVREOD706880007"
+              autoComplete="off"
+              spellCheck={false}
+              className={inputCls}
+            />
+
+            <label className="mb-1 mt-3 block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              CrossTrade secret key <span className="normal-case text-zinc-600">(CROSSTRADE_KEY — leave blank to keep)</span>
+            </label>
+            <input
+              type="password"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder={st?.key ? `current ${st.key}` : "Secret Key from the CrossTrade My Account page"}
+              autoComplete="off"
+              spellCheck={false}
+              className={inputCls}
+            />
+
+            <label className="mb-1 mt-3 block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              personal webhook URL <span className="normal-case text-zinc-600">(CROSSTRADE_URL — leave blank to keep)</span>
+            </label>
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder={st?.url ?? "https://app.crosstrade.io/v1/send/<uid>/<channel>"}
               autoComplete="off"
               spellCheck={false}
               className={inputCls}
@@ -142,9 +183,9 @@ export default function AccountSettings() {
             </label>
 
             <p className="mt-3 rounded border border-info/30 bg-info/5 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-info">
-              The guard reset is decided from the live snapshot, not a guess: if the new name reports the same realized
-              P&L as the current account, it&apos;s the same Tradovate account and the day&apos;s protections are kept.
-              A genuinely different account resets automatically.
+              Only the fields you fill in change — blank means keep. The guard reset is decided from the live snapshot
+              when the account name changes: same realized P&L under the new name → same Tradovate account →
+              protections kept. A wrong key or URL fails closed (entries halt), never misfires.
             </p>
 
             <p className="mt-2 rounded border border-amber-400/30 bg-amber-400/5 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-amber-400">
@@ -165,10 +206,10 @@ export default function AccountSettings() {
               </button>
               <button
                 onClick={() => void submit()}
-                disabled={busy || !account.trim() || !password}
+                disabled={busy || (!account.trim() && !key.trim() && !url.trim()) || !password}
                 className="rounded border border-long/50 bg-long/10 px-2.5 py-1 font-mono text-xs font-bold text-long transition-colors hover:bg-long/20 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {busy ? "applying…" : "switch account"}
+                {busy ? "applying…" : "apply"}
               </button>
             </div>
           </div>

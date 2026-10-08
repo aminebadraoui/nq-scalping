@@ -39,7 +39,7 @@ import {
   type OrderRow,
   type FillRow,
 } from "../lib/reconcile";
-import { resolveEffectiveAccount } from "../lib/execOverrides";
+import { resolveEffectiveCredentials } from "../lib/execOverrides";
 
 /* ---- env ------------------------------------------------------------ */
 function loadEnvLocal() {
@@ -60,15 +60,15 @@ function loadEnvLocal() {
 loadEnvLocal();
 
 const DB_URL = process.env.DATABASE_URL ?? "";
-const CT_KEY = process.env.CROSSTRADE_KEY ?? "";
-// the effective account is resolved in main(): the dashboard's password-
-// gated account switch writes a runtime override the jobs container can't
-// see locally, so it asks the dashboard (key-authenticated) first.
+// the effective credentials are resolved in main(): the dashboard's
+// password-gated switch writes runtime overrides the jobs container
+// can't see locally, so it asks the dashboard (key/password-auth) first.
+let CT_KEY = process.env.CROSSTRADE_KEY ?? "";
 let CT_ACCOUNT = process.env.CROSSTRADE_ACCOUNT ?? "";
 const COMMISSION_PER_SIDE = Number(process.env.CT_COMMISSION_PER_SIDE ?? "0.95");
 
-if (!DB_URL || !CT_KEY) {
-  console.error("reconcileTrades: need DATABASE_URL, CROSSTRADE_KEY");
+if (!DB_URL) {
+  console.error("reconcileTrades: need DATABASE_URL");
   process.exit(1);
 }
 
@@ -567,9 +567,11 @@ function pairFillsOnly(
 
 /* ---- main ----------------------------------------------------------- */
 async function main() {
-  CT_ACCOUNT = await resolveEffectiveAccount(process.env);
-  if (!CT_ACCOUNT) {
-    console.error("[reconcile] no effective CROSSTRADE_ACCOUNT (env, override file, or dashboard)");
+  const eff = await resolveEffectiveCredentials(process.env);
+  CT_ACCOUNT = eff.account;
+  CT_KEY = eff.key;
+  if (!CT_ACCOUNT || !CT_KEY) {
+    console.error("[reconcile] no effective CROSSTRADE_ACCOUNT/CROSSTRADE_KEY (env, override file, or dashboard)");
     await sql.end();
     process.exit(1);
   }

@@ -421,30 +421,38 @@ wider stop grid and the user's approval. Scratch studies
   (lib/accountGuard.ts) before every order — fail-closed when unreadable.
 - **Password-gated account switch on the dashboard (2026-10-07)** — the
   "change…" button next to the account in the status bar edits the linked
-  Tradovate account name (`CROSSTRADE_ACCOUNT`) with no Coolify env edit
-  and no redeploy:
-  - Writes a runtime override to the data volume
-    (`/app/data/exec-overrides.json`), applies it to `process.env`
-    instantly (all exec readers see it), and re-applies it at every boot
-    (`instrumentation.ts` loads it before the daybook boot snapshot).
-  - Gated by `ADMIN_PASSWORD` in the **nq-dashboard** app env (set once in
-    Coolify; timing-safe compare + per-IP throttle; the gate is closed
-    while unset). The Coolify env stays the durable base default — the
-    override wins while present.
-  - Switches are SEAMLESS and data-driven: before applying, the switch
-    reads the CrossTrade snapshot — if the new name reports the SAME
-    realized P&L as the current account it's the same Tradovate account
-    under a new label and protections are KEPT (no mid-day re-baseline
-    of the consistency counter); a genuinely different account resets
-    automatically (state file + Neon `guard_state` row + in-memory
-    reseed). Ambiguous reads keep protections (fail-safe) with a
-    "force reset" checkbox as the tie-breaker. Every switch appends a
-    daybook `exec` audit record. Only switch while flat / outside RTH.
+  Tradovate account name (`CROSSTRADE_ACCOUNT`), the CrossTrade secret
+  key (`CROSSTRADE_KEY`) and the personal webhook URL (`CROSSTRADE_URL`)
+  with no Coolify env edit and no redeploy:
+  - Writes runtime overrides to the data volume
+    (`/app/data/exec-overrides.json`), applies them to `process.env`
+    instantly (all exec readers see them), and re-applies them at every
+    boot (`instrumentation.ts` loads them before the daybook boot
+    snapshot). Each field is shape-validated (account name, alnum+dash
+    key token, webhook URL host-locked to `app.crosstrade.io`) — bad
+    values are refused, never written. Blank fields mean "keep".
+  - Gated by `ADMIN_PASSWORD` in the **nq-dashboard** app env (SET
+    2026-10-08; timing-safe compare + per-IP throttle on the POST and
+    the raw GET; the gate is closed while unset). The Coolify env stays
+    the durable base default — overrides win while present.
+  - Switches are SEAMLESS and data-driven: when the account NAME
+    changes, the switch reads the CrossTrade snapshot — if the new name
+    reports the SAME realized P&L as the current account it's the same
+    Tradovate account under a new label and protections are KEPT (no
+    mid-day re-baseline of the consistency counter); a genuinely
+    different account resets automatically (state file + Neon
+    `guard_state` row + in-memory reseed). Key/URL-only changes never
+    touch the guard (it tracks the Tradovate account, not the CrossTrade
+    login). Ambiguous reads keep protections (fail-safe) with a "force
+    reset" checkbox as the tie-breaker. Every switch appends a daybook
+    `exec` audit record (values masked). Only switch while flat /
+    outside RTH.
   - The jobs container (separate app, own volume) resolves the effective
-    account the same way: `daybookConsolidate`/`reconcileTrades` ask
+    credentials the same way: `daybookConsolidate`/`reconcileTrades` ask
     `/api/exec-settings?raw=1` with `Authorization: Bearer
-    <CROSSTRADE_KEY>` (the key doubles as the shared secret), falling back
-    to their own env. No new credentials.
+    <CROSSTRADE_KEY or ADMIN_PASSWORD>` (the key doubles as the shared
+    secret; the password covers the window after a key change), falling
+    back to their own env. No new credentials.
   - Code lives in `web/lib/execOverrides.ts` + `web/app/api/exec-settings`
     + `web/components/AccountSettings.tsx` — none of the protected
     live-exec libs changed, so the exec gate (`scripts/exec-gate.sh`) is
