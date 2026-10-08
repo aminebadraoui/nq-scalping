@@ -458,6 +458,46 @@ wider stop grid and the user's approval. Scratch studies
     live-exec libs changed, so the exec gate (`scripts/exec-gate.sh`) is
     unaffected; the feature is inert until the operator acts.
 
+## Protection stack, kill switch + fill-model reckoning (2026-10-08, deployed)
+
+Canonical records: docs/research/naked-stop-incident-2026-10-08.md
+(both incidents, the full protection architecture, deploy timeline,
+open decisions) and docs/research/fill-model-integrity-2026-10-08.md
+(the backtest engine vs its fill assumptions + the new study
+discipline). Summary of what is LIVE on the VPS (build eba9813):
+
+- Executor choke-point protections (lib/crossTrade.ts): crossed-stop
+  and crossed-limit dispatch gates, BURST verifier (session-orders read
+  at +0.5s then every 1.5s × 20s per placement), fill-anchored
+  re-bracket, contract cap (MAX_MICRO_CONTRACTS, default 30).
+- CrossTrade WebSocket order stream (lib/ctStream.ts, origin=tradovate):
+  pushed Rejected stop legs react in <1s; P&L stream = liveness
+  heartbeat; backoff reconnects under the 5-upgrades/IP/60s limit.
+- 10s protection watchdog (execWatch): working-stop verification,
+  re-arm via cancel_and_bracket else flatten; untracked manual
+  positions are alert-only, never touched. Stop-slippage alarm journals
+  every exit fill vs its intended stop — the live calibration feed for
+  the fill model.
+- Owner kill switch (lib/tradingHalt.ts + /api/trading +
+  TradingToggle): TRADING LIVE/STOP in the status strip; STOP instant
+  (no password), RESUME password-gated when ADMIN_PASSWORD is set;
+  persisted to GC_DATA_DIR/trading-halt.json, survives redeploys, every
+  flip audited in the daybook.
+
+Deploy timeline: c4884b0 → 539b011 → 9799e6e → 31df712 → eba9813.
+VPS outage 13:35–14:05 ET (frozen guest after the ADMIN_PASSWORD env
+change redeploy; recovered on its own; the persisted halt made the
+recovery safe). Day realized +$882.90 — $17 below the $900 consistency
+cap: no more profit today.
+
+Study verdict (652 sessions, honest fills): RTH s0.5/t2.5 was +$13.8k
+PASS under the old assumptions; with crossed cards gated it is +$9.9k
+dd-BREACH; with stop slippage modeled −$26.2k BREACH — identical at
+every slippage cap (the bleed is routine 1–2 pt stop slips, not tail
+events). Momentum retrace studies were drift-aware from day one and are
+unaffected. Open owner decisions: FEED_RTH (armed underneath the halt),
+MAX_MICRO_CONTRACTS value, the bounded live calibration experiment.
+
 ## Second incident + execution hardening (2026-10-08, same day)
 
 The 12:17 ET RTH short (15 MNQ, "risk $96") lost **−$1,027.50**: the
