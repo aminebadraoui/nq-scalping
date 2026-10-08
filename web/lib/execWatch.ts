@@ -28,6 +28,7 @@
 import { sendTelegram } from "./notify";
 import { placeOrder, placeScaleOut, cancelOrder, type OrderIntent } from "./executor";
 import { stopCrossedAtDispatch, limitCrossedAtDispatch, currentTapeLtp, repairNakedPosition, openProtection, setOpenProtection, reanchorBracketForFill, rearmCrossTradeBracketREST } from "./crossTrade";
+import { tradingHalted } from "./tradingHalt";
 import { momentumProfile, timeExitAt } from "./profile";
 import { registerTimeExit } from "./timeExit";
 import { getLive } from "./live";
@@ -483,6 +484,9 @@ export function priceDistancePts(e: { intent: OrderIntent }): number | null {
 /** register a just-sent trade card (no-op when not live) */
 export function registerExpectation(e: Omit<Expectation, "sendFailed" | "attempts" | "lastAttemptAt">) {
   if (!enabled()) return;
+  // the owner's kill switch: the card is info-only — nothing is placed,
+  // so the watcher has nothing to verify, re-send, or alarm about
+  if (tradingHalted()) return;
   pending.set(e.key, { ...e, sendFailed: failedKeys.has(e.key), attempts: 0, lastAttemptAt: 0 });
 }
 
@@ -548,7 +552,20 @@ export function registerSendFailure(key: string, label: string, reason: string) 
 
 /** called from the feed tick: the 90s verification + optional re-send */
 export async function checkExpectations(): Promise<void> {
-  if (!enabled() || pending.size === 0) return;
+  if (!enabled()) return;
+  // the kill switch flipped mid-flight: cancel any resting limit so it
+  // can never fill after the halt, and drop the pending cards quietly
+  if (tradingHalted()) {
+    for (const [key, e] of [...pending]) {
+      if (e.limit?.orderId) {
+        const c = await cancelOrder(e.limit.orderId);
+        void logExec({ key, label: e.label, attempt: "watch", outcome: c.ok ? "limit_expired" : "limit_cancel_failed", reason: `trading halted — resting limit cancelled: ${c.reason}` });
+      }
+    }
+    pending.clear();
+    return;
+  }
+  if (pending.size === 0) return;
   const now = Date.now();
   let fills: Array<{ ts: number; action: string; qty: number; price: number }> | null = null;
   for (const [key, e] of [...pending]) {

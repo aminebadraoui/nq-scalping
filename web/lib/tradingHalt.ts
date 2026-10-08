@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import path from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { appendDaybook } from "./daybook";
+import { sendTelegram } from "./notify";
 
 const HALT_ENV_KEY = "TRADING_HALT";
 
@@ -70,6 +71,14 @@ export function setTradingHalt(
     outcome: halted ? "trading_halted" : "trading_resumed",
     reason: meta.actor ? `by ${meta.actor}` : "dashboard toggle",
   });
+  // Telegram knows immediately: one message per flip — signals keep
+  // flowing as info-only while halted, and the executor refuses orders
+  void sendTelegram(
+    halted
+      ? "🛑 <b>TRADING HALTED</b> — the owner stopped trading.\nSignal cards will keep arriving for information only; no orders will be placed. Resting limits are cancelled by the watcher."
+      : "✅ <b>TRADING RESUMED</b> — the executor will trade again.\nSignal cards are live orders once more.",
+    { parseMode: "HTML" },
+  ).catch(() => {});
 }
 
 /** timing-safe resume-password check. Both sides are trimmed: a

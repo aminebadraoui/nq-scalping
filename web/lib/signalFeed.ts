@@ -64,6 +64,7 @@ import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations, attachLimitOrderId } from "./execWatch";
 import { stopCrossedAtDispatch, limitCrossedAtDispatch } from "./crossTrade";
+import { tradingHalted } from "./tradingHalt";
 import { counterGateDecision, counterGateParams } from "./rthExitLog";
 import { momentumProfile, rthProfile, applyProfile, timeExitAt, type FamilyProfile } from "./profile";
 import { registerTimeExit, checkTimeExits } from "./timeExit";
@@ -638,6 +639,11 @@ class SignalFeed {
 
   private async push(text: string): Promise<{ sent: boolean; reason: string }> {
     if (!this.announce()) return { sent: false, reason: "announce disabled (dry-run feed)" };
+    // while the owner's kill switch is set every card is INFO-ONLY —
+    // the signal still flows, the label says no order will be placed
+    if (tradingHalted()) {
+      text += "\n\n🛑 <b>TRADING HALTED</b> — this signal is for information only (no order will be placed)";
+    }
     return sendTelegram(text, { parseMode: "HTML" });
   }
 
