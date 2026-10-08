@@ -494,8 +494,9 @@ Study verdict (652 sessions, honest fills): RTH s0.5/t2.5 was +$13.8k
 PASS under the old assumptions; with crossed cards gated it is +$9.9k
 dd-BREACH; with stop slippage modeled −$26.2k BREACH — identical at
 every slippage cap (the bleed is routine 1–2 pt stop slips, not tail
-events). Momentum retrace studies were drift-aware from day one and are
-unaffected. Open owner decisions: FEED_RTH (armed underneath the halt),
+events). Entry-side realism is partial (retrace/entry-quality studies only);
+stop-side slippage was modeled nowhere before this incident — the audit
+applies to every family, with momentum's impact unmeasured. Open owner decisions: FEED_RTH (armed underneath the halt),
 MAX_MICRO_CONTRACTS value, the bounded live calibration experiment.
 
 ## Second incident + execution hardening (2026-10-08, same day)

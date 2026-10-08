@@ -56,13 +56,28 @@ changes nothing, because every slipped fill in the archive was already
 ≤2 pts past the stop. The bleed is thousands of routine small slips on
 stop-outs of a 3-pt stop inside flush tape. It is structural, not tail.
 
-## What remains trustworthy
+## What remains trustworthy — audited per study (2026-10-08)
 
-- **Momentum retrace studies** — built drift-aware from day one
-  (gap-through fills, limit mechanics, fill-anchored brackets), precisely
-  because the 10-04 tape-lag incident taught that discipline first.
 - **Guards, sizing, fees** — account-rule mechanics, independent of fill
   assumptions.
+- **Entry-side realism:**
+  - `retraceSlippageStudy` / `entryQualityStudy` — realistic entry fills
+    (limit-or-better + gap-through, next-bar-open market fills,
+    fill-anchored brackets, drift gates); the 10-04 tape-lag lesson
+    applied.
+  - `momentumStudy` / `sizingOptimizer` (the older momentum generation)
+    — entries at the SIGNAL price with zero drift: an entry-side
+    idealization (small impact: immediate dispatch), still an assumption
+    to close.
+- **Exit-side (stop slippage): modeled NOWHERE before this incident.**
+  Every scorer in the codebase exits at the stop PRICE; the best
+  available was a flat ~0.5 pt/RT cost. The RTH treatment in
+  `rthDriftOptimizer.ts` is the FIRST stop-side slippage model. The
+  blind spot is systemic; its impact scales with stop tightness — RTH's
+  3-pt stops worst, momentum's wider structural stops less, but
+  UNMEASURED, not absent. Pending: apply the slippage model to the
+  momentum/open configs and calibrate the parameter with the live
+  stop-fill journal (the slippage alarm's data).
 - **Anything downstream that consumed RTH trades** (parts of the day-plan
   / risk-stack sweeps) inherits the RTH phantom edge and should be
   re-checked once RTH is re-validated.
