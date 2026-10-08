@@ -11,6 +11,7 @@ import {
   buildChangePayload,
   splitScaleOut,
   classifyResponse,
+  stopCrossedAtDispatch,
   MNQ_TICK,
   type CrossTradeConfig,
 } from "../lib/crossTrade";
@@ -248,4 +249,32 @@ test("placeScaleOut: not configured returns refused without any network", () => 
     assert.equal(r.ok, false);
     assert.match(r.reason, /not configured/);
   });
+});
+
+/* ---- crossed-stop dispatch gate (2026-10-08 naked-position incident) ---- */
+
+test("stopCrossedAtDispatch: long — tape below the stop is crossed (stop would be rejected)", () => {
+  assert.equal(stopCrossedAtDispatch("long", 21847.5, 21847.25), true);
+  assert.equal(stopCrossedAtDispatch("long", 21847.5, 21847.5), true); // exactly AT the stop
+});
+
+test("stopCrossedAtDispatch: long — tape above the stop is safe", () => {
+  assert.equal(stopCrossedAtDispatch("long", 21847.5, 21850.0), false);
+});
+
+test("stopCrossedAtDispatch: short — tape above the stop is crossed (the 09:48 incident shape)", () => {
+  // short stop 31222.75, market 31229.25 at dispatch → InvalidPrice rejection
+  assert.equal(stopCrossedAtDispatch("short", 31222.75, 31229.25), true);
+  assert.equal(stopCrossedAtDispatch("short", 31222.75, 31222.75), true);
+});
+
+test("stopCrossedAtDispatch: short — tape below the stop is safe", () => {
+  assert.equal(stopCrossedAtDispatch("short", 31222.75, 31216.25), false);
+});
+
+test("stopCrossedAtDispatch: unknown tape (null/undefined/NaN) → null (allow, fail open)", () => {
+  assert.equal(stopCrossedAtDispatch("long", 21847.5, null), null);
+  assert.equal(stopCrossedAtDispatch("short", 31222.75, undefined), null);
+  assert.equal(stopCrossedAtDispatch("short", 31222.75, Number.NaN), null);
+  assert.equal(stopCrossedAtDispatch("short", Number.NaN, 31229.25), null);
 });

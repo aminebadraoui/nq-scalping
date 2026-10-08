@@ -51,6 +51,9 @@
 
 import type { OrderIntent } from "./executor";
 import { crossGuardGate } from "./crossGuard";
+import { sendTelegram } from "./notify";
+import { getLive } from "./live";
+import { logExec } from "./execLog";
 
 export type CrossTradeConfig = {
   url: string;
@@ -292,7 +295,12 @@ export async function placeCrossTradeOrder(
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15_000),
     });
-    return classifyResponse(res.status, await res.text());
+    const cls = classifyResponse(res.status, await res.text());
+    // the webhook path carries no OSO child ids for the late-rejection
+    // check, but the bracket still registers so the 30s watchdog can
+    // verify and repair it — same global invariant as the REST path
+    if (cls.ok) registerOpenProtection(intent, { rearmOk: true });
+    return cls;
   } catch (e) {
     // A timeout does NOT establish whether the order was placed (docs) —
     // report UNKNOWN and require Alert History verification, never retry.
@@ -398,7 +406,13 @@ export async function placeCrossTradeScaleOut(
   const bankRes = await post(`bank ${bankOrderId}`, bankPayload);
   const runnerRes = await post(`runner ${runnerOrderId}`, runnerPayload);
   const ok = bankRes.ok && runnerRes.ok;
-  if (ok) markEntryPlaced();
+  if (ok) {
+    markEntryPlaced();
+    // webhook scale-out: no OSO child ids for the late-rejection check,
+    // but the bracket registers so the watchdog can verify/repair
+    // (flatten-only — the ladder owns the runner stop)
+    registerOpenProtection(intent, { rearmOk: false });
+  }
   return {
     ok,
     reason: `bank: ${bankRes.reason} · runner: ${runnerRes.reason}`,
@@ -439,6 +453,22 @@ export function markEntryPlaced() {
 
 export type StackDecision = "allow" | "refuse_recent_entry" | "refuse_position_open" | "confirm_flat";
 
+/** crossed-stop dispatch gate (2026-10-08 naked-position incident).
+ *  Tradovate validates the OSO stop leg against the CURRENT market at
+ *  placement: a stop on the marketable side is rejected with
+ *  InvalidPrice a split second after the place is accepted, and the
+ *  entry still fills — naked. A long's sell-stop must sit BELOW the
+ *  tape, a short's buy-stop ABOVE it. Returns null (unknown → allow)
+ *  when the tape price is unavailable. Pure + unit-tested. */
+export function stopCrossedAtDispatch(
+  dir: "long" | "short",
+  stop: number,
+  ltp: number | null | undefined,
+): boolean | null {
+  if (ltp === null || ltp === undefined || !Number.isFinite(ltp) || !Number.isFinite(stop)) return null;
+  return dir === "long" ? ltp <= stop : ltp >= stop;
+}
+
 /** pure latch decision (unit-tested): elapsed = ms since our entry,
  *  held = MNQ contracts held per the fresh read (null = read failed). */
 export function stackGuardDecision(
@@ -457,11 +487,21 @@ export function stackGuardDecision(
 /** place a bracketed entry with ABSOLUTE stop/target prices. Default is a
  *  market entry; opts.limitPrice switches to a resting LIMIT at that price
  *  (with our own orderId so a later cancel can address it — the CrossTrade
- *  cancel route accepts the user-assigned orderId). */
+ *  cancel route accepts the user-assigned orderId). opts.label feeds the
+ *  protection alerts. GLOBAL safety invariants live here (every REST
+ *  placement passes through): the crossed-stop dispatch gate for limits,
+ *  protection registration, and the post-place bracket-leg verification. */
 export async function placeCrossTradeOrderREST(
   intent: OrderIntent,
-  opts: { limitPrice?: number } = {},
-): Promise<{ ok: boolean; reason: string; orderId?: string }> {
+  opts: { limitPrice?: number; label?: string } = {},
+): Promise<{
+  ok: boolean;
+  reason: string;
+  orderId?: string;
+  nativeEntryId?: string | number;
+  stopChildId?: string | number;
+  targetChildId?: string | number;
+}> {
   const guard = await crossGuardGate();
   if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
   const cfg = loadConfig();
@@ -473,6 +513,21 @@ export async function placeCrossTradeOrderREST(
         (opts.limitPrice !== undefined ? ` @ ${opts.limitPrice.toFixed(2)}` : ""),
     );
     return { ok: true, reason: "dry-run (logged only)", orderId };
+  }
+
+  // crossed-stop dispatch gate (GLOBAL, 2026-10-08 incident): a resting
+  // limit whose OSO stop sits on the marketable side of the current tape
+  // is rejected by Tradovate at placement (InvalidPrice) and the entry
+  // then fills naked — refuse at the choke point so no caller can place
+  // one. Feeds keep their own quiet skips for the journal.
+  if (opts.limitPrice !== undefined) {
+    const ltp = currentTapeLtp();
+    if (stopCrossedAtDispatch(intent.dir, intent.stop, ltp) === true) {
+      return {
+        ok: false,
+        reason: `crossed-stop gate — tape ${Number(ltp).toFixed(2)} past stop ${intent.stop.toFixed(2)} at dispatch (the OSO stop would be rejected and the limit would fill naked)`,
+      };
+    }
   }
 
   // broker price agreement — the tape can lag the real market (2026-10-04:
@@ -506,7 +561,25 @@ export async function placeCrossTradeOrderREST(
   }
   if (leg.kind !== "ok") return { ok: false, reason: leg.reason };
   markEntryPlaced();
-  return { ok: true, reason: `REST placed ${payload.orderId ?? ""}`, orderId };
+  const label = opts.label ?? describeIntent(intent);
+  registerOpenProtection(intent, { rearmOk: true });
+  verifyBracketsAfterPlace({
+    label,
+    key: `protect|${Date.now()}`,
+    intent,
+    entryOrderId: orderId,
+    nativeEntryId: leg.children?.nativeEntryId,
+    stopChildId: leg.children?.stopChildId,
+    targetChildId: leg.children?.targetChildId,
+  });
+  return {
+    ok: true,
+    reason: `REST placed ${payload.orderId ?? ""}`,
+    orderId,
+    nativeEntryId: leg.children?.nativeEntryId,
+    stopChildId: leg.children?.stopChildId,
+    targetChildId: leg.children?.targetChildId,
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -563,7 +636,15 @@ export function buildRESTPlacePayload(
   return payload;
 }
 
-type RESTLegResult = { kind: "ok" | "auth" | "rejected" | "unknown"; reason: string };
+type RESTLegResult = {
+  kind: "ok" | "auth" | "rejected" | "unknown";
+  reason: string;
+  /** Tradovate native ids from the dispatcher envelope: the entry and the
+   *  OSO children. Mapped by what WE sent (take-profit first, then stop —
+   *  the envelope's oso1Id/oso2Id order) so a single-leg (stop-only)
+   *  placement maps oso1 to the stop. */
+  children?: { nativeEntryId?: string | number; stopChildId?: string | number; targetChildId?: string | number };
+};
 
 /** POST one REST leg. 401/403 = auth (pre-dispatch, safe to fall back);
  *  non-2xx or success:false = rejection (pre-dispatch, nothing placed);
@@ -593,7 +674,22 @@ async function postRESTLeg(payload: Omit<RESTPlacePayload, "stopLoss"> & { stopL
     if (j && j.success === false) {
       return { kind: "rejected", reason: `REST rejected: ${String(j.error ?? bodyText).slice(0, 200)}` };
     }
-    return { kind: "ok", reason: bodyText.slice(0, 120) };
+    // capture the OSO child ids — the late-rejection verifier addresses the
+    // stop leg with them (an accepted place can still be rejected ~10ms later
+    // by Tradovate's risk layer, e.g. InvalidPrice on a crossed stop).
+    const resp = (j?.response ?? null) as Record<string, unknown> | null;
+    const o1 = resp?.oso1Id !== undefined && resp?.oso1Id !== null ? (resp.oso1Id as string | number) : undefined;
+    const o2 = resp?.oso2Id !== undefined && resp?.oso2Id !== null ? (resp.oso2Id as string | number) : undefined;
+    const children: RESTLegResult["children"] = resp ? { nativeEntryId: (resp.orderId as string | number | undefined) ?? undefined } : undefined;
+    if (children) {
+      if (payload.takeProfit !== undefined && payload.stopLoss !== undefined) {
+        children.targetChildId = o1;
+        children.stopChildId = o2;
+      } else if (payload.stopLoss !== undefined) {
+        children.stopChildId = o1; // stop-only placement (runner leg)
+      }
+    }
+    return { kind: "ok", reason: bodyText.slice(0, 120), children };
   } catch (e) {
     return {
       kind: "unknown",
@@ -716,6 +812,7 @@ export async function placeCrossTradeScaleOutREST(
     // it will be refused and reported — never silently stacked.)
     console.warn(`[crossTrade] REST unavailable for the runner (${runnerRes.reason}) — runner via webhook (bank already placed)`);
     const w = await postWebhookLeg(runner, cfg, { orderId: runnerOrderId, withTarget: false });
+    if (w.ok) registerOpenProtection(intent, { rearmOk: false });
     return {
       ok: w.ok,
       reason: `bank: ${bankRes.reason} · runner(webhook): ${w.reason}`,
@@ -723,6 +820,29 @@ export async function placeCrossTradeScaleOutREST(
       runnerOrderId: w.ok ? runnerOrderId : undefined,
       runnerQty: runner.contracts,
     };
+  }
+  if (bankRes.kind === "ok" && runnerRes.kind === "ok") {
+    // global protection: the ladder owns the runner stop — repair may only
+    // flatten — and each leg's OSO children are verified after placement
+    registerOpenProtection(intent, { rearmOk: false });
+    verifyBracketsAfterPlace({
+      label: `${describeIntent(bank)} (bank)`,
+      key: `protect|${Date.now()}`,
+      intent: bank,
+      entryOrderId: bankOrderId,
+      nativeEntryId: bankRes.children?.nativeEntryId,
+      stopChildId: bankRes.children?.stopChildId,
+      targetChildId: bankRes.children?.targetChildId,
+    });
+    verifyBracketsAfterPlace({
+      label: `${describeIntent(runner)} (runner)`,
+      key: `protect|${Date.now()}`,
+      intent: runner,
+      entryOrderId: runnerOrderId,
+      nativeEntryId: runnerRes.children?.nativeEntryId,
+      stopChildId: runnerRes.children?.stopChildId,
+      targetChildId: runnerRes.children?.targetChildId,
+    });
   }
   return {
     ok: runnerRes.kind === "ok",
@@ -842,4 +962,302 @@ export async function cancelCrossTradeOrderREST(orderId: string): Promise<{ ok: 
 export function __resetLatchForTest() {
   entryPlacedAt = 0;
   awaitingFlat = false;
+}
+
+/* ------------------------------------------------------------------ *
+ * Naked-position repair (2026-10-08 incident) — when a stop leg was
+ * rejected or cancelled while the position is open, the protection
+ * watchdog re-arms the bracket around the LIVE position via
+ * cancel_and_bracket (cancels leftover working orders, wraps the open
+ * position in a TP/SL OCO), and flattens when the re-arm fails. Both
+ * are dry-run unless EXECUTE_LIVE=1; neither ever auto-retries on
+ * UNKNOWN — the watchdog re-verifies on its next poll instead.
+ * ------------------------------------------------------------------ */
+
+/** re-arm a bracket around an OPEN position (cancel_and_bracket).
+ *  `dir` names the PROTECTED side (long → action buy). The stop must be
+ *  anchored beyond the CURRENT market or Tradovate rejects it again —
+ *  the caller re-anchors it; the target is absolute and always valid. */
+export async function rearmCrossTradeBracketREST(args: {
+  symbol: string;
+  dir: "long" | "short";
+  stopPrice: number;
+  targetPrice: number;
+}): Promise<{ ok: boolean; reason: string }> {
+  const cfg = loadConfig();
+  const live = process.env.EXECUTE_LIVE === "1";
+  const instrument = mapInstrument(args.symbol, cfg.instrument);
+  if (!instrument) return { ok: false, reason: `crossTrade: cannot map symbol "${args.symbol}"` };
+  if (!Number.isFinite(args.stopPrice) || !Number.isFinite(args.targetPrice)) {
+    return { ok: false, reason: `crossTrade: invalid re-arm bracket — stop ${args.stopPrice} target ${args.targetPrice}` };
+  }
+  if (!live) {
+    console.log(`[crossTrade] DRY-RUN(REST) RE-ARM ${args.dir} ${instrument} stop ${args.stopPrice.toFixed(2)} target ${args.targetPrice.toFixed(2)}`);
+    return { ok: true, reason: "dry-run (logged only)" };
+  }
+  try {
+    const res = await fetch(
+      `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/orders/cancel_and_bracket`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
+        body: JSON.stringify({
+          instrument,
+          action: args.dir === "long" ? "buy" : "sell",
+          takeProfit: args.targetPrice.toFixed(2),
+          stopLoss: args.stopPrice.toFixed(2),
+        }),
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    const bodyText = await res.text();
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, reason: `re-arm auth failure (${res.status})` };
+    }
+    let j: Record<string, unknown> | null = null;
+    try {
+      j = JSON.parse(bodyText);
+    } catch {
+      /* plain text */
+    }
+    if (!res.ok) return { ok: false, reason: `re-arm rejected (${res.status}) ${bodyText.slice(0, 160)}` };
+    if (j && j.success === false) {
+      return { ok: false, reason: `re-arm rejected: ${String(j.error ?? bodyText).slice(0, 160)}` };
+    }
+    return { ok: true, reason: `re-armed ${instrument} ${args.dir}` };
+  } catch (e) {
+    return { ok: false, reason: `re-arm UNKNOWN (network: ${String(e)}) — verify the order list manually` };
+  }
+}
+
+/** flatten the whole account (the last-resort repair when a naked
+ *  position cannot be re-armed). Dry-run unless EXECUTE_LIVE=1. */
+export async function flattenCrossTradePositionREST(): Promise<{ ok: boolean; reason: string }> {
+  const cfg = loadConfig();
+  const live = process.env.EXECUTE_LIVE === "1";
+  if (!live) {
+    console.log(`[crossTrade] DRY-RUN(REST) FLATTEN ${cfg.account}`);
+    return { ok: true, reason: "dry-run (logged only)" };
+  }
+  try {
+    const res = await fetch(
+      `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions/flatten`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
+        body: "{}",
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    const bodyText = await res.text();
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, reason: `flatten auth failure (${res.status})` };
+    }
+    let j: Record<string, unknown> | null = null;
+    try {
+      j = JSON.parse(bodyText);
+    } catch {
+      /* plain text */
+    }
+    if (!res.ok) return { ok: false, reason: `flatten rejected (${res.status}) ${bodyText.slice(0, 160)}` };
+    if (j && j.success === false) {
+      return { ok: false, reason: `flatten rejected: ${String(j.error ?? bodyText).slice(0, 160)}` };
+    }
+    return { ok: true, reason: "flattened" };
+  } catch (e) {
+    return { ok: false, reason: `flatten UNKNOWN (network: ${String(e)}) — flatten manually NOW` };
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * GLOBAL protection machinery (2026-10-08 naked-position incident).
+ * Lives in the EXECUTOR, not in any feed family: every REST placement
+ * (market or limit, any caller — current or future) registers its
+ * intended bracket and verifies the OSO legs after placement, and the
+ * watchdogs repair any open position that runs without a working stop.
+ * The 30s account-level sweep lives in execWatch (checkProtection).
+ * ------------------------------------------------------------------ */
+
+/** the protection registry — the last successfully placed bracket on the
+ *  account. The executor writes it on every placement; the watchdogs
+ *  read it to know what a naked position SHOULD be protected with.
+ *  rearmOk=false (scale-out) means repair-by-flatten only. */
+export type OpenProtection = { intent: OrderIntent; rearmOk: boolean; at: number };
+
+const gpProt = globalThis as unknown as {
+  __gcOpenProtection?: OpenProtection | null;
+};
+export function openProtection(): OpenProtection | null {
+  return gpProt.__gcOpenProtection ?? null;
+}
+export function setOpenProtection(p: OpenProtection | null): void {
+  gpProt.__gcOpenProtection = p;
+}
+export function registerOpenProtection(intent: OrderIntent, opts: { rearmOk?: boolean } = {}): void {
+  if (process.env.EXECUTE_LIVE !== "1") return;
+  setOpenProtection({ intent, rearmOk: opts.rearmOk ?? true, at: Date.now() });
+}
+
+/** the tape price the dispatch/repair decisions anchor to (feed ltp, else
+ *  the last closed minute — null when nothing is available). */
+export function currentTapeLtp(): number | null {
+  const live = getLive().state;
+  const ltp = live.snapshot?.ltp ?? live.minutes.at(-1)?.c ?? null;
+  return ltp !== null && Number.isFinite(ltp) ? ltp : null;
+}
+
+/** the emergency re-arm stop: anchored just beyond the CURRENT tape so
+ *  Tradovate accepts it (a crossed stop is rejected with InvalidPrice).
+ *  Pure + unit-tested. */
+export function rearmStopPrice(dir: "long" | "short", ltp: number | null | undefined, padTicks = 4): number | null {
+  if (ltp === null || ltp === undefined || !Number.isFinite(ltp)) return null;
+  const pad = Math.max(1, Math.round(padTicks)) * 0.25;
+  return dir === "long" ? ltp - pad : ltp + pad;
+}
+
+/** is the account flat on MNQ? true = confirmed flat, false = position
+ *  open, null = unreadable (callers treat unreadable as "keep acting",
+ *  never as "all clear"). */
+export async function readMnqFlatREST(): Promise<boolean | null> {
+  const cfg = loadConfig();
+  try {
+    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`, {
+      headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
+    if (!j.success) return null;
+    let qty = 0;
+    for (const p of j.data ?? []) {
+      if (!String(p.instrument ?? p.contractName ?? "").includes("MNQ")) continue;
+      qty += Number(p.netPos ?? p.qty ?? 0);
+    }
+    return qty === 0;
+  } catch {
+    return null;
+  }
+}
+
+/** repair a naked position: re-arm the bracket around the LIVE position
+ *  (stop re-anchored just beyond the tape so it cannot be rejected
+ *  again), verify the re-arm, and flatten when anything fails. Alerts at
+ *  every step; callers throttle per episode. */
+export async function repairNakedPosition(intent: OrderIntent, label: string, key: string): Promise<void> {
+  const ltp = currentTapeLtp();
+  const reg = openProtection();
+  const rearmOk = reg?.rearmOk ?? true;
+  const stopPrice = rearmStopPrice(intent.dir, ltp);
+  if (rearmOk && stopPrice !== null) {
+    const re = await rearmCrossTradeBracketREST({
+      symbol: intent.symbol,
+      dir: intent.dir,
+      stopPrice,
+      targetPrice: intent.target,
+    });
+    if (re.ok) {
+      // the watchdog re-verifies the re-arm landed (working-stop read);
+      // here we trust the accepted reply + the next poll
+      void logExec({ key, label, attempt: "watch", outcome: "stop_rearmed", reason: `stop re-armed @ ${stopPrice.toFixed(2)} (target ${intent.target.toFixed(2)}) — ${re.reason}` });
+      void sendTelegram(
+        `🛡 <b>STOP RE-ARMED</b> — <code>${label}</code>\nthe position was running without a stop; a fresh bracket is working: stop ${stopPrice.toFixed(2)} · target ${intent.target.toFixed(2)}`,
+        { parseMode: "HTML" },
+      ).catch(() => {});
+      return;
+    }
+    void logExec({ key, label, attempt: "watch", outcome: "stop_rearm_failed", reason: re.reason });
+  } else if (rearmOk) {
+    void logExec({ key, label, attempt: "watch", outcome: "stop_rearm_failed", reason: "no tape price to anchor the re-arm stop" });
+  }
+  // the position may have closed while we were reading (a fast target fill
+  // OCO-cancels the stop and looks exactly like a naked position) — never
+  // flatten a position that no longer exists
+  const flat = await readMnqFlatREST();
+  if (flat === true) {
+    void logExec({ key, label, attempt: "watch", outcome: "stop_rearm_failed", reason: "position closed before repair — normal OCO, no action" });
+    return;
+  }
+  const f = await flattenCrossTradePositionREST();
+  void logExec({ key, label, attempt: "watch", outcome: f.ok ? "stop_flattened" : "stop_flatten_failed", reason: f.reason });
+  void sendTelegram(
+    f.ok
+      ? `🚨 <b>NAKED POSITION FLATTENED</b> — <code>${label}</code>\nno working stop could be re-armed — the position was closed to protect the account.`
+      : `🚨🚨 <b>NAKED POSITION — CLOSE MANUALLY NOW</b> — <code>${label}</code>\nre-arm AND flatten both failed (${f.reason}) — there is NO stop on this position.`,
+    { parseMode: "HTML" },
+  ).catch(() => {});
+}
+
+const BRACKET_VERIFY_DELAY_MS = 4000;
+
+/** verify the OSO bracket legs a few seconds after placement — the
+ *  executor's global late-rejection check. Tradovate can accept a place
+ *  and reject the stop leg ~10ms later (InvalidPrice on a crossed stop);
+ *  this cancels a still-working entry before it can fill naked, or
+ *  repairs immediately when the entry already filled. */
+export function verifyBracketsAfterPlace(o: {
+  label: string;
+  key: string;
+  intent: OrderIntent;
+  entryOrderId?: string;
+  nativeEntryId?: string | number;
+  stopChildId?: string | number;
+  targetChildId?: string | number;
+}): void {
+  if (process.env.EXECUTE_LIVE !== "1") return;
+  if (o.stopChildId === undefined && o.targetChildId === undefined && o.nativeEntryId === undefined) return;
+  setTimeout(() => {
+    void (async () => {
+      const cfg = loadConfig();
+      const headers = { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" };
+      const status = async (id: string | number): Promise<string> => {
+        try {
+          const res = await fetch(
+            `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/orders/${encodeURIComponent(String(id))}/status`,
+            { headers, signal: AbortSignal.timeout(15_000) },
+          );
+          const j = (await res.json()) as { success?: boolean; data?: { status?: string } };
+          return j.success ? String(j.data?.status ?? "") : "";
+        } catch {
+          return "";
+        }
+      };
+      const entryStatus = o.nativeEntryId !== undefined ? await status(o.nativeEntryId) : o.entryOrderId ? await status(o.entryOrderId) : "";
+      const stopStatus = o.stopChildId !== undefined ? await status(o.stopChildId) : "";
+      const targetStatus = o.targetChildId !== undefined ? await status(o.targetChildId) : "";
+      const bad = (s: string) => s === "Rejected" || s === "Canceled";
+      const resting = (s: string) => s === "Working" || s === "OnHold" || s === "Suspended" || s === "";
+      if (bad(stopStatus)) {
+        if (o.entryOrderId && resting(entryStatus)) {
+          // entry still resting — cancel it so it can never fill naked
+          const c = await cancelCrossTradeOrderREST(o.entryOrderId);
+          void logExec({
+            key: o.key,
+            label: o.label,
+            attempt: "watch",
+            outcome: c.ok ? "bracket_rejected_cancel_entry" : "limit_cancel_failed",
+            reason: `stop leg ${stopStatus} (entry ${entryStatus || "unknown"}) — ${c.reason}`,
+          });
+          void sendTelegram(
+            `🚨 <b>STOP LEG ${stopStatus.toUpperCase()} AT PLACEMENT — entry cancelled</b> — <code>${o.label}</code>\n` +
+              `Tradovate rejected the OSO stop (InvalidPrice risk) — the resting entry was cancelled so it cannot fill unprotected.` +
+              (c.ok ? "" : `\n<b>CANCEL FAILED — verify manually NOW:</b> ${c.reason}`),
+            { parseMode: "HTML" },
+          ).catch(() => {});
+        } else {
+          // the entry already filled (or is a market entry we cannot
+          // cancel). A fast full OCO cycle also lands here (target hit
+          // within seconds → the stop shows Canceled with the account
+          // flat) — confirm a position actually exists before repairing.
+          const flat = await readMnqFlatREST();
+          if (flat === true) return; // normal OCO completion, nothing to repair
+          void logExec({ key: o.key, label: o.label, attempt: "watch", outcome: "stop_missing", reason: `stop leg ${stopStatus} after entry ${entryStatus}` });
+          void repairNakedPosition(o.intent, o.label, o.key);
+        }
+        return;
+      }
+      if (bad(targetStatus) && !bad(stopStatus)) {
+        void logExec({ key: o.key, label: o.label, attempt: "watch", outcome: "target_missing", reason: `target leg ${targetStatus} — stop remains working` });
+        void sendTelegram(`⚠️ <b>TARGET LEG ${targetStatus.toUpperCase()}</b> — <code>${o.label}</code>\nstop remains working; the trade will exit at the stop or by time.`, { parseMode: "HTML" }).catch(() => {});
+      }
+    })();
+  }, BRACKET_VERIFY_DELAY_MS);
 }

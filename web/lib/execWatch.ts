@@ -27,6 +27,7 @@
 
 import { sendTelegram } from "./notify";
 import { placeOrder, placeScaleOut, cancelOrder, type OrderIntent } from "./executor";
+import { stopCrossedAtDispatch, currentTapeLtp, repairNakedPosition, openProtection, setOpenProtection } from "./crossTrade";
 import { momentumProfile, timeExitAt } from "./profile";
 import { registerTimeExit } from "./timeExit";
 import { getLive } from "./live";
@@ -69,6 +70,161 @@ let pending = new Map<string, Expectation>();
 let alerted = new Set<string>();
 let failedKeys = new Set<string>();
 let fillCache: { at: number; fills: Array<{ ts: number; action: string; qty: number; price: number }> } | null = null;
+
+/* ---- protection watchdog (2026-10-08 naked-position incident) --------- *
+ * The executor (lib/crossTrade.ts) owns the GLOBAL safety invariants:
+ * every REST placement — market or limit, any caller — registers its
+ * bracket and verifies its OSO legs after placement. This module runs
+ * the 30s account-level sweep: while an MNQ position is open, a working
+ * stop must cover it, or the position is repaired (re-arm via
+ * cancel_and_bracket, else flatten — repairNakedPosition). Untracked
+ * positions (manual trades) are alert-only — never touched. */
+
+const gpWatch = globalThis as unknown as {
+  __gcNakedAlerted?: boolean;
+  __gcNakedSince?: number | null;
+};
+function nakedAlerted(): boolean {
+  return gpWatch.__gcNakedAlerted === true;
+}
+function setNakedAlerted(v: boolean): void {
+  gpWatch.__gcNakedAlerted = v;
+}
+function nakedSince(): number | null {
+  return gpWatch.__gcNakedSince ?? null;
+}
+function setNakedSince(t: number | null): void {
+  gpWatch.__gcNakedSince = t;
+}
+
+/** a tracked naked position must persist across two consecutive 30s polls
+ *  before the watchdog repairs it — Tradovate activates a suspended OSO
+ *  stop a beat after the fill, and a re-arm in that window would replace
+ *  the bracket with a 1-pt emergency stop. Evidence-based repairs (the
+ *  executor's rejected-leg check) act immediately instead. Failed repairs
+ *  are retried on a 2-minute cooldown while the position stays naked. */
+const NAKED_PERSIST_MS = 30_000;
+const REPAIR_COOLDOWN_MS = 2 * 60_000;
+
+/** pure classifier: does the working-order list contain a working stop
+ *  that covers the position side? (long → a Sell stop; short → a Buy
+ *  stop — Tradovate's own order rows carry action/ordStatus/stopPrice.) */
+export function stopCoversPosition(orders: Array<Record<string, unknown>>, dir: "long" | "short"): boolean {
+  const want = dir === "long" ? "Sell" : "Buy";
+  return orders.some((o) => {
+    const action = String(o.action ?? "").toLowerCase();
+    const status = String(o.ordStatus ?? o.status ?? "").toLowerCase();
+    const ins = String(o.instrument ?? o.contractName ?? "");
+    const hasStop = o.stopPrice !== undefined && o.stopPrice !== null;
+    const isStopType = String(o.orderType ?? o.type ?? "").toLowerCase().includes("stop");
+    return ins.includes(MNQ) && (status === "working" || status === "") && action === want.toLowerCase() && (hasStop || isStopType);
+  });
+}
+
+const REARM_VERIFY_DELAY_MS = 4000;
+
+async function readWorkingOrders(): Promise<{ ok: boolean; orders: Array<Record<string, unknown>> }> {
+  const key = process.env.CROSSTRADE_KEY ?? "";
+  const account = process.env.CROSSTRADE_ACCOUNT ?? "";
+  try {
+    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/orders`, {
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
+    if (!j.success) return { ok: false, orders: [] };
+    return { ok: true, orders: j.data ?? [] };
+  } catch {
+    return { ok: false, orders: [] };
+  }
+}
+
+/** the working-order check: is a stop actually covering this side? */
+export async function findWorkingStop(dir: "long" | "short"): Promise<{ ok: boolean; found: boolean }> {
+  const r = await readWorkingOrders();
+  if (!r.ok) return { ok: false, found: false };
+  return { ok: true, found: stopCoversPosition(r.orders, dir) };
+}
+
+/** signed MNQ position from the fill-reconciled read (null = flat or
+ *  unreadable — callers treat unreadable as "keep waiting"). */
+async function readMnqPosition(): Promise<{ qty: number; dir: "long" | "short" } | null> {
+  const key = process.env.CROSSTRADE_KEY ?? "";
+  const account = process.env.CROSSTRADE_ACCOUNT ?? "";
+  try {
+    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`, {
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
+    if (!j.success) return null;
+    let qty = 0;
+    for (const p of j.data ?? []) {
+      if (!String(p.instrument ?? p.contractName ?? "").includes(MNQ)) continue;
+      qty += Number(p.netPos ?? p.qty ?? 0);
+    }
+    if (qty === 0) return null;
+    return { qty, dir: qty > 0 ? "long" : "short" };
+  } catch {
+    return null;
+  }
+}
+
+/** the 30s protection watchdog: while an MNQ position is open, verify a
+ *  working stop covers it. Tracked positions are repaired (re-arm →
+ *  flatten); untracked ones (manual trades) alert only, never touched. */
+export async function checkProtection(): Promise<void> {
+  if (!enabled()) return;
+  const pos = await readMnqPosition();
+  const reg = openProtection();
+  if (!pos) {
+    if (reg) setOpenProtection(null); // flat — the entry closed or expired
+    return;
+  }
+  if (!reg || reg.intent.dir !== pos.dir) {
+    if (reg) setOpenProtection(null);
+    if (!nakedAlerted()) {
+      setNakedAlerted(true);
+      void logExec({
+        key: `protect|${Date.now()}`,
+        label: "protection watchdog",
+        attempt: "watch",
+        outcome: "naked_untracked",
+        reason: `MNQ position ${pos.dir} open with no tracked bracket — verify manually`,
+      });
+      void alert(`⚠️ <b>UNTRACKED MNQ POSITION OPEN</b> — ${pos.dir} ${pos.qty} with no bracket we placed — verify manually (never auto-touched).`);
+    }
+    return;
+  }
+  const ws = await findWorkingStop(pos.dir);
+  if (!ws.ok) return; // unreadable book — never guess, retry next poll
+  if (ws.found) {
+    setNakedAlerted(false);
+    setNakedSince(null);
+    return;
+  }
+  // tracked position with NO working stop: alert on the first poll and
+  // repair only when the naked state persists across two polls — the
+  // OSO stop activates a beat after the fill and a repair in that window
+  // would replace the bracket with a 1-pt emergency stop
+  const since = nakedSince();
+  if (since === null) {
+    setNakedSince(Date.now());
+    void logExec({
+      key: `protect|${Date.now()}`,
+      label: `protection watchdog ${pos.dir}`,
+      attempt: "watch",
+      outcome: "stop_missing",
+      reason: "position open with no working stop",
+    });
+    void alert(`🚨 <b>NO WORKING STOP ON OPEN POSITION</b> — ${pos.dir} ${pos.qty} MNQ — re-arming in ~30s if it persists (flatten fallback).`);
+    return;
+  }
+  if (Date.now() - since < NAKED_PERSIST_MS) return;
+  void repairNakedPosition(reg.intent, `protection watchdog ${pos.dir}`, `protect|${Date.now()}`);
+  // retry on a cooldown while the position stays naked (repair alerts)
+  setNakedSince(Date.now() + REPAIR_COOLDOWN_MS);
+}
 
 /* ---- RTH winner-exit tracking (feeds the counter-signal gate) -------- *
  * Bracket exits are exchange-side — the system never sees the exit fill
@@ -133,12 +289,15 @@ async function pollRthExit(): Promise<void> {
 let exitPollStarted = false;
 
 /** 30s broker poll that turns flat transitions into RTH winner-exit
- *  records for the counter-signal gate. Started from instrumentation. */
+ *  records for the counter-signal gate, and runs the protection
+ *  watchdog (working-stop verification + naked-position repair).
+ *  Started from instrumentation. */
 export function startRthExitPoll(intervalMs = 30_000): void {
   if (exitPollStarted || !enabled()) return;
   exitPollStarted = true;
   setInterval(() => {
     void pollRthExit().catch(() => {});
+    void checkProtection().catch(() => {});
   }, intervalMs);
 }
 
@@ -287,6 +446,9 @@ export function isRetryableFailure(reason: string): boolean {
   if (reason.includes("invalid stop")) return false;
   if (reason.includes("invalid target")) return false;
   if (reason.includes("not flat — an MNQ position is open")) return false;
+  // the executor's global gate: re-sending the same limit would just be
+  // refused again (the tape is past the stop — the entry is dead)
+  if (reason.includes("crossed-stop gate")) return false;
   return true;
 }
 
@@ -370,6 +532,9 @@ export async function checkExpectations(): Promise<void> {
         void logExec({ key, label: e.label, attempt: "watch", outcome: "limit_filled", reason: "resting limit filled" });
         void alert(`✅ <b>LIMIT FILLED</b> — <code>${e.label}</code> resting limit entered`);
       }
+      // protection verification on fill: a filled position must have a
+      // working stop — the watchdog repairs (re-arm → flatten) if not
+      void checkProtection().catch(() => {});
       continue;
     }
 
@@ -457,13 +622,23 @@ export async function checkExpectations(): Promise<void> {
       );
       continue;
     }
+    if (e.limit && stopCrossedAtDispatch(e.intent.dir, e.intent.stop, currentTapeLtp()) === true) {
+      // crossed-stop gate: the tape moved through the stop — re-placing the
+      // limit would submit a stop leg Tradovate rejects (InvalidPrice) and
+      // the entry could fill naked (2026-10-08 incident)
+      pending.delete(key);
+      void logExec({ key, label: e.label, attempt: "watch", outcome: "skipped_stale", reason: "tape crossed the stop — limit re-send would place a rejectable bracket" });
+      void alert(`⚠ <b>RE-SEND SKIPPED — tape past stop</b> — <code>${e.label}</code>\nthe tape moved through the stop; re-placing the limit would produce a naked fill.`);
+      continue;
+    }
     const res = e.scaleOut ? await placeScaleOut(e.intent) : await placeOrder(e.intent, e.limit ? { limitPrice: e.limit.price } : {});
     e.attempts += 1;
     e.lastAttemptAt = now;
     if (res.ok && e.limit) {
       // limit re-placed — the resting-limit lifecycle takes over: wait for
       // the fill (time exit registers on fill, not on placement) or cancel
-      // at expiry. The card stays pending.
+      // at expiry. The card stays pending. (The executor registered the
+      // bracket and verified the legs itself — global invariant.)
       if ("orderId" in res && res.orderId) e.limit.orderId = res.orderId;
       void logExec({
         key,
@@ -537,4 +712,7 @@ export function __resetExecWatchForTest() {
   alerted = new Set();
   failedKeys = new Set();
   fillCache = null;
+  setOpenProtection(null);
+  setNakedAlerted(false);
+  setNakedSince(null);
 }

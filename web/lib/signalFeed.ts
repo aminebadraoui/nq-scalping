@@ -63,6 +63,7 @@ import { getOverrides, decideSignal } from "./strategyOverrides";
 import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations, attachLimitOrderId } from "./execWatch";
+import { stopCrossedAtDispatch } from "./crossTrade";
 import { counterGateDecision, counterGateParams } from "./rthExitLog";
 import { momentumProfile, rthProfile, applyProfile, timeExitAt, type FamilyProfile } from "./profile";
 import { registerTimeExit, checkTimeExits } from "./timeExit";
@@ -788,16 +789,20 @@ class SignalFeed {
     const contracts = tiered.contracts;
     const sizeStr = `${contracts} MNQ · risk $${Math.round(contracts * setup.risk * RAPID_EOD_50K.pointValue)}`;
 
-    // emit the order intent to the executor (dry-run by default)
-    void placeOrder({
-      symbol: symbol(),
-      dir: setup.dir,
-      contracts,
-      entry: setup.entry,
-      stop: setup.stop,
-      target: setup.target,
-      timeET: setup.timeET,
-    })
+    // emit the order intent to the executor (dry-run by default); the
+    // executor registers the bracket + verifies the OSO legs (global)
+    void placeOrder(
+      {
+        symbol: symbol(),
+        dir: setup.dir,
+        contracts,
+        entry: setup.entry,
+        stop: setup.stop,
+        target: setup.target,
+        timeET: setup.timeET,
+      },
+      { label: `sweep-reclaim ${setup.dir} ${setup.timeET}` },
+    )
       .then((res) => {
         void logExec({
           key: `reclaim|${key}`,
@@ -1223,6 +1228,8 @@ class SignalFeed {
           this.lastError = `scale-out: ${res.reason}`;
           registerSendFailure(`mom|${key}`, `momentum ${intent.dir} ${et} (scale-out${suffix})`, res.reason);
         }
+        // (the executor registers the bracket + verifies the legs itself —
+        //  a global invariant shared by every entry path)
         return res;
       } catch (e) {
         this.lastError = `scale-out: ${String(e)}`;
@@ -1231,15 +1238,16 @@ class SignalFeed {
     }
     try {
       const limitTag = limitPrice !== undefined ? " (limit)" : "";
-      const res = await placeOrder(intent, limitPrice !== undefined ? { limitPrice } : {});
+      const label = `momentum ${intent.dir} ${et}${suffix}${limitTag}`;
+      const res = await placeOrder(intent, { ...(limitPrice !== undefined ? { limitPrice } : {}), label });
       void logExec({
         key: `mom|${key}`,
-        label: `momentum ${intent.dir} ${et}${suffix}${limitTag}`,
+        label,
         attempt: "initial",
         outcome: res.ok ? "ok" : "failed",
         reason: res.reason,
       });
-      if (!res.ok) registerSendFailure(`mom|${key}`, `momentum ${intent.dir} ${et}${suffix}${limitTag}`, res.reason);
+      if (!res.ok) registerSendFailure(`mom|${key}`, label, res.reason);
       if (res.ok && !scaleOut && limitPrice === undefined) {
         const prof = momentumProfile();
         if (prof.enabled) {
@@ -1390,6 +1398,38 @@ class SignalFeed {
       timeET: et,
     };
 
+    // CROSSTRADE_LIMIT_ENTRIES=0 opts back OUT of the broker resting
+    // limit (market entry at the tape fill — the slippage-exposed path
+    // the backtest rejects); see retraceUseLimit().
+    const useLimit = retraceUseLimit(p.scaleOut);
+
+    // crossed-stop dispatch gate (2026-10-08 incident): if the tape gapped
+    // through the stop between the touch and dispatch, the OSO stop would
+    // be rejected (InvalidPrice) and the entry would fill naked. Skip.
+    const gateLtp = live.snapshot?.ltp ?? live.minutes.at(-1)?.c ?? null;
+    if (useLimit && stopCrossedAtDispatch(p.dir, stop, gateLtp) === true) {
+      console.log(`[expRetrace] crossed-stop gate: skipping ${p.dir} — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch`);
+      await this.record({
+        timeET: et,
+        day: p.day,
+        symbol: symbol(),
+        side: p.dir,
+        price: entry,
+        entry: entry.toFixed(2),
+        stop: stop.toFixed(2),
+        target: target.toFixed(2),
+        size: sizeStr,
+        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        headline: `NQ momentum ${p.dir}`,
+        source: "live",
+        test: false,
+        sent: false,
+        reason: `crossed-stop gate — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch`,
+        features: { ...p.features, retrace: "crossed-stop" },
+      });
+      return;
+    }
+
     const text = [
       `⚡ <b>${STATS.momentum.name} · ${p.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(entry)} · ${et} NY — retrace filled ${drift >= 0 ? "+" : "−"}${Math.abs(drift).toFixed(2)} pts</b>`,
       ``,
@@ -1423,10 +1463,8 @@ class SignalFeed {
       reason: pushRes.reason,
       features: { ...p.features, retrace: "filled", drift },
     });
-    // CROSSTRADE_LIMIT_ENTRIES=0 opts back OUT of the broker resting
-    // limit (market entry at the tape fill — the slippage-exposed path
-    // the backtest rejects); see retraceUseLimit().
-    const useLimit = retraceUseLimit(p.scaleOut);
+    // the retrace fill is dispatched immediately (the limit price IS the
+    // just-touched tape) — the gate above already re-checked the tape
     const limitExpireAtMs = useLimit ? Date.now() + LIMIT_ENTRY_TTL_MS : undefined;
     registerExpectation({
       key: `mom|${p.key}`,
@@ -1648,23 +1686,59 @@ class SignalFeed {
       );
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (size ×${Math.round(size.mult * 100)}%)` : ""}`;
 
-      const et = cdtToET(s.t);
-      void placeOrder(
-        {
-          symbol: symbol(),
-          dir: s.dir,
-          contracts: size.contracts,
+      // crossed-stop dispatch gate (2026-10-08 naked-position incident):
+      // a resting limit whose OSO stop sits on the marketable side of the
+      // current tape is rejected by Tradovate at placement (InvalidPrice)
+      // and the entry then fills with NO stop. Skip the card quietly —
+      // the study models this gate (rthDriftOptimizer crossed-gate cells).
+      const gateLtp = live.snapshot?.ltp ?? live.minutes.at(-1)?.c ?? null;
+      if (useLimitEntry && stopCrossedAtDispatch(s.dir, stop, gateLtp) === true) {
+        const es = esCardChips(esCtx, nqMid, s, false);
+        const rn = roundNumberChips(s);
+        const gch = gapChips(fp, s, gaps);
+        const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
+        console.log(
+          `[rth] crossed-stop gate: skipping ${key} — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (stop would be rejected → naked fill)`,
+        );
+        await this.recordSkip({
+          timeET: cdtToET(s.t),
+          day: s.d,
+          side: s.dir,
+          price: s.entry,
           entry: s.entry,
           stop,
           target,
-          timeET: et,
-        },
-        useLimitEntry ? { limitPrice: s.entry } : {},
-      )
+          verdict: "rth soft-continuation (experimental)",
+          headline: `NQ RTH ${s.dir}`,
+          reason: `crossed-stop gate — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (OSO stop would be rejected)`,
+          features: signalFeatures(s as unknown as Record<string, unknown>, {
+            family: "rth",
+            rejectedBy: ["crossed-stop dispatch gate"],
+            ...es.features,
+            ...rn.features,
+            ...gch.features,
+            ...wall.features,
+          }),
+        });
+        continue;
+      }
+
+      const et = cdtToET(s.t);
+      const label = `rth ${s.dir} ${et}${useLimitEntry ? " (limit)" : ""}`;
+      const intent: OrderIntent = {
+        symbol: symbol(),
+        dir: s.dir,
+        contracts: size.contracts,
+        entry: s.entry,
+        stop,
+        target,
+        timeET: et,
+      };
+      void placeOrder(intent, { ...(useLimitEntry ? { limitPrice: s.entry } : {}), label })
         .then((res) => {
           void logExec({
             key: `rth|${key}`,
-            label: `rth ${s.dir} ${et}${useLimitEntry ? " (limit)" : ""}`,
+            label,
             attempt: "initial",
             outcome: res.ok ? "ok" : "failed",
             reason: res.reason,
@@ -1878,15 +1952,18 @@ class SignalFeed {
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (size ×${Math.round(size.mult * 100)}%)` : ""}`;
 
       const et = cdtToET(s.t);
-      void placeOrder({
-        symbol: symbol(),
-        dir: s.dir,
-        contracts: size.contracts,
-        entry: s.entry,
-        stop: s.stop,
-        target: s.target,
-        timeET: et,
-      })
+      void placeOrder(
+        {
+          symbol: symbol(),
+          dir: s.dir,
+          contracts: size.contracts,
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          timeET: et,
+        },
+        { label: `${family} ${s.dir} ${et}` },
+      )
         .then((res) => {
           void logExec({
             key: `open|${key}`,

@@ -48,7 +48,15 @@ export type ExecLogEntry = {
     | "limit_filled"
     | "limit_expired"
     | "limit_cancel_failed"
-    | "limit_cancelled_giveup";
+    | "limit_cancelled_giveup"
+    | "bracket_rejected_cancel_entry"
+    | "stop_missing"
+    | "stop_rearmed"
+    | "stop_rearm_failed"
+    | "stop_flattened"
+    | "stop_flatten_failed"
+    | "target_missing"
+    | "naked_untracked";
   reason: string;
   meta?: Record<string, unknown>;
 };

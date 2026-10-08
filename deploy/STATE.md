@@ -450,6 +450,40 @@ wider stop grid and the user's approval. Scratch studies
     live-exec libs changed, so the exec gate (`scripts/exec-gate.sh`) is
     unaffected; the feature is inert until the operator acts.
 
+## Naked-position incident + stop protection (2026-10-08)
+
+The 09:48 ET RTH short (7 MNQ, limit 31216.25) filled instantly at
+31229.25 — 13 pts past the signal — because the flush ran the tape
+through the resting limit in the ~100 s dispatch lag. Tradovate rejected
+the OSO stop leg at placement (`InvalidPrice`: a buy-stop below the
+market) ~10 ms after the place was accepted, and the entry filled anyway:
+**the position ran with NO stop** until the owner closed it manually at
++13.75 pts. The watcher logged `limit_filled` and believed the trade was
+protected — nothing verified the bracket legs after placement.
+
+Fixed with three layers (see docs/research/naked-stop-incident-2026-10-08.md),
+all living at the EXECUTOR choke point so every order path is covered:
+1. crossed-stop dispatch gate (`stopCrossedAtDispatch`, in
+   `placeCrossTradeOrderREST`) — a limit order whose stop sits on the
+   marketable side of the dispatch tape is refused (Tradovate would
+   reject that stop); the feeds skip such cards quietly for the journal;
+2. late-rejection check (`verifyBracketsAfterPlace`, auto-fired by the
+   executor ~4 s after every bracketed REST placement) — reads the OSO
+   child statuses: rejected stop + resting entry → cancel the entry;
+   rejected stop + filled entry → repair (after confirming a position
+   exists);
+3. protection watchdog (`checkProtection`, 30 s, execWatch) — while a
+   position is open, verify a working stop covers it; missing → re-arm
+   via `cancel_and_bracket` (stop re-anchored 1 pt beyond the tape) or
+   flatten; untracked (manual) positions are alert-only.
+
+Study consequence: with the crossed cards treated honestly, the live
+`s0.5/t2.5` RTH limit config breaches the eval dd bound (OOS −$2.5k) —
+its prior PASS was partly phantom stop profits from the naked case.
+`s0.5/t2.0` passes but ≈ flat at $1.90/RT. **The RTH family is not
+validated in its current live form; FEED_RTH=0 until a passing safe
+config exists (owner decision).** The safety fix ships regardless.
+
 ## Auto-deploy
 
 **Coolify's native GitHub webhook** (no Actions workflow — the API-key workflow

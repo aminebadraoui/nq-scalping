@@ -19,12 +19,19 @@ import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { closeOf, midOf, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+import { stopCrossedAtDispatch } from "../lib/crossTrade";
 
 const CONCURRENCY = 8;
 const HORIZON = 60;
 const TTL = 5;
 const RISK_BUDGET = 100;
 const SPLIT = "2026-01-01";
+/** crossed-stop dispatch gate (2026-10-08 naked-position incident): the
+ *  live fix skips a limit card whose OSO stop sits on the marketable side
+ *  of the tape at dispatch — Tradovate rejects that stop (InvalidPrice)
+ *  and the entry then fills naked. Dispatch tape proxy = the next-bar
+ *  mid (the study's own drift measurement bar). */
+const XGATE = true;
 
 const STOPS = [0.5, 0.75, 1.0];
 const TARGETS = [1.5, 2.0, 2.5, 3.0];
@@ -49,6 +56,15 @@ function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string,
     const stop = s.entry - dir * risk;
     const target = s.entry + dir * risk * c.t;
     if (!(dir > 0 ? stop < s.entry && s.entry < target : target < s.entry && s.entry < stop)) continue;
+
+    // crossed-stop dispatch gate (the live fix): the card is sent and
+    // skipped when the dispatch tape sits beyond the OSO stop — consumes
+    // the day cap exactly like the live path (recorded as a skip).
+    const nb = minutes[s.entryIdx + 1];
+    if (XGATE && nb && stopCrossedAtDispatch(s.dir, stop, midOf(nb)) === true) {
+      cardCount++;
+      continue;
+    }
 
     // resting limit at the signal entry — fill-or-expire within TTL bars
     const endTtl = Math.min(minutes.length - 1, s.entryIdx + TTL);
@@ -219,6 +235,12 @@ function scoreConfigTtl(minutes: MomMinute[], sigs: MomentumSignal[], date: stri
     const stop = s.entry - dir * risk;
     const target = s.entry + dir * risk * c.t;
     if (!(dir > 0 ? stop < s.entry && s.entry < target : target < s.entry && s.entry < stop)) continue;
+    // crossed-stop dispatch gate (mirrors scoreConfig)
+    const nb2 = minutes[s.entryIdx + 1];
+    if (XGATE && nb2 && stopCrossedAtDispatch(s.dir, stop, midOf(nb2)) === true) {
+      cardCount++;
+      continue;
+    }
     const endTtl = Math.min(minutes.length - 1, s.entryIdx + ttlBars);
     let fillBar = -1;
     let fill = 0;

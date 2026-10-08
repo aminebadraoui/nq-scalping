@@ -31,16 +31,29 @@ export type PlaceOpts = {
   /** resting LIMIT entry at this price (with our own orderId so a later
    *  cancel can address it) instead of the default market entry */
   limitPrice?: number;
+  /** human label for the protection alerts (the post-place leg check) */
+  label?: string;
 };
 
 /** Place a bracketed entry through CrossTrade. The REST path (ABSOLUTE
  *  stop/target at the signal's structural levels) is the default;
  *  CROSSTRADE_REST=0 falls back to the quote-anchored webhook.
- *  opts.limitPrice switches the entry to a resting limit. */
+ *  opts.limitPrice switches the entry to a resting limit.
+ *  The child ids (native entry + OSO stop/target) come back so the
+ *  protection watchdog can verify the legs after placement — an
+ *  accepted place can still be rejected by Tradovate's risk layer a
+ *  split second later (InvalidPrice on a crossed stop). */
 export async function placeOrder(
   intent: OrderIntent,
   opts: PlaceOpts = {},
-): Promise<{ ok: boolean; reason: string; orderId?: string }> {
+): Promise<{
+  ok: boolean;
+  reason: string;
+  orderId?: string;
+  nativeEntryId?: string | number;
+  stopChildId?: string | number;
+  targetChildId?: string | number;
+}> {
   if (crossTradeEnabled()) {
     return process.env.CROSSTRADE_REST === "0"
       ? placeCrossTradeOrder(intent)
