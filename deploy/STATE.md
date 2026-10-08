@@ -431,10 +431,15 @@ wider stop grid and the user's approval. Scratch studies
     Coolify; timing-safe compare + per-IP throttle; the gate is closed
     while unset). The Coolify env stays the durable base default — the
     override wins while present.
-  - Switches are SEAMLESS: the action resets the account guard
-    (state file + Neon `guard_state` row + in-memory reseed; default ON)
-    so a fresh account starts clean, and appends a daybook `exec` audit
-    record. Only switch while flat / outside RTH.
+  - Switches are SEAMLESS and data-driven: before applying, the switch
+    reads the CrossTrade snapshot — if the new name reports the SAME
+    realized P&L as the current account it's the same Tradovate account
+    under a new label and protections are KEPT (no mid-day re-baseline
+    of the consistency counter); a genuinely different account resets
+    automatically (state file + Neon `guard_state` row + in-memory
+    reseed). Ambiguous reads keep protections (fail-safe) with a
+    "force reset" checkbox as the tie-breaker. Every switch appends a
+    daybook `exec` audit record. Only switch while flat / outside RTH.
   - The jobs container (separate app, own volume) resolves the effective
     account the same way: `daybookConsolidate`/`reconcileTrades` ask
     `/api/exec-settings?raw=1` with `Authorization: Bearer

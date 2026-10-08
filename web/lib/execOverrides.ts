@@ -165,6 +165,113 @@ export async function resetGuardForAccountSwitch(
   return { db };
 }
 
+/* ---- same-account detection ------------------------------------------- *
+ * `CROSSTRADE_ACCOUNT` is only a NAME addressing a linked Tradovate
+ * account — renaming it (or pointing a different CrossTrade label at
+ * the same Tradovate account) changes nothing about the underlying
+ * account data. Resetting the guard in that case would re-baseline the
+ * day mid-session (consistency counter + daily floor restart at the
+ * current realized) — the fail-closed machinery exists to prevent
+ * exactly that. So before switching, read the live snapshot and decide:
+ *
+ *   - the typed name is not visible under the current CrossTrade key
+ *     → a different account → RESET.
+ *   - the old AND new names are both visible with the SAME realized
+ *     P&L → the same underlying account → KEEP.
+ *   - the old name is gone (renamed in CrossTrade) and the typed
+ *     account's realized P&L continues the guard's day reference
+ *     (dayStartRealized + dayPnl, flat accounts don't drift) → KEEP.
+ *   - otherwise: re-read once to rule out fills in flight; stable but
+ *     unexplained → KEEP (fail-safe for the consistency counter) with
+ *     an "unverified" note — the operator's force-reset checkbox is
+ *     the tie-breaker.
+ * ---------------------------------------------------------------------- */
+
+export type GuardResetAdvice = {
+  action: "reset" | "keep" | "unverified";
+  reason: string;
+};
+
+const CT_SNAPSHOT_URL = "https://app.crosstrade.io/v1/api/tv/accounts/snapshot";
+const SAME_ACCOUNT_TOL = 25; // $ — realized is fill-based; a flat account doesn't drift
+
+type SnapshotAccount = { name?: string; netLiq?: number; realizedPnl?: number };
+
+async function fetchCrossTradeAccounts(key: string, fetchFn: typeof fetch = fetch): Promise<SnapshotAccount[]> {
+  const res = await fetchFn(CT_SNAPSHOT_URL, {
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) throw new Error(`snapshot ${res.status}`);
+  const j = (await res.json()) as { accounts?: SnapshotAccount[] };
+  return j.accounts ?? [];
+}
+
+const realized = (a: SnapshotAccount | undefined): number | null =>
+  a && Number.isFinite(a.realizedPnl) ? Number(a.realizedPnl) : null;
+
+export async function detectGuardResetFor(
+  typedAccount: string,
+  env: Record<string, string | undefined> = process.env,
+  fetchFn: typeof fetch = fetch,
+): Promise<GuardResetAdvice> {
+  const key = (env.CROSSTRADE_KEY ?? "").trim();
+  const oldName = (env.CROSSTRADE_ACCOUNT ?? "").trim();
+  if (!key) return { action: "unverified", reason: "no CROSSTRADE_KEY — cannot read the account; protections kept" };
+  const name = (n: string) => n.toUpperCase();
+
+  let accounts: SnapshotAccount[];
+  try {
+    accounts = await fetchCrossTradeAccounts(key, fetchFn);
+  } catch {
+    return { action: "unverified", reason: "CrossTrade snapshot unreadable — protections kept (force-reset if this is a new account)" };
+  }
+
+  const typed = accounts.find((a) => name(a.name ?? "") === name(typedAccount));
+  const typedRealized = realized(typed);
+  if (typedRealized === null) {
+    // not visible under THIS key — the executor wouldn't find it either
+    // (crossGuard matches by name), so it must belong to a different
+    // CrossTrade login → a different account.
+    return { action: "reset", reason: `"${typedAccount}" not visible under the current CrossTrade key — different account` };
+  }
+
+  const old = accounts.find((a) => name(a.name ?? "") === name(oldName));
+  const oldRealized = realized(old);
+  if (oldRealized !== null) {
+    if (oldRealized === typedRealized) {
+      return { action: "keep", reason: "old and new names report the same realized P&L — same Tradovate account, protections kept" };
+    }
+    return { action: "reset", reason: `realized P&L ${oldRealized.toFixed(2)} → ${typedRealized.toFixed(2)} — different account` };
+  }
+
+  // the old name is gone from the list (renamed in CrossTrade): the typed
+  // account must continue the guard's day reference to count as "same"
+  const s = guardState();
+  const expected = s.dayStartRealized + s.dayPnl;
+  if (Math.abs(typedRealized - expected) <= SAME_ACCOUNT_TOL) {
+    return { action: "keep", reason: "realized P&L continues the current day reference — same account under a new name, protections kept" };
+  }
+  // diverges from the day reference: either a fill landed since the last
+  // poll (same account) or a genuinely different account. Re-read once —
+  // a stable value that still doesn't explain itself is ambiguous, and
+  // the safe side is to KEEP (a wrong reset undercounts the consistency
+  // cap); the operator's force-reset checkbox breaks the tie.
+  try {
+    const again = await fetchCrossTradeAccounts(key, fetchFn);
+    const againRealized = realized(again.find((a) => name(a.name ?? "") === name(typedAccount)));
+    if (againRealized !== null && againRealized !== typedRealized) {
+      return { action: "keep", reason: "realized P&L moving (fills in flight) — same account, protections kept" };
+    }
+  } catch {
+    /* fall through to the conservative keep */
+  }
+  return {
+    action: "unverified",
+    reason: "realized P&L diverges from the day reference but cannot be confirmed as a new account — protections kept (check force-reset for a new account)",
+  };
+}
+
 /* ---- effective account for the jobs container ------------------------ *
  * The nightly jobs container (daybookConsolidate / reconcileTrades) is a
  * SEPARATE Coolify compose app with its own env + volume, so the

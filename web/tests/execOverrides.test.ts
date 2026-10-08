@@ -11,6 +11,7 @@ import path from "node:path";
 import {
   ACCOUNT_NAME_RE,
   applyExecOverrides,
+  detectGuardResetFor,
   execOverridesFile,
   loadExecOverrides,
   maskAccount,
@@ -153,4 +154,86 @@ test("resolveEffectiveAccount: env fallback when no override and no key", async 
 
   const out = await resolveEffectiveAccount({ ...env, CROSSTRADE_ACCOUNT: "ENV-ACCT" });
   assert.equal(out, "ENV-ACCT");
+});
+
+/* ---- same-account detection ------------------------------------------ */
+
+function fakeFetch(accounts: Array<{ name: string; realizedPnl?: number }>, ok = true): typeof fetch {
+  return (async () => ({ ok, json: async () => ({ accounts }) })) as unknown as typeof fetch;
+}
+
+function throwingFetch(): typeof fetch {
+  return (async () => {
+    throw new Error("network down");
+  }) as unknown as typeof fetch;
+}
+
+const ENV = { CROSSTRADE_KEY: "test-key", CROSSTRADE_ACCOUNT: "OLD-ACCT" };
+
+test("detectGuardResetFor: no key → unverified", async () => {
+  const r = await detectGuardResetFor("NEW", {}, fakeFetch([]));
+  assert.equal(r.action, "unverified");
+});
+
+test("detectGuardResetFor: snapshot unreadable → unverified", async () => {
+  const r = await detectGuardResetFor("NEW", ENV, throwingFetch());
+  assert.equal(r.action, "unverified");
+});
+
+test("detectGuardResetFor: typed name not visible under this key → reset", async () => {
+  const r = await detectGuardResetFor("NOT-LINKED", ENV, fakeFetch([{ name: "OLD-ACCT", realizedPnl: 100 }]));
+  assert.equal(r.action, "reset");
+});
+
+test("detectGuardResetFor: old + new names report the same realized → keep", async () => {
+  const r = await detectGuardResetFor(
+    "NEW-LABEL",
+    ENV,
+    fakeFetch([
+      { name: "OLD-ACCT", realizedPnl: 123.45 },
+      { name: "NEW-LABEL", realizedPnl: 123.45 },
+    ]),
+  );
+  assert.equal(r.action, "keep");
+});
+
+test("detectGuardResetFor: different realized between names → reset", async () => {
+  const r = await detectGuardResetFor(
+    "NEW-ACCT",
+    ENV,
+    fakeFetch([
+      { name: "OLD-ACCT", realizedPnl: -500 },
+      { name: "NEW-ACCT", realizedPnl: 0 },
+    ]),
+  );
+  assert.equal(r.action, "reset");
+});
+
+test("detectGuardResetFor: renamed account continues the day reference → keep", async () => {
+  const s = guardState();
+  s.dayStartRealized = 100;
+  s.dayPnl = 50;
+  const r = await detectGuardResetFor("RENAMED", ENV, fakeFetch([{ name: "RENAMED", realizedPnl: 150 }]));
+  assert.equal(r.action, "keep");
+});
+
+test("detectGuardResetFor: stable divergence from the day reference → unverified (conservative)", async () => {
+  const s = guardState();
+  s.dayStartRealized = 100;
+  s.dayPnl = 50;
+  const r = await detectGuardResetFor("RENAMED", ENV, fakeFetch([{ name: "RENAMED", realizedPnl: 0 }]));
+  assert.equal(r.action, "unverified");
+});
+
+test("detectGuardResetFor: realized moving between reads → keep (fills in flight)", async () => {
+  const s = guardState();
+  s.dayStartRealized = 100;
+  s.dayPnl = 50;
+  let n = 0;
+  const moving = (async () => ({
+    ok: true,
+    json: async () => ({ accounts: [{ name: "RENAMED", realizedPnl: n++ === 0 ? 0 : 900 }] }),
+  })) as unknown as typeof fetch;
+  const r = await detectGuardResetFor("RENAMED", ENV, moving);
+  assert.equal(r.action, "keep");
 });

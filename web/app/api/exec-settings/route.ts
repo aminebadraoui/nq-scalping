@@ -24,6 +24,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import {
   ACCOUNT_NAME_RE,
+  detectGuardResetFor,
   loadExecOverrides,
   maskAccount,
   resetGuardForAccountSwitch,
@@ -109,12 +110,18 @@ export async function POST(req: NextRequest) {
   }
   const before = (process.env.CROSSTRADE_ACCOUNT ?? "").trim();
 
+  // decide the guard reset from the LIVE data, not the operator's guess:
+  // same Tradovate account under a new name → keep protections; a
+  // genuinely different account → reset. `resetGuard === true` forces a
+  // reset (the tie-breaker when the snapshot can't settle it).
+  const advice = await detectGuardResetFor(account);
+  const forceReset = body.resetGuard === true;
+  const doReset = forceReset || advice.action === "reset";
+
   writeExecOverride("CROSSTRADE_ACCOUNT", account);
 
-  // seamless guard reset — default ON (a fresh account must start clean)
-  const resetGuard = body.resetGuard !== false;
-  let guardReset: { db: "cleared" | "skipped" | "failed" } = { db: "skipped" };
-  if (resetGuard) guardReset = await resetGuardForAccountSwitch();
+  let guardReset: { db: "cleared" | "skipped" | "failed" } | null = null;
+  if (doReset) guardReset = await resetGuardForAccountSwitch();
 
   // audit trail: the daybook exec record survives container redeploys
   try {
@@ -125,12 +132,18 @@ export async function POST(req: NextRequest) {
       label: "exec-settings",
       attempt: "override",
       outcome: "applied",
-      reason: `CROSSTRADE_ACCOUNT ${maskAccount(before) ?? "∅"} → ${maskAccount(account)} guardReset:${guardReset.db}`,
+      reason: `CROSSTRADE_ACCOUNT ${maskAccount(before) ?? "∅"} → ${maskAccount(account)} guard:${guardReset ? `reset(${guardReset.db})` : "kept"} · ${advice.reason}`,
     });
   } catch {
     /* audit is best-effort — the change is already applied */
   }
 
   recordOk(ip);
-  return Response.json({ ok: true, account: maskAccount(account), guardReset: guardReset.db });
+  return Response.json({
+    ok: true,
+    account: maskAccount(account),
+    guard: guardReset ? "reset" : "kept",
+    guardDb: guardReset?.db ?? null,
+    guardReason: guardReset ? `guard reset (${guardReset.db}) — ${advice.reason}` : advice.reason,
+  });
 }
