@@ -1,19 +1,29 @@
 /* The owner's manual trading halt — the dashboard kill switch.
  * POST flips the halt (resume is password-gated when ADMIN_PASSWORD is
  * configured; halting is always allowed — a kill switch must never ask
- * permission). GET reports the state. Every flip is audited in the
- * daybook (lib/tradingHalt.ts). */
-import { createHash, timingSafeEqual } from "node:crypto";
-import { setTradingHalt, tradingHalted } from "@/lib/tradingHalt";
+ * permission). GET reports the state AND whether resuming needs a
+ * password, so the UI can adapt instead of guessing. Every flip is
+ * audited in the daybook (lib/tradingHalt.ts). */
+import { setTradingHalt, tradingHalted, verifyResumePassword } from "@/lib/tradingHalt";
 
 export const dynamic = "force-dynamic";
 
-function passwordOk(given: string): boolean {
-  const pw = process.env.ADMIN_PASSWORD;
-  if (!pw) return true; // no password configured — dashboard access is the gate
-  const g = createHash("sha256").update(given).digest();
-  const e = createHash("sha256").update(pw).digest();
-  return timingSafeEqual(g, e);
+/* light per-IP throttle on resume attempts — in-memory, per process;
+ * enough to make a public dashboard password non-brute-forceable */
+const attempts = new Map<string, { n: number; since: number }>();
+const THROTTLE_WINDOW_MS = 5 * 60_000;
+const THROTTLE_MAX = 10;
+
+function throttled(ip: string): number | null {
+  const now = Date.now();
+  const a = attempts.get(ip);
+  if (!a || now - a.since >= THROTTLE_WINDOW_MS) {
+    attempts.set(ip, { n: 1, since: now });
+    return null;
+  }
+  a.n += 1;
+  if (a.n > THROTTLE_MAX) return a.since + THROTTLE_WINDOW_MS - now;
+  return null;
 }
 
 export async function POST(request: Request) {
@@ -22,8 +32,15 @@ export async function POST(request: Request) {
     if (typeof j.halt !== "boolean") {
       return Response.json({ ok: false, reason: "halt must be a boolean" }, { status: 400 });
     }
-    if (!j.halt && !passwordOk(typeof j.password === "string" ? j.password : "")) {
-      return Response.json({ ok: false, reason: "resume requires ADMIN_PASSWORD" }, { status: 401 });
+    if (!j.halt) {
+      const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+      const wait = throttled(ip);
+      if (wait !== null) {
+        return Response.json({ ok: false, reason: `too many attempts — wait ${Math.ceil(wait / 1000)}s` }, { status: 429 });
+      }
+      if (!verifyResumePassword(typeof j.password === "string" ? j.password : "", process.env.ADMIN_PASSWORD)) {
+        return Response.json({ ok: false, reason: "wrong password" }, { status: 401 });
+      }
     }
     try {
       setTradingHalt(j.halt);
@@ -37,5 +54,9 @@ export async function POST(request: Request) {
 }
 
 export async function GET() {
-  return Response.json({ ok: true, halted: tradingHalted() });
+  return Response.json({
+    ok: true,
+    halted: tradingHalted(),
+    resumePasswordRequired: !!process.env.ADMIN_PASSWORD,
+  });
 }

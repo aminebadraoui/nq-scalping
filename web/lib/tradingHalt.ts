@@ -15,6 +15,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { appendDaybook } from "./daybook";
 
 const HALT_ENV_KEY = "TRADING_HALT";
@@ -69,6 +70,17 @@ export function setTradingHalt(
     outcome: halted ? "trading_halted" : "trading_resumed",
     reason: meta.actor ? `by ${meta.actor}` : "dashboard toggle",
   });
+}
+
+/** timing-safe resume-password check. Both sides are trimmed: a
+ *  trailing space on the Coolify env var or a copy-pasted password must
+ *  never lock the owner out of their own kill switch. No password
+ *  configured → true (dashboard access is the gate). Pure + unit-tested. */
+export function verifyResumePassword(given: string, configured?: string | null): boolean {
+  if (!configured) return true;
+  const g = createHash("sha256").update(given.trim()).digest();
+  const e = createHash("sha256").update(configured.trim()).digest();
+  return timingSafeEqual(g, e);
 }
 
 /** TEST ONLY: reset the in-process env key. */

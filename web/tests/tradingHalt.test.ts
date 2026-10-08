@@ -70,3 +70,27 @@ test("TEST helper resets the in-process key", (t) => {
   __resetTradingHaltForTest(env);
   assert.equal(tradingHalted(env), false);
 });
+
+/* ---- resume-password check (UX fix: trim both sides, unset = open) ---- */
+
+import { verifyResumePassword } from "../lib/tradingHalt";
+
+test("verifyResumePassword: exact match opens", () => {
+  assert.equal(verifyResumePassword("hunter2", "hunter2"), true);
+});
+
+test("verifyResumePassword: mismatch refuses", () => {
+  assert.equal(verifyResumePassword("hunter2", "hunter3"), false);
+  assert.equal(verifyResumePassword("", "hunter2"), false);
+});
+
+test("verifyResumePassword: trims both sides — a trailing space on the env var or a copy-pasted password never locks the owner out", () => {
+  assert.equal(verifyResumePassword("hunter2 ", "hunter2"), true);
+  assert.equal(verifyResumePassword(" hunter2", "hunter2"), true);
+  assert.equal(verifyResumePassword("hunter2", " hunter2 "), true);
+});
+
+test("verifyResumePassword: no configured password → open (dashboard access is the gate)", () => {
+  assert.equal(verifyResumePassword("", undefined), true);
+  assert.equal(verifyResumePassword("anything", null), true);
+});
