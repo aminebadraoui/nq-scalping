@@ -39,6 +39,7 @@ import {
   type OrderRow,
   type FillRow,
 } from "../lib/reconcile";
+import { resolveEffectiveAccount } from "../lib/execOverrides";
 
 /* ---- env ------------------------------------------------------------ */
 function loadEnvLocal() {
@@ -60,11 +61,14 @@ loadEnvLocal();
 
 const DB_URL = process.env.DATABASE_URL ?? "";
 const CT_KEY = process.env.CROSSTRADE_KEY ?? "";
-const CT_ACCOUNT = process.env.CROSSTRADE_ACCOUNT ?? "";
+// the effective account is resolved in main(): the dashboard's password-
+// gated account switch writes a runtime override the jobs container can't
+// see locally, so it asks the dashboard (key-authenticated) first.
+let CT_ACCOUNT = process.env.CROSSTRADE_ACCOUNT ?? "";
 const COMMISSION_PER_SIDE = Number(process.env.CT_COMMISSION_PER_SIDE ?? "0.95");
 
-if (!DB_URL || !CT_KEY || !CT_ACCOUNT) {
-  console.error("reconcileTrades: need DATABASE_URL, CROSSTRADE_KEY, CROSSTRADE_ACCOUNT");
+if (!DB_URL || !CT_KEY) {
+  console.error("reconcileTrades: need DATABASE_URL, CROSSTRADE_KEY");
   process.exit(1);
 }
 
@@ -563,6 +567,13 @@ function pairFillsOnly(
 
 /* ---- main ----------------------------------------------------------- */
 async function main() {
+  CT_ACCOUNT = await resolveEffectiveAccount(process.env);
+  if (!CT_ACCOUNT) {
+    console.error("[reconcile] no effective CROSSTRADE_ACCOUNT (env, override file, or dashboard)");
+    await sql.end();
+    process.exit(1);
+  }
+  console.log(`[reconcile] effective account ${CT_ACCOUNT}`);
   await sql.unsafe(TABLE_SQL);
 
   const [fills, signals, orders] = await Promise.all([fetchFills(), fetchSignals(), fetchOrders()]);

@@ -419,6 +419,31 @@ wider stop grid and the user's approval. Scratch studies
   (lib/crossGuard.ts) feeds the CrossTrade account snapshot
   (netLiq/realizedPnl) into the same MFF floor/consistency guard
   (lib/accountGuard.ts) before every order — fail-closed when unreadable.
+- **Password-gated account switch on the dashboard (2026-10-07)** — the
+  "change…" button next to the account in the status bar edits the linked
+  Tradovate account name (`CROSSTRADE_ACCOUNT`) with no Coolify env edit
+  and no redeploy:
+  - Writes a runtime override to the data volume
+    (`/app/data/exec-overrides.json`), applies it to `process.env`
+    instantly (all exec readers see it), and re-applies it at every boot
+    (`instrumentation.ts` loads it before the daybook boot snapshot).
+  - Gated by `ADMIN_PASSWORD` in the **nq-dashboard** app env (set once in
+    Coolify; timing-safe compare + per-IP throttle; the gate is closed
+    while unset). The Coolify env stays the durable base default — the
+    override wins while present.
+  - Switches are SEAMLESS: the action resets the account guard
+    (state file + Neon `guard_state` row + in-memory reseed; default ON)
+    so a fresh account starts clean, and appends a daybook `exec` audit
+    record. Only switch while flat / outside RTH.
+  - The jobs container (separate app, own volume) resolves the effective
+    account the same way: `daybookConsolidate`/`reconcileTrades` ask
+    `/api/exec-settings?raw=1` with `Authorization: Bearer
+    <CROSSTRADE_KEY>` (the key doubles as the shared secret), falling back
+    to their own env. No new credentials.
+  - Code lives in `web/lib/execOverrides.ts` + `web/app/api/exec-settings`
+    + `web/components/AccountSettings.tsx` — none of the protected
+    live-exec libs changed, so the exec gate (`scripts/exec-gate.sh`) is
+    unaffected; the feature is inert until the operator acts.
 
 ## Auto-deploy
 

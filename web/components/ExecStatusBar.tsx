@@ -1,6 +1,7 @@
 "use client";
 
 import { useExecStatus } from "@/lib/useExecStatus";
+import AccountSettings from "./AccountSettings";
 
 /* ------------------------------------------------------------------ *
  * ExecStatusBar — the live status strip at the top of the dashboard.
@@ -49,6 +50,7 @@ export default function ExecStatusBar() {
         <span className="font-mono text-[10px] text-zinc-400">
           {ex?.executeLive ? "EXECUTE_LIVE" : "dry-run"} · {ex?.account ?? "no account"} · {ex?.instrument ?? ""}
         </span>
+        <AccountSettings />
 
         {/* account + day */}
         {p?.account && (

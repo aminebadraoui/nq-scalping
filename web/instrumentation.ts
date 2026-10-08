@@ -12,6 +12,15 @@
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === "edge") return;
   try {
+    // runtime execution overrides (the password-gated dashboard account
+    // switch) — MUST apply before the daybook boot snapshot and the feed
+    // start so the effective CROSSTRADE_ACCOUNT is what everything reads
+    const { applyExecOverrides } = await import("./lib/execOverrides");
+    applyExecOverrides();
+  } catch {
+    /* no override file — plain Coolify env governs */
+  }
+  try {
     // daybook boot record: the variation fingerprint + full settings
     // snapshot, written before anything trades (best-effort, never throws)
     const { bootDaybook } = await import("./lib/daybook");
