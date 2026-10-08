@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { familyName } from "@/lib/familyNames";
 import { type StreakRow, type DrawdownRow, type HourCell, type HourRow } from "@/lib/journalMetrics";
+import { flattenFeatures, ledgerCsv, type LedgerRow as DeepTradeRow, type LedgerVariable } from "@/lib/tradeLedger";
 
 /* ------------------------------------------------------------------ *
  * Trade journal — the dedicated surface for the self-improving loop:
@@ -406,6 +407,12 @@ export default function JournalPage() {
   const [hours, setHours] = useState<HourRow[]>([]);
   const [insights, setInsights] = useState<Insight[]>([]);
   const [overrides, setOverrides] = useState<Override[]>([]);
+  const [deepTrades, setDeepTrades] = useState<DeepTradeRow[]>([]);
+  const [deepVars, setDeepVars] = useState<LedgerVariable[]>([]);
+  const [deepSource, setDeepSource] = useState<string>("");
+  const [showAllVars, setShowAllVars] = useState(false);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [acctFilter, setAcctFilter] = useState<string>("all");
   const [loaded, setLoaded] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -413,8 +420,9 @@ export default function JournalPage() {
     Promise.all([
       fetch(`/api/trades?range=${scoreRange}`).then((r) => r.json()),
       fetch("/api/insights").then((r) => r.json()),
+      fetch("/api/trades/table").then((r) => r.json()),
     ])
-      .then(([t, i]) => {
+      .then(([t, i, l]) => {
         setRun(t.runs?.[0] ?? null);
         setAnalysis(t.analysis ?? null);
         setTrades(t.trades ?? []);
@@ -433,6 +441,9 @@ export default function JournalPage() {
         setHours(t.hours ?? []);
         setInsights(i.insights ?? []);
         setOverrides(i.overrides ?? []);
+        setDeepTrades(l.rows ?? []);
+        setDeepVars(l.variables ?? []);
+        setDeepSource(l.source ?? "");
         setLoaded(true);
       })
       .catch(() => {});
@@ -472,6 +483,25 @@ export default function JournalPage() {
   const activeOverrides = overrides.filter((o) => o.active);
   const newestFirst = [...trades].reverse();
   const maxAbsDay = Math.max(1, ...dayRows.map((d) => Math.abs(d.netUsd)));
+
+  /* ---- all-variables trade table ---- */
+  const deepFiltered = deepTrades.filter((r) => acctFilter === "all" || r.account === acctFilter);
+  const deepAccounts = [...new Set(deepTrades.map((r) => r.account))].sort();
+  const varCell = (v: unknown): string => {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "number") return String(Math.round(v * 10000) / 10000);
+    if (typeof v === "boolean") return v ? "1" : "0";
+    return String(v);
+  };
+  const downloadCsv = () => {
+    const csv = ledgerCsv(deepFiltered, deepVars.map((v) => v.key));
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `trades-${deepFiltered[0]?.day ?? "all"}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
 
   return (
     <main className="mx-auto w-full max-w-[1800px] px-4 py-6">
@@ -1123,6 +1153,215 @@ export default function JournalPage() {
             </div>
             <p className="mt-1 font-mono text-[9px] text-zinc-600">
               source: MFF/Tradovate fills export (round trips no signal explains) · P&L shown NET (commissions included, $0.95/side/contract)
+            </p>
+          </section>
+
+          <section className="rounded-md border border-zinc-800 bg-panel p-4">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">
+                All trades · every variable
+              </h2>
+              <div className="flex flex-wrap items-center gap-2 font-mono text-[10px]">
+                <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-500">
+                  {deepTrades.length} rows · source {deepSource || "—"} · {deepVars.length} variables
+                </span>
+                <span className="flex overflow-hidden rounded border border-zinc-800">
+                  <button
+                    onClick={() => setAcctFilter("all")}
+                    className={`px-1.5 py-0.5 ${acctFilter === "all" ? "bg-info/10 text-info" : "text-zinc-500 hover:text-zinc-200"}`}
+                  >
+                    ALL
+                  </button>
+                  {deepAccounts.map((a) => (
+                    <button
+                      key={a}
+                      onClick={() => setAcctFilter(a)}
+                      title={a}
+                      className={`px-1.5 py-0.5 ${acctFilter === a ? "bg-info/10 text-info" : "text-zinc-500 hover:text-zinc-200"}`}
+                    >
+                      …{a.slice(-4)}
+                    </button>
+                  ))}
+                </span>
+                <button
+                  onClick={() => setShowAllVars(!showAllVars)}
+                  className={`rounded border px-1.5 py-0.5 ${showAllVars ? "border-info/60 bg-info/10 text-info" : "border-zinc-800 text-zinc-500 hover:text-zinc-200"}`}
+                >
+                  {showAllVars ? "VARS ON" : "VARS OFF"}
+                </button>
+                <button
+                  onClick={downloadCsv}
+                  className="rounded border border-long/40 px-1.5 py-0.5 text-long hover:bg-long/10"
+                >
+                  ↓ CSV
+                </button>
+              </div>
+            </div>
+            <div className="max-h-[70vh] overflow-auto">
+              <table className="w-full border-collapse font-mono text-[10px]">
+                <thead className="sticky top-0 z-10 bg-panel">
+                  <tr className="text-left text-zinc-500">
+                    <th className="border-b border-zinc-800 py-1 pr-2 font-normal">day · time</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">acct</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">dir</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">strategy</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">signal</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">fill → exit</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">gross / net</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">result</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">variation</th>
+                    {showAllVars &&
+                      deepVars.map((v) => (
+                        <th key={v.key} title={`${v.key} · present on ${v.count} rows`} className="max-w-[130px] truncate border-b border-zinc-800 px-2 py-1 text-right font-normal">
+                          {v.key}
+                        </th>
+                      ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {deepFiltered.map((r) => {
+                    const flat = flattenFeatures(r.features);
+                    const open = expandedKey === r.key;
+                    return (
+                      <Fragment key={r.key}>
+                        <tr
+                          onClick={() => setExpandedKey(open ? null : r.key)}
+                          className={`cursor-pointer align-top text-zinc-400 ${open ? "bg-zinc-900" : "hover:bg-zinc-900/50"}`}
+                        >
+                          <td className="py-1 pr-2 whitespace-nowrap">
+                            {r.day.slice(5)} {r.timeET || "—"}
+                          </td>
+                          <td className="px-2 py-1 whitespace-nowrap text-zinc-500" title={r.account}>
+                            …{r.account.slice(-4)}
+                            {r.accountSource === "date-boundary" ? "·∂" : ""}
+                          </td>
+                          <td className={`px-2 py-1 font-semibold ${r.side === "long" ? "text-long" : "text-short"}`}>
+                            {r.side.toUpperCase().slice(0, 1)}
+                          </td>
+                          <td className="px-2 py-1 text-right">{r.contracts || "—"}</td>
+                          <td className="px-2 py-1 whitespace-nowrap">{familyName(r.family)}</td>
+                          <td className="px-2 py-1 text-right">{fmtPx(r.sigEntry)}</td>
+                          <td className="px-2 py-1 text-right whitespace-nowrap">
+                            {r.status === "no-fill" || r.status === "unexecuted" ? (
+                              <span className="rounded border border-warn/50 bg-warn/10 px-1 py-0.5 text-[8px] text-warn">NO FILL</span>
+                            ) : (
+                              `${fmtPx(r.fillEntry)} → ${fmtPx(r.exitAvg)}`
+                            )}
+                          </td>
+                          <td className="px-2 py-1 text-right whitespace-nowrap">
+                            {fmtUsd(r.grossUsd)} / <span className={(r.netUsd ?? 0) >= 0 ? "text-long" : "text-short"}>{fmtUsd(r.netUsd)}</span>
+                          </td>
+                          <td className="px-2 py-1 whitespace-nowrap">
+                            {r.status === "matched" ? (
+                              <span className="flex items-center gap-1">
+                                <span className="font-semibold">{r.result.toUpperCase() || "—"}</span>
+                                {r.stopRun && <span title="stop-run">⛔</span>}
+                                {r.targetReached && <span title="target was in range">🎯</span>}
+                                {r.recovered && <span title="price recovered after exit">↩</span>}
+                              </span>
+                            ) : (
+                              <span className="text-zinc-600">{r.reason || "vetoed"}</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-1 whitespace-nowrap text-zinc-500" title={r.variationId ?? ""}>
+                            {r.variationId ? r.variationId.slice(0, 8) : "—"}
+                          </td>
+                          {showAllVars &&
+                            deepVars.map((v) => (
+                              <td key={v.key} className="max-w-[130px] truncate px-2 py-1 text-right text-zinc-500">
+                                {varCell(flat[v.key])}
+                              </td>
+                            ))}
+                        </tr>
+                        {open && (
+                          <tr>
+                            <td colSpan={10 + (showAllVars ? deepVars.length : 0)} className="border-b border-zinc-800 bg-zinc-950/60 px-2 py-2">
+                              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                <div>
+                                  <p className="mb-1 text-[9px] font-bold uppercase tracking-wider text-zinc-500">card</p>
+                                  <p className="text-[10px] leading-relaxed text-zinc-400">{r.verdict || "—"}</p>
+                                  <p className="text-[10px] text-zinc-500">{r.headline}</p>
+                                  <p className="mt-1 text-[10px] text-zinc-600">
+                                    {r.size} · {r.source} · sent {r.sent ? "✓" : "✗"}
+                                    {r.reason ? ` · ${r.reason}` : ""}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="mb-1 text-[9px] font-bold uppercase tracking-wider text-zinc-500">levels & anatomy</p>
+                                  <p className="text-[10px] text-zinc-400">
+                                    sig {fmtPx(r.sigEntry)} · stop {fmtPx(r.sigStop)} · target {fmtPx(r.sigTarget)}
+                                  </p>
+                                  <p className="text-[10px] text-zinc-400">
+                                    fill {fmtPx(r.fillEntry)} → exit {fmtPx(r.exitAvg)} · drift {fmtPts(r.drift)} · MFE {fmtPts(r.mfe)} · MAE{" "}
+                                    {fmtPts(r.mae)} · held {r.heldMin === null ? "—" : `${Math.round(r.heldMin)}m`}
+                                  </p>
+                                  <p className="text-[10px] text-zinc-600">{r.lossLabel ? `loss class: ${r.lossLabel}` : ""}</p>
+                                </div>
+                                <div>
+                                  <p className="mb-1 text-[9px] font-bold uppercase tracking-wider text-zinc-500">
+                                    variation {r.variationId ? r.variationId.slice(0, 8) : "—"}
+                                    {r.buildSha ? ` · ${r.buildSha.slice(0, 7)}` : ""}
+                                  </p>
+                                  {r.settings ? (
+                                    <div className="max-h-40 overflow-y-auto">
+                                      <table className="w-full font-mono text-[9px] text-zinc-500">
+                                        <tbody>
+                                          {Object.entries(r.settings)
+                                            .sort(([a], [b]) => a.localeCompare(b))
+                                            .map(([k, v]) => (
+                                              <tr key={k}>
+                                                <td className="pr-2 whitespace-nowrap">{k}</td>
+                                                <td className="break-all text-zinc-400">{v || "—"}</td>
+                                              </tr>
+                                            ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  ) : (
+                                    <p className="text-[10px] text-zinc-600">no boot record for this day</p>
+                                  )}
+                                </div>
+                                <div className="md:col-span-2 xl:col-span-3">
+                                  <p className="mb-1 text-[9px] font-bold uppercase tracking-wider text-zinc-500">
+                                    variables at signal time ({Object.keys(flat).length})
+                                  </p>
+                                  {Object.keys(flat).length ? (
+                                    <div className="grid grid-cols-2 gap-x-4 md:grid-cols-4 xl:grid-cols-6">
+                                      {Object.entries(flat)
+                                        .sort(([a], [b]) => a.localeCompare(b))
+                                        .map(([k, v]) => (
+                                          <div key={k} className="flex min-w-0 justify-between gap-2 border-b border-zinc-900 py-0.5">
+                                            <span className="truncate text-zinc-500" title={k}>
+                                              {k}
+                                            </span>
+                                            <span className="whitespace-nowrap text-zinc-300">{varCell(v)}</span>
+                                          </div>
+                                        ))}
+                                    </div>
+                                  ) : (
+                                    <p className="text-[10px] text-zinc-600">
+                                      no feature vector recorded (trades from before feature capture)
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {loaded && deepTrades.length === 0 && (
+                <p className="py-2 font-mono text-xs text-zinc-600">no trades in the ledger yet</p>
+              )}
+            </div>
+            <p className="mt-2 font-mono text-[9px] text-zinc-600">
+              click a row for the full variable dump · VARS ON appends every distinct signal-time variable as a column · ↓ CSV exports the
+              flat training table (core + all variables) · ∂ = account inferred from the 2026-10-05 reset boundary · variables include
+              context that does not participate in the signal (dom, walls, ES/seasonal/round-number context, kelly, gates)
             </p>
           </section>
 
