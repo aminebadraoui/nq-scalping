@@ -56,7 +56,9 @@ export type ExecLogEntry = {
     | "stop_flattened"
     | "stop_flatten_failed"
     | "target_missing"
-    | "naked_untracked";
+    | "naked_untracked"
+    | "bracket_reanchored"
+    | "stop_slipped";
   reason: string;
   meta?: Record<string, unknown>;
 };

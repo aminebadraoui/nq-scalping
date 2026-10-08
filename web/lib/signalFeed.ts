@@ -63,7 +63,7 @@ import { getOverrides, decideSignal } from "./strategyOverrides";
 import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, checkExpectations, attachLimitOrderId } from "./execWatch";
-import { stopCrossedAtDispatch } from "./crossTrade";
+import { stopCrossedAtDispatch, limitCrossedAtDispatch } from "./crossTrade";
 import { counterGateDecision, counterGateParams } from "./rthExitLog";
 import { momentumProfile, rthProfile, applyProfile, timeExitAt, type FamilyProfile } from "./profile";
 import { registerTimeExit, checkTimeExits } from "./timeExit";
@@ -1686,19 +1686,25 @@ class SignalFeed {
       );
       const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` ($${cap} risk cap)` : ""}${size.mult < 1 ? ` (size ×${Math.round(size.mult * 100)}%)` : ""}`;
 
-      // crossed-stop dispatch gate (2026-10-08 naked-position incident):
+      // crossed-stop / crossed-limit dispatch gates (2026-10-08 incidents):
       // a resting limit whose OSO stop sits on the marketable side of the
       // current tape is rejected by Tradovate at placement (InvalidPrice)
-      // and the entry then fills with NO stop. Skip the card quietly —
-      // the study models this gate (rthDriftOptimizer crossed-gate cells).
+      // → naked fill; a limit the tape has already moved THROUGH fills at
+      // the market and the signal-anchored stop compresses (the 12:16
+      // 0.8-pt stop → 134-tick slippage). Skip quietly — the study models
+      // both gates (rthDriftOptimizer gate / gate-limit cells).
       const gateLtp = live.snapshot?.ltp ?? live.minutes.at(-1)?.c ?? null;
-      if (useLimitEntry && stopCrossedAtDispatch(s.dir, stop, gateLtp) === true) {
+      const crossedStop = useLimitEntry && stopCrossedAtDispatch(s.dir, stop, gateLtp) === true;
+      const crossedLimit = useLimitEntry && limitCrossedAtDispatch(s.dir, s.entry, gateLtp) === true;
+      if (crossedStop || crossedLimit) {
         const es = esCardChips(esCtx, nqMid, s, false);
         const rn = roundNumberChips(s);
         const gch = gapChips(fp, s, gaps);
         const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
         console.log(
-          `[rth] crossed-stop gate: skipping ${key} — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (stop would be rejected → naked fill)`,
+          crossedStop
+            ? `[rth] crossed-stop gate: skipping ${key} — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (stop would be rejected → naked fill)`
+            : `[rth] crossed-limit gate: skipping ${key} — tape ${Number(gateLtp).toFixed(2)} through limit ${s.entry.toFixed(2)} at dispatch (fill would drift and compress the stop)`,
         );
         await this.recordSkip({
           timeET: cdtToET(s.t),
@@ -1710,10 +1716,12 @@ class SignalFeed {
           target,
           verdict: "rth soft-continuation (experimental)",
           headline: `NQ RTH ${s.dir}`,
-          reason: `crossed-stop gate — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (OSO stop would be rejected)`,
+          reason: crossedStop
+            ? `crossed-stop gate — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (OSO stop would be rejected)`
+            : `crossed-limit gate — tape ${Number(gateLtp).toFixed(2)} through limit ${s.entry.toFixed(2)} at dispatch (fill drift would compress the stop)`,
           features: signalFeatures(s as unknown as Record<string, unknown>, {
             family: "rth",
-            rejectedBy: ["crossed-stop dispatch gate"],
+            rejectedBy: [crossedStop ? "crossed-stop dispatch gate" : "crossed-limit dispatch gate"],
             ...es.features,
             ...rn.features,
             ...gch.features,

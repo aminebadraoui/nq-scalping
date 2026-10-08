@@ -27,7 +27,7 @@
 
 import { sendTelegram } from "./notify";
 import { placeOrder, placeScaleOut, cancelOrder, type OrderIntent } from "./executor";
-import { stopCrossedAtDispatch, currentTapeLtp, repairNakedPosition, openProtection, setOpenProtection } from "./crossTrade";
+import { stopCrossedAtDispatch, limitCrossedAtDispatch, currentTapeLtp, repairNakedPosition, openProtection, setOpenProtection, reanchorBracketForFill, rearmCrossTradeBracketREST } from "./crossTrade";
 import { momentumProfile, timeExitAt } from "./profile";
 import { registerTimeExit } from "./timeExit";
 import { getLive } from "./live";
@@ -170,6 +170,35 @@ async function readMnqPosition(): Promise<{ qty: number; dir: "long" | "short" }
   }
 }
 
+/** stop-slippage alarm (2026-10-08 −$1,056 event): when a tracked trade
+ *  goes flat, compare the exit fill against the intended stop. A fill
+ *  far beyond the stop means the stop-market chased a gap — the risk
+ *  model priced the stop at its trigger, and reality disagreed. Alert +
+ *  journal so execution quality is visible, not just P&L. */
+async function checkExitSlippage(intent: OrderIntent): Promise<void> {
+  const fills = await fetchFills();
+  const want = intent.dir === "long" ? "Sell" : "Buy";
+  const exits = fills.filter((f) => f.action === want);
+  if (!exits.length) return;
+  exits.sort((a, b) => a.ts - b.ts);
+  const exit = exits[exits.length - 1];
+  const verdict = classifyExitFill(intent, exit.price);
+  if (verdict !== "stop_slipped") return;
+  const gap = intent.dir === "long" ? intent.stop - exit.price : exit.price - intent.stop;
+  void logExec({
+    key: `protect|${Date.now()}`,
+    label: `protection watchdog ${intent.dir}`,
+    attempt: "watch",
+    outcome: "stop_slipped",
+    reason: `stop ${intent.stop.toFixed(2)} filled at ${exit.price.toFixed(2)} — ${gap.toFixed(1)} pts beyond the trigger`,
+  });
+  void alert(
+    `🚨 <b>STOP SLIPPED ${gap.toFixed(1)} PTS</b> — <code>protection watchdog</code>\n` +
+      `the stop at ${intent.stop.toFixed(2)} filled at ${exit.price.toFixed(2)} — ${gap.toFixed(1)} pts of gap-through slippage on ${intent.contracts} MNQ (≈ $${(gap * intent.contracts * 2).toFixed(0)}).\n` +
+      `<i>execution-quality alarm — the planned risk was ${Math.abs(intent.entry - intent.stop).toFixed(1)} pts</i>`,
+  );
+}
+
 /** the 30s protection watchdog: while an MNQ position is open, verify a
  *  working stop covers it. Tracked positions are repaired (re-arm →
  *  flatten); untracked ones (manual trades) alert only, never touched. */
@@ -178,7 +207,14 @@ export async function checkProtection(): Promise<void> {
   const pos = await readMnqPosition();
   const reg = openProtection();
   if (!pos) {
-    if (reg) setOpenProtection(null); // flat — the entry closed or expired
+    if (reg) {
+      // flat transition — the trade just exited. If the exit fill landed
+      // far beyond the intended stop (gap-through slippage, the
+      // 2026-10-08 −$1,056 event), scream: the risk model needs to know
+      // its stop fills are not landing where they were priced.
+      void checkExitSlippage(reg.intent);
+      setOpenProtection(null); // flat — the entry closed or expired
+    }
     return;
   }
   if (!reg || reg.intent.dir !== pos.dir) {
@@ -348,18 +384,51 @@ async function fetchFills(): Promise<Array<{ ts: number; action: string; qty: nu
 /** fill match: the trade side printed >= 80% of the contracts within the window */
 export function fillMatches(
   e: { ts: number; intent: { dir: "long" | "short"; contracts: number } },
-  fills: Array<{ ts: number; action: string; qty: number }>,
+  fills: Array<{ ts: number; action: string; qty: number; price?: number }>,
   now: number,
 ): boolean {
+  return findMatchingFill(e, fills, now) !== null;
+}
+
+/** the matched entry fill (with its price) — null when no fill matches.
+ *  The fill PRICE is the execution-quality input for the re-anchor and
+ *  slippage checks: it is where the trade actually got in, not the signal. */
+export function findMatchingFill(
+  e: { ts: number; intent: { dir: "long" | "short"; contracts: number } },
+  fills: Array<{ ts: number; action: string; qty: number; price?: number }>,
+  now: number,
+): { ts: number; action: string; qty: number; price?: number } | null {
   const want = e.intent.dir === "long" ? "Buy" : "Sell";
   const need = Math.max(1, Math.floor(e.intent.contracts * 0.8));
-  return fills.some(
-    (f) =>
-      f.action === want &&
-      f.qty >= need &&
-      f.ts >= e.ts - 10_000 &&
-      f.ts <= e.ts + MATCH_WINDOW_MS,
+  // the match contract is side/size/window only (unchanged); price rides
+  // along when the caller's fill rows carry it (the watcher's always do)
+  const matches = fills.filter(
+    (f) => f.action === want && f.qty >= need && f.ts >= e.ts - 10_000 && f.ts <= e.ts + MATCH_WINDOW_MS,
   );
+  if (!matches.length) return null;
+  matches.sort((a, b) => a.ts - b.ts);
+  return matches[matches.length - 1];
+}
+
+/** pure exit-fill classifier for the slippage alarm: was the flat
+ *  transition a stop-out that filled beyond the intended stop? "target"
+ *  = exited near the target (normal); "stop_slipped" = exited beyond the
+ *  stop by more than thresholdPts; null = in between (manual/other). */
+export function classifyExitFill(
+  intent: { dir: "long" | "short"; stop: number; target: number },
+  exitPrice: number,
+  thresholdPts = 2,
+): "target" | "stop_slipped" | null {
+  if (!Number.isFinite(exitPrice)) return null;
+  const stopGap = intent.dir === "long" ? intent.stop - exitPrice : exitPrice - intent.stop; // > 0 = beyond the stop
+  const targetGap = Math.abs(exitPrice - intent.target);
+  const stopDist = Math.abs(exitPrice - intent.stop);
+  if (stopDist <= targetGap) {
+    // the exit landed on the stop side of the bracket
+    if (stopGap > thresholdPts) return "stop_slipped";
+    return null; // stopped out near the trigger — the intended outcome
+  }
+  return "target";
 }
 
 /** broker verification: is the MNQ book clean (no working order, no position)?
@@ -446,9 +515,10 @@ export function isRetryableFailure(reason: string): boolean {
   if (reason.includes("invalid stop")) return false;
   if (reason.includes("invalid target")) return false;
   if (reason.includes("not flat — an MNQ position is open")) return false;
-  // the executor's global gate: re-sending the same limit would just be
-  // refused again (the tape is past the stop — the entry is dead)
+  // the executor's global gates: re-sending the same limit would just be
+  // refused again (the tape is past the stop/limit — the entry is dead)
   if (reason.includes("crossed-stop gate")) return false;
+  if (reason.includes("crossed-limit gate")) return false;
   return true;
 }
 
@@ -478,7 +548,7 @@ export function registerSendFailure(key: string, label: string, reason: string) 
 export async function checkExpectations(): Promise<void> {
   if (!enabled() || pending.size === 0) return;
   const now = Date.now();
-  let fills: Array<{ ts: number; action: string; qty: number }> | null = null;
+  let fills: Array<{ ts: number; action: string; qty: number; price: number }> | null = null;
   for (const [key, e] of [...pending]) {
     // signal window (owner rule): nothing is ever placed outside
     // Sunday 18:00 ET → Friday 16:00 ET (daily 16:00–18:00 halt Mon–Thu) —
@@ -622,13 +692,18 @@ export async function checkExpectations(): Promise<void> {
       );
       continue;
     }
-    if (e.limit && stopCrossedAtDispatch(e.intent.dir, e.intent.stop, currentTapeLtp()) === true) {
-      // crossed-stop gate: the tape moved through the stop — re-placing the
-      // limit would submit a stop leg Tradovate rejects (InvalidPrice) and
-      // the entry could fill naked (2026-10-08 incident)
+    if (
+      e.limit &&
+      (stopCrossedAtDispatch(e.intent.dir, e.intent.stop, currentTapeLtp()) === true ||
+        limitCrossedAtDispatch(e.intent.dir, e.limit.price, currentTapeLtp()) === true)
+    ) {
+      // crossed-stop / crossed-limit gates: the tape moved through the
+      // bracket — re-placing the limit would submit a stop leg Tradovate
+      // rejects (naked fill) or a drifted fill with a compressed stop
+      // (the 2026-10-08 incidents)
       pending.delete(key);
-      void logExec({ key, label: e.label, attempt: "watch", outcome: "skipped_stale", reason: "tape crossed the stop — limit re-send would place a rejectable bracket" });
-      void alert(`⚠ <b>RE-SEND SKIPPED — tape past stop</b> — <code>${e.label}</code>\nthe tape moved through the stop; re-placing the limit would produce a naked fill.`);
+      void logExec({ key, label: e.label, attempt: "watch", outcome: "skipped_stale", reason: "tape crossed the stop/limit — limit re-send would place a broken bracket" });
+      void alert(`⚠ <b>RE-SEND SKIPPED — tape through the bracket</b> — <code>${e.label}</code>\nthe tape moved through the stop/limit; re-placing would produce a naked fill or a compressed stop.`);
       continue;
     }
     const res = e.scaleOut ? await placeScaleOut(e.intent) : await placeOrder(e.intent, e.limit ? { limitPrice: e.limit.price } : {});

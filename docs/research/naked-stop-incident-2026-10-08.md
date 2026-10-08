@@ -1,5 +1,48 @@
 # Naked-position incident + stop-protection fix — 2026-10-08
 
+## Second incident, same day — stop slippage (−$1,056)
+
+At 12:17 ET the RTH short (15 MNQ, limit 31187.375, stop 31190.56 —
+3.19 pts, "risk $96") filled instantly at 31189.75: the limit was
+marketable, the tape had moved 2.4 pts through it. The signal-anchored
+stop was then **0.81 pts from the actual fill**. The market flushed
+~35 pts in 11 seconds; the stop triggered and the stop-market filled at
+**31224.00 — 134 ticks past the trigger** (15 × 34.25 × $2 = −$1,027.50).
+The stop existed and worked; the loss came from gap-through slippage on
+a compressed stop. Day went +$724 → −$332.
+
+Root causes (execution-level, family-agnostic):
+1. **Crossed-limit dispatch**: the entry limit was already run through
+   at dispatch → marketable → instant fill drifting past the signal.
+2. **Signal-anchored brackets on drifted fills**: the planned 3.19-pt
+   stop compressed to 0.81 pts. Momentum-retrace anchors to the fill;
+   the RTH limit path anchored to the signal — the inconsistency.
+3. **Fixed-$ sizing on a tight stop** → 15 contracts → slippage × size.
+4. **Backtests score stop-outs at the trigger** (zero slippage) — the
+   tight-stop configs' edge was partly this modeling assumption.
+
+## Extra execution protections (shipped with the first fix)
+
+5. **Crossed-limit dispatch gate** (`limitCrossedAtDispatch`, in
+   `placeCrossTradeOrderREST`, 1-pt threshold): a limit the tape has
+   already moved through at dispatch is refused — the entry premise is
+   gone. Separates today's clean winners (0.1-pt crossings) from both
+   disasters (13.0 / 2.4 pts).
+6. **Fill-anchored re-bracket** (`reanchorBracketForFill` + the L2
+   check at +4 s): when the fill drifted and compressed the stop
+   (< 50% of the planned distance), the bracket is re-anchored to the
+   actual fill via `cancel_and_bracket` so the planned risk holds.
+7. **Executor contract cap** (`MAX_MICRO_CONTRACTS`, default 30): bounds
+   slippage × size.
+8. **Stop-slippage alarm** (`checkExitSlippage` + `classifyExitFill`):
+   the watchdog compares the exit fill against the intended stop and
+   alerts + journals when a stop fills far beyond its trigger.
+
+Study: `scripts/rthDriftOptimizer.ts` extended with a stop-slippage
+model (stop-market chases to the bar close), the crossed-limit gate
+treatment, and a contract-cap sweep — see the focused safety grid in
+its output.
+
 ## The incident
 
 The 09:48 ET RTH short (7 MNQ, limit 31216.25, stop 31222.75, target

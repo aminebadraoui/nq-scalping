@@ -12,6 +12,8 @@ import {
   splitScaleOut,
   classifyResponse,
   stopCrossedAtDispatch,
+  limitCrossedAtDispatch,
+  reanchorBracketForFill,
   MNQ_TICK,
   type CrossTradeConfig,
 } from "../lib/crossTrade";
@@ -277,4 +279,42 @@ test("stopCrossedAtDispatch: unknown tape (null/undefined/NaN) → null (allow, 
   assert.equal(stopCrossedAtDispatch("short", 31222.75, undefined), null);
   assert.equal(stopCrossedAtDispatch("short", 31222.75, Number.NaN), null);
   assert.equal(stopCrossedAtDispatch("short", Number.NaN, 31229.25), null);
+});
+
+/* ---- crossed-limit dispatch gate + fill re-anchor (2026-10-08 −$1,056 event) ---- */
+
+test("limitCrossedAtDispatch: short — tape above the limit is crossed (the 12:16 shape)", () => {
+  assert.equal(limitCrossedAtDispatch("short", 31187.375, 31189.75), true); // 2.4 pts through
+  assert.equal(limitCrossedAtDispatch("short", 31187.375, 31189.75, 3), false); // inside threshold
+});
+
+test("limitCrossedAtDispatch: long — tape below the limit is crossed", () => {
+  assert.equal(limitCrossedAtDispatch("long", 31245.125, 31242.0), true);
+});
+
+test("limitCrossedAtDispatch: sub-tick crossings pass (the clean 10:10/11:31 fills)", () => {
+  assert.equal(limitCrossedAtDispatch("short", 31231.875, 31232.0), false); // 0.125 pts
+  assert.equal(limitCrossedAtDispatch("long", 31245.125, 31245.0), false);
+});
+
+test("limitCrossedAtDispatch: unknown tape → null (fail open)", () => {
+  assert.equal(limitCrossedAtDispatch("short", 31187.375, null), null);
+  assert.equal(limitCrossedAtDispatch("long", 31245.125, Number.NaN), null);
+});
+
+test("reanchorBracketForFill: drifted fill compresses the stop → re-anchor to the fill (the 12:16 shape)", () => {
+  // short: signal 31187.375, stop 31190.56 (3.19 above), target 31179.41;
+  // fill drifted 2.4 pts up → actual stop distance 0.81 pts < 50% of planned
+  const re = reanchorBracketForFill(intent({ dir: "short", entry: 31187.375, stop: 31190.56, target: 31179.41 }), 31189.75);
+  assert.ok(re);
+  assert.ok(Math.abs(re!.stop - 31192.94) < 0.01); // fill + planned 3.19
+  assert.ok(Math.abs(re!.target - 31181.78) < 0.01); // fill − planned 7.97
+});
+
+test("reanchorBracketForFill: healthy fill (no drift) → null", () => {
+  assert.equal(reanchorBracketForFill(intent({ dir: "short", entry: 31231.875, stop: 31238.76, target: 31216.05 }), 31232.0), null);
+});
+
+test("reanchorBracketForFill: non-finite fill → null", () => {
+  assert.equal(reanchorBracketForFill(intent(), Number.NaN), null);
 });

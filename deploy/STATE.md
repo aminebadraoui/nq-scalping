@@ -458,6 +458,31 @@ wider stop grid and the user's approval. Scratch studies
     live-exec libs changed, so the exec gate (`scripts/exec-gate.sh`) is
     unaffected; the feature is inert until the operator acts.
 
+## Second incident + execution hardening (2026-10-08, same day)
+
+The 12:17 ET RTH short (15 MNQ, "risk $96") lost **−$1,027.50**: the
+limit was marketable at dispatch (tape 2.4 pts through it), the fill
+drifted to 31189.75, and the signal-anchored stop (31190.56) compressed
+to 0.81 pts from the fill. An 11-second ~35-pt flush triggered it and
+the 15-lot stop-market filled 134 ticks past the trigger (31224.00).
+The stop existed and worked — the loss was gap-through slippage on a
+compressed stop. Day +$724 → −$332 (below the −$250 floor → the guard
+halts new entries for the day).
+
+Extra execution protections (all in the executor/watchdog, family-agnostic):
+1. crossed-limit dispatch gate (`limitCrossedAtDispatch`, 1-pt
+   threshold) — refuse a limit the tape has already moved through;
+2. fill-anchored re-bracket (`reanchorBracketForFill`, L2 at +4 s) —
+   re-anchor stop/target to the actual fill when drift compressed the
+   stop below 50% of the planned distance;
+3. executor contract cap (`MAX_MICRO_CONTRACTS`, default 30) — bounds
+   slippage × size;
+4. stop-slippage alarm (`checkExitSlippage` + `classifyExitFill`) — the
+   watchdog compares the exit fill to the intended stop and alerts.
+Study: `scripts/rthDriftOptimizer.ts` now models stop slippage
+(stop-market chases to the bar close), the crossed-limit gate, and a
+contract-cap sweep (focused safety grid in its output).
+
 ## Naked-position incident + stop protection (2026-10-08)
 
 The 09:48 ET RTH short (7 MNQ, limit 31216.25) filled instantly at

@@ -4,7 +4,7 @@
  * naked-position repair from the 2026-10-08 incident. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { stopCoversPosition } from "../lib/execWatch";
+import { stopCoversPosition, classifyExitFill } from "../lib/execWatch";
 import { rearmStopPrice } from "../lib/crossTrade";
 
 test("rearmStopPrice: long anchors the stop just BELOW the tape (Tradovate-valid)", () => {
@@ -74,4 +74,24 @@ test("stopCoversPosition: wrong side, rejected, or non-MNQ orders do not cover",
 test("stopCoversPosition: empty or unknown-status orders never cover", () => {
   assert.equal(stopCoversPosition([], "short"), false);
   assert.equal(stopCoversPosition([{ action: "Buy", instrument: "MNQZ6", stopPrice: 31230.25 }], "short"), true); // status absent but stopPrice present → cover
+});
+
+/* ---- stop-slippage classifier (2026-10-08 −$1,056 event) ---- */
+
+test("classifyExitFill: short exited far above the stop → stop_slipped", () => {
+  // the 12:16 card: stop 31190.56, exit 31224.00 → 33.4 pts beyond
+  assert.equal(classifyExitFill({ dir: "short", stop: 31190.56, target: 31179.41 }, 31224.0), "stop_slipped");
+});
+
+test("classifyExitFill: long exited far below the stop → stop_slipped", () => {
+  assert.equal(classifyExitFill({ dir: "long", stop: 31238.44, target: 31261.84 }, 31235.0), "stop_slipped");
+});
+
+test("classifyExitFill: exit near the target → target (normal)", () => {
+  assert.equal(classifyExitFill({ dir: "short", stop: 31238.76, target: 31216.05 }, 31213.75), "target");
+  assert.equal(classifyExitFill({ dir: "long", stop: 31238.44, target: 31261.84 }, 31262.5), "target");
+});
+
+test("classifyExitFill: stop-out near the trigger → null (intended outcome)", () => {
+  assert.equal(classifyExitFill({ dir: "short", stop: 31238.76, target: 31216.05 }, 31239.0), null);
 });

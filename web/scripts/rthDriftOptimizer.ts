@@ -41,7 +41,7 @@ const TTL = 5;
  *    reanchor — the crossed card fills at the dispatch tape with the
  *               bracket rebuilt from the fill (structural distances).
  */
-const XMODES = ["none", "gate", "repair", "reanchor"] as const;
+const XMODES = ["none", "gate", "gate-limit", "repair", "reanchor"] as const;
 type XMode = (typeof XMODES)[number];
 const EMERGENCY_STOP_PTS = 1.0; // the re-arm stop pad (4 ticks)
 
@@ -51,7 +51,8 @@ const ENTRIES = ["market", "limit"] as const;
 const GATED = [false, true];
 
 type Entry = (typeof ENTRIES)[number];
-type Config = { s: number; t: number; entry: Entry; gate: boolean; x: XMode };
+type Config = { s: number; t: number; entry: Entry; gate: boolean; x: XMode; slip: boolean; cap: number };
+const LIMIT_GATE_PTS = 1; // the crossed-LIMIT dispatch gate threshold
 
 const openOf = (m: MomMinute): number => (m.o > 0 ? m.o : midOf(m));
 
@@ -72,14 +73,17 @@ function gateSkip(g: Geo, risk: number, targetDist: number): boolean {
 }
 
 /** first-touch stop/target scan from a fill (dispatch minute excluded) */
-function scoreFromFill(minutes: MomMinute[], sig: MomentumSignal, fill: number, startIdx: number, stop: number, target: number): number | null {
+function scoreFromFill(minutes: MomMinute[], sig: MomentumSignal, fill: number, startIdx: number, stop: number, target: number, slip = false): number | null {
   const dir = sig.dir === "long" ? 1 : -1;
   const end = Math.min(minutes.length - 1, sig.entryIdx + HORIZON);
   let exit = closeOf(minutes[end]);
   for (let j = Math.max(startIdx, sig.entryIdx + 1); j <= end; j++) {
     const b = minutes[j];
     if (dir > 0 ? b.low <= stop : b.high >= stop) {
-      exit = stop;
+      // stop-slippage model: the stop-market chases the flush to the
+      // bar's close — a gap-through fill lands wherever the market
+      // traded, not at the trigger (the 2026-10-08 134-tick event)
+      exit = slip ? (dir > 0 ? Math.min(stop, closeOf(b)) : Math.max(stop, closeOf(b))) : stop;
       break;
     }
     if (dir > 0 ? b.high >= target : b.low <= target) {
@@ -92,7 +96,7 @@ function scoreFromFill(minutes: MomMinute[], sig: MomentumSignal, fill: number, 
 
 type Trade = { date: string; pnl: number; risk: number };
 
-function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string, c: Config): Trade[] {
+function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string, c: Config, slip = false): Trade[] {
   const out: Trade[] = [];
   let openUntil = -1;
   for (const s of sigs) {
@@ -115,9 +119,14 @@ function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string,
         pnl = -0.5; // fill beyond the absolute target → instant OCO
         closeIdx = s.entryIdx + HORIZON;
       } else {
-        pnl = scoreFromFill(minutes, s, g.fill, s.entryIdx + 2, stop, target);
+        pnl = scoreFromFill(minutes, s, g.fill, s.entryIdx + 2, stop, target, slip);
       }
     } else {
+      // crossed-LIMIT dispatch (the 12:16 shape): the tape already moved
+      // through the limit at dispatch → marketable fill + compressed stop.
+      // gate-limit skips the card entirely.
+      const crossedLimit = s.dir === "long" ? g.fill < s.entry - LIMIT_GATE_PTS : g.fill > s.entry + LIMIT_GATE_PTS;
+      if (c.x === "gate-limit" && crossedLimit) continue;
       // crossed-stop dispatch: the OSO stop is on the marketable side of
       // the dispatch tape → Tradovate rejects it and the entry fills naked
       const crossed = stopCrossedAtDispatch(s.dir, stop, g.fill) === true;
@@ -128,15 +137,15 @@ function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string,
           // re-armed with the emergency stop 1 pt beyond the fill; the
           // target stays the original structural level
           const estop = s.dir === "long" ? g.fill - EMERGENCY_STOP_PTS : g.fill + EMERGENCY_STOP_PTS;
-          pnl = scoreFromFill(minutes, s, g.fill, s.entryIdx + 2, estop, target);
+          pnl = scoreFromFill(minutes, s, g.fill, s.entryIdx + 2, estop, target, slip);
         } else if (c.x === "reanchor") {
           // bracket rebuilt from the fill (structural distances)
           const estop = g.fill - dir * risk;
           const etarget = g.fill + dir * risk * c.t;
-          pnl = scoreFromFill(minutes, s, g.fill, s.entryIdx + 2, estop, etarget);
+          pnl = scoreFromFill(minutes, s, g.fill, s.entryIdx + 2, estop, etarget, slip);
         } else {
           // "none": the old model — score as if the rejected stop existed
-          pnl = scoreFromFill(minutes, s, g.fill, s.entryIdx + 2, stop, target);
+          pnl = scoreFromFill(minutes, s, g.fill, s.entryIdx + 2, stop, target, slip);
         }
       } else {
         // resting limit at the signal entry, fill-or-expire within TTL bars
@@ -152,7 +161,7 @@ function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string,
           fill = dir > 0 ? Math.min(open, s.entry) : Math.max(open, s.entry);
           break;
         }
-        if (fillBar >= 0) pnl = scoreFromFill(minutes, s, fill, fillBar + 1, stop, target);
+        if (fillBar >= 0) pnl = scoreFromFill(minutes, s, fill, fillBar + 1, stop, target, slip);
         else continue; // expired — no trade, no window consumed
       }
     }
@@ -163,9 +172,9 @@ function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string,
   return out;
 }
 
-function usdSim(trades: Trade[]) {
+function usdSim(trades: Trade[], cap = 30) {
   const rows = trades.map((t) => {
-    const contracts = Math.max(1, Math.min(30, Math.floor(RISK_BUDGET / (t.risk * 2))));
+    const contracts = Math.max(1, Math.min(cap, Math.floor(RISK_BUDGET / (t.risk * 2))));
     return { date: t.date, pnlPts: t.pnl, riskPts: t.risk, pnlUsd: t.pnl * contracts * 2 - contracts * FEE_RT };
   });
   const d = dollarize(rows.map((r) => ({ date: r.date, pnlPts: r.pnlPts, riskPts: r.riskPts })));
@@ -190,8 +199,14 @@ async function main() {
         for (const gate of GATED)
           for (const x of XMODES) {
             if (entry === "market" && x !== "none") continue; // x-treatments are limit-only
-            combos.push({ s, t, entry, gate, x });
+            combos.push({ s, t, entry, gate, x, slip: false, cap: 30 });
           }
+  // focused safety grid: the live configs × crossed-gate × stop-slippage × cap
+  for (const [s, t] of [[0.5, 2.5], [0.5, 2.0]] as const)
+    for (const x of ["none", "gate", "gate-limit"] as const)
+      for (const slip of [false, true])
+        for (const cap of [30, 10, 8, 5])
+          combos.push({ s, t, entry: "limit", gate: false, x, slip, cap });
   const perCombo: Trade[][] = combos.map(() => []);
   console.log(`replaying ${dates.length} sessions × ${combos.length} configs…`);
 
@@ -203,7 +218,7 @@ async function main() {
     for (const { date, minutes } of lm) {
       if (!minutes) continue;
       const sigs = detectSoftMomentum(minutes, SOFT_PROD);
-      for (let c = 0; c < combos.length; c++) perCombo[c].push(...scoreConfig(minutes, sigs, date, combos[c]));
+      for (let c = 0; c < combos.length; c++) perCombo[c].push(...scoreConfig(minutes, sigs, date, combos[c], combos[c].slip));
     }
     i += CONCURRENCY;
     if (i % 200 < CONCURRENCY) console.log(`  ${i}/${dates.length} · ${((Date.now() - t0) / 1000).toFixed(0)}s`);
@@ -219,7 +234,7 @@ async function main() {
     const losses = ts.filter((t) => t.pnl <= 0);
     const gw = wins.reduce((a, t) => a + t.pnl, 0);
     const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-    const sm = usdSim(ts);
+    const sm = usdSim(ts, combos[c].cap);
     rows.push({
       c: combos[c],
       n: ts.length,
@@ -258,6 +273,15 @@ async function main() {
     const b = rs[0];
     console.log(
       `${entry.padEnd(6)} ${gate ? "gate" : "no-g"} best: s${b.c.s} t${b.c.t} x-${b.c.x} | n=${b.n} wr=${b.wr.toFixed(1)}% pf=${b.pf.toFixed(2)} | $${b.netUsd.toFixed(0)} dd $${b.dd.toFixed(0)} ${b.passed ? "PASS" : "BREACH"}`,
+    );
+  }
+
+  console.log("\n=== FOCUSED SAFETY GRID: live configs × crossed-gate × stop-slippage × cap ===");
+  const focusRows = rows.filter((r) => r.c.entry === "limit" && (r.c.slip || r.c.cap !== 30 || r.c.x === "gate-limit"));
+  focusRows.sort((a, b) => (`${a.c.x}|${a.c.s}|${b.c.slip}|${a.c.cap}`).localeCompare(`${b.c.x}|${b.c.s}|${a.c.slip}|${b.c.cap}`));
+  for (const r of focusRows) {
+    console.log(
+      `s${r.c.s} t${r.c.t} x-${r.c.x.padEnd(10)} slip=${r.c.slip ? "Y" : "N"} cap=${String(r.c.cap).padStart(2)} | n=${String(r.n).padStart(5)} wr=${r.wr.toFixed(1).padStart(5)}% pf=${r.pf.toFixed(2).padStart(5)} | $${r.netUsd.toFixed(0).padStart(8)} dd $${r.dd.toFixed(0).padStart(7)} ${r.passed ? "PASS" : "BREACH"}`,
     );
   }
 

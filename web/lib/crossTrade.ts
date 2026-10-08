@@ -122,8 +122,9 @@ function ticksFromPoints(points: number): number {
 
 /**
  * Build the flat JSON webhook payload for a bracketed market entry.
- * Pure — no env, no I/O — so it is unit-testable. Throws on inputs
- * that would produce an invalid order instead of guessing.
+ * Throws on inputs that would produce an invalid order instead of
+ * guessing; the quantity is capped by maxContracts() (MAX_MICRO_CONTRACTS
+ * env knob, default 30 — the executor-level slippage×size bound).
  *
  * opts.orderId attaches our order id (required to CHANGE the stop later);
  * opts.withTarget=false omits take_profit — the runner leg of a scale-out
@@ -138,7 +139,7 @@ export function buildCrossTradePayload(
   if (!instrument) {
     throw new Error(`crossTrade: cannot map symbol "${intent.symbol}" to a Tradovate instrument`);
   }
-  const qty = Math.max(1, Math.min(30, Math.floor(intent.contracts)));
+  const qty = Math.max(1, Math.min(maxContracts(), Math.floor(intent.contracts)));
   const stopTicks = ticksFromPoints(Math.abs(intent.entry - intent.stop));
   if (!Number.isFinite(stopTicks) || stopTicks < 1) {
     throw new Error(`crossTrade: invalid stop — entry ${intent.entry} stop ${intent.stop}`);
@@ -469,6 +470,56 @@ export function stopCrossedAtDispatch(
   return dir === "long" ? ltp <= stop : ltp >= stop;
 }
 
+/** crossed-limit dispatch gate (2026-10-08 −$1,056 stop-slippage
+ *  incident). A resting limit that the tape has already moved THROUGH at
+ *  dispatch is marketable: it fills instantly at the market, the fill
+ *  drifts past the signal, and the signal-anchored stop compresses
+ *  (the 12:16 card's 3.2-pt stop became a 0.8-pt stop after a 2.4-pt
+ *  drift — instant stop-out, 134 ticks of slippage). thresholdPts lets
+ *  sub-tick crossings (the clean 10:10/11:31 fills) through. Null =
+ *  unknown tape → allow. Pure + unit-tested. */
+export function limitCrossedAtDispatch(
+  dir: "long" | "short",
+  limit: number,
+  ltp: number | null | undefined,
+  thresholdPts = 1,
+): boolean | null {
+  if (ltp === null || ltp === undefined || !Number.isFinite(ltp) || !Number.isFinite(limit)) return null;
+  const thr = Math.max(0, thresholdPts);
+  return dir === "long" ? ltp < limit - thr : ltp > limit + thr;
+}
+
+/** re-anchor a bracket to the actual FILL when the fill drifted past the
+ *  signal and compressed the stop distance (the planned risk must be the
+ *  risk you get). Returns the fill-anchored stop/target, or null when
+ *  the bracket is healthy (drift < half the stop distance). Pure +
+ *  unit-tested. */
+export function reanchorBracketForFill(
+  intent: OrderIntent,
+  fill: number,
+  minCompressionFactor = 0.5,
+): { stop: number; target: number } | null {
+  if (!Number.isFinite(fill)) return null;
+  const riskDist = Math.abs(intent.entry - intent.stop);
+  const targetDist = Math.abs(intent.target - intent.entry);
+  if (!(riskDist > 0)) return null;
+  const dirSign = intent.dir === "long" ? 1 : -1;
+  const actualStopDist = (fill - intent.stop) * dirSign; // > 0 when the stop is on the valid side
+  if (actualStopDist >= riskDist * minCompressionFactor) return null;
+  return {
+    stop: fill - dirSign * riskDist,
+    target: fill + dirSign * targetDist,
+  };
+}
+
+/** executor-level micro-contract cap — bounds slippage × size so a
+ *  gap-through stop fill cannot cost 10× the planned risk. Default 30
+ *  (the current behavior); the study picks the live value. */
+export function maxContracts(): number {
+  const n = Number(process.env.MAX_MICRO_CONTRACTS);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 30;
+}
+
 /** pure latch decision (unit-tested): elapsed = ms since our entry,
  *  held = MNQ contracts held per the fresh read (null = read failed). */
 export function stackGuardDecision(
@@ -526,6 +577,16 @@ export async function placeCrossTradeOrderREST(
       return {
         ok: false,
         reason: `crossed-stop gate — tape ${Number(ltp).toFixed(2)} past stop ${intent.stop.toFixed(2)} at dispatch (the OSO stop would be rejected and the limit would fill naked)`,
+      };
+    }
+    // crossed-limit dispatch gate (GLOBAL, 2026-10-08 −$1,056 slippage
+    // incident): a limit the tape has already moved through fills at the
+    // market and the signal-anchored stop compresses — the planned risk
+    // is never the actual risk. Refuse; the entry premise is gone.
+    if (limitCrossedAtDispatch(intent.dir, opts.limitPrice, ltp) === true) {
+      return {
+        ok: false,
+        reason: `crossed-limit gate — tape ${Number(ltp).toFixed(2)} through limit ${opts.limitPrice.toFixed(2)} at dispatch (the fill would drift and compress the stop)`,
       };
     }
   }
@@ -615,7 +676,7 @@ export function buildRESTPlacePayload(
   if (opts.limitPrice !== undefined && !Number.isFinite(opts.limitPrice)) {
     throw new Error(`crossTrade: invalid limit price — ${opts.limitPrice}`);
   }
-  const qty = Math.max(1, Math.min(30, Math.floor(intent.contracts)));
+  const qty = Math.max(1, Math.min(maxContracts(), Math.floor(intent.contracts)));
   const isLimit = opts.limitPrice !== undefined;
   const payload: RESTPlacePayload = {
     instrument,
@@ -1188,6 +1249,34 @@ export async function repairNakedPosition(intent: OrderIntent, label: string, ke
 
 const BRACKET_VERIFY_DELAY_MS = 4000;
 
+/** the latest entry-side fill since `sinceMs` (the fill-reconciled truth
+ *  for where the trade actually got in — the re-anchor anchor). */
+async function latestEntryFill(intent: OrderIntent, sinceMs: number): Promise<{ price: number } | null> {
+  const cfg = loadConfig();
+  const want = intent.dir === "long" ? "Buy" : "Sell";
+  try {
+    const res = await fetch("https://app.crosstrade.io/v1/api/tv/fills", {
+      headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const j = (await res.json()) as { data?: Array<{ data?: Array<Record<string, unknown>> }> };
+    let best: { ts: number; price: number } | null = null;
+    for (const env of j.data ?? []) {
+      for (const f of env.data ?? []) {
+        if (String(f.action) !== want) continue;
+        const ts = Date.parse(String(f.timestamp ?? ""));
+        if (!Number.isFinite(ts) || ts < sinceMs) continue;
+        const price = Number(f.price);
+        if (!Number.isFinite(price)) continue;
+        if (!best || ts > best.ts) best = { ts, price };
+      }
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
 /** verify the OSO bracket legs a few seconds after placement — the
  *  executor's global late-rejection check. Tradovate can accept a place
  *  and reject the stop leg ~10ms later (InvalidPrice on a crossed stop);
@@ -1257,6 +1346,42 @@ export function verifyBracketsAfterPlace(o: {
       if (bad(targetStatus) && !bad(stopStatus)) {
         void logExec({ key: o.key, label: o.label, attempt: "watch", outcome: "target_missing", reason: `target leg ${targetStatus} — stop remains working` });
         void sendTelegram(`⚠️ <b>TARGET LEG ${targetStatus.toUpperCase()}</b> — <code>${o.label}</code>\nstop remains working; the trade will exit at the stop or by time.`, { parseMode: "HTML" }).catch(() => {});
+        return;
+      }
+      // healthy bracket, entry filled → fill-anchored re-bracket
+      // (2026-10-08 −$1,056 stop-slippage incident): if the fill drifted
+      // past the signal, the signal-anchored stop is compressed (the 12:16
+      // card's 3.2-pt stop became 0.8 pts) and a flush runs it over with
+      // huge slippage. Re-anchor the bracket to the ACTUAL fill so the
+      // planned risk is the risk the trade carries.
+      if (entryStatus === "Filled" && !bad(stopStatus)) {
+        const fill = await latestEntryFill(o.intent, Date.now() - BRACKET_VERIFY_DELAY_MS - 30_000);
+        if (fill) {
+          const reanchor = reanchorBracketForFill(o.intent, fill.price);
+          if (reanchor) {
+            const re = await rearmCrossTradeBracketREST({
+              symbol: o.intent.symbol,
+              dir: o.intent.dir,
+              stopPrice: reanchor.stop,
+              targetPrice: reanchor.target,
+            });
+            void logExec({
+              key: o.key,
+              label: o.label,
+              attempt: "watch",
+              outcome: re.ok ? "bracket_reanchored" : "stop_rearm_failed",
+              reason: re.ok
+                ? `fill ${fill.price.toFixed(2)} drifted past the signal — stop re-anchored ${reanchor.stop.toFixed(2)} · target ${reanchor.target.toFixed(2)} — ${re.reason}`
+                : `re-anchor failed: ${re.reason}`,
+            });
+            void sendTelegram(
+              re.ok
+                ? `⚓ <b>BRACKET RE-ANCHORED TO THE FILL</b> — <code>${o.label}</code>\nfill ${fill.price.toFixed(2)} drifted from the signal ${o.intent.entry.toFixed(2)} — stop moved to ${reanchor.stop.toFixed(2)} · target ${reanchor.target.toFixed(2)} so the planned risk holds.`
+                : `🚨 <b>RE-ANCHOR FAILED</b> — <code>${o.label}</code>\nfill drifted and the compressed bracket could not be re-anchored (${re.reason}) — the watchdog will repair if the stop is missing.`,
+              { parseMode: "HTML" },
+            ).catch(() => {});
+          }
+        }
       }
     })();
   }, BRACKET_VERIFY_DELAY_MS);
