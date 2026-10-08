@@ -87,3 +87,47 @@ Even with the slim workload, the watchdog is the backstop: if a future
 change reintroduces heavy Neon traffic, the operator gets paged at 80% —
 with the project's reset date in the message — instead of discovering the
 pause when the journal stops updating.
+
+## The rebuild — fresh project `nq-store2` (same day)
+
+Chosen over waiting for the reset: a new project starts with a full 5 GiB
+meter immediately. `nq-store` was KEPT (paused projects retain data) for a
+post-reset dump of the Neon-only history (pre-10-06 signals/trades).
+
+| Fact | Value |
+|---|---|
+| New project | `nq-store2` (`proud-waterfall-41356644`, org `nq-scalping`, aws-us-west-2) |
+| Meter at cutover | 0.00 GiB / 5 GiB · resets 2026-11-01 |
+| Endpoints updated | `nq-dashboard` + `nq-jobs` Coolify env `DATABASE_URL`, `web/.env.local` |
+
+Rebuild pipeline (all idempotent, committed):
+
+1. `scripts/restoreJournal.ts` — pulls the DB-less sources from the live
+   dashboard (`/api/daybook`, volume ∪ R2) and rebuilds `signals` (10 rows
+   with full 50-key feature vectors), `exec_log` (17), and the 10-06
+   `trades` from the dayend summary (9 rows, `source='daybook'`). Applies
+   the full `db/schema.sql` + operational-table DDL (incl. the empty
+   `manual_trades` `/api/trades` references).
+2. `scripts/reconcileTrades.ts --since 2026-09-28` — re-paired CrossTrade
+   fills (durable history, both accounts) against the restored signals:
+   5 matched + 3 unexecuted (10-07 session) + 23 unmatched fills.
+3. `scripts/tradeAnalysis.ts` — anatomy recomputed from the R2 archive
+   (refactored off `candles_1m`; per-trade archive-day mapping because the
+   bar files are named by the closing NY date while `trades.day` uses the
+   daybook trading-day key).
+4. `scripts/scoreSignals.ts` — runs, but outcomes stay unscored until the
+   VPS nightly (its container holds the collected session files the file
+   replay reads).
+
+Verified in production after deploy: `/api/trades` and `/api/trades/table`
+both serve `source: db` — 17 trades, 55 variable columns, journal net
++$168.80 (10-06 summary +$500.90 ∔ 10-07 reconcile −$332.10).
+
+Known gaps (accepted): Neon-only history before 10-06 (recoverable when
+`nq-store` resumes on 2026-11-01 — then dump + merge); `manual_trades`
+rows from the MFF/Tradovate export (re-import when the next export is
+pulled); signal outcomes (next nightly).
+
+Open env request: add `NEON_API_KEY` (+ `TELEGRAM_BOT_TOKEN`) to the
+`nq-jobs` env so the watchdog's 80% page actually sends on the VPS —
+owner-approved per repo policy.
