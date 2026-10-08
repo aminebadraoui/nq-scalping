@@ -8,6 +8,7 @@ export type ExecHealth = {
   now: string;
   execution: {
     crosstradeConfigured: boolean;
+    tradingHalt: boolean;
     account: string | null;
     instrument: string;
     executeLive: boolean;

@@ -2,6 +2,7 @@
 
 import { useExecStatus } from "@/lib/useExecStatus";
 import AccountSettings from "./AccountSettings";
+import TradingToggle from "./TradingToggle";
 
 /* ------------------------------------------------------------------ *
  * ExecStatusBar — the live status strip at the top of the dashboard.
@@ -51,6 +52,7 @@ export default function ExecStatusBar() {
           {ex?.executeLive ? "EXECUTE_LIVE" : "dry-run"} · {ex?.account ?? "no account"} · {ex?.instrument ?? ""}
         </span>
         <AccountSettings />
+        <TradingToggle />
 
         {/* account + day */}
         {p?.account && (

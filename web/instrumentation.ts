@@ -21,6 +21,13 @@ export async function register(): Promise<void> {
     /* no override file — plain Coolify env governs */
   }
   try {
+    // the owner's manual trading halt must survive redeploys
+    const { loadTradingHalt } = await import("./lib/tradingHalt");
+    loadTradingHalt();
+  } catch {
+    /* ignore */
+  }
+  try {
     // daybook boot record: the variation fingerprint + full settings
     // snapshot, written before anything trades (best-effort, never throws)
     const { bootDaybook } = await import("./lib/daybook");

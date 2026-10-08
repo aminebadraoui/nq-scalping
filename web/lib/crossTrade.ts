@@ -54,6 +54,7 @@ import { crossGuardGate } from "./crossGuard";
 import { sendTelegram } from "./notify";
 import { getLive } from "./live";
 import { logExec } from "./execLog";
+import { tradingHalted } from "./tradingHalt";
 
 export type CrossTradeConfig = {
   url: string;
@@ -280,6 +281,8 @@ export async function placeCrossTradeOrder(
     console.log(`[crossTrade] DRY-RUN ${describeIntent(intent)}`);
     return { ok: true, reason: "dry-run (logged only)" };
   }
+  if (tradingHalted()) return { ok: false, reason: "trading halted by owner — dashboard kill switch (resume from the dashboard)" };
+
 
   let payload: CrossTradePayload;
   try {
@@ -369,6 +372,7 @@ export async function placeCrossTradeScaleOut(
     // too small to split — fall back to a single bracketed order
     return placeCrossTradeOrder(bank);
   }
+  if (live && tradingHalted()) return { ok: false, reason: "trading halted by owner — dashboard kill switch (resume from the dashboard)" };
   if (!live) {
     console.log(
       `[crossTrade] DRY-RUN SCALE-OUT ${intent.dir.toUpperCase()} ${intent.contracts} ${intent.symbol} ` +
@@ -558,6 +562,7 @@ export async function placeCrossTradeOrderREST(
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
   const orderId = opts.limitPrice !== undefined ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-lmt` : undefined;
+  if (live && tradingHalted()) return { ok: false, reason: "trading halted by owner — dashboard kill switch (resume from the dashboard)" };
   if (!live) {
     console.log(
       `[crossTrade] DRY-RUN(REST) ${opts.limitPrice !== undefined ? "LIMIT" : ""} ${describeIntent(intent)}` +
@@ -836,6 +841,7 @@ export async function placeCrossTradeScaleOutREST(
     // too small to split — fall back to a single bracketed order (REST path)
     return placeCrossTradeOrderREST(bank);
   }
+  if (live && tradingHalted()) return { ok: false, reason: "trading halted by owner — dashboard kill switch (resume from the dashboard)" };
   if (!live) {
     console.log(
       `[crossTrade] DRY-RUN(REST) SCALE-OUT ${intent.dir.toUpperCase()} ${intent.contracts} ${intent.symbol} ` +

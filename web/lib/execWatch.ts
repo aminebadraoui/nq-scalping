@@ -519,6 +519,7 @@ export function isRetryableFailure(reason: string): boolean {
   // refused again (the tape is past the stop/limit — the entry is dead)
   if (reason.includes("crossed-stop gate")) return false;
   if (reason.includes("crossed-limit gate")) return false;
+  if (reason.includes("trading halted")) return false;
   return true;
 }
 
@@ -527,6 +528,7 @@ export function isRetryableFailure(reason: string): boolean {
  *  after the broker verification. */
 export function registerSendFailure(key: string, label: string, reason: string) {
   if (!enabled()) return;
+  if (reason.includes("trading halted")) return; // the owner's kill switch — intentional, not a failure to alarm about
   if (alerted.has(key)) return;
   failedKeys.add(key);
   if (pending.has(key)) pending.get(key)!.sendFailed = true;
@@ -773,11 +775,15 @@ export async function checkExpectations(): Promise<void> {
       outcome: retryable ? "resend_gave_up" : "resend_aborted",
       reason: res.reason,
     });
-    void alert(
-      retryable
-        ? `🚨 <b>RE-SEND GAVE UP</b> — <code>${e.label}</code> — ${MAX_RESEND_ATTEMPTS} verified attempts failed: ${res.reason}`
-        : `🚨 <b>RE-SEND ABORTED</b> — <code>${e.label}</code> — ${res.reason} (not retryable)`,
-    );
+    if (res.reason.includes("trading halted")) {
+      // the owner's kill switch — record quietly, never alarm
+    } else {
+      void alert(
+        retryable
+          ? `🚨 <b>RE-SEND GAVE UP</b> — <code>${e.label}</code> — ${MAX_RESEND_ATTEMPTS} verified attempts failed: ${res.reason}`
+          : `🚨 <b>RE-SEND ABORTED</b> — <code>${e.label}</code> — ${res.reason} (not retryable)`,
+      );
+    }
   }
 }
 
