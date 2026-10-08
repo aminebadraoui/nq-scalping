@@ -115,6 +115,27 @@ create table if not exists trades (
   matched_at timestamptz not null default now()
 );
 create index if not exists trades_ts_idx on trades (ts desc);
+
+-- the manual bucket (importTradovateTrades/importMffTrades DDL, empty on a
+-- rebuild — /api/trades references the table even when it has no rows)
+create table if not exists manual_trades (
+  id bigint generated always as identity primary key,
+  key text unique not null,
+  day text not null,
+  symbol text not null,
+  direction text not null,
+  qty int not null,
+  entry_price numeric(10,2) not null,
+  exit_price numeric(10,2) not null,
+  pnl_usd numeric(12,2) not null,
+  pnl_net_usd numeric(12,2),
+  fees_usd numeric(12,2),
+  entry_at timestamptz not null,
+  exit_at timestamptz not null,
+  matched_signal text,
+  imported_at timestamptz not null default now()
+);
+create index if not exists manual_trades_day_idx on manual_trades (day);
 `;
 
 type DaybookRecord = Record<string, unknown> & { t: string };
