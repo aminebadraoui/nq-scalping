@@ -3,10 +3,13 @@
  * it rolls over, so the current session survives any container restart
  * instead of living only in the LiveFeed's RAM buffer.
  *
- * Best-effort by design: a dropped write is not retried (the nightly
- * ingester is the authoritative writer and reconciles everything on its
- * next pass). The live rows are a preview — the ingester's post-close
- * data overwrites them via the same upsert keys.
+ * Best-effort by design: a dropped write is not retried. Writes ONLY the
+ * ETH candle row (ts/h/l/v/buy/sell — a few hundred bytes per minute):
+ * the per-tick footprint rows were dropped on 2026-10-08 because the
+ * nightly bulk ingest + readthrough of footprint_ticks blew Neon Free's
+ * 5 GiB/month data-transfer cap (project paused). The tick clusters stay
+ * in the LiveFeed RAM + the gcdata JSON / R2 archive, where every
+ * consumer (charts, backtests, labs) reads them.
  *
  * Writes the ETH (full Globex day) session only. RTH is a derived subset
  * that the nightly job computes; live minutes belong to the full day.
@@ -81,27 +84,8 @@ export async function persistLiveMinute(m: LiveStoreMinute): Promise<void> {
         date = excluded.date, o = excluded.o, h = excluded.h, l = excluded.l,
         c = excluded.c, v = excluded.v, buy = excluded.buy, sell = excluded.sell
     `;
-
-    const ticks = Object.entries(m.levels ?? {}).map(([p, cell]) => ({
-      ts,
-      date,
-      session: "ETH",
-      price_cents: Math.round(Number(p) * 100),
-      buy: cell[0],
-      sell: cell[1],
-      // live ticks carry volume, not per-price trade counts — the nightly
-      // ingester fills the authoritative counts from FOOTPRINT/V2
-      buy_trades: 0,
-      sell_trades: 0,
-    }));
-    if (ticks.length) {
-      await sql`
-        insert into footprint_ticks ${sql(ticks as never, "ts", "date", "session", "price_cents", "buy", "sell", "buy_trades", "sell_trades")}
-        on conflict (ts, session, price_cents) do update set
-          date = excluded.date, buy = excluded.buy, sell = excluded.sell,
-          buy_trades = excluded.buy_trades, sell_trades = excluded.sell_trades
-      `;
-    }
+    // footprint_ticks writes intentionally removed (2026-10-08, Neon
+    // transfer-cap incident) — the ticks live in RAM/R2, not Neon.
   } catch (e) {
     // best-effort — never let a DB blip kill the live feed
     console.error("liveStore persist failed:", (e as Error).message ?? e);

@@ -5,6 +5,11 @@
  *
  *   --all              backfill every collected dataset (default: today's)
  *   --since DATE       ingest datasets from DATE onward
+ *   --candles          also ingest candles_1m + footprint_ticks (the bulk
+ *                      tables). OFF by default — Neon Free's 5 GiB/month
+ *                      data-transfer cap is blown by the nightly 21-day
+ *                      re-ingest + readthrough of these tables; the
+ *                      archive (local JSON + R2) serves them instead.
  *   --profiles         also compute + store the daily P0–P5 level sheets
  *   --events           also compute + store the analysis events
  *   --dry-run          print what would be ingested, touch nothing
@@ -129,6 +134,14 @@ async function main() {
   }
   console.log(`datasets to process: ${ds.length} (${ds[0].date} … ${ds.at(-1)?.date})`);
 
+  // bulk market-data tables are opt-in since 2026-10-08: the nightly 21-day
+  // re-ingest of candles + footprint_ticks (plus the dashboard readthrough
+  // of the same tables) exhausted Neon Free's monthly data-transfer cap and
+  // paused the project. Bars/ticks live in the gcdata JSON + R2 archive;
+  // Neon keeps only the small operational tables (sheets/events/signals/…).
+  const WANT_CANDLES = flag("--candles");
+  if (!WANT_CANDLES) console.log("candles/footprint ingest OFF (pass --candles to backfill the bulk tables)");
+
   const ssl = /localhost|127\.0\.0\.1/.test(DATABASE_URL) ? false : ("require" as const);
   const sql = flag("--dry-run") ? null : postgres(DATABASE_URL, { max: 4, ssl });
 
@@ -148,6 +161,7 @@ async function main() {
   let candlesTotal = 0;
   let ticksTotal = 0;
   for (const { date, session } of ds) {
+    if (!WANT_CANDLES) continue; // bulk tables off — the loop only feeds profiles/events below
     const candles = loadCandles(date, session);
     if (!candles.length) {
       console.log(`  skip ${date} ${session}: no file`);

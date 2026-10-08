@@ -79,31 +79,37 @@ if [ -z "${DATABASE_URL:-}" ]; then
   exit 1
 fi
 
-log "--- tape parity: snapshot live-written bars (before ingest overwrites them) ---"
-# The live feed persists its tick-built minutes into candles_1m as bars
-# close; ingest overwrites those rows with the vendor's collected candles.
-# Snapshot first so the live-vs-archive divergence is measurable tonight.
-"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/tapeParity.ts snapshot "$TO" 2>&1
-TAPE_SNAP_RC=$?
-log "tapeParity snapshot exit=$TAPE_SNAP_RC"
+log "--- neon quota meter (pre) ---"
+# The 2026-10-08 pause (free-plan data-transfer cap) must never repeat
+# silently: when NEON_API_KEY is set the watchdog reads the project meter
+# and pages the operator past NEON_QUOTA_PAGE_PCT (default 80%). Logged
+# either way — the meter line lands in the nightly log every run.
+if [ -n "${NEON_API_KEY:-}" ]; then
+  "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/neonQuota.ts 2>&1 || true
+else
+  log "NEON_API_KEY not set — quota watchdog skipped (add it to the jobs env)"
+fi
 
-log "--- ingest into Neon ---"
-# Neon Free caps storage at 512 MB; the 2.5-year history stays in
-# gcdata/data JSON (the lab/study read those files directly). Ingest a rolling
-# ~3-week window so the dashboard's 5-day profile composite stays intact
-# without hitting the storage cap.
+log "--- tape parity: skipped (2026-10-08) ---"
+# The parity snapshot/compare diffed the live-written candles_1m against
+# the vendor candles the ingester used to overwrite them with. The bulk
+# candle/footprint ingest is OFF now (it blew Neon Free's 5 GiB/month
+# data-transfer cap and paused the project on 2026-10-08), so there is no
+# vendor overwrite to diff — candles_1m stays live-written and the two
+# tapeParity steps are meaningless. Kept in git for when --candles is used.
+
+log "--- ingest into Neon (operational tables only) ---"
+# Candles + footprint_ticks stay in the gcdata JSON / R2 archive (the
+# dashboard serves them from there; Neon Free's data-transfer cap is 5
+# GiB/month and the 21-day nightly re-ingest of the bulk tables blew it).
+# Only the small operational tables land in Neon: profile sheets + events
+# (idempotent upserts, a few KB per day), plus the signals/trades/guard
+# rows the live dashboard and the other nightly steps write themselves.
 SINCE=$(days_ago 21)
-log "ingest window: $SINCE .. $TO"
+log "ingest window: $SINCE .. $TO (profiles + events only)"
 "$NODE_BIN" --import ../scripts/ts-loader.mjs ./db/ingest.ts --since "$SINCE" --profiles --events 2>&1
 INGEST_RC=$?
 log "ingest exit=$INGEST_RC"
-
-log "--- tape parity: compare live-written vs archived bars ---"
-# candles_1m now holds the vendor candles — diff the pre-ingest snapshot
-# against them and record one tape_parity row (observational only).
-"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/tapeParity.ts compare "$TO" 2>&1
-TAPE_CMP_RC=$?
-log "tapeParity compare exit=$TAPE_CMP_RC"
 
 log "--- divergence store refresh (progressive, backtest-grade) ---"
 # Canonical per-session D2/D4 artifacts the backtest engine reads
@@ -133,7 +139,7 @@ log "scoreSignals exit=$SCORESIG_RC"
 log "--- analyze trades (win/loss framework) ---"
 # Per-trade execution anatomy (drift, MFE/MAE, stop-runs) + win/loss
 # aggregates by strategy/hour/side → `trade_analysis` + enriched `trades`.
-# Runs after ingest so the bars are vendor-grade. Idempotent.
+# Bars come from the live-written candles_1m (bulk ingest is off). Idempotent.
 "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/tradeAnalysis.ts 2>&1
 ANALYSIS_RC=$?
 log "tradeAnalysis exit=$ANALYSIS_RC"
@@ -155,9 +161,9 @@ INSIGHTS_RC=$?
 log "strategyInsights exit=$INSIGHTS_RC"
 
 log "--- AI macro briefing (post-close) ---"
-# DeepSeek situation analysis over the macro context + the day's now-ingested
-# tape → one `macro_briefings` row for the dashboard card. Runs AFTER ingest
-# so the snapshot reads vendor-grade bars. Best-effort: the card also has the
+# DeepSeek situation analysis over the macro context + the day's tape →
+# one `macro_briefings` row for the dashboard card. Reads the live-written
+# candles_1m (bulk ingest is off). Best-effort: the card also has the
 # 09:15 ET pre-open row and its own refresh button.
 "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/macroBriefing.ts post-close 2>&1
 BRIEFING_RC=$?
@@ -209,6 +215,13 @@ if [ "$(date +%u)" = "5" ]; then
   log "riskStack exit=$RISKSTACK_RC"
 else
   log "not Friday — skipping the weekly risk-stack backtest"
+fi
+
+log "--- neon quota meter (post) ---"
+# Post-work meter: shows the night's transfer delta next to the pre-run
+# line, and pages the operator if the cap is approaching.
+if [ -n "${NEON_API_KEY:-}" ]; then
+  "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/neonQuota.ts 2>&1 || true
 fi
 
 FINAL_RC=$INGEST_RC

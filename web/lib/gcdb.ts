@@ -65,7 +65,12 @@ export async function dbListDatasets(): Promise<
     .sort((a, b) => (a.date < b.date ? 1 : -1));
 }
 
-/** Rebuild the exact file shape: candles with per-tick bid×ask clusters. */
+/** Rebuild the exact file shape: candles with per-tick bid×ask clusters.
+ *  Requires BOTH bars and ticks: footprint_ticks are no longer written to
+ *  Neon (2026-10-08 transfer-cap fix), so recent days have bars only —
+ *  returning a candles-only day would silently strip the chart of its
+ *  footprint. Return null so gcdata falls back to the R2/local archive,
+ *  which always carries the full clusters. */
 export async function dbLoadDay(date: string, session: "RTH" | "ETH"): Promise<Candle[] | null> {
   const sql = getDb();
   const bars = (await sql`
@@ -86,6 +91,7 @@ export async function dbLoadDay(date: string, session: "RTH" | "ETH"): Promise<C
     buy_trades: number;
     sell_trades: number;
   }[];
+  if (!ticks.length) return null; // partial day — let the archive serve it
 
   // group clusters per minute. The postgres driver returns bigint columns as
   // STRINGS to preserve precision — everything here is cast to Number because
