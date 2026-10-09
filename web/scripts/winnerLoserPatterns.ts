@@ -129,10 +129,13 @@ const wrCell = (wins: number, n: number): string => `${(n ? (wins / n) * 100 : 0
 
 const ARROWS: Record<VarPattern["direction"], string> = { up: "↑", down: "↓", flat: "→", split: "⚡" };
 const ROLE: Record<VarPattern["kind"], string> = { "fire-time": "pre", "post-hoc": "post" };
+const VERDICT_TAG: Record<VarPattern["verdict"], string> = { significant: "[SIG]", stable: "[STABLE]", exploratory: "[EXPL]" };
+
+const fmtP = (v: number | null): string => (v === null ? "—" : v < 0.001 ? "<0.001" : v.toFixed(3));
 
 function varLine(p: VarPattern): string {
   const head = `${ARROWS[p.direction]} ${p.directionLabel}`;
-  return `${head} · effect ${p.effectPp >= 0 ? "+" : ""}${p.effectPp.toFixed(1)}pp · ${p.strength.toUpperCase()} · n=${p.n}`;
+  return `${head} · effect ${p.effectPp >= 0 ? "+" : ""}${p.effectPp.toFixed(1)}pp · ${p.strength.toUpperCase()} · n=${p.n} · p=${fmtP(p.pValue)} · q=${fmtP(p.qValue)}${p.stable === "insufficient" ? " · stability n/a" : p.stable ? " · stable both halves" : " · unstable across halves"}`;
 }
 
 function cellsLine(p: VarPattern, max = 6): string {
@@ -167,15 +170,16 @@ async function main() {
     console.log(`  ${f.padEnd(20)} WR ${pct(b)}`);
   }
   console.log("\nkey: ↑ higher → more wins · ↓ lower → more wins · ⚡ prefers one value · → flat");
-  console.log("     [pre] known at fire time · [post] execution anatomy (correlated by construction)\n");
+  console.log("     [pre] known at fire time · [post] execution anatomy (correlated by construction)");
+  console.log("     [SIG] FDR q<0.10 · [STABLE] same direction in both time halves · [EXPL] exploratory only\n");
 
   const exclude = new Set<string>();
   const patterns = minePatterns(rows, { minN: MIN_N, exclude, anatomyKeys: Object.keys(POST_HOC_KEYS) });
 
-  console.log(`=== TOP ${TOP} variables by |effect| ===\n`);
+  console.log(`=== TOP ${TOP} variables by evidence (significant → stable → exploratory) ===\n`);
   for (const p of patterns.slice(0, TOP)) {
     if (p.effectPp === 0 && p.direction === "flat") continue;
-    console.log(`[${ROLE[p.kind]}·${p.type.slice(0, 4).padEnd(4)}] ${p.key.padEnd(30).slice(0, 30)} (${p.kind === "post-hoc" ? "ANATOMY" : groupLabelOf(p.key)})`);
+    console.log(`[${ROLE[p.kind]}·${p.type.slice(0, 4).padEnd(4)}] ${VERDICT_TAG[p.verdict]} ${p.key.padEnd(28).slice(0, 28)} (${p.kind === "post-hoc" ? "ANATOMY" : groupLabelOf(p.key)})`);
     console.log(`   ${varLine(p)}`);
     console.log(`   ${cellsLine(p)}`);
     const fl = familyLine(p);
@@ -196,7 +200,7 @@ async function main() {
   }
 
   if (CSV) {
-    const head = "role,group,variable,type,direction,direction_label,effect_pp,strength,cell,n,wins,wr,lift_pp,mean_value";
+    const head = "role,group,variable,type,direction,direction_label,effect_pp,strength,p_value,q_value,stable,verdict,cell,n,wins,wr,lift_pp,mean_value";
     const lines = [head];
     for (const p of patterns) {
       for (const c of p.cells) {
@@ -210,6 +214,10 @@ async function main() {
             `"${p.directionLabel.replace(/"/g, '""')}"`,
             p.effectPp.toFixed(2),
             p.strength,
+            p.pValue === null ? "" : p.pValue,
+            p.qValue === null ? "" : p.qValue,
+            p.stable ?? "",
+            p.verdict,
             `"${c.label.replace(/"/g, '""')}"`,
             c.n,
             c.wins,
@@ -225,7 +233,10 @@ async function main() {
   }
 
   console.log(
-    "\nfootnotes: effect = lift spread between the two extreme cells in percentage points; strength = heuristic over effect + sample (strong ≥10pp & n≥15 both sides · mild ≥5pp · else weak) — a reading aid, not a significance test.\n" +
+    "\nmethods: p — Mann-Whitney (numeric, raw values) · Fisher exact on the extreme 2×2 (categorical) · Cochran-Mantel-Haenszel stratified by family (presence).\n" +
+      "q — Benjamini-Hochberg FDR across every variable tested in this run; [SIG] = q < 0.10.\n" +
+      "stability — the direction recomputed on the early vs late half of the time-ordered trades; [STABLE] = same non-flat direction, ≥2pp effect in BOTH halves; 'stability n/a' = a half lacked enough rows.\n" +
+      "ranking — significant > stable > exploratory, then |effect|. Reading aids on live journal samples, not a substitute for the archive studies' train/test discipline.\n" +
       "[post] anatomy patterns diagnose execution; they don't gate. Fire-time study features (ES/seasonal/round/gap/wall/kelly/dom) were known at fire time but never gated the card. Cells with n < min-n print but don't rank.",
   );
   await sql.end();

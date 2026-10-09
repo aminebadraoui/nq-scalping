@@ -31,6 +31,7 @@
 
 import { flattenFeatures } from "./tradeLedger";
 import { familyOf } from "./tradeStats";
+import { fisherExact, mannWhitneyP, cmhP, bhFdr } from "./patternStats";
 
 export type CellStats = {
   /** cell label: quantile range, category value, or present/absent */
@@ -74,6 +75,18 @@ export type VarPattern = {
   strength: "strong" | "mild" | "weak";
   /** the same split inside each strategy family */
   perFamily: FamilyCell[];
+  /** raw p-value of the type-appropriate test (see patternStats.ts):
+   *  Mann-Whitney (numeric) · Fisher extreme 2×2 (categorical) ·
+   *  CMH stratified by family (presence) */
+  pValue: number | null;
+  /** Benjamini-Hochberg FDR q-value across all variables in the run */
+  qValue: number | null;
+  /** does the direction hold in BOTH time halves (early vs late)?
+   *  true = same direction ≥ 2pp each half · false = flipped/flat ·
+   *  "insufficient" = a half lacked enough rows to judge */
+  stable: boolean | "insufficient" | null;
+  /** significant (FDR q < 0.10) · stable · exploratory */
+  verdict: "significant" | "stable" | "exploratory";
 };
 
 export type WinLossRow = {
@@ -319,8 +332,61 @@ export function patternFor(
     perFamily.sort((a, b) => b.n - a.n);
   }
 
+  /* ---- p-value (type-appropriate test, see patternStats.ts) ----- */
+  let pValue: number | null = null;
+  if (type === "numeric") {
+    const w: number[] = [];
+    const l: number[] = [];
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i];
+      if (v === undefined) continue;
+      const nv = num(v);
+      if (nv === null) continue;
+      (results[i] === "win" ? w : l).push(nv);
+    }
+    pValue = mannWhitneyP(w, l);
+  } else if (type === "presence") {
+    if (famCtx) {
+      const tables: Array<{ a: number; b: number; c: number; d: number }> = [];
+      for (const [f] of famCtx.baselines) {
+        const idx = rows
+          .map((x, i) => (famCtx.families[i] === f ? i : -1))
+          .filter((i) => i >= 0);
+        const present = idx.filter((i) => values[i] !== undefined);
+        const absent = idx.filter((i) => values[i] === undefined);
+        if (present.length === 0 || absent.length === 0) continue;
+        tables.push({
+          a: present.filter((i) => results[i] === "win").length,
+          b: present.filter((i) => results[i] === "loss").length,
+          c: absent.filter((i) => results[i] === "win").length,
+          d: absent.filter((i) => results[i] === "loss").length,
+        });
+      }
+      if (tables.length > 0) pValue = cmhP(tables);
+    } else {
+      const present = rows.filter((x) => x.v !== undefined);
+      const absent = rows.filter((x) => x.v === undefined);
+      pValue = fisherExact(
+        present.filter((x) => x.r === "win").length,
+        present.filter((x) => x.r === "loss").length,
+        absent.filter((x) => x.r === "win").length,
+        absent.filter((x) => x.r === "loss").length,
+      );
+    }
+  } else {
+    const q = cells.filter(qualifying);
+    if (q.length >= 2) {
+      const best = [...q].sort((a, b) => b.wr - a.wr)[0];
+      const worst = [...q].sort((a, b) => a.wr - b.wr)[0];
+      pValue = fisherExact(best.wins, best.n - best.wins, worst.wins, worst.n - worst.wins);
+    }
+  }
+
   cells.sort((a, b) => b.liftPp - a.liftPp || b.n - a.n);
-  return { key, kind, type, baselineWr, n: nTotal, cells, direction, directionLabel, effectPp, strength, perFamily };
+  return {
+    key, kind, type, baselineWr, n: nTotal, cells, direction, directionLabel, effectPp, strength, perFamily,
+    pValue, qValue: null, stable: null, verdict: "exploratory",
+  };
 }
 
 export type MineOptions = {
@@ -398,13 +464,10 @@ export function familyBaselines(rows: WinLossRow[]): Map<string, number> {
   return new Map([...by.entries()].map(([f, s]) => [f, s.n > 0 ? s.w / s.n : 0]));
 }
 
-/** mine every variable across the rows and rank by |effectPp| */
-export function minePatterns(rows: WinLossRow[], opts: MineOptions = {}): VarPattern[] {
-  const minN = opts.minN ?? 5;
-  const decided = rows.filter((r) => r.result === "win" || r.result === "loss");
+/** one mining pass (no FDR, no stability) — the core loop */
+function mineOnce(decided: WinLossRow[], minN: number, exclude: Set<string>, anatomyKeys: string[]): VarPattern[] {
   const wins = decided.filter((r) => r.result === "win").length;
   const baselineWr = decided.length > 0 ? wins / decided.length : 0;
-  const exclude = opts.exclude ?? new Set<string>();
   const baselines = familyBaselines(decided);
 
   const universe = new Map<string, { kind: VarPattern["kind"]; values: Array<unknown | undefined> }>();
@@ -416,7 +479,7 @@ export function minePatterns(rows: WinLossRow[], opts: MineOptions = {}): VarPat
       universe.set(k, slot);
     }
   }
-  for (const k of opts.anatomyKeys ?? []) {
+  for (const k of anatomyKeys) {
     if (exclude.has(k)) continue;
     const slot = universe.get(k) ?? { kind: "post-hoc" as const, values: new Array<unknown | undefined>(decided.length).fill(undefined) };
     slot.kind = "post-hoc";
@@ -435,6 +498,81 @@ export function minePatterns(rows: WinLossRow[], opts: MineOptions = {}): VarPat
     const p = patternFor(key, slot.kind, slot.values, decided.map((r) => r.result), baselineWr, minN, famCtx);
     if (p) out.push(p);
   }
-  out.sort((a, b) => Math.abs(b.effectPp) - Math.abs(a.effectPp) || b.n - a.n || a.key.localeCompare(b.key));
   return out;
+}
+
+/** the significance threshold for the FDR verdict (documented in the codebook) */
+export const FDR_Q = 0.1;
+/** minimum |effect| in each half for a direction to count as "holding" */
+export const STABILITY_MIN_EFFECT_PP = 2;
+
+/**
+ * Mine every variable, then the statistical foundation on top:
+ *   · q-values — Benjamini-Hochberg FDR over every variable's p-value
+ *     in this run (verdict "significant" at q < 0.10);
+ *   · stability — the direction is recomputed on the early and late
+ *     halves of the time-ordered rows; it "holds" when both halves
+ *     show the same non-flat direction with ≥ 2pp effect each;
+ *   · verdict — significant > stable > exploratory, which is also the
+ *     ranking order, then |effect|, then n.
+ */
+export function minePatterns(rows: WinLossRow[], opts: MineOptions = {}): VarPattern[] {
+  const minN = opts.minN ?? 5;
+  const decided = rows.filter((r) => r.result === "win" || r.result === "loss");
+  const exclude = opts.exclude ?? new Set<string>();
+  const anatomyKeys = opts.anatomyKeys ?? [];
+
+  const full = mineOnce(decided, minN, exclude, anatomyKeys);
+
+  /* FDR across the run's variables */
+  const withP = full
+    .map((p, i) => ({ p, i }))
+    .filter((x) => x.p.pValue !== null)
+    .sort((a, b) => (a.p.pValue ?? 1) - (b.p.pValue ?? 1));
+  const qs = bhFdr(withP.map((x) => x.p.pValue ?? 1));
+  withP.forEach((x, j) => {
+    x.p.qValue = qs[j];
+  });
+
+  /* stability: early vs late time halves */
+  if (decided.length >= minN * 2) {
+    const mid = Math.floor(decided.length / 2);
+    const A = new Map(mineOnce(decided.slice(0, mid), minN, exclude, anatomyKeys).map((p) => [p.key, p]));
+    const B = new Map(mineOnce(decided.slice(mid), minN, exclude, anatomyKeys).map((p) => [p.key, p]));
+    for (const p of full) {
+      const a = A.get(p.key);
+      const b = B.get(p.key);
+      if (!a || !b) p.stable = "insufficient";
+      else if (
+        a.direction !== "flat" &&
+        a.direction === b.direction &&
+        Math.abs(a.effectPp) >= STABILITY_MIN_EFFECT_PP &&
+        Math.abs(b.effectPp) >= STABILITY_MIN_EFFECT_PP
+      ) {
+        p.stable = true;
+      } else {
+        p.stable = false;
+      }
+    }
+  } else {
+    for (const p of full) p.stable = "insufficient";
+  }
+
+  for (const p of full) {
+    // significance is claimed only when FDR passes AND the time split
+    // does not contradict it (stable true, or unjudgeable) — a
+    // significant-but-flipping pattern is non-stationary, not an edge
+    const sig = p.qValue !== null && p.qValue < FDR_Q && p.stable !== false;
+    p.verdict = sig ? "significant" : p.stable === true ? "stable" : "exploratory";
+  }
+
+  const rank: Record<VarPattern["verdict"], number> = { significant: 0, stable: 1, exploratory: 2 };
+  full.sort(
+    (a, b) =>
+      rank[a.verdict] - rank[b.verdict] ||
+      Math.abs(b.effectPp) - Math.abs(a.effectPp) ||
+      b.n - a.n ||
+      a.key.localeCompare(b.key),
+  );
+  return full;
 }

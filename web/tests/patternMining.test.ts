@@ -132,3 +132,58 @@ test("winLossRowsFromDb maps a trades row: features parsed, pre-trade keys injec
 });
 
 const blob = (): string => JSON.stringify({ a: Array.from({ length: 40 }, (_, i) => i) });
+
+/* ---- the statistical foundation (verdict layer) ---------------------- */
+
+test("minePatterns: a clean consistent variable is significant and ranks first", () => {
+  const rows = [];
+  for (let v = 1; v <= 60; v++) {
+    // winners in the upper third of EACH half — direction "up" holds in
+    // both time halves, so the variable is significant AND stable
+    const win = v % 60 <= 30 ? v >= 16 : v >= 46;
+    rows.push({
+      result: (win ? "win" : "loss") as "win" | "loss",
+      flat: { x: v, y: v % 2 }, // y = noise (categorical, near 50/50 both outcomes)
+      anatomy: { family: "a" },
+    });
+  }
+  const out = minePatterns(rows, { minN: 5, anatomyKeys: [] });
+  const x = out.find((p) => p.key === "x")!;
+  const y = out.find((p) => p.key === "y")!;
+  assert.equal(out[0].key, "x", "evidence ranking puts the significant variable first");
+  assert.equal(x.verdict, "significant");
+  assert.ok(x.pValue !== null && x.pValue < 0.001, `p=${x.pValue}`);
+  assert.ok(x.qValue !== null && x.qValue < 0.1, `q=${x.qValue}`);
+  assert.equal(x.stable, true);
+  assert.equal(y.verdict, "stable", "noise-ish split that happens to hold in both halves is stable, not significant");
+  assert.ok(y.pValue !== null && y.pValue > 0.5, `noise p=${y.pValue}`);
+});
+
+test("minePatterns: significance is rejected when the direction flips across time halves", () => {
+  const rows = [];
+  for (let v = 1; v <= 60; v++) {
+    rows.push({
+      result: (v <= 30 ? "win" : "loss") as "win" | "loss", // wins only in the EARLY half
+      flat: { z: v },
+      anatomy: { family: "a" },
+    });
+  }
+  const out = minePatterns(rows, { minN: 5, anatomyKeys: [] });
+  const z = out.find((p) => p.key === "z")!;
+  assert.ok(z.pValue !== null && z.pValue < 0.001, "overall association is real");
+  assert.equal(z.stable, false, "but it flips across the halves");
+  assert.equal(z.verdict, "exploratory", "non-stationary patterns never claim significance");
+});
+
+test("minePatterns: stability is unjudgeable on a small sample", () => {
+  const rows = [];
+  for (let v = 1; v <= 10; v++) {
+    rows.push({ result: (v > 5 ? "win" : "loss") as "win" | "loss", flat: { x: v }, anatomy: { family: "a" } });
+  }
+  const out = minePatterns(rows, { minN: 8, anatomyKeys: [] });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].stable, "insufficient", "10 rows can't be split into two judgeable halves at minN 8");
+  // with only one variable tested, FDR = the raw p — significance is not
+  // contradicted by stability, so the verdict stands
+  assert.equal(out[0].verdict, "significant");
+});

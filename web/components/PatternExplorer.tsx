@@ -40,6 +40,10 @@ type Pattern = {
   strength: "strong" | "mild" | "weak";
   cells: Cell[];
   perFamily: FamilyCell[];
+  pValue: number | null;
+  qValue: number | null;
+  stable: boolean | "insufficient" | null;
+  verdict: "significant" | "stable" | "exploratory";
 };
 
 type Resp = {
@@ -68,10 +72,15 @@ const ROLE_LABEL: Record<"input" | "study" | "post", string> = {
   post: "POST-HOC",
 };
 
-const STRENGTH_STYLE: Record<Pattern["strength"], string> = {
-  strong: "border-long/50 bg-long/10 text-long",
-  mild: "border-warn/50 bg-warn/10 text-warn",
-  weak: "border-zinc-700 bg-zinc-800/40 text-zinc-500",
+const VERDICT_STYLE: Record<Pattern["verdict"], string> = {
+  significant: "border-long/50 bg-long/10 text-long",
+  stable: "border-info/50 bg-info/10 text-info",
+  exploratory: "border-zinc-700 bg-zinc-800/40 text-zinc-500",
+};
+const VERDICT_TITLE: Record<Pattern["verdict"], string> = {
+  significant: "FDR-corrected q < 0.10 across every variable in this run, and the time split doesn't contradict it",
+  stable: "same direction in BOTH time halves (early vs late), ≥2pp effect each",
+  exploratory: "not yet significant or stable — pattern surface only",
 };
 
 const pct = (x: number): string => `${(x * 100).toFixed(0)}%`;
@@ -180,7 +189,8 @@ export default function PatternExplorer() {
 
       <p className="mb-2 font-mono text-[9px] leading-snug text-zinc-600">
         ↑ higher values win more · ↓ lower values win more · ⚡ prefers one value · → flat · effect = lift spread between the two extreme cells (pp) ·
-        strength is a reading aid over effect + sample, not a significance test · POST-HOC anatomy correlates with the result by construction
+        p = Mann-Whitney (numeric) / Fisher extreme 2×2 (categorical) / CMH by family (presence) · q = Benjamini-Hochberg FDR across all variables ·
+        significant = q &lt; 0.10 · stable = same direction in both time halves (≥2pp each) · POST-HOC anatomy correlates with the result by construction
       </p>
 
       {!loaded && <p className="font-mono text-xs text-zinc-600">loading…</p>}
@@ -201,13 +211,22 @@ export default function PatternExplorer() {
                   <span className="text-[11px] font-semibold text-zinc-100">{p.key}</span>
                   <span className={`rounded border px-1 py-0.5 text-[8px] uppercase ${ROLE_STYLE[r]}`}>{ROLE_LABEL[r]}</span>
                   <span className="rounded border border-zinc-800 px-1 py-0.5 text-[8px] uppercase text-zinc-500">{p.type}</span>
-                  <span className={`rounded border px-1 py-0.5 text-[8px] uppercase ${STRENGTH_STYLE[p.strength]}`}>{p.strength}</span>
+                  <span className={`rounded border px-1 py-0.5 text-[8px] uppercase ${VERDICT_STYLE[p.verdict]}`} title={VERDICT_TITLE[p.verdict]}>
+                    {p.verdict}
+                  </span>
                   <span className="ml-auto whitespace-nowrap text-[9px] text-zinc-500">
                     n={p.n} · effect {p.effectPp >= 0 ? "+" : ""}
                     {p.effectPp.toFixed(1)}pp · {p.group}
                   </span>
                 </div>
-                <p className="mt-0.5 font-mono text-[10px] text-zinc-400">{p.directionLabel}</p>
+                <p className="mt-0.5 font-mono text-[10px] text-zinc-400">
+                  {p.directionLabel} · p={p.pValue === null ? "—" : p.pValue < 0.001 ? "<0.001" : p.pValue.toFixed(3)} · q=
+                  {p.qValue === null ? "—" : p.qValue < 0.001 ? "<0.001" : p.qValue.toFixed(3)}
+                  <span className="text-zinc-600">
+                    {" "}
+                    · {p.stable === true ? "holds in both time halves" : p.stable === false ? "flips or flattens across halves" : "stability n/a (sample too small)"}
+                  </span>
+                </p>
               </button>
 
               <div className="mt-1.5 space-y-0.5 border-t border-zinc-800/60 pt-1">

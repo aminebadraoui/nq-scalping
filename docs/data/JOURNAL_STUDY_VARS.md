@@ -245,6 +245,37 @@ Observational only — never read by the signal engine
 - Study tip: the feature set is NOT uniform across families — pick the
   columns relevant to the family being studied; missing = not applicable.
 
+## Statistical foundation (pattern explorer + CLI)
+
+The winner/loser pattern layer (`lib/patternMining.ts` +
+`lib/patternStats.ts`, surface: journal Pattern explorer + the CLI)
+applies a fixed, documented statistical discipline to every variable:
+
+| Layer | Method | Threshold |
+|---|---|---|
+| Direction | numeric: top vs bottom quantile win rate · categorical: best vs worst cell · presence: present vs absent **within each family**, then combined | ≥ 2pp to count as a direction |
+| Effect | lift spread between the two extreme cells (percentage points) | reported always; belief is gated by p/q/stability |
+| p-value | **Mann-Whitney U** (numeric, raw values, two-sided, tie-corrected) · **Fisher exact** on the extreme 2×2 (categorical) · **Cochran-Mantel-Haenszel** stratified by family (presence) | — |
+| Multiple comparisons | **Benjamini-Hochberg FDR** q-value across every variable tested in the run | significant at **q < 0.10** |
+| Stability | the direction recomputed on the **early vs late half** of the time-ordered trades | same non-flat direction with **≥ 2pp effect in both halves** |
+| Verdict | `significant` = q < 0.10 AND the time split does not contradict it · `stable` = direction holds in both halves · `exploratory` = everything else | ranking: significant → stable → exploratory |
+
+Rules that keep the foundation honest:
+
+- A significant-but-**flipping** pattern (q < 0.10 but the direction
+  reverses or flattens across the time halves) is demoted to
+  `exploratory` — non-stationary associations are not edges.
+- Stability is `insufficient` (not `false`) when a half lacks enough
+  rows — absence of evidence doesn't block significance.
+- An "absent" feature cell usually means *another strategy family*
+  recorded the trade, so presence tests are stratified by family (CMH)
+  and flag-style booleans (`aPlus`, `firstToday`, …) treat absent as
+  "no".
+- Post-hoc anatomy keeps its role label: its p-values are real but its
+  patterns are correlated with the result by construction.
+- These are reading aids on the live journal sample — the archive
+  studies' train/test split remains the promotion path to a gate.
+
 ## Changelog
 
 - **2026-10-08** — added `deltaFrac` (expansion |delta|÷vol) and
@@ -253,5 +284,9 @@ Observational only — never read by the signal engine
   journal. Additive recording only — no detector behavior changed.
   Retroactive backfill for archive studies is possible by replaying the
   detectors over the R2 archive (`web/scripts/` CLIs).
+- **2026-10-08** — added the pattern layer: winner/loser explorer
+  (`web/scripts/winnerLoserPatterns.ts`, `GET /api/patterns`, journal
+  panel) with per-variable direction/effect/strength; then the
+  statistical foundation above (p/q/stability/verdict).
 
 *Educational research only — not financial advice.*
