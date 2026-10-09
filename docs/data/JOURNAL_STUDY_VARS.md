@@ -288,5 +288,11 @@ Rules that keep the foundation honest:
   (`web/scripts/winnerLoserPatterns.ts`, `GET /api/patterns`, journal
   panel) with per-variable direction/effect/strength; then the
   statistical foundation above (p/q/stability/verdict).
+- **2026-10-08** — registry + reproducibility: every variable is
+  declared in `web/lib/featureRegistry.ts` (codebook-as-code — role,
+  type, doc); unregistered keys surface as DRIFT in the panel and CLI.
+  Explorations store as `pattern_runs` rows (panel "RUN NOW" or the CLI
+  `--record`): filters + build sha + family baselines + full results,
+  loadable from the journal's run selector.
 
 *Educational research only — not financial advice.*

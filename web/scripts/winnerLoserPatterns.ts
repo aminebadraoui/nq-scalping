@@ -43,6 +43,8 @@ import {
   type WinLossRow,
 } from "../lib/patternMining";
 import { groupKeyOf, GROUP_ORDER } from "../lib/featureGroups";
+import { driftKeys } from "../lib/featureRegistry";
+import { ensurePatternRunsTable, recordPatternRun, buildSha } from "../lib/patternRuns";
 
 /* ---- env ------------------------------------------------------------ */
 function loadEnvLocal() {
@@ -67,7 +69,7 @@ if (!DB_URL) {
   console.error("winnerLoserPatterns: need DATABASE_URL");
   process.exit(1);
 }
-const sql = postgres(DB_URL, { ssl: "require", max: 2 });
+const sql = postgres(DB_URL, { ssl: "require", max: 2, onnotice: () => {} });
 
 /* ---- flags ----------------------------------------------------------- */
 const arg = (name: string, def = ""): string => {
@@ -83,6 +85,7 @@ const TOP = Number(arg("top", "30")) || 30;
 const MIN_N = Number(arg("min-n", "5")) || 5;
 const CSV = arg("csv", "");
 const ALL_CELLS = has("all-cells");
+const RECORD = has("record");
 
 const GROUP_LABEL = new Map(GROUP_ORDER.map((g) => [g.key, g.label]));
 const groupLabelOf = (key: string): string => GROUP_LABEL.get(groupKeyOf(key)) ?? "OTHER";
@@ -176,6 +179,12 @@ async function main() {
   const exclude = new Set<string>();
   const patterns = minePatterns(rows, { minN: MIN_N, exclude, anatomyKeys: Object.keys(POST_HOC_KEYS) });
 
+  const drift = driftKeys(patterns.map((p) => p.key));
+  if (drift.length) {
+    console.log(`⚠ registry drift — ${drift.length} unregistered variable(s): ${drift.join(", ")}`);
+    console.log("  (register them in web/lib/featureRegistry.ts + docs/data/JOURNAL_STUDY_VARS.md)\n");
+  }
+
   console.log(`=== TOP ${TOP} variables by evidence (significant → stable → exploratory) ===\n`);
   for (const p of patterns.slice(0, TOP)) {
     if (p.effectPp === 0 && p.direction === "flat") continue;
@@ -230,6 +239,28 @@ async function main() {
     }
     writeFileSync(CSV, lines.join("\n") + "\n");
     console.log(`\ncsv → ${CSV}`);
+  }
+
+  if (RECORD) {
+    await ensurePatternRunsTable(sql);
+    const runId = await recordPatternRun(sql, {
+      sha: buildSha(),
+      since: SINCE,
+      family: FAMILY,
+      account: ACCOUNT,
+      minN: MIN_N,
+      nTrades: rows.length,
+      wins,
+      losses: rows.length - wins,
+      baselineWr: rows.length ? wins / rows.length : 0,
+      familyBaselines: [...familyBaselines(rows).entries()].map(([family, wr]) => {
+        const n = rows.filter((r) => String(r.anatomy.family) === family).length;
+        const w = rows.filter((r) => String(r.anatomy.family) === family && r.result === "win").length;
+        return { family, n, wins: w, wr };
+      }),
+      patterns,
+    });
+    console.log(`\nrecorded → pattern_runs #${runId} (viewable in the journal Pattern explorer run selector)`);
   }
 
   console.log(

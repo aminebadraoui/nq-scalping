@@ -3,18 +3,23 @@
 /* ------------------------------------------------------------------ *
  * Pattern explorer — the journal's winner/loser variable view.
  *
- * One row per variable, strongest direction first: what the variable
- * is, which way it points (↑ higher → more wins · ↓ lower → more wins
- * · ⚡ prefers one value · → flat), the effect size in percentage
- * points, and the W%/L% split of every bucket — plus the same split
- * inside each strategy family on expand.
+ * One row per variable, strongest evidence first: direction, effect,
+ * p/q/stability and the SIGNIFICANT / STABLE / EXPLORATORY verdict,
+ * W%/L% per bucket, per-strategy rows on expand.
  *
- * The same engine computes the CLI (scripts/winnerLoserPatterns.ts)
- * via GET /api/patterns, so the numbers always agree.
+ * Everything is doable and visible from here:
+ *   · RUN NOW stores the analysis as a reproducible pattern_runs row
+ *     (filters + sha + results) — pick any stored run from the
+ *     selector, or stay on LIVE;
+ *   · unregistered variables (feature drift) carry a badge;
+ *   · the full feature registry (codebook-as-code) renders below,
+ *     searchable.
+ * The CLI (scripts/winnerLoserPatterns.ts) runs the same engine.
  * ------------------------------------------------------------------ */
 
 import { useEffect, useRef, useState } from "react";
 import { familyName } from "@/lib/familyNames";
+import { FEATURE_REGISTRY, type RegistryEntry } from "@/lib/featureRegistry";
 
 type Cell = {
   label: string;
@@ -44,17 +49,40 @@ type Pattern = {
   qValue: number | null;
   stable: boolean | "insufficient" | null;
   verdict: "significant" | "stable" | "exploratory";
+  registered: boolean;
+  doc: string | null;
+};
+
+type RunSummary = {
+  id: number;
+  runAt: string;
+  sha: string;
+  since: string;
+  minN: number;
+  nTrades: number;
+  baselineWr: number;
+  significant: number;
+  stable: number;
+  exploratory: number;
 };
 
 type Resp = {
   ok: boolean;
   reason?: string;
+  source?: "live" | "run";
+  runId?: number | null;
+  runAt?: string;
+  sha?: string;
+  since?: string;
+  minN?: number;
   n: number;
   wins: number;
   losses: number;
   baselineWr: number;
   familyBaselines: Array<{ family: string; n: number; wins: number; wr: number }>;
   patterns: Pattern[];
+  drift: string[];
+  runs: RunSummary[];
 };
 
 const ARROW: Record<Pattern["direction"], string> = { up: "↑", down: "↓", flat: "→", split: "⚡" };
@@ -84,6 +112,7 @@ const VERDICT_TITLE: Record<Pattern["verdict"], string> = {
 };
 
 const pct = (x: number): string => `${(x * 100).toFixed(0)}%`;
+const fmtP = (v: number | null): string => (v === null ? "—" : v < 0.001 ? "<0.001" : v.toFixed(3));
 
 function CellBar({ label, n, wins, wr, total }: { label: string; n: number; wins: number; wr: number; total: number }) {
   const losses = n - wins;
@@ -103,19 +132,67 @@ function CellBar({ label, n, wins, wr, total }: { label: string; n: number; wins
   );
 }
 
+const REGISTRY_ROLE_STYLE: Record<RegistryEntry["role"], string> = ROLE_STYLE;
+
+function RegistryView() {
+  const [query, setQuery] = useState("");
+  const groups = new Map<string, RegistryEntry[]>();
+  for (const e of FEATURE_REGISTRY) {
+    if (query && !`${e.key} ${e.doc}`.toLowerCase().includes(query.toLowerCase())) continue;
+    const arr = groups.get(e.group) ?? [];
+    arr.push(e);
+    groups.set(e.group, arr);
+  }
+  return (
+    <details className="mt-3 rounded border border-zinc-800/70 bg-zinc-950/30 px-3 py-2">
+      <summary className="cursor-pointer font-mono text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+        Feature registry — the codebook ({FEATURE_REGISTRY.length} entries)
+      </summary>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="filter registry…"
+        className="mt-2 w-56 rounded border border-zinc-800 bg-panel px-1.5 py-0.5 font-mono text-[9px] text-zinc-300 placeholder:text-zinc-600"
+      />
+      <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {[...groups.entries()].map(([group, entries]) => (
+          <div key={group}>
+            <p className="mb-1 text-[9px] font-bold uppercase tracking-wider text-zinc-500">{group}</p>
+            <div className="space-y-0.5">
+              {entries.map((e) => (
+                <div key={e.key} className="border-b border-zinc-900 py-0.5 font-mono text-[9px]">
+                  <div className="flex items-center gap-1">
+                    <span className="text-zinc-300">{e.key}</span>
+                    <span className={`rounded border px-1 py-px text-[7px] uppercase ${REGISTRY_ROLE_STYLE[e.role]}`}>{e.role}</span>
+                    <span className="rounded border border-zinc-800 px-1 py-px text-[7px] uppercase text-zinc-500">{e.type}</span>
+                  </div>
+                  <p className="text-zinc-600">{e.doc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {groups.size === 0 && <p className="font-mono text-[9px] text-zinc-600">no registry entries match the filter</p>}
+      </div>
+    </details>
+  );
+}
+
 export default function PatternExplorer() {
   const [data, setData] = useState<Resp | null>(null);
   const [range, setRange] = useState<"7" | "30" | "90" | "all">("30");
+  const [runId, setRunId] = useState<number | null>(null);
   const [role, setRole] = useState<"all" | "input" | "study" | "post">("all");
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [running, setRunning] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const since = range === "all" ? "" : new Date(Date.now() - Number(range) * 86400_000).toISOString().slice(0, 10);
 
   const load = () => {
-    fetch(`/api/patterns?since=${since}&minN=5`)
+    fetch(`/api/patterns?since=${since}&minN=5${runId ? `&run=${runId}` : ""}`)
       .then((r) => r.json())
       .then((j: Resp) => {
         setData(j.ok ? j : null);
@@ -131,7 +208,22 @@ export default function PatternExplorer() {
       if (timerRef.current) clearInterval(timerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
+  }, [range, runId]);
+
+  const runNow = () => {
+    setRunning(true);
+    fetch("/api/patterns", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ since, minN: 5, account: "all", family: "" }),
+    })
+      .then((r) => r.json())
+      .then((j: { ok: boolean; runId?: number }) => {
+        if (j.ok && j.runId) setRunId(j.runId);
+      })
+      .catch(() => {})
+      .finally(() => setRunning(false));
+  };
 
   const patterns = (data?.patterns ?? []).filter((p) => {
     const r = ROLE_OF(p);
@@ -139,6 +231,12 @@ export default function PatternExplorer() {
     if (query && !p.key.toLowerCase().includes(query.toLowerCase()) && !p.group.toLowerCase().includes(query.toLowerCase())) return false;
     return true;
   });
+  const verdictCounts = (list: Pattern[]) => ({
+    significant: list.filter((p) => p.verdict === "significant").length,
+    stable: list.filter((p) => p.verdict === "stable").length,
+    exploratory: list.filter((p) => p.verdict === "exploratory").length,
+  });
+  const counts = verdictCounts(data?.patterns ?? []);
 
   return (
     <section className="rounded-md border border-zinc-800 bg-panel p-4">
@@ -170,15 +268,48 @@ export default function PatternExplorer() {
             placeholder="filter variable…"
             className="w-36 rounded border border-zinc-800 bg-panel px-1.5 py-0.5 text-[9px] text-zinc-300 placeholder:text-zinc-600"
           />
+          <select
+            value={runId ?? 0}
+            onChange={(e) => setRunId(Number(e.target.value) || null)}
+            className="max-w-[260px] rounded border border-zinc-800 bg-panel px-1.5 py-0.5 text-[9px] text-zinc-400"
+            title="stored runs — pick one to view its snapshot, or LIVE for the current data"
+          >
+            <option value={0}>LIVE</option>
+            {(data?.runs ?? []).map((r) => (
+              <option key={r.id} value={r.id}>
+                #{r.id} · {r.runAt.slice(0, 16).replace("T", " ")} · n={r.nTrades} · {r.significant}S/{r.stable}s/{r.exploratory}e
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={runNow}
+            disabled={running}
+            className="rounded border border-long/50 bg-long/10 px-1.5 py-0.5 text-[9px] text-long hover:bg-long/20 disabled:opacity-50"
+            title="run the analysis now and store it as a reproducible snapshot (pattern_runs)"
+          >
+            {running ? "running…" : "▶ RUN NOW"}
+          </button>
         </div>
       </div>
 
       {data && (
-        <div className="mb-3 flex flex-wrap items-center gap-2 font-mono text-[10px] text-zinc-500">
+        <div className="mb-2 flex flex-wrap items-center gap-2 font-mono text-[10px] text-zinc-500">
           <span>
-            {data.n} trades · <span className="text-long">{data.wins}W</span>/<span className="text-short">{data.losses}L</span> · baseline{" "}
-            {pct(data.baselineWr)}
+            {data.source === "run" ? `run #${data.runId}` : "live"} · {data.runAt?.slice(0, 16).replace("T", " ") ?? ""}
+            {data.sha ? ` · sha ${data.sha}` : ""}
+            {data.since ? ` · since ${data.since}` : " · all time"} · minN {data.minN ?? 5}
           </span>
+          <span>
+            {data.n} trades · <span className="text-long">{data.wins}W</span>/<span className="text-short">{data.losses}L</span> · baseline {pct(data.baselineWr)}
+          </span>
+          <span className="text-zinc-600">
+            verdicts: <span className="text-long">{counts.significant} sig</span> · <span className="text-info">{counts.stable} stable</span> · {counts.exploratory} exploratory
+          </span>
+          {data.drift.length > 0 && (
+            <span className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn" title={data.drift.join(", ")}>
+              {data.drift.length} unregistered variable{data.drift.length > 1 ? "s" : ""} — registry drift
+            </span>
+          )}
           {data.familyBaselines.map((f) => (
             <span key={f.family} className="rounded border border-zinc-800 px-1.5 py-0.5" title={`${f.wins}W / ${f.n - f.wins}L`}>
               {familyName(f.family)} {pct(f.wr)}
@@ -190,7 +321,7 @@ export default function PatternExplorer() {
       <p className="mb-2 font-mono text-[9px] leading-snug text-zinc-600">
         ↑ higher values win more · ↓ lower values win more · ⚡ prefers one value · → flat · effect = lift spread between the two extreme cells (pp) ·
         p = Mann-Whitney (numeric) / Fisher extreme 2×2 (categorical) / CMH by family (presence) · q = Benjamini-Hochberg FDR across all variables ·
-        significant = q &lt; 0.10 · stable = same direction in both time halves (≥2pp each) · POST-HOC anatomy correlates with the result by construction
+        significant = q &lt; 0.10 and not contradicted by the time split · stable = same direction in both halves (≥2pp each) · POST-HOC anatomy correlates with the result by construction
       </p>
 
       {!loaded && <p className="font-mono text-xs text-zinc-600">loading…</p>}
@@ -214,14 +345,21 @@ export default function PatternExplorer() {
                   <span className={`rounded border px-1 py-0.5 text-[8px] uppercase ${VERDICT_STYLE[p.verdict]}`} title={VERDICT_TITLE[p.verdict]}>
                     {p.verdict}
                   </span>
+                  {!p.registered && (
+                    <span
+                      className="rounded border border-warn/50 bg-warn/10 px-1 py-0.5 text-[8px] uppercase text-warn"
+                      title="not in lib/featureRegistry.ts — the feature was added or renamed without registering it (drift)"
+                    >
+                      unregistered
+                    </span>
+                  )}
                   <span className="ml-auto whitespace-nowrap text-[9px] text-zinc-500">
                     n={p.n} · effect {p.effectPp >= 0 ? "+" : ""}
                     {p.effectPp.toFixed(1)}pp · {p.group}
                   </span>
                 </div>
-                <p className="mt-0.5 font-mono text-[10px] text-zinc-400">
-                  {p.directionLabel} · p={p.pValue === null ? "—" : p.pValue < 0.001 ? "<0.001" : p.pValue.toFixed(3)} · q=
-                  {p.qValue === null ? "—" : p.qValue < 0.001 ? "<0.001" : p.qValue.toFixed(3)}
+                <p className="mt-0.5 font-mono text-[10px] text-zinc-400" title={p.doc ?? undefined}>
+                  {p.directionLabel} · p={fmtP(p.pValue)} · q={fmtP(p.qValue)}
                   <span className="text-zinc-600">
                     {" "}
                     · {p.stable === true ? "holds in both time halves" : p.stable === false ? "flips or flattens across halves" : "stability n/a (sample too small)"}
@@ -280,6 +418,8 @@ export default function PatternExplorer() {
           );
         })}
       </div>
+
+      <RegistryView />
     </section>
   );
 }
