@@ -5,6 +5,7 @@ import { familyName } from "@/lib/familyNames";
 import { type StreakRow, type DrawdownRow, type HourCell, type HourRow } from "@/lib/journalMetrics";
 import { flattenFeatures, ledgerCsv, type LedgerRow as DeepTradeRow, type LedgerVariable } from "@/lib/tradeLedger";
 import { groupFeatures } from "@/lib/featureGroups";
+import PatternExplorer from "@/components/PatternExplorer";
 
 /* ------------------------------------------------------------------ *
  * Trade journal — the dedicated surface for the self-improving loop:
@@ -954,6 +955,9 @@ export default function JournalPage() {
               never an account/guard metric (the MFF account guard is reported in /api/gc?action=health → execution.protections)
             </p>
           </section>
+
+          {/* ---- winner/loser pattern explorer (same engine as the CLI) ---- */}
+          <PatternExplorer />
 
           {/* ---- dedicated metric tables (one question each) ---- */}
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
