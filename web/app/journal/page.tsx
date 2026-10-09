@@ -4,6 +4,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { familyName } from "@/lib/familyNames";
 import { type StreakRow, type DrawdownRow, type HourCell, type HourRow } from "@/lib/journalMetrics";
 import { flattenFeatures, ledgerCsv, type LedgerRow as DeepTradeRow, type LedgerVariable } from "@/lib/tradeLedger";
+import { groupFeatures } from "@/lib/featureGroups";
 
 /* ------------------------------------------------------------------ *
  * Trade journal — the dedicated surface for the self-improving loop:
@@ -1327,17 +1328,34 @@ export default function JournalPage() {
                                     variables at signal time ({Object.keys(flat).length})
                                   </p>
                                   {Object.keys(flat).length ? (
-                                    <div className="grid grid-cols-2 gap-x-4 md:grid-cols-4 xl:grid-cols-6">
-                                      {Object.entries(flat)
-                                        .sort(([a], [b]) => a.localeCompare(b))
-                                        .map(([k, v]) => (
-                                          <div key={k} className="flex min-w-0 justify-between gap-2 border-b border-zinc-900 py-0.5">
-                                            <span className="truncate text-zinc-500" title={k}>
-                                              {k}
+                                    <div className="space-y-2">
+                                      {groupFeatures(flat).map((g) => (
+                                        <div key={g.key}>
+                                          <div className="mb-0.5 flex items-baseline justify-between gap-2">
+                                            <span className={`text-[9px] font-bold uppercase tracking-wider ${g.role === "signal" ? "text-long" : "text-zinc-500"}`}>
+                                              {g.label}
                                             </span>
-                                            <span className="whitespace-nowrap text-zinc-300">{varCell(v)}</span>
+                                            <span
+                                              className={`rounded border px-1 py-px text-[8px] uppercase ${
+                                                g.role === "signal" ? "border-long/40 bg-long/10 text-long" : "border-zinc-700 bg-zinc-800/40 text-zinc-500"
+                                              }`}
+                                            >
+                                              {g.role === "signal" ? "drives signal" : "study only"}
+                                            </span>
                                           </div>
-                                        ))}
+                                          <p className="mb-1 text-[8px] text-zinc-600">{g.note}</p>
+                                          <div className="grid grid-cols-2 gap-x-4 md:grid-cols-4 xl:grid-cols-6">
+                                            {g.entries.map(([k, v]) => (
+                                              <div key={k} className="flex min-w-0 justify-between gap-2 border-b border-zinc-900 py-0.5">
+                                                <span className="truncate text-zinc-500" title={k}>
+                                                  {k}
+                                                </span>
+                                                <span className="whitespace-nowrap text-zinc-300">{varCell(v)}</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ))}
                                     </div>
                                   ) : (
                                     <p className="text-[10px] text-zinc-600">

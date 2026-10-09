@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { cdtToET } from "@/lib/times";
+import { flattenFeatures } from "@/lib/tradeLedger";
+import { groupFeatures } from "@/lib/featureGroups";
 
 type CompactCandidate = {
   side: "bid" | "ask";
@@ -43,6 +45,8 @@ export type HistoryEntry = {
   sent: boolean;
   reason: string;
   dom?: DomContext | null;
+  /** the full feature vector recorded at fire time — signal inputs + study-only context */
+  features?: Record<string, unknown> | null;
   /** post-fire price-replay score: win | loss | time | open | "" (unscored) */
   outcome?: string;
   exitPrice?: number | null;
@@ -105,12 +109,27 @@ function fmt(n: number): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+const featVal = (v: unknown): string => {
+  if (typeof v === "number") return String(Math.round(v * 10000) / 10000);
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  return String(v);
+};
+
 export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEntry) => void }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [live, setLive] = useState<boolean | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [featIds, setFeatIds] = useState<Set<string>>(new Set());
+  const toggleFeat = (id: string) => {
+    setFeatIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const closedCount = entries.filter((e) => e.outcome === "win" || e.outcome === "loss").length;
   const wins = entries.filter((e) => e.outcome === "win").length;
@@ -183,6 +202,8 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
         {entries.map((e) => {
           const id = `${e.ts}|${e.day}|${e.side}|${e.price}`;
           const active = activeId === id;
+          const groups = groupFeatures(flattenFeatures(e.features));
+          const featOpen = featIds.has(id);
           return (
             <div
               key={id}
@@ -221,6 +242,20 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
                 <span className={`rounded border px-1 py-0.5 text-[9px] font-semibold ${SIDE_STYLE[e.side]}`}>
                   {SIDE_LABEL[e.side]}
                 </span>
+                {groups.length > 0 && (
+                  <button
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      toggleFeat(id);
+                    }}
+                    className={`rounded border px-1 py-0.5 text-[9px] transition-colors ${
+                      featOpen ? "border-info/60 bg-info/10 text-info" : "border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                    }`}
+                    title="signal inputs + study context recorded at fire time"
+                  >
+                    FEATURES ▾
+                  </button>
+                )}
               </span>
             </div>
 
@@ -237,6 +272,36 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
               <span><span className="text-zinc-600">TARGET</span> {e.target || "—"}</span>
               <span><span className="text-zinc-600">SIZE</span> {e.size || "—"}</span>
             </div>
+
+            {/* the full feature vector, grouped: what made the signal vs what was only observed */}
+            {featOpen && groups.length > 0 && (
+              <div className="mt-1.5 space-y-1.5 border-t border-zinc-800/60 pt-1 font-mono text-[9px] leading-snug">
+                {groups.map((g) => (
+                  <div key={g.key}>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className={`font-bold uppercase tracking-wider ${g.role === "signal" ? "text-long" : "text-zinc-500"}`}>
+                        {g.label}
+                      </span>
+                      <span
+                        className={`rounded border px-1 py-px text-[8px] uppercase ${
+                          g.role === "signal" ? "border-long/40 bg-long/10 text-long" : "border-zinc-700 bg-zinc-800/40 text-zinc-500"
+                        }`}
+                      >
+                        {g.role === "signal" ? "drives signal" : "study only"}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-4 md:grid-cols-3">
+                      {g.entries.map(([k, v]) => (
+                        <div key={k} className="flex min-w-0 justify-between gap-2 border-b border-zinc-900 py-0.5">
+                          <span className="truncate text-zinc-500" title={k}>{k}</span>
+                          <span className="whitespace-nowrap text-zinc-300">{featVal(v)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* the DOM picture captured at signal time — observational only */}
             {e.dom && (

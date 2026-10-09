@@ -55,6 +55,9 @@ export async function GET() {
       maePts: h.outcome?.maePts ?? null,
       // the DOM (iceberg) picture captured at signal time — observational only
       dom: h.features?.dom ?? null,
+      // the full feature vector recorded at fire time (signal inputs +
+      // study-only context) — the grouped view in SignalHistory reads this
+      features: h.features ?? null,
     })),
     signal: s
       ? {
