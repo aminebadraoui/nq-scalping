@@ -131,3 +131,13 @@ pulled); signal outcomes (next nightly).
 Open env request: add `NEON_API_KEY` (+ `TELEGRAM_BOT_TOKEN`) to the
 `nq-jobs` env so the watchdog's 80% page actually sends on the VPS —
 owner-approved per repo policy.
+
+## Watchdog armed (same day, via Coolify API)
+
+- Added `NEON_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` to the
+  `nq-jobs` env (bot token + chat id copied from the `nq-dashboard` env,
+  values never logged) and redeployed the jobs container.
+- Page path verified end-to-end: a test `sendMessage` through the same
+  bot + chat returned `ok: true` (the "watchdog credential test" card).
+- The nightly now logs the transfer meter pre/post and pages Telegram at
+  `NEON_QUOTA_PAGE_PCT` (80%).
