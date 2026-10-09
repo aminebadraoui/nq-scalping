@@ -269,6 +269,12 @@ export type MomentumSignal = {
   breakStack: "buy" | "sell" | "none";
   breakVwapPos: number;
   flushRangeR: number;
+  /** |delta| ÷ volume of the trigger bar — the expansion's ≥0.5 one-sided
+   *  gate (journal-only recording; never read by any gate) */
+  deltaFrac?: number;
+  /** dominant cluster rows on the trade side — the RTH card's footprint
+   *  proof (≥3; journal-only recording, the RTH gate reads its own count) */
+  domClusters?: number;
 };
 
 function med(a: number[]): number {
@@ -1053,6 +1059,7 @@ export function detectExpansionScalp(minutes: MomMinute[], cfg: ExpansionConfig 
       breakStack: stack,
       breakVwapPos: barVwapPos(m.levels, range, m.low),
       flushRangeR: 0,
+      deltaFrac: absD,
     });
   }
   return out;

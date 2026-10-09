@@ -247,6 +247,8 @@ test("expansion fires on a huge one-sided bar with a matching stack", () => {
   assert.ok(Math.abs(s.entry - 101.5) < 0.01, `entry ${s.entry}`);
   assert.ok(Math.abs(s.stop - 97.5) < 0.01, `stop ${s.stop}`);
   assert.ok(s.breakRangeR >= 1.6, `rangeR ${s.breakRangeR}`);
+  // journal-only recording: |delta| ÷ volume (80/100 = 0.8 — the ≥0.5 gate)
+  assert.ok(Math.abs((s.deltaFrac ?? 0) - 0.8) < 0.01, `deltaFrac ${s.deltaFrac}`);
 });
 
 test("expansion gate: a 63%-one-sided huge bar does NOT fire (tonight's 18:41 class)", () => {
@@ -398,6 +400,8 @@ test("RTH soft-continuation: 60% one-sided RTH bar fires, Globex bars don't", ()
   assert.equal(sigs.length, 1);
   assert.equal(sigs[0].dir, "long");
   assert.equal(sigs[0].t, "08:31");
+  // journal-only recording: all 4 rows are dominant buy clusters (the ≥3 proof)
+  assert.equal(sigs[0].domClusters, 4);
   // 0.75R plan: entry = mid 101.0, stop = 98.0 (risk 3), target = 103.25
   assert.ok(Math.abs(sigs[0].entry - 101.0) < 0.01, `entry ${sigs[0].entry}`);
   assert.ok(Math.abs(sigs[0].stop - 98.0) < 0.01, `stop ${sigs[0].stop}`);

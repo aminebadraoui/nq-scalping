@@ -133,6 +133,7 @@ export function detectSoftMomentum(minutes: MomMinute[], cfg: SoftConfig = SOFT_
       breakStack: "none",
       breakVwapPos: 0.5,
       flushRangeR: 0,
+      domClusters: dom,
     });
   }
   return out;

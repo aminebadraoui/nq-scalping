@@ -383,6 +383,7 @@ function signalFeatures(s: Record<string, unknown>, extra: Record<string, unknow
     "kind", "flushFrac", "flushVol", "flushRange", "failDepth", "respFrac", "respVol", "respDelay", "respProof",
     "breakFrac", "breakVol", "breakDelay", "refDist", "progressPts", "medVol", "distVwapPts", "cumDelta", "deltaFromFlush",
     "atr14", "riskPts", "trailLowDist", "trailHighDist", "breakRangeR", "breakStack", "breakVwapPos", "flushRangeR",
+    "deltaFrac", "domClusters",
     "hourET", "extreme", "buyPct", "dir", "risk",
   ];
   const f: Record<string, unknown> = {};
