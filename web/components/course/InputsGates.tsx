@@ -1,10 +1,10 @@
-import { Callout, Section } from "@/components/ui";
+import { Callout } from "@/components/ui";
 
 /* ------------------------------------------------------------------ *
- * Course module 05 — the Journal inputs & gates codebook.
+ * Course module 05 lessons — the Journal inputs & gates codebook.
  *
- * This is the module that answers "what do the input/gate features in
- * the journal actually do, and how is each one used in each strategy?"
+ * The module that answers "what do the input/gate features in the
+ * journal actually do, and how is each one used in each strategy?"
  * Every row mirrors lib/featureRegistry.ts + lib/featureGroups.ts, but
  * explained for a beginner, strategy by strategy.
  * ------------------------------------------------------------------ */
@@ -413,8 +413,6 @@ const ANATOMY: GlossGroup = {
   ],
 };
 
-const GLOSSARY: GlossGroup[] = [FLUSH_FAMILY, BREAKOUT_FAMILY, CONTEXT_FAMILY, LABELS_FAMILY, ANATOMY];
-
 /* ---------------- per-strategy gate map ---------------- */
 
 const STRATEGY_GATES: Array<{ name: string; gates: string; recorded: string }> = [
@@ -450,11 +448,9 @@ const STRATEGY_GATES: Array<{ name: string; gates: string; recorded: string }> =
   },
 ];
 
-/* ---------------- the section ---------------- */
-
 function GlossTable({ group }: { group: GlossGroup }) {
   return (
-    <div className="mb-6">
+    <div>
       <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
         <h3 className="text-sm font-bold uppercase tracking-wider text-zinc-300">{group.title}</h3>
         <span className="font-mono text-[10px] text-zinc-600">role: signal input</span>
@@ -484,159 +480,194 @@ function GlossTable({ group }: { group: GlossGroup }) {
   );
 }
 
-export function InputsGatesSection() {
+/* ------------------------------------------------ lesson 1: roles */
+
+export function RolesLesson() {
   return (
-    <section id="codebook" className="scroll-mt-20">
-      <Section
-        kicker="module 05 · the codebook"
-        title="Journal inputs & gates — every variable, decoded"
-        lede="This module answers the question the whole course is built around: what do the input and gate features in the Journal do, and how does each strategy use them? By the end, the variable dump on any trade will read like a sentence instead of a spreadsheet."
-      >
-        {/* ---- the three roles ---- */}
-        <Callout tone="long" title="First: the three roles a variable can have">
-          <p className="mb-2">
-            <b className="text-zinc-100">input</b> — a measurement taken from the tape at signal time (the
-            numbers in <span className="font-mono text-xs">SIGNAL INPUTS</span> and{" "}
-            <span className="font-mono text-xs">CARD LABELS &amp; GATES</span>).{" "}
-            <b className="text-zinc-100">study</b> — context recorded at the same moment but never read by any
-            gate (ES, seasonal, round numbers, gaps, walls, kelly, DOM — module 08).{" "}
-            <b className="text-zinc-100">post</b> — computed after the trade ends (the anatomy).
-          </p>
-          <p>
-            In the Journal&rsquo;s variable dump the badge does the work for you:{" "}
-            <span className="font-mono text-xs text-long">drives signal</span> marks the input groups,{" "}
-            <span className="font-mono text-xs text-zinc-400">study only</span> marks everything else. In the
-            Pattern Explorer the same split is the <span className="font-mono text-xs">all / input / study / post</span>{" "}
-            role filter.
-          </p>
-        </Callout>
+    <div className="space-y-4">
+      <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
+        This module answers the question the whole course is built around: what do the input and gate features
+        in the Journal do, and how does each strategy use them? By the end, the variable dump on any trade will
+        read like a sentence instead of a spreadsheet.
+      </p>
 
-        <Callout tone="info" title="Input vs gate — the one-line version">
-          An <b className="text-zinc-100">input</b> is a measurement. A <b className="text-zinc-100">gate</b> is a
-          strategy applying a pass/fail threshold to an input. The same input can be a gate in one strategy and a
-          mere recording in another: <span className="font-mono text-xs">breakFrac</span> is gated at ≥0.75 by the
-          momentum card, at ≥0.60 by the RTH card — and it is still recorded on every card regardless of who
-          gated it, because the pattern miner studies all of them. A value on a card does not mean a gate read
-          it; the tables below say exactly which strategy reads what.
-        </Callout>
+      <Callout tone="long" title="First: the three roles a variable can have">
+        <p className="mb-2">
+          <b className="text-zinc-100">input</b> — a measurement taken from the tape at signal time (the numbers
+          in <span className="font-mono text-xs">SIGNAL INPUTS</span> and{" "}
+          <span className="font-mono text-xs">CARD LABELS &amp; GATES</span>).{" "}
+          <b className="text-zinc-100">study</b> — context recorded at the same moment but never read by any
+          gate (ES, seasonal, round numbers, gaps, walls, kelly, DOM — the chips module).{" "}
+          <b className="text-zinc-100">post</b> — computed after the trade ends (the anatomy).
+        </p>
+        <p>
+          In the Journal&rsquo;s variable dump the badge does the work for you:{" "}
+          <span className="font-mono text-xs text-long">drives signal</span> marks the input groups,{" "}
+          <span className="font-mono text-xs text-zinc-400">study only</span> marks everything else. In the
+          Pattern Explorer the same split is the <span className="font-mono text-xs">all / input / study / post</span>{" "}
+          role filter.
+        </p>
+      </Callout>
 
-        <Callout tone="warn" title="The word “gate” appears twice in the journal — know both">
-          <p className="mb-2">
-            (1) <b className="text-zinc-100">The thresholds in the detectors</b> — the ≥/≤ rules in modules
-            02–04: the things that decide whether a card exists at all. (2){" "}
-            <b className="text-zinc-100">The <span className="font-mono text-xs">gates</span> key</b> in{" "}
-            <span className="font-mono text-xs">CARD LABELS &amp; GATES</span> — the{" "}
-            <b className="text-zinc-100">override snapshot</b>: the self-improving loop&rsquo;s levers (family on/off,
-            hour vetoes, tighter risk…) as they stood the moment the card was decided.
-          </p>
-          <p>
-            You approve the second kind on the Journal&rsquo;s <i>Insights &amp; gates</i> panel — the nightly miner
-            proposes changes with evidence, you approve, and the live feed applies them within minutes. Every
-            card then carries the snapshot of exactly which levers were active for it. That is the loop: trade →
-            journal → mine → gate → trade better.
-          </p>
-        </Callout>
+      <Callout tone="info" title="Input vs gate — the one-line version">
+        An <b className="text-zinc-100">input</b> is a measurement. A <b className="text-zinc-100">gate</b> is a
+        strategy applying a pass/fail threshold to an input. The same input can be a gate in one strategy and a
+        mere recording in another: <span className="font-mono text-xs">breakFrac</span> is gated at ≥0.75 by the
+        momentum card, at ≥0.60 by the RTH card — and it is still recorded on every card regardless of who
+        gated it, because the pattern miner studies all of them. A value on a card does not mean a gate read
+        it; the tables in this module say exactly which strategy reads what.
+      </Callout>
 
-        {/* ---- the glossary ---- */}
-        <h3 className="mb-4 mt-8 text-lg font-bold text-zinc-50">The glossary, group by group</h3>
-        {GLOSSARY.map((g) => (
-          <GlossTable key={g.title} group={g} />
-        ))}
+      <Callout tone="warn" title="The word “gate” appears twice in the journal — know both">
+        <p className="mb-2">
+          (1) <b className="text-zinc-100">The thresholds in the detectors</b> — the ≥/≤ rules in the strategy
+          modules: the things that decide whether a card exists at all. (2){" "}
+          <b className="text-zinc-100">The <span className="font-mono text-xs">gates</span> key</b> in{" "}
+          <span className="font-mono text-xs">CARD LABELS &amp; GATES</span> — the{" "}
+          <b className="text-zinc-100">override snapshot</b>: the self-improving loop&rsquo;s levers (family on/off,
+          hour vetoes, tighter risk…) as they stood the moment the card was decided.
+        </p>
+        <p>
+          You approve the second kind on the Journal&rsquo;s <i>Insights &amp; gates</i> panel — the nightly miner
+          proposes changes with evidence, you approve, and the live feed applies them within minutes. Every
+          card then carries the snapshot of exactly which levers were active for it. That is the loop: trade →
+          journal → mine → gate → trade better.
+        </p>
+      </Callout>
+    </div>
+  );
+}
 
-        {/* ---- study-only groups, forward pointer ---- */}
-        <div className="mb-8 rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
-          <h3 className="mb-1 text-sm font-bold uppercase tracking-wider text-zinc-400">
-            The study-only groups — context, never gates
-          </h3>
-          <p className="text-[13px] leading-relaxed text-zinc-400">
-            <span className="font-mono text-xs">ES CROSS-ASSET</span> ·{" "}
-            <span className="font-mono text-xs">SEASONAL</span> ·{" "}
-            <span className="font-mono text-xs">ROUND NUMBERS</span> ·{" "}
-            <span className="font-mono text-xs">PRICE GAPS</span> ·{" "}
-            <span className="font-mono text-xs">GAMMA WALLS</span> ·{" "}
-            <span className="font-mono text-xs">KELLY</span> ·{" "}
-            <span className="font-mono text-xs">DOM EVIDENCE</span> — every one of these is recorded at signal
-            time for research, and{" "}
-            <b className="text-zinc-200">none of them decides anything</b>. The day plan trades all cards, A+ or
-            not, chip or no chip. Module 08 explains each chip family and the one rule they all share.
-          </p>
-        </div>
+/* ------------------------------------------------ lesson 2: glossary I */
 
-        {/* ---- per-strategy map ---- */}
-        <h3 className="mb-4 text-lg font-bold text-zinc-50">The per-strategy gate map — one screen, all six cards</h3>
-        <div className="mb-8 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60">
-          <table className="w-full min-w-[760px] text-left align-top text-sm">
-            <thead>
-              <tr className="border-b border-zinc-800 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
-                <th className="px-4 py-2 font-normal">strategy</th>
-                <th className="px-4 py-2 font-normal">inputs it GATES on (with thresholds)</th>
-                <th className="px-4 py-2 font-normal">inputs it merely records</th>
+export function CodebookFlushLesson() {
+  return (
+    <div className="space-y-6">
+      <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
+        Glossary part one: the two families that describe the signal itself — the failed push and the
+        counterattack. For each variable: what it is in plain English, and exactly which strategy gates on it.
+      </p>
+      <GlossTable group={FLUSH_FAMILY} />
+      <GlossTable group={BREAKOUT_FAMILY} />
+    </div>
+  );
+}
+
+/* ------------------------------------------------ lesson 3: glossary II */
+
+export function CodebookContextLesson() {
+  return (
+    <div className="space-y-6">
+      <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
+        Glossary part two: the tape around the setup, the card&rsquo;s identity and vetoes, and the post-trade
+        anatomy.
+      </p>
+      <GlossTable group={CONTEXT_FAMILY} />
+      <GlossTable group={LABELS_FAMILY} />
+      <GlossTable group={ANATOMY} />
+
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
+        <h3 className="mb-1 text-sm font-bold uppercase tracking-wider text-zinc-400">
+          The study-only groups — context, never gates
+        </h3>
+        <p className="text-[13px] leading-relaxed text-zinc-400">
+          <span className="font-mono text-xs">ES CROSS-ASSET</span> ·{" "}
+          <span className="font-mono text-xs">SEASONAL</span> ·{" "}
+          <span className="font-mono text-xs">ROUND NUMBERS</span> ·{" "}
+          <span className="font-mono text-xs">PRICE GAPS</span> ·{" "}
+          <span className="font-mono text-xs">GAMMA WALLS</span> ·{" "}
+          <span className="font-mono text-xs">KELLY</span> ·{" "}
+          <span className="font-mono text-xs">DOM EVIDENCE</span> — every one of these is recorded at signal
+          time for research, and{" "}
+          <b className="text-zinc-200">none of them decides anything</b>. The day plan trades all cards, A+ or
+          not, chip or no chip. The chips module explains each chip family and the one rule they all share.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------ lesson 4: the gate map */
+
+export function CodebookMapLesson() {
+  return (
+    <div className="space-y-4">
+      <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
+        One screen, all six cards: the inputs each strategy actually gates on (with thresholds) versus the
+        inputs it merely records. Then the five-step method for reading any trade&rsquo;s variable dump.
+      </p>
+
+      <div className="overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-900/60">
+        <table className="w-full min-w-[760px] text-left align-top text-sm">
+          <thead>
+            <tr className="border-b border-zinc-800 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+              <th className="px-4 py-2 font-normal">strategy</th>
+              <th className="px-4 py-2 font-normal">inputs it GATES on (with thresholds)</th>
+              <th className="px-4 py-2 font-normal">inputs it merely records</th>
+            </tr>
+          </thead>
+          <tbody>
+            {STRATEGY_GATES.map((s) => (
+              <tr key={s.name} className="border-b border-zinc-800/60 align-top last:border-0">
+                <td className="whitespace-nowrap px-4 py-3 font-mono text-xs font-bold text-long">{s.name}</td>
+                <td className="px-4 py-3 font-mono text-xs leading-relaxed text-info">{s.gates}</td>
+                <td className="px-4 py-3 font-mono text-xs leading-relaxed text-zinc-500">{s.recorded}</td>
               </tr>
-            </thead>
-            <tbody>
-              {STRATEGY_GATES.map((s) => (
-                <tr key={s.name} className="border-b border-zinc-800/60 align-top last:border-0">
-                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs font-bold text-long">{s.name}</td>
-                  <td className="px-4 py-3 font-mono text-xs leading-relaxed text-info">{s.gates}</td>
-                  <td className="px-4 py-3 font-mono text-xs leading-relaxed text-zinc-500">{s.recorded}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
-        {/* ---- how to read a dump ---- */}
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
-          <h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-zinc-400">
-            How to read a trade&rsquo;s variable dump in five steps
-          </h3>
-          <ol className="space-y-2.5 text-[13px] leading-relaxed text-zinc-300">
-            <li className="flex gap-3">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">1</span>
-              <span>
-                Open the trade in the Journal and expand <i>variables at signal time</i>. Read{" "}
-                <span className="font-mono text-xs text-info">kind</span> and{" "}
-                <span className="font-mono text-xs text-info">family</span> first — which card is this?
-              </span>
-            </li>
-            <li className="flex gap-3">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">2</span>
-              <span>
-                Walk the <span className="font-mono text-xs text-long">SIGNAL INPUTS</span> numbers through that
-                strategy&rsquo;s gate list from the map above. Each number either cleared a threshold (e.g.{" "}
-                <span className="font-mono text-xs">breakFrac 0.79 ≥ 0.75</span>) or was recorded for study —
-                the “how each strategy uses it” column tells you which.
-              </span>
-            </li>
-            <li className="flex gap-3">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">3</span>
-              <span>
-                Check <span className="font-mono text-xs">CARD LABELS &amp; GATES</span>: which overrides were
-                active (<span className="font-mono text-xs">gates</span>), was anything vetoed or news-blocked,
-                and what labels did the card carry (<span className="font-mono text-xs">aPlus</span>,{" "}
-                <span className="font-mono text-xs">firstToday</span>)?
-              </span>
-            </li>
-            <li className="flex gap-3">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">4</span>
-              <span>
-                Skim the study-only groups for context — but remember: they describe the weather, they did not
-                fire the trade.
-              </span>
-            </li>
-            <li className="flex gap-3">
-              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">5</span>
-              <span>
-                Finish with the anatomy: <span className="font-mono text-xs">drift</span>,{" "}
-                <span className="font-mono text-xs">mfe/mae</span>,{" "}
-                <span className="font-mono text-xs">stopRun</span>,{" "}
-                <span className="font-mono text-xs">lossLabel</span> — how the trade actually lived and how it
-                died. That is the review data, not the entry data.
-              </span>
-            </li>
-          </ol>
-        </div>
-      </Section>
-    </section>
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
+        <h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-zinc-400">
+          How to read a trade&rsquo;s variable dump in five steps
+        </h3>
+        <ol className="space-y-2.5 text-[13px] leading-relaxed text-zinc-300">
+          <li className="flex gap-3">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">1</span>
+            <span>
+              Open the trade in the Journal and expand <i>variables at signal time</i>. Read{" "}
+              <span className="font-mono text-xs text-info">kind</span> and{" "}
+              <span className="font-mono text-xs text-info">family</span> first — which card is this?
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">2</span>
+            <span>
+              Walk the <span className="font-mono text-xs text-long">SIGNAL INPUTS</span> numbers through that
+              strategy&rsquo;s gate list from the map above. Each number either cleared a threshold (e.g.{" "}
+              <span className="font-mono text-xs">breakFrac 0.79 ≥ 0.75</span>) or was recorded for study — the
+              “how each strategy uses it” column tells you which.
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">3</span>
+            <span>
+              Check <span className="font-mono text-xs">CARD LABELS &amp; GATES</span>: which overrides were
+              active (<span className="font-mono text-xs">gates</span>), was anything vetoed or news-blocked,
+              and what labels did the card carry (<span className="font-mono text-xs">aPlus</span>,{" "}
+              <span className="font-mono text-xs">firstToday</span>)?
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">4</span>
+            <span>
+              Skim the study-only groups for context — but remember: they describe the weather, they did not
+              fire the trade.
+            </span>
+          </li>
+          <li className="flex gap-3">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-long/40 font-mono text-[10px] text-long">5</span>
+            <span>
+              Finish with the anatomy: <span className="font-mono text-xs">drift</span>,{" "}
+              <span className="font-mono text-xs">mfe/mae</span>,{" "}
+              <span className="font-mono text-xs">stopRun</span>,{" "}
+              <span className="font-mono text-xs">lossLabel</span> — how the trade actually lived and how it
+              died. That is the review data, not the entry data.
+            </span>
+          </li>
+        </ol>
+      </div>
+    </div>
   );
 }

@@ -1,9 +1,9 @@
-import { Callout, Section } from "@/components/ui";
+import { Callout } from "@/components/ui";
 
 /* ------------------------------------------------------------------ *
- * Course modules 08–09 — the study-only chips and the cheat sheets.
- * Chips: the journal-only context labels (never gates). Cheat sheets:
- * the one-page checklists to keep open while trading.
+ * Course modules 08–09 lessons — the study-only chips and the cheat
+ * sheets. Chips: the journal-only context labels (never gates).
+ * Cheat sheets: the one-page checklists to keep open while trading.
  * ------------------------------------------------------------------ */
 
 type ChipFamily = {
@@ -128,103 +128,106 @@ const NUMBERS: Array<[string, string]> = [
   ["$2,000", "end-of-day trailing max loss"],
 ];
 
-export function ChipsModule() {
-  return (
-    <section id="chips" className="scroll-mt-20">
-      <Section
-        kicker="module 08 · context labels"
-        title="The study chips — context the journal records, never gates"
-        lede="The cards print small labels — ES CONFIRM 85%, FOMC DAY 84%, STOP @ROUND, WALL IN PATH… These are the study-role features from module 05: context recorded at signal time so the research can measure it. One rule covers them all:"
-      >
-        <Callout tone="warn" title="The one rule: chips describe the weather — they never decide the trade">
-          The day plan trades <b className="text-zinc-100">every card</b>, chip or no chip, A+ or not. A card
-          with no chips is still a card; a card with a scary chip (PRE-FOMC 67%) is still a card. The chips
-          exist so that a hundred trades from now, the journal can tell you which contexts actually mattered —
-          and the miner can propose a gate with evidence. That is their only job.
-        </Callout>
+/* ------------------------------------------------ module 08 */
 
-        <div className="space-y-6">
-          {CHIP_FAMILIES.map((f) => (
-            <div key={f.title} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
-              <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
-                <h3 className="text-sm font-bold text-zinc-100">{f.title}</h3>
-                <span className="font-mono text-[10px] text-zinc-500">
-                  journal group: {f.group} · study only
-                </span>
-              </div>
-              <p className="mb-3 text-[12px] italic text-zinc-500">{f.note}</p>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[640px] text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-zinc-800 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
-                      <th className="px-3 py-1.5 font-normal">chip</th>
-                      <th className="px-3 py-1.5 font-normal">what it says</th>
-                      <th className="px-3 py-1.5 font-normal">what it measured</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {f.rows.map(([c, w, m]) => (
-                      <tr key={c} className="border-b border-zinc-800/60 last:border-0">
-                        <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-info">{c}</td>
-                        <td className="px-3 py-2 text-zinc-300">{w}</td>
-                        <td className="px-3 py-2 text-zinc-400">{m}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+export function ChipsLesson() {
+  return (
+    <div className="space-y-4">
+      <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
+        The cards print small labels — ES CONFIRM 85%, FOMC DAY 84%, STOP @ROUND, WALL IN PATH… These are the
+        study-role features from the codebook module: context recorded at signal time so the research can
+        measure it. One rule covers them all:
+      </p>
+
+      <Callout tone="warn" title="The one rule: chips describe the weather — they never decide the trade">
+        The day plan trades <b className="text-zinc-100">every card</b>, chip or no chip, A+ or not. A card
+        with no chips is still a card; a card with a scary chip (PRE-FOMC 67%) is still a card. The chips
+        exist so that a hundred trades from now, the journal can tell you which contexts actually mattered —
+        and the miner can propose a gate with evidence. That is their only job.
+      </Callout>
+
+      <div className="space-y-4">
+        {CHIP_FAMILIES.map((f) => (
+          <div key={f.title} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
+            <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="text-sm font-bold text-zinc-100">{f.title}</h3>
+              <span className="font-mono text-[10px] text-zinc-500">
+                journal group: {f.group} · study only
+              </span>
             </div>
-          ))}
-        </div>
-      </Section>
-    </section>
+            <p className="mb-3 text-[12px] italic text-zinc-500">{f.note}</p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-800 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                    <th className="px-3 py-1.5 font-normal">chip</th>
+                    <th className="px-3 py-1.5 font-normal">what it says</th>
+                    <th className="px-3 py-1.5 font-normal">what it measured</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {f.rows.map(([c, w, m]) => (
+                    <tr key={c} className="border-b border-zinc-800/60 last:border-0">
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-info">{c}</td>
+                      <td className="px-3 py-2 text-zinc-300">{w}</td>
+                      <td className="px-3 py-2 text-zinc-400">{m}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
-export function CheatSheetsModule() {
+/* ------------------------------------------------ module 09 */
+
+export function CheatSheetsLesson() {
   return (
-    <section id="cheatsheets" className="scroll-mt-20">
-      <Section
-        kicker="module 09 · keep these open"
-        title="Cheat sheets — the whole course on one screen"
-        lede="Everything a live session needs, compressed. Keep the four checklists next to the chart and re-read the numbers card until they are reflexes."
-      >
-        <div className="mb-8 grid gap-4 lg:grid-cols-2">
-          {CHEAT_SHEETS.map((c) => (
-            <div key={c.title} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
-              <h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-zinc-300">{c.title}</h3>
-              <ul className="space-y-1.5">
-                {c.items.map((i) => (
-                  <li key={i} className="flex gap-2 text-[13px] leading-relaxed text-zinc-400">
-                    <span className="text-zinc-600">·</span>
-                    <span>{i}</span>
-                  </li>
-                ))}
-              </ul>
+    <div className="space-y-4">
+      <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
+        Everything a live session needs, compressed. Keep the four checklists next to the chart and re-read the
+        numbers card until they are reflexes.
+      </p>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        {CHEAT_SHEETS.map((c) => (
+          <div key={c.title} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
+            <h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-zinc-300">{c.title}</h3>
+            <ul className="space-y-1.5">
+              {c.items.map((i) => (
+                <li key={i} className="flex gap-2 text-[13px] leading-relaxed text-zinc-400">
+                  <span className="text-zinc-600">·</span>
+                  <span>{i}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
+        <h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-zinc-300">
+          The numbers to memorize
+        </h3>
+        <div className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
+          {NUMBERS.map(([n, m]) => (
+            <div key={n} className="flex items-baseline justify-between gap-2 border-b border-zinc-900 py-1">
+              <span className="font-mono text-sm font-bold text-long">{n}</span>
+              <span className="text-right font-mono text-[11px] text-zinc-500">{m}</span>
             </div>
           ))}
         </div>
+      </div>
 
-        <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
-          <h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-zinc-300">
-            The numbers to memorize
-          </h3>
-          <div className="grid gap-x-6 gap-y-1.5 sm:grid-cols-2 lg:grid-cols-3">
-            {NUMBERS.map(([n, m]) => (
-              <div key={n} className="flex items-baseline justify-between gap-2 border-b border-zinc-900 py-1">
-                <span className="font-mono text-sm font-bold text-long">{n}</span>
-                <span className="text-right font-mono text-[11px] text-zinc-500">{m}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <p className="mt-8 font-mono text-[11px] leading-relaxed text-zinc-500">
-          You have reached the end of the course. The loop from here: module 02–04 for the setups · module 05
-          for every variable · module 06 for the procedure · module 07 for the plan · module 08 for context —
-          and the Journal to prove it all, trade by trade.
-        </p>
-      </Section>
-    </section>
+      <p className="font-mono text-[11px] leading-relaxed text-zinc-500">
+        You have reached the end of the course. The loop from here: the strategy modules for the setups · the
+        codebook for every variable · execution for the procedure · risk for the plan · chips for context — and
+        the Journal to prove it all, trade by trade.
+      </p>
+    </div>
   );
 }
