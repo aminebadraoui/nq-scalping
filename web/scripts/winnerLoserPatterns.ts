@@ -249,6 +249,7 @@ async function main() {
       family: FAMILY,
       account: ACCOUNT,
       minN: MIN_N,
+      universe: "filled",
       nTrades: rows.length,
       wins,
       losses: rows.length - wins,

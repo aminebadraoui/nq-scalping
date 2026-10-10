@@ -71,6 +71,26 @@ export function familyOf(verdict: string): string {
 
 /* ---- hour buckets -------------------------------------------------- */
 
+/** hypothetical win rate by family over the ALL-SIGNALS universe: every
+ *  recorded card's replay outcome (win/loss only — time/open don't
+ *  decide). The signal-quality complement to the filled-only scoreboard:
+ *  a family whose hyp WR is far above its filled WR is being filtered
+ *  or executed badly; the reverse means the gates add value. */
+export function hypWrByFamily(
+  sigs: Array<{ verdict: string; outcome: string }>,
+): Map<string, { n: number; wins: number; wr: number }> {
+  const by = new Map<string, { n: number; wins: number }>();
+  for (const s of sigs) {
+    if (s.outcome !== "win" && s.outcome !== "loss") continue;
+    const f = familyOf(s.verdict);
+    const e = by.get(f) ?? { n: 0, wins: 0 };
+    e.n++;
+    if (s.outcome === "win") e.wins++;
+    by.set(f, e);
+  }
+  return new Map([...by.entries()].map(([f, e]) => [f, { n: e.n, wins: e.wins, wr: e.n > 0 ? e.wins / e.n : 0 }]));
+}
+
 export function hourBucketOf(timeET: string): string {
   const h = Number.parseInt(timeET.slice(0, 2), 10);
   const m = Number.parseInt(timeET.slice(3, 5), 10);

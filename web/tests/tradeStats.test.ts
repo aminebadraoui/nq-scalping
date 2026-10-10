@@ -10,6 +10,7 @@ import {
   computeFeatures,
   markFirstOfDay,
   aggregateTrades,
+  hypWrByFamily,
   type TradeForAnalysis,
   type Bar,
   type EnrichedTrade,
@@ -189,4 +190,24 @@ test("aggregateTrades: win rate, PF, expectancy and stop-run rate", () => {
   assert.ok(Math.abs((all.stopRunRate ?? 0) - 0.5) < 1e-9);
   const fam = stats.find((s) => s.group === "family" && s.label === "momentum_flush")!;
   assert.equal(fam.n, 4);
+});
+
+test("hypWrByFamily: replay win rate over all signals, time/open excluded", () => {
+  const m = hypWrByFamily([
+    { verdict: "momentum failed-flush breakout", outcome: "win" },
+    { verdict: "momentum failed-flush breakout", outcome: "loss" },
+    { verdict: "momentum failed-flush breakout", outcome: "loss" },
+    { verdict: "momentum failed-flush breakout", outcome: "time" }, // not decided
+    { verdict: "momentum failed-flush breakout", outcome: "open" }, // not decided
+    { verdict: "rth soft-continuation (experimental)", outcome: "win" },
+    { verdict: "rth soft-continuation (experimental)", outcome: "win" },
+    { verdict: "sweep-reclaim scalp", outcome: "loss" },
+  ]);
+  const mom = m.get("momentum_flush")!;
+  assert.equal(mom.n, 3);
+  assert.equal(mom.wins, 1);
+  assert.ok(Math.abs(mom.wr - 1 / 3) < 1e-9);
+  const rth = m.get("rth")!;
+  assert.equal(rth.wr, 1);
+  assert.equal(m.get("sweep_reclaim")!.wr, 0);
 });

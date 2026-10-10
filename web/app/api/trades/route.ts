@@ -1,5 +1,5 @@
 import { dbEnabled, getDb } from "@/lib/gcdb";
-import { familyOf } from "@/lib/tradeStats";
+import { familyOf, hypWrByFamily } from "@/lib/tradeStats";
 import { edgeStatuses, REPLAY_EXPR_BASELINES } from "@/lib/edgeMonitor";
 import { streakTable, drawdownTable, hourMatrix, hourTable } from "@/lib/journalMetrics";
 import { listDaybookDaysRemote, readDaybookDayRemote, type DaybookDaySummary, type DaybookRecord } from "@/lib/daybook";
@@ -299,7 +299,7 @@ export async function GET(request: Request) {
     // reconcile runs — the trades/signals tables are the record).
     let scoreboard: unknown[] = [];
     if (rangeTrades.length) {
-      const sigs = await db`select ts, verdict from signals where ts >= ${w0}`;
+      const sigs = await db`select ts, verdict, outcome from signals where ts >= ${w0}`;
       type Bucket = {
         signals: number;
         fills: number;
@@ -346,11 +346,17 @@ export async function GET(request: Request) {
       // the same set of trades the table aggregates
       const statuses = edgeStatuses(enriched as unknown as Parameters<typeof edgeStatuses>[0], { window: 10_000_000 });
       const statusByFamily = new Map(statuses.map((s) => [s.family, s]));
+      // the all-signals hypothetical win rate per family (replay outcomes
+      // of every recorded card — the signal-quality complement to fills)
+      const hypByFamily = hypWrByFamily(
+        sigs as unknown as Array<{ verdict: string; outcome: string }>,
+      );
       scoreboard = [...buckets.entries()].map(([family, b]) => {
         const st = statusByFamily.get(family);
         const fills = b.fills;
         const liveExpR = st && fills >= 8 ? st.meanExpR : null;
         const baselineExpR = st?.baselineExpR ?? REPLAY_EXPR_BASELINES[family] ?? REPLAY_EXPR_BASELINES.other;
+        const hyp = hypByFamily.get(family);
         return {
           family,
           signals: b.signals,
@@ -362,6 +368,8 @@ export async function GET(request: Request) {
           netUsd: Math.round(b.netUsd * 100) / 100,
           liveExpR: st?.meanExpR ?? null,
           baselineExpR,
+          hypWr: hyp ? hyp.wr : null,
+          hypN: hyp ? hyp.n : 0,
           status: st?.status ?? "insufficient",
           detail: st?.detail ?? "",
         };
@@ -382,6 +390,8 @@ export async function GET(request: Request) {
           netUsd: 0,
           liveExpR: null,
           baselineExpR: REPLAY_EXPR_BASELINES[fam],
+          hypWr: null,
+          hypN: 0,
           status: "insufficient",
           detail: "no cards recorded in this range",
         });

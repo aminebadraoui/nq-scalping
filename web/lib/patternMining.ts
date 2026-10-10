@@ -30,7 +30,7 @@
  * ------------------------------------------------------------------ */
 
 import { flattenFeatures } from "./tradeLedger";
-import { familyOf } from "./tradeStats";
+import { familyOf, hourBucketOf } from "./tradeStats";
 import { fisherExact, mannWhitneyP, cmhP, bhFdr } from "./patternStats";
 
 export type CellStats = {
@@ -474,6 +474,37 @@ export function winLossRowsFromDb(raw: Array<Record<string, unknown>>): WinLossR
     const anatomy: Record<string, unknown> = { family: String(r.family ?? "") || familyOf(String(r.verdict ?? "")) || "other" };
     for (const [k, fn] of Object.entries(POST_HOC_KEYS)) anatomy[k] = fn(r);
     rows.push({ result: String(r.result) === "win" ? "win" : "loss", flat, anatomy });
+  }
+  return rows;
+}
+
+/** map recorded SIGNAL rows (the all-signals universe) to mining rows:
+ *  the hypothetical first-touch outcome decides win/loss (time/open/
+ *  unscored rows are skipped), features come from the signal's own
+ *  vector, and post-hoc anatomy is absent (so it never mines). The
+ *  result measures SIGNAL QUALITY, not money — hypothetical fills. */
+export function signalsToWinLossRows(raw: Array<Record<string, unknown>>): WinLossRow[] {
+  const rows: WinLossRow[] = [];
+  for (const s of raw) {
+    const outcome = String(s.outcome ?? "");
+    if (outcome !== "win" && outcome !== "loss") continue;
+    const timeET = String(s.time_et ?? "");
+    rows.push(
+      ...winLossRowsFromDb([
+        {
+          day: String(s.day),
+          time_et: timeET,
+          side: String(s.side),
+          contracts: Number(String(s.size ?? "").match(/^(\d+)\s*MNQ/)?.[1] ?? 0),
+          family: familyOf(String(s.verdict ?? "")),
+          verdict: String(s.verdict ?? ""),
+          hour_bucket: hourBucketOf(timeET),
+          first_of_day: undefined,
+          features: s.features ?? null,
+          result: outcome,
+        },
+      ]),
+    );
   }
   return rows;
 }

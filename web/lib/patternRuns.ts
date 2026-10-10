@@ -24,6 +24,8 @@ export type PatternRunRow = {
   family: string;
   account: string;
   minN: number;
+  /** filled = reconciled trades · signals = hypothetical replay outcomes */
+  universe: "filled" | "signals";
   nTrades: number;
   wins: number;
   losses: number;
@@ -41,6 +43,7 @@ create table if not exists pattern_runs (
   family text not null default '',
   account text not null default 'all',
   min_n int not null default 5,
+  universe text not null default 'filled',
   n_trades int not null default 0,
   wins int not null default 0,
   losses int not null default 0,
@@ -48,6 +51,7 @@ create table if not exists pattern_runs (
   family_baselines jsonb not null default '[]',
   patterns jsonb not null default '[]'
 );
+alter table pattern_runs add column if not exists universe text not null default 'filled';
 create index if not exists pattern_runs_at_idx on pattern_runs (run_at desc);
 `;
 
@@ -61,9 +65,9 @@ export async function recordPatternRun(db: postgres.Sql, run: RunInput): Promise
   await ensurePatternRunsTable(db);
   const rows = (await db`
     insert into pattern_runs
-      (sha, since, family, account, min_n, n_trades, wins, losses, baseline_wr, family_baselines, patterns)
+      (sha, since, family, account, min_n, universe, n_trades, wins, losses, baseline_wr, family_baselines, patterns)
     values
-      (${run.sha}, ${run.since}, ${run.family}, ${run.account}, ${run.minN}, ${run.nTrades}, ${run.wins}, ${run.losses},
+      (${run.sha}, ${run.since}, ${run.family}, ${run.account}, ${run.minN}, ${run.universe}, ${run.nTrades}, ${run.wins}, ${run.losses},
        ${run.baselineWr}, ${JSON.stringify(run.familyBaselines)}, ${JSON.stringify(run.patterns)})
     returning id`) as Array<{ id: number }>;
   return rows[0]?.id ?? 0;
@@ -77,6 +81,7 @@ export type PatternRunSummary = {
   family: string;
   account: string;
   minN: number;
+  universe: "filled" | "signals";
   nTrades: number;
   wins: number;
   losses: number;
@@ -90,7 +95,7 @@ export type PatternRunSummary = {
 export async function listPatternRuns(db: postgres.Sql, limit = 25): Promise<PatternRunSummary[]> {
   await ensurePatternRunsTable(db);
   const rows = (await db`
-    select id, run_at, sha, since, family, account, min_n, n_trades, wins, losses, baseline_wr, patterns
+    select id, run_at, sha, since, family, account, min_n, universe, n_trades, wins, losses, baseline_wr, patterns
     from pattern_runs
     order by run_at desc
     limit ${limit}`) as Array<Record<string, unknown>>;
@@ -110,6 +115,7 @@ export async function listPatternRuns(db: postgres.Sql, limit = 25): Promise<Pat
       family: String(r.family),
       account: String(r.account),
       minN: Number(r.min_n),
+      universe: String(r.universe) === "signals" ? "signals" : "filled",
       nTrades: Number(r.n_trades),
       wins: Number(r.wins),
       losses: Number(r.losses),
@@ -124,7 +130,7 @@ export async function listPatternRuns(db: postgres.Sql, limit = 25): Promise<Pat
 export async function getPatternRun(db: postgres.Sql, id: number): Promise<PatternRunRow | null> {
   await ensurePatternRunsTable(db);
   const rows = (await db`
-    select id, run_at, sha, since, family, account, min_n, n_trades, wins, losses, baseline_wr, family_baselines, patterns
+    select id, run_at, sha, since, family, account, min_n, universe, n_trades, wins, losses, baseline_wr, family_baselines, patterns
     from pattern_runs
     where id = ${id}`) as Array<Record<string, unknown>>;
   const r = rows[0];
@@ -147,6 +153,7 @@ export async function getPatternRun(db: postgres.Sql, id: number): Promise<Patte
     family: String(r.family),
     account: String(r.account),
     minN: Number(r.min_n),
+    universe: String(r.universe) === "signals" ? "signals" : "filled",
     nTrades: Number(r.n_trades),
     wins: Number(r.wins),
     losses: Number(r.losses),

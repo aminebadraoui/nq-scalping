@@ -94,6 +94,9 @@ type ScoreRow = {
   netUsd: number;
   liveExpR: number | null;
   baselineExpR: number;
+  /** hypothetical first-touch win rate over ALL recorded cards (replay) */
+  hypWr: number | null;
+  hypN: number;
   status: "ok" | "watch" | "breach" | "insufficient";
   detail: string;
 };
@@ -924,6 +927,7 @@ export default function JournalPage() {
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal text-short" title="losses">L</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">net</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="live expectancy per R (mean gross R/trade)">live expR</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="hypothetical first-touch win rate over EVERY recorded card (replay outcomes, unfilled included) — the signal-quality view; compare with live fills to judge the gates">hyp WR</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="replay baseline from the 648-session archive">replay expR</th>
                     <th className="border-b border-zinc-800 px-2 py-1 font-normal" title="live expectancy vs the 648-session replay baseline — a strategy-quality flag, NOT an account metric">edge</th>
                   </tr>
@@ -960,6 +964,16 @@ export default function JournalPage() {
                             <span className={s.liveExpR >= 0 ? "text-long" : "text-short"}>{s.liveExpR >= 0 ? "+" : ""}{s.liveExpR.toFixed(2)}</span>
                           )}
                         </td>
+                        <td className="px-2 py-1 text-right" title={s.hypN ? `all signals replayed: ${s.hypN} decided (win/loss)` : "no replay outcomes yet"}>
+                          {s.hypWr === null ? (
+                            <span className="text-zinc-600">—</span>
+                          ) : (
+                            <span className={s.hypWr >= 0.6 ? "text-info" : s.hypWr <= 0.4 ? "text-warn" : "text-zinc-400"}>
+                              {pct(s.hypWr)}
+                              <span className="text-zinc-600"> (n={s.hypN})</span>
+                            </span>
+                          )}
+                        </td>
                         <td className="px-2 py-1 text-right text-zinc-500">{s.baselineExpR.toFixed(2)}</td>
                         <td className="px-2 py-1">
                           <span
@@ -982,6 +996,7 @@ export default function JournalPage() {
             <p className="mt-2 font-mono text-[9px] leading-snug text-zinc-600">
               accumulates over the selected range (7D / 30D / 90D / ALL — never resets; trades and cards persist forever) ·
               sort: net $ = account contribution · expR = mean gross R/trade (replay baseline until a family has ≥8 fills) · frequency = fills, then cards ·
+              hyp WR = hypothetical first-touch win rate over EVERY recorded card (unfilled included) — signal quality, not money; a gap vs live expR measures what the gates + fills filter ·
               live n is small — treat ranks as provisional · skips = cards recorded but not filled (gates, retrace expiries, refusals) ·
               edge compares LIVE expR to the 648-session replay baseline only (edge OK &gt;= half · edge weak &lt; half · edge lost &lt;= 0) — it is a strategy-quality flag,
               never an account/guard metric (the MFF account guard is reported in /api/gc?action=health → execution.protections)

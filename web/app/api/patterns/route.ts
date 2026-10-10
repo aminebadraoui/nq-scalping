@@ -19,11 +19,14 @@
 import type { NextRequest } from "next/server";
 import { dbEnabled, getDb } from "@/lib/gcdb";
 import { accountForDay } from "@/lib/tradeLedger";
+import { familyOf } from "@/lib/tradeStats";
 import {
   minePatterns,
   winLossRowsFromDb,
+  signalsToWinLossRows,
   POST_HOC_KEYS,
   type VarPattern,
+  type WinLossRow,
 } from "@/lib/patternMining";
 import { groupKeyOf, GROUP_ORDER } from "@/lib/featureGroups";
 import { lookupFeature, driftKeys } from "@/lib/featureRegistry";
@@ -60,27 +63,42 @@ async function runAnalysis(sp: URLSearchParams): Promise<RunInput & { runAt: str
   const family = (sp.get("family") ?? "").replace(/[^a-z_]/g, "");
   const minN = Number(sp.get("minN") ?? "5") || 5;
   const account = sp.get("account") ?? "all";
+  const universe = (sp.get("universe") ?? "filled") === "signals" ? ("signals" as const) : ("filled" as const);
 
-  const raw = (await db`
-    select t.day, t.time_et, t.side, t.contracts, t.family, t.verdict,
-           t.result, t.hour_bucket, t.first_of_day,
-           t.entry_adverse_pts, t.held_min, t.mfe_pts, t.mae_pts,
-           t.target_reached, t.recovered, t.stop_run, t.loss_label,
-           t.features
-    from trades t
-    where t.result in ('win','loss')
-      ${since ? db`and t.day >= ${since}` : db``}
-      ${family ? db`and t.family = ${family}` : db``}
-    order by t.ts asc`) as Array<Record<string, unknown>>;
-
-  const filtered =
-    account === "all"
-      ? raw
-      : raw.filter((r) => {
-          const a = accountForDay(String(r.day)).account;
-          return account === "new" ? a.endsWith("007") : !a.endsWith("007");
-        });
-  const rows = winLossRowsFromDb(filtered);
+  let rows: WinLossRow[];
+  if (universe === "signals") {
+    // the all-signals universe: every recorded card's HYPOTHETICAL
+    // first-touch replay outcome (win/loss) — signal-quality view,
+    // not money (no fills, no slippage, no commissions)
+    const rawSigs = (await db`
+      select key, day, time_et, side, size, verdict, outcome, features
+      from signals
+      where outcome in ('win','loss')
+        ${since ? db`and day >= ${since}` : db``}
+      order by ts asc`) as Array<Record<string, unknown>>;
+    const sigs = family ? rawSigs.filter((s) => familyOf(String(s.verdict ?? "")) === family) : rawSigs;
+    rows = signalsToWinLossRows(sigs);
+  } else {
+    const raw = (await db`
+      select t.day, t.time_et, t.side, t.contracts, t.family, t.verdict,
+             t.result, t.hour_bucket, t.first_of_day,
+             t.entry_adverse_pts, t.held_min, t.mfe_pts, t.mae_pts,
+             t.target_reached, t.recovered, t.stop_run, t.loss_label,
+             t.features
+      from trades t
+      where t.result in ('win','loss')
+        ${since ? db`and t.day >= ${since}` : db``}
+        ${family ? db`and t.family = ${family}` : db``}
+      order by t.ts asc`) as Array<Record<string, unknown>>;
+    const filtered =
+      account === "all"
+        ? raw
+        : raw.filter((r) => {
+            const a = accountForDay(String(r.day)).account;
+            return account === "new" ? a.endsWith("007") : !a.endsWith("007");
+          });
+    rows = winLossRowsFromDb(filtered);
+  }
   const wins = rows.filter((r) => r.result === "win").length;
 
   const famStats = new Map<string, { n: number; wins: number }>();
@@ -102,6 +120,7 @@ async function runAnalysis(sp: URLSearchParams): Promise<RunInput & { runAt: str
     family,
     account,
     minN,
+    universe,
     nTrades: rows.length,
     wins,
     losses: rows.length - wins,
@@ -127,7 +146,7 @@ export async function GET(req: NextRequest) {
       const patterns = run.patterns.map((p) =>
         annotate(p as VarPattern),
       );
-      return Response.json({ ok: true, source: "run", runId, runAt: run.runAt, sha: run.sha, since: run.since, family: run.family, account: run.account, minN: run.minN, n: run.nTrades, wins: run.wins, losses: run.losses, baselineWr: run.baselineWr, familyBaselines: run.familyBaselines, patterns, drift: driftKeys(patterns.map((p) => p.key)), runs: await listPatternRuns(db) });
+      return Response.json({ ok: true, source: "run", runId, runAt: run.runAt, sha: run.sha, since: run.since, family: run.family, account: run.account, minN: run.minN, universe: run.universe, n: run.nTrades, wins: run.wins, losses: run.losses, baselineWr: run.baselineWr, familyBaselines: run.familyBaselines, patterns, drift: driftKeys(patterns.map((p) => p.key)), runs: await listPatternRuns(db) });
     }
     const a = await runAnalysis(req.nextUrl.searchParams);
     return Response.json({
@@ -140,6 +159,7 @@ export async function GET(req: NextRequest) {
       family: a.family,
       account: a.account,
       minN: a.minN,
+      universe: a.universe,
       n: a.nTrades,
       wins: a.wins,
       losses: a.losses,
@@ -161,7 +181,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const sp = new URLSearchParams();
-    for (const k of ["since", "family", "account", "minN"] as const) {
+    for (const k of ["since", "family", "account", "minN", "universe"] as const) {
       if (typeof body[k] === "string" || typeof body[k] === "number") sp.set(k, String(body[k]));
     }
     const a = await runAnalysis(sp);
@@ -172,6 +192,7 @@ export async function POST(req: NextRequest) {
       family: a.family,
       account: a.account,
       minN: a.minN,
+      universe: a.universe,
       nTrades: a.nTrades,
       wins: a.wins,
       losses: a.losses,

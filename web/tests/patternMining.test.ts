@@ -8,6 +8,7 @@ import {
   minePatterns,
   familyBaselines,
   winLossRowsFromDb,
+  signalsToWinLossRows,
 } from "../lib/patternMining";
 
 test("binLabelOf brackets values against thresholds", () => {
@@ -188,6 +189,24 @@ test("wide integer domains (>30 distinct) fall back to quantiles", () => {
 });
 
 /* ---- the statistical foundation (verdict layer) ---------------------- */
+
+test("signalsToWinLossRows: hypothetical outcomes decide, time/open skipped", () => {
+  const rows = signalsToWinLossRows([
+    { day: "2026-10-08", time_et: "13:05", side: "long", size: "9 MNQ", verdict: "rth soft-continuation (experimental)", outcome: "win", features: JSON.stringify({ breakFrac: 0.7 }) },
+    { day: "2026-10-08", time_et: "13:20", side: "short", size: "9 MNQ", verdict: "momentum (huge-bar expansion · retrace)", outcome: "loss", features: null },
+    { day: "2026-10-08", time_et: "13:40", side: "long", size: "9 MNQ", verdict: "rth soft-continuation (experimental)", outcome: "time", features: null }, // skipped
+    { day: "2026-10-08", time_et: "13:55", side: "long", size: "9 MNQ", verdict: "rth soft-continuation (experimental)", outcome: "open", features: null }, // skipped
+  ]);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].result, "win");
+  assert.equal(rows[0].flat.breakFrac, 0.7);
+  assert.equal(rows[0].anatomy.family, "rth");
+  assert.equal(rows[0].flat.side, "long");
+  assert.equal(rows[0].flat.contracts, 9);
+  assert.equal(rows[0].flat.hourBucket, "rth");
+  assert.equal(rows[1].result, "loss");
+  assert.equal(rows[1].anatomy.family, "momentum_expansion");
+});
 
 test("minePatterns: a clean consistent variable is significant and ranks first", () => {
   const rows = [];

@@ -59,6 +59,7 @@ type RunSummary = {
   sha: string;
   since: string;
   minN: number;
+  universe: "filled" | "signals";
   nTrades: number;
   baselineWr: number;
   significant: number;
@@ -75,6 +76,7 @@ type Resp = {
   sha?: string;
   since?: string;
   minN?: number;
+  universe?: "filled" | "signals";
   n: number;
   wins: number;
   losses: number;
@@ -182,6 +184,7 @@ export default function PatternExplorer() {
   const [data, setData] = useState<Resp | null>(null);
   const [range, setRange] = useState<"7" | "30" | "90" | "all">("30");
   const [runId, setRunId] = useState<number | null>(null);
+  const [universe, setUniverse] = useState<"filled" | "signals">("filled");
   const [role, setRole] = useState<"all" | "input" | "study" | "post">("all");
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -192,7 +195,7 @@ export default function PatternExplorer() {
   const since = range === "all" ? "" : new Date(Date.now() - Number(range) * 86400_000).toISOString().slice(0, 10);
 
   const load = () => {
-    fetch(`/api/patterns?since=${since}&minN=5${runId ? `&run=${runId}` : ""}`)
+    fetch(`/api/patterns?since=${since}&minN=5&universe=${universe}${runId ? `&run=${runId}` : ""}`)
       .then((r) => r.json())
       .then((j: Resp) => {
         setData(j.ok ? j : null);
@@ -208,14 +211,14 @@ export default function PatternExplorer() {
       if (timerRef.current) clearInterval(timerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, runId]);
+  }, [range, runId, universe]);
 
   const runNow = () => {
     setRunning(true);
     fetch("/api/patterns", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ since, minN: 5, account: "all", family: "" }),
+      body: JSON.stringify({ since, minN: 5, account: "all", family: "", universe }),
     })
       .then((r) => r.json())
       .then((j: { ok: boolean; runId?: number }) => {
@@ -243,6 +246,22 @@ export default function PatternExplorer() {
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Pattern explorer — winners vs losers, per variable</h2>
         <div className="flex flex-wrap items-center gap-2 font-mono text-[10px]">
+          <span className="flex overflow-hidden rounded border border-zinc-800">
+            <button
+              onClick={() => setUniverse("filled")}
+              className={`px-1.5 py-0.5 text-[9px] ${universe === "filled" ? "bg-long/15 text-long" : "text-zinc-500 hover:text-zinc-200"}`}
+              title="reconciled trades with real fills, real P&L — the money view"
+            >
+              FILLED
+            </button>
+            <button
+              onClick={() => setUniverse("signals")}
+              className={`px-1.5 py-0.5 text-[9px] ${universe === "signals" ? "bg-info/15 text-info" : "text-zinc-500 hover:text-zinc-200"}`}
+              title="every recorded card scored by hypothetical first-touch replay — the signal-quality view (not money)"
+            >
+              ALL SIGNALS
+            </button>
+          </span>
           {(["7", "30", "90", "all"] as const).map((r) => (
             <button
               key={r}
@@ -277,7 +296,7 @@ export default function PatternExplorer() {
             <option value={0}>LIVE</option>
             {(data?.runs ?? []).map((r) => (
               <option key={r.id} value={r.id}>
-                #{r.id} · {r.runAt.slice(0, 16).replace("T", " ")} · n={r.nTrades} · {r.significant}S/{r.stable}s/{r.exploratory}e
+                #{r.id} · {r.runAt.slice(0, 16).replace("T", " ")} · n={r.nTrades} · {r.significant}S/{r.stable}s/{r.exploratory}e{r.universe === "signals" ? " · sig" : ""}
               </option>
             ))}
           </select>
@@ -297,7 +316,7 @@ export default function PatternExplorer() {
           <span>
             {data.source === "run" ? `run #${data.runId}` : "live"} · {data.runAt?.slice(0, 16).replace("T", " ") ?? ""}
             {data.sha ? ` · sha ${data.sha}` : ""}
-            {data.since ? ` · since ${data.since}` : " · all time"} · minN {data.minN ?? 5}
+            {data.since ? ` · since ${data.since}` : " · all time"} · minN {data.minN ?? 5} · {data.universe === "signals" ? "all signals (hypothetical)" : "filled"}
           </span>
           <span>
             {data.n} trades · <span className="text-long">{data.wins}W</span>/<span className="text-short">{data.losses}L</span> · baseline {pct(data.baselineWr)}
@@ -319,6 +338,11 @@ export default function PatternExplorer() {
       )}
 
       <p className="mb-2 font-mono text-[9px] leading-snug text-zinc-600">
+        {universe === "signals" ? (
+          <span className="text-info">ALL-SIGNALS universe: outcomes are HYPOTHETICAL first-touch replay scores (assume a limit fill at the signal entry — no slippage, no commissions). Signal-quality view only, never money. </span>
+        ) : (
+          <span>FILLED universe: reconciled trades with real fills and P&L. </span>
+        )}
         ↑ higher values win more · ↓ lower values win more · ⚡ prefers one value · → flat · effect = lift spread between the two extreme cells (pp) ·
         p = Mann-Whitney (numeric) / Fisher extreme 2×2 (categorical) / CMH by family (presence) · q = Benjamini-Hochberg FDR across all variables ·
         significant = q &lt; 0.10 and not contradicted by the time split · stable = same direction in both halves (≥2pp each) · POST-HOC anatomy correlates with the result by construction ·

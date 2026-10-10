@@ -39,6 +39,7 @@ import {
   type SignalRef,
   type TripLabel,
 } from "../lib/manualAudit";
+import { unfilledCounterfactual, type Counterfactual } from "../lib/unfilledCounterfactual";
 
 function loadEnvLocal() {
   const p = path.resolve(process.cwd(), ".env.local");
@@ -271,6 +272,7 @@ async function llmNarrative(
   rejected: Array<{ family: string; n: number }>,
   rejectedTotal: number,
   manual: ManualContext | null,
+  counterfactual: Counterfactual | null,
 ): Promise<string | null> {
   const url = process.env.ANALYSIS_LLM_URL;
   const key = process.env.ANALYSIS_LLM_KEY;
@@ -312,6 +314,10 @@ async function llmNarrative(
           "performance — report them in their own paragraph, never inside a strategy's numbers. bot-suspect trips match a " +
           "signal strictly (time+qty+price) but were never paired — likely bot trades that lost their card; flag them " +
           "explicitly and suggest re-pairing. ambiguous trips need a human look. orphanSignals = cards with no fill at all. " +
+          "unfilledCounterfactual is the HYPOTHETICAL first-touch replay of every recorded card that never got a fill " +
+          "(vetoed, gated, or unexecuted): judge whether the gates + fills are SAVING money (unfilled cards would mostly " +
+          "have lost) or COSTING money (they would mostly have won). NEVER count would-be points as real P&L — label them " +
+          "'would-be' every time. " +
           "Be skeptical of small samples. Concise markdown, no disclaimers.",
       },
       {
@@ -326,6 +332,7 @@ async function llmNarrative(
           findings: insights.map((i) => ({ severity: i.severity, kind: i.kind, title: i.title, finding: i.finding })),
           rejectedSignals: { total: rejectedTotal, byFamily: rejected },
           manualTrades: manual ?? { total: 0, summary: null, netByLabel: null, suspects: [], ambiguous: [], orphanSignals: 0 },
+          unfilledCounterfactual: counterfactual ?? null,
           trades: tradeLines,
         }),
       },
@@ -374,6 +381,35 @@ async function main() {
   const rejectedTotal = rejected.reduce((s, r) => s + r.n, 0);
   if (rejectedTotal > 0) {
     console.log(`[insights] ${rejectedTotal} vetoed candidates: ${rejected.map((r) => `${r.family}=${r.n}`).join(", ")}`);
+  }
+
+  // ---- unfilled counterfactual: the hypothetical replay of every card
+  //      that never got a fill — what the gates + fills filtered out ----
+  const allSignals = (await sql`
+    select key, verdict, side, entry, stop, target, outcome
+    from signals
+    where ts >= ${since.getTime()}`) as Array<Record<string, unknown>>;
+  const filledKeys = new Set(
+    ((await sql`select distinct signal_key from trades where status = 'matched' and ts >= ${since.getTime()}`) as Array<{
+      signal_key: string;
+    }>).map((r) => String(r.signal_key)),
+  );
+  const counterfactual = unfilledCounterfactual(
+    allSignals.map((s) => ({
+      key: String(s.key),
+      verdict: String(s.verdict ?? ""),
+      side: String(s.side),
+      entry: String(s.entry ?? ""),
+      stop: String(s.stop ?? ""),
+      target: String(s.target ?? ""),
+      outcome: String(s.outcome ?? ""),
+    })),
+    filledKeys,
+  );
+  if (counterfactual.total > 0) {
+    console.log(
+      `[insights] unfilled counterfactual: ${counterfactual.total} cards, ${counterfactual.decided} decided → ${counterfactual.wins}W/${counterfactual.losses}L/${counterfactual.times}T · would-be ${counterfactual.wouldBePts} pts`,
+    );
   }
 
   const insights = mineInsights(trades, { walkForward: process.env.INSIGHTS_WALK_FORWARD !== "0" });
@@ -429,12 +465,15 @@ async function main() {
 
   // ---- AI narrative ----
   const narrative =
-    (await llmNarrative(trades, insights, rejected, rejectedTotal, manual)) ??
+    (await llmNarrative(trades, insights, rejected, rejectedTotal, manual, counterfactual)) ??
     renderDeterministicNarrative(trades, insights);
   const rejectionLine =
     rejectedTotal > 0
       ? `\n\nVetoed candidates this window: ${rejectedTotal} (${rejected.map((r) => `${r.family}=${r.n}`).join(", ")}) — news blackout, applied overrides, or unfilled expansion retraces.`
       : "";
+  const counterfactualLine = counterfactual
+    ? `\n\nUnfilled cards (hypothetical first-touch replay): ${counterfactual.total} recorded, ${counterfactual.decided} decided → ${counterfactual.wins}W/${counterfactual.losses}L/${counterfactual.times}T · would-be ${counterfactual.wouldBePts >= 0 ? "+" : ""}${counterfactual.wouldBePts.toFixed(1)} pts — what the gates + fills filtered out. NOT real P&L.`
+    : "";
   let manualLine = "";
   if (manual) {
     const manualNet = manual.netByLabel.manual + manual.netByLabel.ambiguous + manual.netByLabel["bot-suspect"];
@@ -442,10 +481,11 @@ async function main() {
   }
   await sql`
     insert into insights (strategy, kind, severity, title, finding, evidence, status, source)
-    values ('all', 'narrative', 'info', 'AI strategy review', ${narrative + rejectionLine + manualLine}, ${JSON.stringify({
+    values ('all', 'narrative', 'info', 'AI strategy review', ${narrative + rejectionLine + counterfactualLine + manualLine}, ${JSON.stringify({
       trades: trades.length,
       windowStart: since.toISOString(),
       rejectedTotal,
+      counterfactual: counterfactual ?? null,
       manual: manual
         ? { total: manual.total, summary: manual.summary, netByLabel: manual.netByLabel, suspects: manual.suspects, ambiguous: manual.ambiguous, orphanSignals: manual.orphanSignals }
         : null,
