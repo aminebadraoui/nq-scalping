@@ -10,6 +10,7 @@ const links = [
   { href: "/", label: "Dashboard", note: "live working surface" },
   { href: "/rules", label: "Rules", note: "every live halt/veto with its current state" },
   { href: "/strategies", label: "Strategies", note: "how the live signal feed works, condition by condition" },
+  { href: "/course", label: "Course", note: "learn to trade the system manually — strategies, inputs & gates, execution, risk" },
   { href: "/journal", label: "Journal", note: "trades, win/loss analysis, AI review + gates" },
   { href: "/lab", label: "Lab", note: "test entry theories against the collected sessions" },
   { href: "/docs", label: "Docs", note: "the research" },
