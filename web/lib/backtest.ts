@@ -28,6 +28,8 @@ import { cdtToET } from "./times";
 import { dollarize, simulateAccount, type AccountSimResult } from "./propAccount";
 import { loadSessionDivergences, type DivRow } from "./divStore";
 import { divergenceFuel } from "./divergence";
+// consolidated engine: the one scorer + the standard T1 metric set
+import { scoreTrade, coreStats, propViability, type CoreStats, type Viability } from "./backtestEngine";
 
 export type TuningConfig = {
   name: string;
@@ -133,6 +135,7 @@ export type Fire = {
 };
 
 export type TradeResult = Fire & {
+  date: string; // session date the trade was replayed in
   exit: number;
   pnl: number; // net points (cost already deducted)
   hit: "target" | "stop" | "time";
@@ -142,37 +145,19 @@ export type TradeResult = Fire & {
   hasDiv: boolean;
 };
 
+/** the canonical forward scorer from the consolidated engine, wired to this
+ *  harness's conventions: 0.5 pt cost, 60-bar time exit, close = c>0 ? c :
+ *  high (the historical time-exit rule), pessimistic stop-first. */
 function scoreFire(minutes: FootprintMinute[], fire: Fire, hasDiv: boolean): TradeResult | null {
-  const { entry, stop, target, side } = fire;
-  const dir = side === "long" ? 1 : -1;
-  // invalid levels (wrong side / NaN) can't be evaluated — drop
-  if (!Number.isFinite(entry) || !Number.isFinite(stop) || !Number.isFinite(target)) return null;
-  if (side === "long" && !(stop < entry && entry < target)) return null;
-  if (side === "short" && !(target < entry && entry < stop)) return null;
-
-  const start = fire.bar + 1;
-  const end = Math.min(minutes.length - 1, fire.bar + HOLD_BARS);
-  let hit: TradeResult["hit"] = "time";
-  let exit = minutes[end]?.c > 0 ? minutes[end].c : minutes[end]?.high ?? entry;
-  let heldBars = end - fire.bar;
-
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const low = b.low;
-    const high = b.high;
-    if (side === "long") {
-      if (low <= stop && high >= target) { hit = "stop"; exit = stop; heldBars = j - fire.bar; break; } // conservative: stop first
-      if (low <= stop) { hit = "stop"; exit = stop; heldBars = j - fire.bar; break; }
-      if (high >= target) { hit = "target"; exit = target; heldBars = j - fire.bar; break; }
-    } else {
-      if (high >= stop && low <= target) { hit = "stop"; exit = stop; heldBars = j - fire.bar; break; }
-      if (high >= stop) { hit = "stop"; exit = stop; heldBars = j - fire.bar; break; }
-      if (low <= target) { hit = "target"; exit = target; heldBars = j - fire.bar; break; }
-    }
-  }
-
-  const pnl = (exit - entry) * dir - COST_PTS;
-  return { ...fire, exit, pnl, hit, heldBars, hasDiv };
+  const dir = fire.side === "long" ? 1 : -1;
+  const risk = Math.abs(fire.entry - fire.stop);
+  const sc = scoreTrade(
+    minutes,
+    { dir, entry: fire.entry, stop: fire.stop, target: fire.target, entryIdx: fire.bar, risk },
+    { costPts: COST_PTS, holdBars: HOLD_BARS, timeClose: (b) => (b.c > 0 ? b.c : b.high), onNoBars: "time" },
+  );
+  if (!sc) return null;
+  return { ...fire, date: "", exit: sc.exit, pnl: sc.pnl, hit: sc.hit, heldBars: sc.heldBars, hasDiv };
 }
 
 /* ---------------- session replay ---------------- */
@@ -362,7 +347,8 @@ export function replay(sd: SessionData, cfg: TuningConfig): SessionResult {
   // report the win-rate influence of a matching D2/D4
   const trades = fires
     .map((f) => scoreFire(minutes, f, divergenceFuel(divergences, f.t, f.side, DIV_BARS) !== null))
-    .filter((x): x is TradeResult => x !== null);
+    .filter((x): x is TradeResult => x !== null)
+    .map((t) => ({ ...t, date: sd.date }));
   return { date: sd.date, fires, trades };
 }
 
@@ -380,6 +366,17 @@ export type SetupStats = {
   /** the fuel split — does a matching divergence change the win rate? */
   withDiv: FuelSplit;
   withoutDiv: FuelSplit;
+  /** standard T1 columns (consolidated engine — BACKTEST-REPORT-STANDARD.md) */
+  avgWin: number;
+  avgLoss: number;
+  payoff: number;
+  expR: number;
+  sqn: number;
+  maxDdPts: number;
+  sharpeSess: number;
+  concTop10: number;
+  wrCiLo: number;
+  wrCiHi: number;
 };
 
 /** win/loss aggregates of one trade cohort (divergence-fueled vs not) */
@@ -399,6 +396,8 @@ export type AccountSummary = {
   dollarAvg: number;
   eval: AccountSimResult;
   funded: AccountSimResult;
+  /** T4 — pass-before-breach bootstrap + maxDD vs MLL (consolidated engine) */
+  viability: Viability;
 };
 
 export type ConfigResult = {
@@ -433,6 +432,8 @@ function summarize(trades: TradeResult[]): SetupStats {
   const grossWin = wins.reduce((a, t) => a + t.pnl, 0);
   const grossLoss = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
   const netPts = trades.reduce((a, t) => a + t.pnl, 0);
+  // the standard T1 set from the consolidated engine
+  const std: CoreStats = coreStats(trades.map((t) => ({ date: t.date, pnl: t.pnl, risk: Math.abs(t.entry - t.stop) })));
   return {
     trades: trades.length,
     wins: wins.length,
@@ -444,6 +445,16 @@ function summarize(trades: TradeResult[]): SetupStats {
     avgPts: trades.length ? netPts / trades.length : 0,
     withDiv: fuel(trades.filter((t) => t.hasDiv)),
     withoutDiv: fuel(trades.filter((t) => !t.hasDiv)),
+    avgWin: std.avgWin,
+    avgLoss: std.avgLoss,
+    payoff: std.payoff,
+    expR: std.expR,
+    sqn: std.sqn,
+    maxDdPts: std.maxDdPts,
+    sharpeSess: std.sharpeSess,
+    concTop10: std.concTop10,
+    wrCiLo: std.wrCi[0],
+    wrCiHi: std.wrCi[1],
   };
 }
 
@@ -517,6 +528,8 @@ export async function runSweep(
           : 0,
         eval: simulateAccount(dollars, "eval"),
         funded: simulateAccount(dollars, "funded"),
+        // T4: pass-before-breach over day order + maxDD vs MLL
+        viability: propViability(a.acct.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }))),
       },
     };
   });

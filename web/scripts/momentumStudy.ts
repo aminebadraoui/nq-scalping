@@ -23,7 +23,6 @@ import { detectOpenDrive, OPEN_DEFAULTS, type OpenDriveConfig } from "../lib/ope
 import {
   detectMomentum,
   detectExpansionScalp,
-  closeOf,
   MOM_DEFAULTS,
   EXP_DEFAULTS,
   MOM_PROD,
@@ -33,6 +32,8 @@ import {
   type MomMinute,
   type MomentumSignal,
 } from "../lib/momentum";
+// consolidated engine: canonical scorer + standard T1/T2/T4 + verdict
+import { scoreTrade, scoreSequential, coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
 
 const REMOTE = process.env.GC_REMOTE_URL?.replace(/\/+$/, "") ?? "";
 const CONCURRENCY = 8;
@@ -89,70 +90,35 @@ type ScoredSignal = MomentumSignal & {
 };
 
 function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string): ScoredSignal | null {
-  const dir = sig.dir === "long" ? 1 : -1;
-  const { entry, stop, target, risk } = sig;
-  if (!(risk > 0) || (dir > 0 && !(stop < entry && entry < target)) || (dir < 0 && !(target < entry && entry < stop))) return null;
-
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + HOLD_BARS);
-  if (start > end) return null;
-
-  let hit: ScoredSignal["hit"] = "time";
-  let exit = closeOf(minutes[end]);
-  let heldBars = end - sig.entryIdx;
-  let mfe = 0;
-  let mae = 0;
-  let run = 0;
-  let ambiguous = false;
-  let hit2R = false;
-  let hit3R = false;
-  const t2 = dir > 0 ? entry + 2 * risk : entry - 2 * risk;
-  const t3 = dir > 0 ? entry + 3 * risk : entry - 3 * risk;
-
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const fav = dir > 0 ? b.high - entry : entry - b.low;
-    const adv = dir > 0 ? entry - b.low : b.high - entry;
-    mfe = Math.max(mfe, fav / risk);
-    mae = Math.max(mae, adv / risk);
-    run = Math.max(run, fav);
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (j === start && stopHit && tgtHit) ambiguous = true;
-    if (stopHit) {
-      hit = "stop";
-      exit = stop;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-    if (dir > 0 ? b.high >= t3 : b.low <= t3) hit3R = true;
-    if (dir > 0 ? b.high >= t2 : b.low <= t2) hit2R = true;
-    if (tgtHit) {
-      hit = "target";
-      exit = target;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-  }
-
-  const pnl = (exit - entry) * dir - COST_PTS;
-  return { ...sig, date, exit, pnl, hit, heldBars, mfeR: mfe, maeR: mae, runPts: run, hit2R, hit3R, ambiguous };
+  // the consolidated engine's canonical scorer (pessimistic same-bar rule,
+  // 0.5 pt cost, 60-bar time exit, midpoint close — momentum closeOf).
+  const sc = scoreTrade(
+    minutes,
+    { dir: sig.dir === "long" ? 1 : -1, entry: sig.entry, stop: sig.stop, target: sig.target, entryIdx: sig.entryIdx, risk: sig.risk },
+    { costPts: COST_PTS, holdBars: HOLD_BARS },
+  );
+  if (!sc) return null;
+  return {
+    ...sig,
+    date,
+    exit: sc.exit,
+    pnl: sc.pnl,
+    hit: sc.hit,
+    heldBars: sc.heldBars,
+    mfeR: sc.mfeR,
+    maeR: sc.maeR,
+    runPts: sc.runPts,
+    hit2R: sc.hit2R,
+    hit3R: sc.hit3R,
+    ambiguous: sc.ambiguous,
+  };
 }
 
 /** one trade at a time: a signal whose entry bar falls inside an open trade
  *  (entryIdx ≤ open trade's exit bar) is skipped — the live trader cannot be
  *  in two trades. Signals are processed in order. */
-function scoreSequential(minutes: MomMinute[], signals: MomentumSignal[], date: string): ScoredSignal[] {
-  const out: ScoredSignal[] = [];
-  let openUntil = -1;
-  for (const s of signals) {
-    if (s.entryIdx <= openUntil) continue;
-    const sc = scoreSignal(minutes, s, date);
-    if (!sc) continue;
-    out.push(sc);
-    openUntil = sc.entryIdx + sc.heldBars;
-  }
-  return out;
+function scoreSequentialLocal(minutes: MomMinute[], signals: MomentumSignal[], date: string): ScoredSignal[] {
+  return scoreSequential(signals, (s) => scoreSignal(minutes, s, date));
 }
 
 /* ---------------- aggregation ---------------- */
@@ -395,7 +361,7 @@ async function main() {
               ? detectExpansionScalp(minutes, variants[v].cfg as ExpansionConfig)
               : detectMomentum(minutes, variants[v].cfg as MomConfig);
         if (o.sequential) {
-          perVariant[v].push(...scoreSequential(minutes, signals, date));
+          perVariant[v].push(...scoreSequentialLocal(minutes, signals, date));
         } else {
           for (const s of signals) {
             const sc = scoreSignal(minutes, s, date);
@@ -478,6 +444,44 @@ async function main() {
   for (const [h, tt] of [...byHour.entries()].sort((a, b) => a[0] - b[0])) {
     console.log(`  ${String(h).padStart(2)}:00: ${fmt(stats(tt))}`);
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * T1 core quality for the best variant, T2 variant ranking, T4 prop
+   * viability, five-slot verdict. Every study run prints this block. ---- */
+  const bestIdx = variants.findIndex((v) => v.name === best.name);
+  const engineTrades = perVariant[bestIdx].map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([
+    { label: "all", stats: coreStats(engineTrades) },
+    { label: "train", stats: coreStats(engineTrades.filter((t) => t.date < splitDate)) },
+    { label: "test", stats: coreStats(engineTrades.filter((t) => t.date >= splitDate)) },
+  ]));
+  console.log("\n" + renderT2(
+    rows.map((r) => ({
+      rule: r.name,
+      n: r.test.n,
+      wr: r.test.wr,
+      ci: wilson95(r.test.wins, r.test.n),
+      pf: r.test.pf,
+      expPts: r.test.avgPts,
+      trainTest: `${r.train.wr.toFixed(0)}% / ${r.test.wr.toFixed(0)}%`,
+    })),
+  ));
+  const viability = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(viability));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: best.test.netPts > 0 && best.test.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(best.train.wr - best.test.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 
   if (o.dump) {
     await fs.writeFile(

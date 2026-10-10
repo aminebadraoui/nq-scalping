@@ -22,8 +22,11 @@ import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { closeOf, detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
+import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
+// consolidated engine: canonical scorer + sequential overlay (full-window
+// occupancy preserved — the Python validator's input does not change)
+import { scoreTrade, scoreSequential } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 /** MNQ point value at one contract — the validator's per-session USD series
@@ -48,43 +51,23 @@ type FamilyKey = keyof typeof FAMILIES;
 
 const comboId = (c: Combo) => `s${c.s}_t${c.t}_x${c.x}`;
 
-function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, stopMult: number, targetMult: number, timeExit: number, costPts: number): { risk: number; pnl: number } | null {
+function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, stopMult: number, targetMult: number, timeExit: number, costPts: number): { risk: number; pnl: number; heldBars: number } | null {
   const dir = sig.dir === "long" ? 1 : -1;
   const risk = sig.risk * stopMult;
   const entry = sig.entry;
   const stop = entry - dir * risk;
   const target = entry + dir * risk * targetMult;
-  if (!(risk > 0) || (dir > 0 && !(stop < entry && entry < target)) || (dir < 0 && !(target < entry && entry < stop))) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + timeExit);
-  if (start > end) return null;
-  let exit = closeOf(minutes[end]);
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    if (dir > 0 ? b.low <= stop : b.high >= stop) {
-      exit = stop;
-      break;
-    }
-    if (dir > 0 ? b.high >= target : b.low <= target) {
-      exit = target;
-      break;
-    }
-  }
-  return { risk, pnl: (exit - entry) * dir - costPts };
+  // the consolidated engine's canonical scorer (stop-first, midpoint close,
+  // cost inside the P&L) — identical semantics to the former inline loop
+  const sc = scoreTrade(minutes, { dir, entry, stop, target, entryIdx: sig.entryIdx, risk }, { costPts, holdBars: timeExit });
+  return sc ? { risk, pnl: sc.pnl, heldBars: sc.heldBars } : null;
 }
 
-/** one-trade-at-a-time within a session — matches rthOptimizer/walkForward. */
-function scoreSequential(minutes: MomMinute[], signals: MomentumSignal[], stopMult: number, targetMult: number, timeExit: number, costPts: number): { risk: number; pnl: number }[] {
-  const out: { risk: number; pnl: number }[] = [];
-  let openUntil = -1;
-  for (const sig of signals) {
-    if (sig.entryIdx <= openUntil) continue;
-    const sc = scoreSignal(minutes, sig, stopMult, targetMult, timeExit, costPts);
-    if (!sc) continue;
-    out.push(sc);
-    openUntil = sig.entryIdx + timeExit;
-  }
-  return out;
+/** one-trade-at-a-time within a session — matches rthOptimizer/walkForward.
+ *  Full-window occupancy (openUntil = entryIdx + timeExit), the historical
+ *  convention that the Python validator's matrix was built with. */
+function scoreSequentialGrid(minutes: MomMinute[], signals: MomentumSignal[], stopMult: number, targetMult: number, timeExit: number, costPts: number): { risk: number; pnl: number }[] {
+  return scoreSequential(signals, (sig) => scoreSignal(minutes, sig, stopMult, targetMult, timeExit, costPts), { occupy: "full", window: timeExit });
 }
 
 async function main() {
@@ -114,7 +97,7 @@ async function main() {
       const signals = family.detect(minutes);
       loaded.push(date);
       for (const c of combos) {
-        const trades = scoreSequential(minutes, signals, c.s, c.t, c.x, costPts);
+        const trades = scoreSequentialGrid(minutes, signals, c.s, c.t, c.x, costPts);
         const bucket = perCombo.get(comboId(c))!;
         const netPts = trades.reduce((a, tr) => a + tr.pnl, 0);
         const riskPts = trades.reduce((a, tr) => a + tr.risk, 0);

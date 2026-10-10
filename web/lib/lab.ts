@@ -23,6 +23,8 @@ import { analyze, computeSheet, extractFootprint, listUsableSessions, type Absor
 import { promises as fs, readdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// Wilson CI lives in the consolidated engine now (same math, one home)
+import { wilson95 as wilson } from "./backtestEngine";
 
 export const EXPECTED_ETH_MINUTES = 1380;
 const TICK = 0.25;
@@ -600,15 +602,6 @@ function mulberry32(seed: number) {
   };
 }
 
-function wilson(wins: number, n: number): [number, number] {
-  if (!n) return [0, 0];
-  const z = 1.96;
-  const p = wins / n;
-  const d = 1 + (z * z) / n;
-  const c = p + (z * z) / (2 * n);
-  const s = z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n));
-  return [Math.max(0, ((c - s) / d) * 100), Math.min(100, ((c + s) / d) * 100)];
-}
 
 /** Bootstrap by resampling SESSIONS, not trades: trades inside one session are correlated. */
 function clusterBootstrap(rows: LabSample[], iters = 800): [number, number] {

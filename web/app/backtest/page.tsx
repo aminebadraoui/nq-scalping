@@ -12,9 +12,31 @@ type Stats = {
   /** divergence-fuel split (present when the sweep was run with the div store) */
   withDiv?: FuelSplit;
   withoutDiv?: FuelSplit;
+  /** standard T1 columns (consolidated engine — BACKTEST-REPORT-STANDARD.md) */
+  avgWin?: number;
+  avgLoss?: number;
+  payoff?: number;
+  expR?: number;
+  sqn?: number;
+  maxDdPts?: number;
+  sharpeSess?: number;
+  concTop10?: number;
+  wrCiLo?: number;
+  wrCiHi?: number;
 };
 
 type FuelSplit = { trades: number; wins: number; winRate: number; netPts: number; profitFactor: number };
+
+/** T4 viability summary (the full AccountSimResult is elided) */
+type ViabilitySummary = {
+  iters?: number;
+  maxDdUsd?: number;
+  mllRatio?: number;
+  pPass?: number | null;
+  medianDaysToPass?: number | null;
+  evalSim?: { passDay?: string | null; breachDay?: string | null; totalProfit?: number; tradingDays?: number };
+  fundedSim?: { breachDay?: string | null; payouts?: number; finalEquity?: number };
+};
 
 type ConfigResult = {
   config: { name: string; floor: number; dom: number; posHi: number; posLo: number; localBars: number; pbNear: number };
@@ -26,6 +48,7 @@ type ConfigResult = {
   test: Stats;
   bySetup: { reversal: Stats; pullback: Stats };
   byYear: { year: string; stats: Stats }[];
+  account?: { dollarNet?: number; eval?: unknown; funded?: unknown; viability?: ViabilitySummary };
 };
 
 type Payload = {
@@ -197,6 +220,8 @@ export default function BacktestPage() {
               </div>
             )}
 
+            {best && best.all.avgWin !== undefined && <StandardCard r={best} />}
+
             <div className="overflow-x-auto mt-6 rounded border border-zinc-800">
               <table className="w-full text-[11px] border-collapse">
                 <thead>
@@ -300,6 +325,93 @@ function Row({ r, best, expanded, onToggle }: { r: ConfigResult; best: boolean; 
         </tr>
       )}
     </>
+  );
+}
+
+/* ---------------- standard quality card (T1 + T4, consolidated engine) ---------------- */
+
+const signed = (n: number, dp = 2) => `${n >= 0 ? "+" : "−"}${fmt(Math.abs(n), dp)}`;
+
+/** the walk-forward winner's core quality table + prop viability line,
+ *  exactly the T1/T4 columns of docs/BACKTEST-REPORT-STANDARD.md */
+function StandardCard({ r }: { r: ConfigResult }) {
+  const row = (label: string, s: Stats) => {
+    const wr = s.trades ? `${Math.round(s.winRate * 100 * 10) / 10}% [${fmt(s.wrCiLo ?? 0, 1)}–${fmt(s.wrCiHi ?? 0, 1)}]` : "—";
+    return (
+      <tr className="border-b border-zinc-800/50">
+        <td className="px-2 py-1 text-zinc-100">{label}</td>
+        <td className="px-2 py-1 text-right">{s.trades}</td>
+        <td className="px-2 py-1 text-right">{wr}</td>
+        <td className="px-2 py-1 text-right">{s.wins > 0 ? signed(s.avgWin ?? 0) : "—"}</td>
+        <td className="px-2 py-1 text-right">{s.trades - s.wins > 0 ? fmt(s.avgLoss ?? 0) : "—"}</td>
+        <td className="px-2 py-1 text-right">{s.trades - s.wins > 0 && Number.isFinite(s.payoff ?? NaN) ? fmt(s.payoff!) : "—"}</td>
+        <td className="px-2 py-1 text-right">{signed(s.avgPts)}</td>
+        <td className="px-2 py-1 text-right">{signed(s.expR ?? 0)}</td>
+        <td className="px-2 py-1 text-right">{pf(s.profitFactor)}</td>
+        <td className="px-2 py-1 text-right">{Number.isFinite(s.sqn ?? NaN) ? fmt(s.sqn!, 1) : "—"}</td>
+        <td className="px-2 py-1 text-right">{fmt(s.maxDdPts ?? 0, 1)}</td>
+        <td className="px-2 py-1 text-right">{Number.isFinite(s.sharpeSess ?? NaN) ? fmt(s.sharpeSess!, 2) : "—"}</td>
+        <td className="px-2 py-1 text-right">{(s.concTop10 ?? 0).toFixed(1)}%</td>
+      </tr>
+    );
+  };
+  const v = r.account?.viability;
+  const evalOut = v?.evalSim
+    ? v.evalSim.breachDay
+      ? `eval BREACH ${v.evalSim.breachDay}`
+      : v.evalSim.passDay
+        ? `eval PASS ${v.evalSim.passDay}`
+        : `eval no-pass ($${fmt(v.evalSim.totalProfit ?? 0, 0)} · ${v.evalSim.tradingDays ?? 0}d)`
+    : null;
+  const fundedOut = v?.fundedSim
+    ? v.fundedSim.breachDay
+      ? `funded BREACH ${v.fundedSim.breachDay}`
+      : `funded payouts ${v.fundedSim.payouts ?? 0} ($${fmt(v.fundedSim.finalEquity ?? 0, 0)})`
+    : null;
+  return (
+    <div className="mt-4 rounded border border-zinc-800 bg-zinc-900/30 px-4 py-3">
+      <div className="text-[11px] uppercase tracking-wider text-zinc-400">standard quality report · walk-forward winner</div>
+      <div className="overflow-x-auto mt-2">
+        <table className="w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="text-left text-zinc-500 border-b border-zinc-800">
+              <th className="px-2 py-1 font-semibold">cohort</th>
+              <th className="px-2 py-1 font-semibold text-right">n</th>
+              <th className="px-2 py-1 font-semibold text-right">WR [CI95]</th>
+              <th className="px-2 py-1 font-semibold text-right">avg win</th>
+              <th className="px-2 py-1 font-semibold text-right">avg loss</th>
+              <th className="px-2 py-1 font-semibold text-right">payoff</th>
+              <th className="px-2 py-1 font-semibold text-right">exp pts</th>
+              <th className="px-2 py-1 font-semibold text-right">exp R</th>
+              <th className="px-2 py-1 font-semibold text-right">PF</th>
+              <th className="px-2 py-1 font-semibold text-right">SQN</th>
+              <th className="px-2 py-1 font-semibold text-right">maxDD</th>
+              <th className="px-2 py-1 font-semibold text-right">Sharpe</th>
+              <th className="px-2 py-1 font-semibold text-right">conc</th>
+            </tr>
+          </thead>
+          <tbody>
+            {row("all", r.all)}
+            {row("train", r.train)}
+            {row("test", r.test)}
+          </tbody>
+        </table>
+      </div>
+      {v && (
+        <div className="mt-2 text-[11px] text-zinc-400 flex flex-wrap gap-x-4 gap-y-1">
+          <span>
+            P(pass before breach) = <b className={v.pPass !== null && v.pPass !== undefined && v.pPass >= 0.9 ? "text-emerald-300" : v.pPass !== null && v.pPass !== undefined && v.pPass >= 0.7 ? "text-amber-300" : "text-zinc-200"}>{v.pPass === null || v.pPass === undefined ? "—" : `${Math.round(v.pPass * 100)}%`}</b>
+            {v.medianDaysToPass !== null && v.medianDaysToPass !== undefined ? ` · median ${v.medianDaysToPass} days to pass` : ""}
+          </span>
+          <span>
+            maxDD <b className="text-zinc-200">${fmt(v.maxDdUsd ?? 0, 0)}</b> = <b className="text-zinc-200">{Math.round((v.mllRatio ?? 0) * 100)}%</b> of MLL
+          </span>
+          <span>{evalOut ?? "—"}</span>
+          <span>{fundedOut ?? "—"}</span>
+          {v.iters ? <span className="text-zinc-600">({v.iters} reshuffles)</span> : null}
+        </div>
+      )}
+    </div>
   );
 }
 
