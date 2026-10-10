@@ -8,6 +8,12 @@
 - Never change Coolify env vars, feed toggles, or profile knobs without
   explicit user approval, even when a backtest suggests it.
 - Pts-only scratch sweeps are research input, not validations.
+- Every study report follows `docs/BACKTEST-REPORT-STANDARD.md`: the fixed
+  skeleton, the T0/T1/T2/T3/T4 tables with their exact column orders (T1
+  core quality table always first in Results, then T4 prop-account
+  viability — eval/funded rows with the pass-before-breach question), the
+  threshold bands, and the five-slot VERDICT line including `viability`.
+  No ad-hoc result tables.
 - Revert an accidental live change immediately, then explain.
 - Keep the user's uncommitted WIP out of commits (surgical commits:
   stage only the intended files/hunks).

@@ -1,6 +1,6 @@
 # NQ Scalping Dashboard + Research Docs (Next.js)
 
-Two surfaces, nothing else:
+Surfaces (full list; see `components/Nav.tsx`):
 
 - **`/` — the dashboard** (the working surface). At the top, the **AI macro
   briefing** card: DeepSeek (v4-pro) interprets all the macro-context data
@@ -34,6 +34,20 @@ Two surfaces, nothing else:
   overview, evidence, tool stack, strategies, the interactive checklist with its
   expectancy math, and every source. Anchor links: `/docs#evidence`,
   `/docs#tools`, `/docs#strategies`, `/docs#checklist`, `/docs#sources`.
+- **`/studies` — the study archive**: all `docs/research/` studies catalogued
+  by family (momentum · RTH · bias/calendar · reversal-retired · risk/sizing ·
+  validation · ops), each with its question, regenerating script, and the
+  exact CLI; scripts tagged **standard ✓** print the consolidated report
+  (T1/T2/T4 + five-slot verdict per `docs/BACKTEST-REPORT-STANDARD.md`,
+  engine `lib/backtestEngine.ts`). Registry: `lib/studies.ts` (committed —
+  ships in the bundle).
+- **`/backtest`** — the walk-forward threshold sweep (offline `db/backtest.ts`
+  results) + the DSR/PBO/CPCV overfit audit; renders the winner's standard
+  quality table + prop viability line.
+- **`/journal`** — live trade journal (patterns, AI review, gates) ·
+  **`/lab`** — entry-theory lab · **`/rules`** — live halts/vetoes ·
+  **`/strategies`** — feed strategies condition by condition · **`/course`** —
+  manual-trading course.
 - **`/dashboard`** redirects to `/` (kept so old links/bookmarks still work).
 
 ## Data
@@ -60,7 +74,7 @@ The chart can show three windows (toolbar buttons); the profile level stack
 npm install   # uses a local npm cache if system cache is broken:
               # npm_config_cache="$PWD/../.npm-cache" npm install
 npm run dev   # http://localhost:3000  (dashboard)
-npm test      # 427 regression tests over every calculation (~2.5 s, no network)
+npm test      # 796 regression tests over every calculation (~7 s, no network)
 npm run build && npm start
 ```
 
