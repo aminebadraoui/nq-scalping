@@ -20,6 +20,10 @@ import { closeOf, midOf, type MomMinute, type MomentumSignal } from "../lib/mome
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
 import { stopCrossedAtDispatch } from "../lib/crossTrade";
+// consolidated engine: standard T1/T2/T4 + verdict (the local scorer is a
+// limit-entry replay with fill-price brackets and fees OUTSIDE the pnl, so
+// it is NOT the engine scorer; it stays untouched).
+import { coreStats, propViability, renderT1, renderT2, renderT4, renderVerdict, type EngineTrade } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const HORIZON = 60;
@@ -34,7 +38,7 @@ const SPLIT = "2026-01-01";
 const XGATE = true;
 
 const STOPS = [0.5, 0.75, 1.0];
-const TARGETS = [1.5, 2.0, 2.5, 3.0];
+const TARGETS = [1.0, 1.5, 2.0, 2.5, 3.0];
 const CAPS = ["all", "3/day"];
 
 type Config = { s: number; t: number; cap: string };
@@ -119,15 +123,14 @@ function usdSim(trades: Trade[], feeRt: number) {
 }
 
 function stats(ts: Trade[]) {
-  const wins = ts.filter((t) => t.pnl > 0);
-  const losses = ts.filter((t) => t.pnl <= 0);
-  const gw = wins.reduce((a, t) => a + t.pnl, 0);
-  const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
+  // legacy {n, wr, pf, net} fed from the engine's canonical T1 stats —
+  // identical formulas (wins = pnl > 0, pf = grossWin/grossLoss, net = Σpnl).
+  const cs = coreStats(ts);
   return {
-    n: ts.length,
-    wr: ts.length ? (wins.length / ts.length) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    net: ts.reduce((a, t) => a + t.pnl, 0),
+    n: cs.n,
+    wr: cs.wr,
+    pf: cs.pf,
+    net: cs.netPts,
   };
 }
 
@@ -218,6 +221,57 @@ async function main() {
       const sm = usdSim(ts, 1.9);
       console.log(`TTL ${ttl} | n=${st.n} wr=${st.wr.toFixed(1)}% pf=${st.pf.toFixed(2)} | $${sm.netUsd.toFixed(0)} dd $${sm.maxDD.toFixed(0)} ${sm.passed ? "PASS" : "BREACH"}`);
     }
+  }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * Primary cohort = the walk-forward winner (top train-qualified config).
+   * Note: the limit scorer keeps fees OUTSIDE the pnl (the cost ladder
+   * applies them), so the engine block reads gross pts, exactly like the
+   * legacy tables. ---- */
+  if (qualified.length || rows.length) {
+    const pick = qualified.length ? qualified[0] : rows[0];
+    const pickIdx = combos.indexOf(pick.c);
+    const engineTrades: EngineTrade[] = perCombo[pickIdx].map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+    console.log("\n=== STANDARD REPORT ===");
+    console.log(renderT1([
+      { label: `primary s${pick.c.s} t${pick.c.t} ${pick.c.cap} (all)`, stats: coreStats(engineTrades) },
+      { label: "train", stats: coreStats(engineTrades.filter((t) => t.date < SPLIT)) },
+      { label: "test", stats: coreStats(engineTrades.filter((t) => t.date >= SPLIT)) },
+    ]));
+    console.log("\n" + renderT2(
+      qualified.map((r) => {
+        const trainCs = coreStats(perCombo[combos.indexOf(r.c)].filter((t) => t.date < SPLIT));
+        const testCs = coreStats(perCombo[combos.indexOf(r.c)].filter((t) => t.date >= SPLIT));
+        const base = r.c.cap === "all" ? null : rows.find((r2) => r2.c.s === r.c.s && r2.c.t === r.c.t && r2.c.cap === "all");
+        return {
+          rule: `s${r.c.s} t${r.c.t} ${r.c.cap}`,
+          n: testCs.n,
+          wr: testCs.wr,
+          ci: testCs.wrCi,
+          pf: testCs.pf,
+          expPts: testCs.expPts,
+          trainTest: `${trainCs.wr.toFixed(0)}% / ${testCs.wr.toFixed(0)}%`,
+          compare: base ? `no-cap OOS wr ${coreStats(perCombo[combos.indexOf(base.c)].filter((t) => t.date >= SPLIT)).wr.toFixed(0)}%` : "—",
+        };
+      }),
+    ));
+    const viability = propViability(engineTrades, { splitDate: SPLIT });
+    console.log("\n" + renderT4(viability));
+    const stdTrain = coreStats(engineTrades.filter((t) => t.date < SPLIT));
+    const stdTest = coreStats(engineTrades.filter((t) => t.date >= SPLIT));
+    console.log(
+      "\n" +
+        renderVerdict({
+          edge: stdTest.netPts > 0 && stdTest.expR > 0 ? "real" : "absent",
+          significance: "—",
+          stability: `train/test WR gap ${(stdTrain.wr - stdTest.wr).toFixed(1)} pts`,
+          holdout: "n/a (validation pipeline)",
+          viability:
+            viability.pPass === null
+              ? "n/a"
+              : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+        }),
+    );
   }
 }
 

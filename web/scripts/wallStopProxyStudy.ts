@@ -26,7 +26,6 @@ import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import {
   detectMomentum,
   detectExpansionScalp,
-  closeOf,
   MOM_PROD,
   EXP_PROD,
   type MomMinute,
@@ -34,6 +33,8 @@ import {
 } from "../lib/momentum";
 import { applyWallStop, type WallStopConfig } from "../lib/wallStop";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+// consolidated engine: canonical scorer + standard T1/T2/T4 + verdict
+import { scoreTrade as engineScoreTrade, coreStats, propViability, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST_PTS = 0.5;
@@ -83,7 +84,8 @@ function scoreTrade(
   wallCfg: WallStopConfig | null,
 ): Scored | null {
   const dir = sig.dir === "long" ? 1 : -1;
-  let { entry, stop, target, risk } = sig;
+  const { entry, target } = sig;
+  let { stop } = sig;
 
   const magnet = magnetAt(minutes, sig.entryIdx);
   let widened = false;
@@ -103,36 +105,19 @@ function scoreTrade(
     }
   }
 
-  risk = dir > 0 ? entry - stop : stop - entry;
-  if (!(risk > 0)) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + HOLD_BARS);
-  if (start > end) return null;
-
-  let hit: Scored["hit"] = "time";
-  let exit = closeOf(minutes[end]);
-  let heldBars = end - sig.entryIdx;
-
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) {
-      hit = "stop";
-      exit = stop;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-    if (tgtHit) {
-      hit = "target";
-      exit = target;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-  }
-
-  const pnl = (exit - entry) * dir - COST_PTS;
-  return { date, dir: sig.dir, entry, stop, risk, pnl, hit, heldBars, magnet, magnetDist, widened };
+  const risk = dir > 0 ? entry - stop : stop - entry;
+  // the consolidated engine's canonical scorer (pessimistic stop-first,
+  // 0.5 pt cost, 60-bar time exit, midpoint close). applyWallStop only
+  // ever widens the stop in the adverse direction, so stop < entry <
+  // target (dir-aware) holds on every path and the geometry validation
+  // never drops a trade the old loop would have scored.
+  const sc = engineScoreTrade(
+    minutes,
+    { dir, entry, stop, target, entryIdx: sig.entryIdx, risk },
+    { costPts: COST_PTS, holdBars: HOLD_BARS },
+  );
+  if (!sc) return null;
+  return { date, dir: sig.dir, entry, stop, risk: sc.risk, pnl: sc.pnl, hit: sc.hit, heldBars: sc.heldBars, magnet, magnetDist, widened };
 }
 
 function replay(
@@ -162,12 +147,9 @@ function replay(
 }
 
 function stats(tt: Scored[]) {
-  const n = tt.length;
-  const wins = tt.filter((t) => t.pnl > 0).length;
-  const gw = tt.reduce((a, t) => a + Math.max(0, t.pnl), 0);
-  const gl = tt.reduce((a, t) => a + Math.max(0, -t.pnl), 0);
-  const expR = n ? tt.reduce((a, t) => a + t.pnl / t.risk, 0) / n : 0;
-  return { n, wr: n ? (wins / n) * 100 : 0, pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0, net: gw - gl, expR };
+  // the standard metric set (identical WR/PF/net/expR formulas)
+  const s = coreStats(tt.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+  return { n: s.n, wr: s.wr, pf: s.pf, net: s.netPts, expR: s.expR };
 }
 
 function fmt(s: ReturnType<typeof stats>): string {
@@ -293,6 +275,67 @@ async function main() {
       `  ${name}: widened=${widened.length} | winners after widen=${saved.length} (${widened.length ? ((saved.length / widened.length) * 100).toFixed(0) : 0}%) | still stopped=${stillStopped.length}`,
     );
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * T1 core quality for the baseline (prod stops, mom+exp — the cohort
+   * every treatment is measured against), T2 variant ranking with the
+   * baseline family as the comparison column, T4 prop viability, verdict. */
+  const engineTrades = baseAll.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(
+    renderT1([
+      { label: "all", stats: coreStats(engineTrades) },
+      { label: "train", stats: coreStats(engineTrades.filter((t) => t.date < splitDate)) },
+      { label: "test", stats: coreStats(engineTrades.filter((t) => t.date >= splitDate)) },
+    ]),
+  );
+  const toEngine = (tt: Scored[]) => tt.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  const baseMom = coreStats(toEngine(base.mom));
+  const baseExp = coreStats(toEngine(base.exp));
+  console.log(
+    "\n" +
+      renderT2(
+        results.flatMap((r, vi) =>
+          (
+            [
+              { name: "mom", tr: r.mom, baseC: baseMom },
+              { name: "exp", tr: r.exp, baseC: baseExp },
+            ] as const
+          ).map(({ name, tr, baseC }) => {
+            const cs = coreStats(toEngine(tr));
+            const trC = coreStats(toEngine(tr.filter((t) => t.date < splitDate)));
+            const teC = coreStats(toEngine(tr.filter((t) => t.date >= splitDate)));
+            return {
+              rule: `${r.label} · ${name}`,
+              n: cs.n,
+              wr: cs.wr,
+              ci: cs.wrCi,
+              pf: cs.pf,
+              expPts: cs.expPts,
+              trainTest: `${trC.wr.toFixed(0)}% / ${teC.wr.toFixed(0)}%`,
+              compare: vi === 0 ? undefined : `base ${name} exp ${baseC.expPts >= 0 ? "+" : ""}${baseC.expPts.toFixed(2)} pts`,
+            };
+          }),
+        ),
+      ),
+  );
+  const viability = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(viability));
+  const trainCore = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const testCore = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: testCore.netPts > 0 && testCore.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(trainCore.wr - testCore.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

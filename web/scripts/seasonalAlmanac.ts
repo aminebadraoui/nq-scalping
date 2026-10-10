@@ -39,10 +39,10 @@ import {
   type MomMinute,
   type MomentumSignal,
 } from "../lib/momentum";
+import { scoreTrade, scoreSequential as scoreSequentialEngine, coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
-const COST_PTS = 0.5;
-const HOLD_BARS = 60;
+const COST_PTS = 0.5; // still used by Part B (hour drift net of cost)
 
 /* ---------------- calendars ---------------- */
 
@@ -283,15 +283,8 @@ function hourOpen(minutes: MomMinute[], h: number): number | null {
 type DayStat = { n: number; wins: number; up: number; mean: number; med: number; meanAbs: number; lo: number; hi: number };
 type CellStat = DayStat & { lift: number; train: { n: number; up: number; mean: number }; test: { n: number; up: number; mean: number } };
 
-function wilson(wins: number, n: number): [number, number] {
-  if (!n) return [0, 0];
-  const z = 1.96;
-  const p = wins / n;
-  const d = 1 + (z * z) / n;
-  const c = p + (z * z) / (2 * n);
-  const s = z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n));
-  return [((c - s) / d) * 100, ((c + s) / d) * 100];
-}
+/* Wilson 95% CI on a proportion now comes from the engine's wilson95
+ * (percent bounds; same formula as the previous local implementation). */
 
 function dayStat(vals: number[]): DayStat {
   const n = vals.length;
@@ -300,7 +293,7 @@ function dayStat(vals: number[]): DayStat {
   const s = [...vals].sort((a, b) => a - b);
   const med = n ? (s[Math.floor(n / 2)] + s[Math.ceil((n - 1) / 2)]) / 2 : 0;
   const meanAbs = n ? vals.reduce((a, b) => a + Math.abs(b), 0) / n : 0;
-  const [lo, hi] = wilson(wins, n);
+  const [lo, hi] = wilson95(wins, n);
   return { n, wins, up: n ? (wins / n) * 100 : 0, mean, med, meanAbs, lo, hi };
 }
 
@@ -341,58 +334,33 @@ type Scored = MomentumSignal & {
 
 function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string): Scored | null {
   const dir = sig.dir === "long" ? 1 : -1;
-  const { entry, stop, target, risk } = sig;
-  if (!(risk > 0) || (dir > 0 && !(stop < entry && entry < target)) || (dir < 0 && !(target < entry && entry < stop))) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + HOLD_BARS);
-  if (start > end) return null;
-  let hit: Scored["hit"] = "time";
-  let exit = closeOf(minutes[end]);
-  let heldBars = end - sig.entryIdx;
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) {
-      hit = "stop";
-      exit = stop;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-    if (tgtHit) {
-      hit = "target";
-      exit = target;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-  }
-  const pnl = (exit - entry) * dir - COST_PTS;
-  return { ...sig, date, pnl, exit, hit, heldBars };
+  /* canonical engine scorer: pessimistic stop-first, 0.5 pt cost, 60-bar
+   * time exit at closeOf, last-bar signals dropped — semantics identical
+   * to the previous local loop for every valid detector signal */
+  const sc = scoreTrade(minutes, {
+    dir,
+    entry: sig.entry,
+    stop: sig.stop,
+    target: sig.target,
+    entryIdx: sig.entryIdx,
+    risk: sig.risk,
+  });
+  if (!sc) return null;
+  return { ...sig, date, pnl: sc.pnl, exit: sc.exit, hit: sc.hit, heldBars: sc.heldBars };
 }
 
 function scoreSequential(minutes: MomMinute[], signals: MomentumSignal[], date: string): Scored[] {
-  const out: Scored[] = [];
-  let openUntil = -1;
-  for (const s of signals) {
-    if (s.entryIdx <= openUntil) continue;
-    const sc = scoreSignal(minutes, s, date);
-    if (!sc) continue;
-    out.push(sc);
-    openUntil = sc.entryIdx + sc.heldBars;
-  }
-  return out;
+  return scoreSequentialEngine(signals, (s) => scoreSignal(minutes, s, date));
 }
 
 type TradeStat = { n: number; wins: number; wr: number; pf: number; avgPts: number; netPts: number; lo: number; hi: number; days: number };
 
 function tradeStat(tr: Scored[]): TradeStat {
-  const n = tr.length;
-  const wins = tr.filter((t) => t.pnl > 0).length;
-  const gw = tr.filter((t) => t.pnl > 0).reduce((a, t) => a + t.pnl, 0);
-  const gl = Math.abs(tr.filter((t) => t.pnl <= 0).reduce((a, t) => a + t.pnl, 0));
-  const net = tr.reduce((a, t) => a + t.pnl, 0);
-  const [lo, hi] = wilson(wins, n);
-  return { n, wins, wr: n ? (wins / n) * 100 : 0, pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0, avgPts: n ? net / n : 0, netPts: net, lo, hi, days: new Set(tr.map((t) => t.date)).size };
+  /* engine coreStats — identical formulas to the previous local version
+   * (wins = pnl>0, pf = grossWin/grossLoss over pnl<=0, exp = net/n), so
+   * the legacy fmtTrade() output is unchanged */
+  const c = coreStats(tr.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+  return { n: c.n, wins: c.wins, wr: c.wr, pf: c.pf, avgPts: c.expPts, netPts: c.netPts, lo: c.wrCi[0], hi: c.wrCi[1], days: c.sessions };
 }
 
 function fmtTrade(s: TradeStat): string {
@@ -606,6 +574,71 @@ async function main() {
   );
   printTradeFamily("OPEX", tcell((t) => (flags.get(t.date)!.opexDay ? "opex-day" : flags.get(t.date)!.opexWeek ? "opex-week" : "other")), split);
   printTradeFamily("FOMC", tcell((t) => (flags.get(t.date)!.fomcDay ? "fomc-day" : flags.get(t.date)!.preFomc ? "pre-fomc-day" : "other")), split);
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * T1 core quality for the Part C card overlay, T2 one row per calendar
+   * cell, T4 prop viability, five-slot verdict. ---- */
+  const splitDate = split;
+  const engineTrades = trades.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  const eAll = coreStats(engineTrades);
+  const eTrain = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const eTest = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(
+    renderT1([
+      { label: "all", stats: eAll },
+      { label: "train", stats: eTrain },
+      { label: "test", stats: eTest },
+    ]),
+  );
+  const t2rows: { rule: string; n: number; wr: number; ci: [number, number]; pf: number; expPts: number; trainTest: string; compare: string }[] = [];
+  const cellFamilies: Array<[string, Array<[string, Scored[]]>]> = [
+    ["entry hour (ET)", tcell((t) => hourOf(t))],
+    ["session part", tcell((t) => (inRTH(t.t) ? "RTH 9:30–16:00" : "Globex"))],
+    ["day of week", tcell((t) => DOW[partsOf(t.date).dow])],
+    ["month", tcell((t) => MONTHS[partsOf(t.date).m - 1])],
+    ["turn of month", tcell((t) => (flags.get(t.date)!.lastOfMonth ? "last-day" : flags.get(t.date)!.first3OfMonth ? "first-3" : "mid-month"))],
+    [
+      "holiday window",
+      tcell((t) => (flags.get(t.date)!.preHoliday ? "pre-holiday" : flags.get(t.date)!.postHoliday ? "post-holiday" : flags.get(t.date)!.earlyClose ? "early-close" : "regular")),
+    ],
+    ["OPEX", tcell((t) => (flags.get(t.date)!.opexDay ? "opex-day" : flags.get(t.date)!.opexWeek ? "opex-week" : "other"))],
+    ["FOMC", tcell((t) => (flags.get(t.date)!.fomcDay ? "fomc-day" : flags.get(t.date)!.preFomc ? "pre-fomc-day" : "other"))],
+  ];
+  for (const [famName, cells] of cellFamilies) {
+    for (const [name, tr] of cells) {
+      const toEngine = (ts: Scored[]) => ts.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+      const s = coreStats(toEngine(tr));
+      const sTr = coreStats(toEngine(tr.filter((t) => t.date < splitDate)));
+      const sTe = coreStats(toEngine(tr.filter((t) => t.date >= splitDate)));
+      t2rows.push({
+        rule: `${famName}: ${name}`,
+        n: s.n,
+        wr: s.wr,
+        ci: wilson95(s.wins, s.n),
+        pf: s.pf,
+        expPts: s.expPts,
+        trainTest: `${sTr.wr.toFixed(0)}% / ${sTe.wr.toFixed(0)}%`,
+        compare: `baseline ${eAll.wr.toFixed(0)}% WR`,
+      });
+    }
+  }
+  console.log("\n" + renderT2(t2rows));
+  const viability = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(viability));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: eTest.netPts > 0 && eTest.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(eTrain.wr - eTest.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 
   /* ---- dump ---- */
 

@@ -22,6 +22,7 @@
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
 import { scoreScaleOut, type ScaleOutTrade } from "../lib/runner";
+import { coreStats, wilson95, propViability, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
 import {
   detectMomentum,
   detectExpansionScalp,
@@ -249,6 +250,50 @@ async function main() {
     console.log(`              eval: ${accountLine(r.evalSim)}`);
     console.log(`              funded: ${accountLine(r.funded)}`);
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * primary cohort = the `full` variant (THE LIVE STACK); T1 core quality
+   * (no train/test split — all row only), T2 variant ranking vs the
+   * fixed1R baseline, T4 prop viability, five-slot verdict. ---- */
+  const full = accum.find((a) => a.rule.name === "full")!.trades;
+  const engineTrades = full.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+  const allStats = coreStats(engineTrades);
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([{ label: "all", stats: allStats }]));
+  const baseline = accum.find((a) => a.rule.name === "fixed1R")!;
+  const baseStats = coreStats(baseline.trades.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts })));
+  console.log(
+    "\n" +
+      renderT2(
+        accum.map(({ rule, trades }) => {
+          const st = coreStats(trades.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts })));
+          return {
+            rule: rule.name,
+            n: st.n,
+            wr: st.wr,
+            ci: wilson95(st.wins, st.n),
+            pf: st.pf,
+            expPts: st.expPts,
+            compare: rule.name === "fixed1R" ? undefined : `fixed1R WR ${baseStats.wr.toFixed(0)}%`,
+          };
+        }),
+      ),
+  );
+  const viability = propViability(engineTrades);
+  console.log("\n" + renderT4(viability));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: allStats.netPts > 0 && allStats.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: "—",
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

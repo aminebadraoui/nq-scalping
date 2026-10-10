@@ -13,13 +13,15 @@
 
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { closeOf, type MomMinute, type MomentumSignal } from "../lib/momentum";
+import { type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
+// consolidated engine: canonical scorer + standard T1/T2/T4 + verdict
+import { scoreTrade, scoreSequential as engineScoreSequential, coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict, type EngineTrade } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST_PTS = 0.5;
 
-type Trade = { date: string; risk: number; pnl: number };
+type Trade = { date: string; risk: number; pnl: number; heldBars?: number };
 
 function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string, stopMult: number, targetMult: number, timeExit: number): Trade | null {
   const dir = sig.dir === "long" ? 1 : -1;
@@ -27,48 +29,28 @@ function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string, st
   const entry = sig.entry;
   const stop = entry - dir * risk;
   const target = entry + dir * risk * targetMult;
-  if (!(risk > 0) || (dir > 0 && !(stop < entry && entry < target)) || (dir < 0 && !(target < entry && entry < stop))) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + timeExit);
-  if (start > end) return null;
-  let exit = closeOf(minutes[end]);
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    if (dir > 0 ? b.low <= stop : b.high >= stop) {
-      exit = stop;
-      break;
-    }
-    if (dir > 0 ? b.high >= target : b.low <= target) {
-      exit = target;
-      break;
-    }
-  }
-  return { date, risk, pnl: (exit - entry) * dir - COST_PTS };
+  // the consolidated engine's canonical scorer (stop-first, midpoint
+  // close, 0.5 pt cost inside the P&L, last-bar fires dropped) — identical
+  // semantics to the former inline loop.
+  const sc = scoreTrade(minutes, { dir, entry, stop, target, entryIdx: sig.entryIdx, risk }, { costPts: COST_PTS, holdBars: timeExit });
+  return sc ? { date, risk, pnl: sc.pnl, heldBars: sc.heldBars } : null;
 }
 
 function scoreSequential(minutes: MomMinute[], signals: MomentumSignal[], date: string, stopMult: number, targetMult: number, timeExit: number): Trade[] {
-  const out: Trade[] = [];
-  let openUntil = -1;
-  for (const sig of signals) {
-    if (sig.entryIdx <= openUntil) continue;
-    const sc = scoreSignal(minutes, sig, date, stopMult, targetMult, timeExit);
-    if (!sc) continue;
-    out.push(sc);
-    openUntil = sig.entryIdx + timeExit;
-  }
-  return out;
+  // one-trade-at-a-time, full-window occupancy (openUntil = entryIdx +
+  // timeExit) — the historical convention this optimizer always used.
+  return engineScoreSequential(signals, (sig) => scoreSignal(minutes, sig, date, stopMult, targetMult, timeExit), { occupy: "full", window: timeExit });
 }
 
-function stats(trades: { pnl: number }[]) {
-  const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
-  const gw = wins.reduce((a, t) => a + t.pnl, 0);
-  const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
+function stats(trades: Trade[]) {
+  // legacy {n, wr, pf, net} fed from the engine's canonical T1 stats —
+  // identical formulas (wins = pnl > 0, pf = grossWin/grossLoss, net = Σpnl).
+  const cs = coreStats(trades);
   return {
-    n: trades.length,
-    wr: trades.length ? (wins.length / trades.length) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    net: trades.reduce((a, t) => a + t.pnl, 0),
+    n: cs.n,
+    wr: cs.wr,
+    pf: cs.pf,
+    net: cs.netPts,
   };
 }
 
@@ -246,6 +228,55 @@ async function main() {
     const st = stats(t);
     console.log(`${tm}R: n=${st.n} wr=${st.wr.toFixed(1)}% pf=${st.pf.toFixed(2)} net=${st.net.toFixed(0)}pts (breakeven ${(100 / (1 + tm)).toFixed(0)}%)`);
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * Primary cohort = the full-history PASS winner (the script's own
+   * conclusion: train-constrained picks are untrustworthy for RTH), else
+   * the train winner. T1 core quality, T2 the train ranking, T4 prop
+   * viability, five-slot verdict. ---- */
+  const pick = full.length ? full[0] : rows[0];
+  const pickIdx = combos.findIndex((x) => x.s === pick.s && x.t === pick.t && x.x === pick.x);
+  const engineTrades: EngineTrade[] = perCombo[pickIdx].map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([
+    { label: `primary s${pick.s} t${pick.t} x${pick.x} sz${pick.sz} (all)`, stats: coreStats(engineTrades) },
+    { label: "train", stats: coreStats(engineTrades.filter((t) => t.date < split)) },
+    { label: "test", stats: coreStats(engineTrades.filter((t) => t.date >= split)) },
+  ]));
+  console.log("\n" + renderT2(
+    rows.slice(0, 12).map((r) => {
+      const c = combos.findIndex((x) => x.s === r.s && x.t === r.t && x.x === r.x);
+      const trainCs = coreStats(perCombo[c].filter((t) => t.date < split));
+      const testCs = coreStats(perCombo[c].filter((t) => t.date >= split));
+      return {
+        rule: `s${r.s} t${r.t} x${r.x} sz${r.sz}`,
+        n: trainCs.n,
+        wr: trainCs.wr,
+        ci: wilson95(trainCs.wins, trainCs.n),
+        pf: trainCs.pf,
+        expPts: trainCs.expPts,
+        trainTest: `${trainCs.wr.toFixed(0)}% / ${testCs.wr.toFixed(0)}%`,
+        compare: `base s1.0/t1.0/x60 train WR ${baseTrainStats.wr.toFixed(0)}%`,
+      };
+    }),
+  ));
+  const viability = propViability(engineTrades, { splitDate: split });
+  console.log("\n" + renderT4(viability));
+  const stdTrain = coreStats(engineTrades.filter((t) => t.date < split));
+  const stdTest = coreStats(engineTrades.filter((t) => t.date >= split));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: stdTest.netPts > 0 && stdTest.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(stdTrain.wr - stdTest.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

@@ -25,7 +25,6 @@ import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import {
   detectMomentum,
   detectExpansionScalp,
-  closeOf,
   MOM_PROD,
   EXP_PROD,
   type MomMinute,
@@ -34,6 +33,7 @@ import {
   type ExpansionConfig,
 } from "../lib/momentum";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+import { scoreTrade as engineScoreTrade, coreStats, renderT1, renderT2, renderT4, renderVerdict, propViability } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST_PTS = 0.5;
@@ -58,52 +58,45 @@ type Scored = {
 
 function scoreTrade(minutes: MomMinute[], sig: MomentumSignal, date: string): Scored | null {
   const dir = sig.dir === "long" ? 1 : -1;
-  const { entry, stop, target, risk } = sig;
-  if (!(risk > 0)) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + HOLD_BARS);
-  if (start > end) return null;
+  const sc = engineScoreTrade(minutes, { dir, entry: sig.entry, stop: sig.stop, target: sig.target, entryIdx: sig.entryIdx, risk: sig.risk });
+  if (!sc) return null;
 
-  let hit: Scored["hit"] = "time";
-  let exit = closeOf(minutes[end]);
-  let heldBars = end - sig.entryIdx;
+  // post-stop probe (the engine scores exit/pnl; the run measurement
+  // stays here, derived from the engine's stop bar = entryIdx + heldBars)
   let stopDepth = 0;
   let postStopFav = 0;
-
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) {
-      hit = "stop";
-      exit = stop;
-      heldBars = j - sig.entryIdx;
-      const to = Math.min(minutes.length - 1, j + POST_BARS);
-      let worst = dir > 0 ? minutes[j].low : minutes[j].high;
-      let best = dir > 0 ? minutes[j].high : minutes[j].low;
-      for (let q = j; q <= to; q++) {
-        if (dir > 0) {
-          worst = Math.min(worst, minutes[q].low);
-          best = Math.max(best, minutes[q].high);
-        } else {
-          worst = Math.max(worst, minutes[q].high);
-          best = Math.min(best, minutes[q].low);
-        }
+  if (sc.hit === "stop") {
+    const j = sig.entryIdx + sc.heldBars;
+    const to = Math.min(minutes.length - 1, j + POST_BARS);
+    let worst = dir > 0 ? minutes[j].low : minutes[j].high;
+    let best = dir > 0 ? minutes[j].high : minutes[j].low;
+    for (let q = j; q <= to; q++) {
+      if (dir > 0) {
+        worst = Math.min(worst, minutes[q].low);
+        best = Math.max(best, minutes[q].high);
+      } else {
+        worst = Math.max(worst, minutes[q].high);
+        best = Math.min(best, minutes[q].low);
       }
-      stopDepth = Math.max(0, dir > 0 ? stop - worst : worst - stop);
-      postStopFav = Math.max(0, dir > 0 ? best - stop : stop - best);
-      break;
     }
-    if (tgtHit) {
-      hit = "target";
-      exit = target;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
+    stopDepth = Math.max(0, dir > 0 ? sig.stop - worst : worst - sig.stop);
+    postStopFav = Math.max(0, dir > 0 ? best - sig.stop : sig.stop - best);
   }
 
-  const pnl = (exit - entry) * dir - COST_PTS;
-  return { date, hourET: sig.hourET, kind: sig.kind, dir: sig.dir, entry, stop, risk, pnl, hit, heldBars, stopDepth, postStopFav };
+  return {
+    date,
+    hourET: sig.hourET,
+    kind: sig.kind,
+    dir: sig.dir,
+    entry: sig.entry,
+    stop: sig.stop,
+    risk: sig.risk,
+    pnl: sc.pnl,
+    hit: sc.hit,
+    heldBars: sc.heldBars,
+    stopDepth,
+    postStopFav,
+  };
 }
 
 /** one trade at a time (the live trader cannot be in two positions) */
@@ -127,20 +120,19 @@ function isStopRun(t: Scored, favR = 1): boolean {
 }
 
 function bucketStats(tt: Scored[]) {
-  const n = tt.length;
-  const wins = tt.filter((t) => t.pnl > 0).length;
-  const gw = tt.reduce((a, t) => a + Math.max(0, t.pnl), 0);
-  const gl = tt.reduce((a, t) => a + Math.max(0, -t.pnl), 0);
+  // WR/PF/net come from the consolidated engine (identical formulas:
+  // wins = pnl>0, pf = grossWin/grossLoss, net = grossWin − grossLoss)
+  const s = coreStats(tt.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
   const stops = tt.filter((t) => t.hit === "stop");
   const runs = stops.filter((t) => isStopRun(t));
   const meanDepth = stops.length ? stops.reduce((a, t) => a + t.stopDepth, 0) / stops.length : 0;
   const meanFavR = stops.length ? stops.reduce((a, t) => a + t.postStopFav / t.risk, 0) / stops.length : 0;
   return {
-    n,
-    wins,
-    wr: n ? (wins / n) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    net: gw - gl,
+    n: s.n,
+    wins: s.wins,
+    wr: s.wr,
+    pf: s.pf,
+    net: s.netPts,
     stops: stops.length,
     runs: runs.length,
     runShare: stops.length ? (runs.length / stops.length) * 100 : 0,
@@ -299,6 +291,50 @@ async function main() {
     }
     console.log();
   }
+
+  /* ==== STANDARD REPORT (consolidated engine) ==== */
+  const engineTrades = [...prod.mom, ...prod.exp].map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  const etAll = coreStats(engineTrades);
+  const etTrain = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const etTest = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([
+    { label: "all (prod pads, mom+exp)", stats: etAll },
+    { label: "train", stats: etTrain },
+    { label: "test", stats: etTest },
+  ]));
+
+  const t2rows = results.flatMap((r) =>
+    (["mom", "exp"] as const).map((fam) => {
+      const tr = r[fam];
+      const s = coreStats(tr.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+      const train = coreStats(tr.filter((t) => t.date < splitDate).map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+      const test = coreStats(tr.filter((t) => t.date >= splitDate).map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+      const other = fam === "mom" ? r.exp : r.mom;
+      const so = coreStats(other.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+      return {
+        rule: `${r.label} · ${fam}`,
+        n: s.n,
+        wr: s.wr,
+        ci: s.wrCi,
+        pf: s.pf,
+        expPts: s.expPts,
+        trainTest: `${train.wr.toFixed(0)}% / ${test.wr.toFixed(0)}%`,
+        compare: `${fam === "mom" ? "exp" : "mom"}: wr ${so.wr.toFixed(1)}% pf ${Number.isFinite(so.pf) ? so.pf.toFixed(2) : "inf"}`,
+      };
+    }),
+  );
+  console.log("\n" + renderT2(t2rows));
+
+  const v = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(v));
+  console.log(renderVerdict({
+    edge: etTest.netPts > 0 && etTest.expR > 0 ? "real" : "absent",
+    significance: "—",
+    stability: `train/test WR gap ${Math.abs(etTrain.wr - etTest.wr).toFixed(1)} pts`,
+    holdout: "n/a (validation pipeline)",
+    viability: v.pPass === null ? "n/a" : `${v.pPass >= 0.9 ? "PASS" : v.pPass >= 0.7 ? "weak" : "FAIL"} (P=${v.pPass.toFixed(2)})`,
+  }));
 }
 
 main().catch((e) => {

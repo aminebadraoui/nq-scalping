@@ -23,9 +23,19 @@
  * ------------------------------------------------------------------ */
 
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { detectMomentum, detectExpansionScalp, closeOf, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
+import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+import {
+  coreStats,
+  scoreTrade,
+  wilson95,
+  propViability,
+  renderT1,
+  renderT2,
+  renderT4,
+  renderVerdict,
+} from "../lib/backtestEngine";
 
 const COST = 0.95; // measured live round-trip (TRADE_REVIEW_2026-10-02)
 const DRIFT = 1.75; // measured median adverse fill drift on losers
@@ -75,15 +85,9 @@ function replay(
     const entry = s.entry;
     const stop = entry - dir * risk;
     const target = entry + dir * risk * targetR;
-    const end = Math.min(minutes.length - 1, s.entryIdx + timeExit);
-    if (s.entryIdx + 1 > end) continue;
-    let exit = closeOf(minutes[end]);
-    for (let j = s.entryIdx + 1; j <= end; j++) {
-      const b = minutes[j];
-      if (dir > 0 ? b.low <= stop : b.high >= stop) { exit = stop; break; }
-      if (dir > 0 ? b.high >= target : b.low <= target) { exit = target; break; }
-    }
-    let pnl = (exit - entry) * dir - COST;
+    const sc = scoreTrade(minutes, { dir, entry, stop, target, entryIdx: s.entryIdx, risk }, { costPts: COST, holdBars: timeExit });
+    if (!sc) continue; // no forward bars → drop (the local convention)
+    let pnl = sc.pnl;
     if (drift === "all") pnl -= DRIFT;
     else if (drift === "losers" && pnl < 0) pnl -= DRIFT;
     out.push({ date: s.d, pnlPts: pnl, riskPts: risk });
@@ -95,13 +99,11 @@ function replay(
 type Stats = { n: number; wr: number; pf: number; net: number; exp: number };
 
 function stats(tt: Trade[]): Stats {
-  const wins = tt.filter((t) => t.pnlPts > 0);
-  const losses = tt.filter((t) => t.pnlPts < 0);
-  const gw = wins.reduce((a, t) => a + t.pnlPts, 0);
-  const gl = Math.abs(losses.reduce((a, t) => a + t.pnlPts, 0));
-  const net = tt.reduce((a, t) => a + t.pnlPts, 0);
-  const dec = wins.length + losses.length;
-  return { n: tt.length, wr: dec ? (wins.length / dec) * 100 : 0, pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0, net, exp: tt.length ? net / tt.length : 0 };
+  const st = coreStats(tt.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts })));
+  // legacy wr excludes zero-pnl trades from the denominator (decided);
+  // the engine counts them as losses — pf/net/exp formulas are identical
+  const dec = tt.filter((t) => t.pnlPts !== 0).length;
+  return { n: st.n, wr: dec ? (st.wins / dec) * 100 : 0, pf: st.pf, net: st.netPts, exp: st.expPts };
 }
 
 function sim(tt: Trade[]): string {
@@ -221,6 +223,86 @@ async function main() {
       console.log(`  ${`${fam.name} ${label}`.padEnd(18)} ${passes}/${windows} windows pass${breaches ? ` · ${breaches} breach` : ""} · test net ${aggTestNet.toFixed(0)} pts`);
     }
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * primary cohort = MOM · gap rate (live) · structural 1R · drift losers —
+   * the honest live-executor shape; T1 all/train/test (split 2026-01-01),
+   * T2 the MOM grid cells, T4 prop viability, five-slot verdict. ---- */
+  const mom = FAMILIES.find((f) => f.name === "MOM")!;
+  const momTrades = (rate: "gap" | "flat60", mult: number, tR: number, tExit: number, drift: "none" | "losers" | "all"): Trade[] => {
+    const tt: Trade[] = [];
+    for (const s of sessions) tt.push(...replay(s.minutes, s.sigs["MOM"], mult, tR, tExit, rate, drift, 0));
+    return tt;
+  };
+  const primaryTrades = momTrades("gap", 1.0, mom.structuralT, 60, "losers");
+  const engineTrades = primaryTrades.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+  const allStats = coreStats(engineTrades);
+  const trainStats = coreStats(engineTrades.filter((t) => t.date < SPLIT));
+  const testStats = coreStats(engineTrades.filter((t) => t.date >= SPLIT));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(
+    renderT1([
+      { label: "all", stats: allStats },
+      { label: "train", stats: trainStats },
+      { label: "test", stats: testStats },
+    ]),
+  );
+  const cellRows: { rule: string; tt: Trade[]; opp: Trade[] }[] = [];
+  for (const rate of ["gap", "flat60"] as const) {
+    for (const mult of [0.35, 0.45, 0.6, 0.75, 0.9, 1.0]) {
+      for (const drift of ["none", "losers", "all"] as const) {
+        cellRows.push({
+          rule: `${rate.padEnd(6)} s${String(mult).padEnd(4)} ${drift.padEnd(6)}`,
+          tt: momTrades(rate, mult, mom.targetR, mom.timeExit, drift),
+          opp: momTrades(rate === "gap" ? "flat60" : "gap", mult, mom.targetR, mom.timeExit, drift),
+        });
+      }
+    }
+    for (const drift of ["none", "losers", "all"] as const) {
+      cellRows.push({
+        rule: `${rate.padEnd(6)} struct ${drift.padEnd(6)}`,
+        tt: momTrades(rate, 1.0, mom.structuralT, 60, drift),
+        opp: momTrades(rate === "gap" ? "flat60" : "gap", 1.0, mom.structuralT, 60, drift),
+      });
+    }
+  }
+  console.log(
+    "\n" +
+      renderT2(
+        cellRows.map((c) => {
+          const engine = c.tt.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+          const st = coreStats(engine);
+          const tr = coreStats(engine.filter((t) => t.date < SPLIT));
+          const te = coreStats(engine.filter((t) => t.date >= SPLIT));
+          const opp = coreStats(c.opp.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts })));
+          return {
+            rule: c.rule,
+            n: st.n,
+            wr: st.wr,
+            ci: wilson95(st.wins, st.n),
+            pf: st.pf,
+            expPts: st.expPts,
+            trainTest: `${tr.wr.toFixed(0)}% / ${te.wr.toFixed(0)}%`,
+            compare: `opposite rate WR ${opp.wr.toFixed(0)}%`,
+          };
+        }),
+      ),
+  );
+  const viability = propViability(engineTrades, { splitDate: SPLIT });
+  console.log("\n" + renderT4(viability));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: testStats.netPts > 0 && testStats.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(trainStats.wr - testStats.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

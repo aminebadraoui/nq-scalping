@@ -38,6 +38,10 @@ import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { closeOf, midOf, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+// consolidated engine: standard T1/T2/T4 + verdict (the local cells are
+// gate + drift-fill replays with fees OUTSIDE the pnl, so they are NOT the
+// engine scorer; they stay untouched).
+import { coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict, type EngineTrade } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const HORIZON = 60; // bars — rthOptimizer base convention
@@ -90,18 +94,19 @@ type Trade = {
 function stats(ts: Trade[]) {
   const kept = ts.filter((t) => t.kind === "kept");
   const skipped = ts.filter((t) => t.kind === "skipped");
-  const wins = kept.filter((t) => t.pnlPts > 0);
-  const losses = kept.filter((t) => t.pnlPts <= 0);
-  const gw = wins.reduce((a, t) => a + t.pnlPts, 0);
-  const gl = Math.abs(losses.reduce((a, t) => a + t.pnlPts, 0));
+  // kept-set WR/PF/net fed from the engine's canonical T1 stats — identical
+  // formulas (wins = pnlPts > 0 over kept, pf = grossWin/grossLoss, net =
+  // ΣpnlPts over kept). The skip ledger stays hand-rolled (engine has no
+  // hypothetical-forfeit concept).
+  const cs = coreStats(kept.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.risk })));
   const sw = skipped.filter((t) => t.pnlPts > 0);
   const sl = skipped.filter((t) => t.pnlPts <= 0);
   return {
-    n: kept.length,
+    n: cs.n,
     skipN: skipped.length,
-    wr: kept.length ? (wins.length / kept.length) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    net: kept.reduce((a, t) => a + t.pnlPts, 0),
+    wr: cs.wr,
+    pf: cs.pf,
+    net: cs.netPts,
     skipNet: skipped.reduce((a, t) => a + t.pnlPts, 0),
     skipWins: sw.length,
     skipLosses: sl.length,
@@ -424,6 +429,53 @@ async function main() {
   console.log(
     `TTL 3    @k=0.5: kept ${st3.n} wr ${st3.wr.toFixed(1)}% pf ${st3.pf.toFixed(2)} net ${st3.net.toFixed(0)}pts` +
       ` | gate-skip ${st3.skipN - exp3} · expired ${exp3} | scratch ${st3.scratches} stopouts ${st3.fullStops} | $${usd3.netUsd.toFixed(0)} dd $${usd3.maxDD.toFixed(0)} ${usd3.passed ? "PASS" : "BREACH"}`,
+  );
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * Primary cohort = the no-gate baseline (live as-is) cell-B kept trades.
+   * Cell-B pnl is gross of fees (the $1.90/RT ladder lives in simCellB),
+   * so the engine block reads the same unit as the legacy tables. No
+   * train/test split here → T1 prints the "all" row only; T2 compares the
+   * gate k-sweep per cell against the no-gate baseline; T4 + verdict. ---- */
+  const engineTrades: EngineTrade[] = baseline.B.filter((t) => t.kind === "kept").map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([{ label: "baseline no-gate cell B kept (all)", stats: coreStats(engineTrades) }]));
+  const cellRow = (cellId: "A" | "B", label: string, cell: Cell) => {
+    const kept = cell[cellId].filter((t) => t.kind === "kept").map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.risk }));
+    const cs = coreStats(kept);
+    const baseKept = baseline[cellId].filter((t) => t.kind === "kept").map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.risk }));
+    const baseCs = coreStats(baseKept);
+    return {
+      rule: `${cellId} ${label}`,
+      n: cs.n,
+      wr: cs.wr,
+      ci: wilson95(cs.wins, cs.n),
+      pf: cs.pf,
+      expPts: cs.expPts,
+      compare: `${cellId} no-gate wr ${baseCs.wr.toFixed(0)}% · net ${baseCs.netPts.toFixed(0)}pts`,
+    };
+  };
+  console.log("\n" + renderT2([
+    cellRow("A", "no-gate", baseline),
+    ...KS.map((k) => cellRow("A", `k=${k}`, perK[String(k)])),
+    cellRow("B", "no-gate", baseline),
+    ...KS.map((k) => cellRow("B", `k=${k}`, perK[String(k)])),
+  ]));
+  const viability = propViability(engineTrades);
+  console.log("\n" + renderT4(viability));
+  const allCs = coreStats(engineTrades);
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: allCs.netPts > 0 && allCs.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: "—",
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
   );
 }
 

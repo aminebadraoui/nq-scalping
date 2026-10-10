@@ -27,13 +27,13 @@ import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import {
   detectMomentum,
   detectExpansionScalp,
-  closeOf,
   MOM_PROD,
   EXP_PROD,
   type MomMinute,
   type MomentumSignal,
 } from "../lib/momentum";
 import { simulateAccount, accountLine } from "../lib/propAccount";
+import { scoreTrade as engineScoreTrade, coreStats, renderT1, renderT2, renderT4, renderVerdict, propViability } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST_PTS = 0.5;
@@ -58,40 +58,18 @@ function sizeFor(riskPts: number, budget: number): number {
 
 function scoreTrade(minutes: MomMinute[], sig: MomentumSignal, date: string, mult: number, tier2: boolean): Scored | null {
   const dir = sig.dir === "long" ? 1 : -1;
-  const { entry, stop, target, risk } = sig;
-  if (!(risk > 0)) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + HOLD_BARS);
-  if (start > end) return null;
-
-  let exit = closeOf(minutes[end]);
-  let heldBars = end - sig.entryIdx;
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) {
-      exit = stop;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-    if (tgtHit) {
-      exit = target;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-  }
-  const pnlPts = (exit - entry) * dir - COST_PTS;
+  const sc = engineScoreTrade(minutes, { dir, entry: sig.entry, stop: sig.stop, target: sig.target, entryIdx: sig.entryIdx, risk: sig.risk });
+  if (!sc) return null;
   const budget = tier2 ? BUDGET * mult : BUDGET;
-  const contracts = sizeFor(risk, budget);
+  const contracts = sizeFor(sc.risk, budget);
   return {
     date,
-    pnlPts,
-    riskPts: risk,
+    pnlPts: sc.pnl,
+    riskPts: sc.risk,
     tier2,
     contracts,
-    pnl: Math.round(pnlPts * POINT_VALUE * contracts * 100) / 100,
-    heldBars,
+    pnl: Math.round(sc.pnl * POINT_VALUE * contracts * 100) / 100,
+    heldBars: sc.heldBars,
   };
 }
 
@@ -228,6 +206,57 @@ async function main() {
     `  tier1: n=${t1.length} wr=${wr(t1).toFixed(1)}% avg $${exp(t1).toFixed(0)}/trade | ` +
       `tier2: n=${t2.length} wr=${wr(t2).toFixed(1)}% avg $${exp(t2).toFixed(0)}/trade (at 1.5× size)`,
   );
+
+  /* ==== STANDARD REPORT (consolidated engine) ==== */
+  const base = results.find((r) => r.label === "baseline (1.0 all)")!;
+  const engineTrades = base.trades.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+  const etAll = coreStats(engineTrades);
+  const etTrain = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const etTest = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([
+    { label: "all (baseline 1.0×)", stats: etAll },
+    { label: "train", stats: etTrain },
+    { label: "test", stats: etTest },
+  ]));
+
+  // cell comparison: tier1 vs tier2 of the A+|huge 1.5× plan, in points
+  const p15T1 = p15.trades.filter((t) => !t.tier2).map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+  const p15T2 = p15.trades.filter((t) => t.tier2).map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+  const sT1 = coreStats(p15T1);
+  const sT2 = coreStats(p15T2);
+  console.log("\n" + renderT2([
+    {
+      rule: "tier1 (A+|huge plan)",
+      n: sT1.n,
+      wr: sT1.wr,
+      ci: sT1.wrCi,
+      pf: sT1.pf,
+      expPts: sT1.expPts,
+      trainTest: `${coreStats(p15T1.filter((t) => t.date < splitDate)).wr.toFixed(0)}% / ${coreStats(p15T1.filter((t) => t.date >= splitDate)).wr.toFixed(0)}%`,
+      compare: `vs tier2: wr ${sT2.wr.toFixed(1)}% pf ${Number.isFinite(sT2.pf) ? sT2.pf.toFixed(2) : "inf"}`,
+    },
+    {
+      rule: "tier2 (A+|huge plan)",
+      n: sT2.n,
+      wr: sT2.wr,
+      ci: sT2.wrCi,
+      pf: sT2.pf,
+      expPts: sT2.expPts,
+      trainTest: `${coreStats(p15T2.filter((t) => t.date < splitDate)).wr.toFixed(0)}% / ${coreStats(p15T2.filter((t) => t.date >= splitDate)).wr.toFixed(0)}%`,
+      compare: `vs tier1: wr ${sT1.wr.toFixed(1)}% pf ${Number.isFinite(sT1.pf) ? sT1.pf.toFixed(2) : "inf"}`,
+    },
+  ]));
+
+  const v = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(v));
+  console.log(renderVerdict({
+    edge: etTest.netPts > 0 && etTest.expR > 0 ? "real" : "absent",
+    significance: "—",
+    stability: `train/test WR gap ${Math.abs(etTrain.wr - etTest.wr).toFixed(1)} pts`,
+    holdout: "n/a (validation pipeline)",
+    viability: v.pPass === null ? "n/a" : `${v.pPass >= 0.9 ? "PASS" : v.pPass >= 0.7 ? "weak" : "FAIL"} (P=${v.pPass.toFixed(2)})`,
+  }));
 }
 
 main().catch((e) => {

@@ -17,8 +17,12 @@
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
 import { closeOf, type MomMinute } from "../lib/momentum";
+// consolidated engine: standard T1/T2/T4 + verdict (the local first-touch
+// scorer is NOT the engine scorer — time-outs here are neutral 0-pt trades,
+// so it stays hand-rolled; see the standard block comment).
+import { coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict, type EngineTrade } from "../lib/backtestEngine";
 
-type Scored = { n: number; wins: number; exp: number };
+type Scored = { n: number; wins: number; exp: number; gw: number; gl: number };
 
 const hourET = (t: string): number => (Number(t.slice(0, 2)) + 1) % 24;
 const mmOf = (t: string): number => Number(t.slice(3, 5));
@@ -92,9 +96,16 @@ async function main() {
           if (dir === 1 ? b.low <= stop : b.high >= stop) { stopped = true; break; }
           if (dir === 1 ? b.high >= target : b.low <= target) { win = true; break; }
         }
-        const a = agg.get(key) ?? { n: 0, wins: 0, exp: 0 };
+        const a = agg.get(key) ?? { n: 0, wins: 0, exp: 0, gw: 0, gl: 0 };
         a.n++;
-        if (win) { a.wins++; a.exp += Math.abs(target - entry) - 0.5; } else if (stopped) { a.exp += -risk - 0.5; }
+        if (win) {
+          a.wins++;
+          a.exp += Math.abs(target - entry) - 0.5;
+          a.gw += Math.abs(target - entry) - 0.5;
+        } else if (stopped) {
+          a.exp += -risk - 0.5;
+          a.gl += risk + 0.5;
+        }
         agg.set(key, a);
         last = k;
         if (key.startsWith("c1-0.6-")) {
@@ -174,6 +185,49 @@ async function main() {
   console.log("  eval  ", accountLine(simulateAccount(d9, "eval")));
   console.log("  funded", accountLine(simulateAccount(d9, "funded")));
   console.log("  net $ (budget-sized):", d9.reduce((a, t) => a + t.pnl, 0).toFixed(0));
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * Primary cohort = the c1-0.6 combined set (the candidate the script
+   * grounds in the account sim). No train/test split, so T1 prints the
+   * "all" row only; T2 ranks the candidate cells (compare = opposite
+   * side); T4 + verdict follow. ---- */
+  const engineTrades: EngineTrade[] = acctTrades.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([{ label: "c1-0.6 combined (all)", stats: coreStats(engineTrades) }]));
+  const keys = [...agg.keys()].sort();
+  console.log("\n" + renderT2(
+    keys.map((key) => {
+      const a = agg.get(key)!;
+      const oppKey = key.endsWith("-L") ? `${key.slice(0, -1)}S` : `${key.slice(0, -1)}L`;
+      const opp = agg.get(oppKey);
+      const pf = a.gl > 0 ? a.gw / a.gl : a.gw > 0 ? Infinity : 0;
+      return {
+        rule: key,
+        n: a.n,
+        wr: a.n ? (100 * a.wins) / a.n : 0,
+        ci: wilson95(a.wins, a.n),
+        pf,
+        expPts: a.n ? a.exp / a.n : 0,
+        compare: opp ? `${oppKey} ${opp.n ? ((100 * opp.wins) / opp.n).toFixed(0) : "—"}% WR` : "—",
+      };
+    }),
+  ));
+  const viability = propViability(engineTrades);
+  console.log("\n" + renderT4(viability));
+  const allCs = coreStats(engineTrades);
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: allCs.netPts > 0 && allCs.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: "—",
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

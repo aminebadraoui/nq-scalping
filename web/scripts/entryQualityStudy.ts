@@ -44,6 +44,7 @@ import {
 } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { detectOpenDrive, OPEN_PROD } from "../lib/openDrive";
+import { coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST = 0.5; // pts round-trip slippage+cost inside the scorer
@@ -408,6 +409,64 @@ async function main() {
   const flushLate = base.trades.filter((t) => t.fam === "momentum" && t.drift < -2);
   const flushLateNet = flushLate.reduce((a, t) => a + t.pnlUsd, 0);
   console.log(`\nmomentum_flush late chases (open-fill drift < −2 pts): n=${flushLate.length} net=${fmtUsd(flushLateNet)}`);
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * Engine-level stats on point-level P&L (pnlPts/riskPts — the legacy
+   * USD summarize above stays untouched: its WR is decided-only W/(W+L)
+   * and its PF excludes scratch trades, both intentionally different
+   * from the engine's wins = pnl>0 over all n). Primary cohort = the
+   * open-fill baseline. ---- */
+  const splitDate = split;
+  const engineTrades = base.trades.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+  const eAll = coreStats(engineTrades);
+  const eTrain = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const eTest = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(
+    renderT1([
+      { label: "all", stats: eAll },
+      { label: "train", stats: eTrain },
+      { label: "test", stats: eTest },
+    ]),
+  );
+  const vStats = sums.map((a) => {
+    const toEngine = (ts: Trade[]) => ts.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+    const s = coreStats(toEngine(a.trades));
+    const sTr = coreStats(toEngine(a.trades.filter((t) => t.date < splitDate)));
+    const sTe = coreStats(toEngine(a.trades.filter((t) => t.date >= splitDate)));
+    return { name: a.v.name, s, sTr, sTe };
+  });
+  const wrOf = (name: string): string => `${vStats.find((x) => x.name === name)!.s.wr.toFixed(0)}% WR`;
+  console.log(
+    "\n" +
+      renderT2(
+        vStats.map((v) => ({
+          rule: v.name,
+          n: v.s.n,
+          wr: v.s.wr,
+          ci: wilson95(v.s.wins, v.s.n),
+          pf: v.s.pf,
+          expPts: v.s.expPts,
+          trainTest: `${v.sTr.wr.toFixed(0)}% / ${v.sTe.wr.toFixed(0)}%`,
+          compare: v.name === "live(ref)" ? "—" : v.name === "open-fill" ? `live(ref) ${wrOf("live(ref)")}` : `open-fill ${wrOf("open-fill")}`,
+        })),
+      ),
+  );
+  const viability = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(viability));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: eTest.netPts > 0 && eTest.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(eTrain.wr - eTest.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

@@ -31,6 +31,7 @@ import { closeOf, midOf, type MomMinute } from "../lib/momentum";
 import { detectMomentum, MOM_PROD, detectExpansionScalp, EXP_PROD, type MomentumSignal } from "../lib/momentum";
 import { detectOpenDrive, OPEN_PROD } from "../lib/openDrive";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+import { coreStats, wilson95, propViability, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const FEE_RT = 1.9;
@@ -192,18 +193,73 @@ async function main() {
       for (const h of horizons) {
         for (const slip of slips) {
           const ts = buckets.get(`${f}|${slip}|${lag}|${h}`)!;
-        const wins = ts.filter((t) => t.pnl > 0);
-        const losses = ts.filter((t) => t.pnl <= 0);
-        const gw = wins.reduce((a, t) => a + t.pnl, 0);
-        const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-        const sm = usdSim(ts);
-        console.log(
-          `${f.padEnd(10)} ${lag.padEnd(6)} ${(slip ? "Y" : "N").padEnd(5)} ${(h === Infinity ? "session" : String(h) + " bars").padEnd(8)} ${String(ts.length).padStart(6)} ${((wins.length / Math.max(1, ts.length)) * 100).toFixed(1).padStart(6)}% ${(gl > 0 ? (gw / gl).toFixed(2) : gw > 0 ? "∞" : "0.00").padStart(6)} ${String(Math.round(sm.netUsd)).padStart(10)} ${String(Math.round(sm.maxDD)).padStart(9)}  ${sm.passed ? "PASS" : "BREACH"}`,
-        );
+          const st = coreStats(ts); // wins pnl>0 · pf gw/gl — identical formulas
+          const sm = usdSim(ts);
+          console.log(
+            `${f.padEnd(10)} ${lag.padEnd(6)} ${(slip ? "Y" : "N").padEnd(5)} ${(h === Infinity ? "session" : String(h) + " bars").padEnd(8)} ${String(st.n).padStart(6)} ${st.wr.toFixed(1).padStart(6)}% ${(Number.isFinite(st.pf) ? st.pf.toFixed(2) : "∞").padStart(6)} ${String(Math.round(sm.netUsd)).padStart(10)} ${String(Math.round(sm.maxDD)).padStart(9)}  ${sm.passed ? "PASS" : "BREACH"}`,
+          );
         }
       }
     }
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * primary cohort = momentum · slip=Y (the honest stop-out model) ·
+   * open-lag market fill · session horizon. Note: this study's pnl pts
+   * exclude the round-trip cost (fees are applied as $1.90/RT in the USD
+   * sim), so T1/T4 numbers here are pre-cost pts. No train/test split. ---- */
+  const primary = buckets.get("momentum|true|open|Infinity")!;
+  const engineTrades = primary.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  const allStats = coreStats(engineTrades);
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([{ label: "all", stats: allStats }]));
+  const cells: { rule: string; trades: Trade[]; opp: Trade[] | null }[] = [];
+  for (const f of families) {
+    for (const lag of f === "expansion" ? (["open"] as const) : lags) {
+      for (const h of horizons) {
+        for (const slip of slips) {
+          cells.push({
+            rule: `${f} ${lag} slip=${slip ? "Y" : "N"} ${h === Infinity ? "session" : h + "b"}`,
+            trades: buckets.get(`${f}|${slip}|${lag}|${h}`)!,
+            opp: buckets.get(`${f}|${!slip}|${lag}|${h}`)!,
+          });
+        }
+      }
+    }
+  }
+  console.log(
+    "\n" +
+      renderT2(
+        cells.map((c) => {
+          const st = coreStats(c.trades);
+          const opp = coreStats(c.opp ?? []);
+          return {
+            rule: c.rule,
+            n: st.n,
+            wr: st.wr,
+            ci: wilson95(st.wins, st.n),
+            pf: st.pf,
+            expPts: st.expPts,
+            compare: `opposite slip WR ${opp.wr.toFixed(0)}%`,
+          };
+        }),
+      ),
+  );
+  const viability = propViability(engineTrades);
+  console.log("\n" + renderT4(viability));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: allStats.netPts > 0 && allStats.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: "—",
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

@@ -35,9 +35,19 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { detectMomentum, detectExpansionScalp, closeOf, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
+import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { htfStructure } from "../lib/htfStructure";
 import { parseTreasuryCsv, spread210, spread103m } from "../lib/bonds";
+import {
+  scoreTrade,
+  coreStats,
+  wilson95,
+  propViability,
+  renderT1,
+  renderT2,
+  renderT4,
+  renderVerdict,
+} from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST_PTS = 0.5;
@@ -185,33 +195,22 @@ function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string, st
   const stop = entry - dir * risk;
   const target = entry + dir * risk; // 1R of the (possibly new) stop
   if (!(risk > 0) || (dir > 0 && !(stop < entry && entry < target)) || (dir < 0 && !(target < entry && entry < stop))) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + HOLD_BARS);
-  if (start > end) return null;
-  let hit: ScoredTrade["hit"] = "time";
-  let exit = closeOf(minutes[end]);
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) {
-      hit = "stop";
-      exit = stop;
-      break;
-    }
-    if (tgtHit) {
-      hit = "target";
-      exit = target;
-      break;
-    }
-  }
+  // consolidated engine scorer: pessimistic stop-first, 0.5 pt cost,
+  // 60-bar time exit (closeOf midpoint fallback), last-bar signals dropped
+  // — identical to the former local loop.
+  const sc = scoreTrade(
+    minutes,
+    { dir, entry, stop, target, entryIdx: sig.entryIdx, risk },
+    { costPts: COST_PTS, holdBars: HOLD_BARS },
+  );
+  if (!sc) return null;
   return {
     date,
     dir: sig.dir,
     entry,
     risk,
-    pnl: (exit - entry) * dir - COST_PTS,
-    hit,
+    pnl: sc.pnl,
+    hit: sc.hit,
     volT: null,
     vixT: null,
     agreeD: null,
@@ -243,18 +242,11 @@ function scoreSequential(minutes: MomMinute[], signals: MomentumSignal[], date: 
 type Stats = { n: number; wr: number; pf: number; expR: number; netPts: number };
 
 function stats(trades: { pnl: number; risk: number }[]): Stats {
-  const n = trades.length;
-  const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
-  const gw = wins.reduce((a, t) => a + t.pnl, 0);
-  const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-  return {
-    n,
-    wr: n ? (wins.length / n) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    expR: n ? trades.reduce((a, t) => a + t.pnl / t.risk, 0) / n : 0,
-    netPts: trades.reduce((a, t) => a + t.pnl, 0),
-  };
+  // engine-backed (formulas identical: wins = pnl>0, losses = pnl<=0,
+  // wr = wins/n, pf = gw/gl, expR = mean(pnl/risk), netPts = Σ pnl);
+  // synthetic dates — the returned fields are date-independent.
+  const s = coreStats(trades.map((t, i) => ({ date: `t${String(i).padStart(6, "0")}`, pnl: t.pnl, risk: t.risk })));
+  return { n: s.n, wr: s.wr, pf: s.pf, expR: s.expR, netPts: s.netPts };
 }
 
 function fmt(s: Stats): string {
@@ -521,6 +513,55 @@ async function main() {
     );
     console.log(`dumped ${baseTrades.length} trades → ${o.dump}`);
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * Primary cohort = baseTrades (s1.0 ×1.0 baseline). Variant pnl already
+   * carries the sizeFor multiplier, so per-variant rows are the scaled
+   * fill. ---- */
+  const splitDate = o.split;
+  const engineTrades = baseTrades.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([
+    { label: "all", stats: coreStats(engineTrades) },
+    { label: "train", stats: coreStats(engineTrades.filter((t) => t.date < splitDate)) },
+    { label: "test", stats: coreStats(engineTrades.filter((t) => t.date >= splitDate)) },
+  ]));
+  {
+    const base = coreStats(engineTrades);
+    console.log("\n" + renderT2(variants.map((v, i) => {
+      const trades = perVariant[i].map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+      const s = coreStats(trades);
+      const tr = coreStats(trades.filter((t) => t.date < splitDate));
+      const te = coreStats(trades.filter((t) => t.date >= splitDate));
+      return {
+        rule: v.name,
+        n: s.n,
+        wr: s.wr,
+        ci: wilson95(s.wins, s.n),
+        pf: s.pf,
+        expPts: s.expPts,
+        trainTest: `${tr.wr.toFixed(0)}% / ${te.wr.toFixed(0)}%`,
+        compare: v.name === "s1.0" ? "—" : `base s1.0 WR ${base.wr.toFixed(1)}%`,
+      };
+    })));
+  }
+  const viability = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(viability));
+  const trainStats = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const testStats = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: testStats.netPts > 0 && testStats.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(trainStats.wr - testStats.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

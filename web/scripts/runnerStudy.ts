@@ -29,6 +29,7 @@ import {
 } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { detectOpenDrive, OPEN_PROD } from "../lib/openDrive";
+import { coreStats, propViability, renderT1, renderT4, renderVerdict } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const FIXED_MICROS = 9; // live default for momentum/expansion/RTH
@@ -215,11 +216,10 @@ type FamStats = {
 function famStats(name: string, trades: { t: Outcome; date: string }[], exit: "ladder" | "scaleout" | "fixed"): FamStats {
   const rs = trades.map((x) => x.t);
   const n = rs.length;
-  const wins = rs.filter((t) => t.pnl > 0);
-  const losses = rs.filter((t) => t.pnl <= 0);
-  const gw = wins.reduce((a, t) => a + t.pnl, 0);
-  const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-  const net = rs.reduce((a, t) => a + t.pnl, 0);
+  /* engine coreStats for the standard metrics — identical formulas to the
+   * previous local version (wins = pnl>0, pf = grossWin/grossLoss over
+   * pnl<=0, exp = net/n, expR = mean pnl/risk), so fmtFam() is unchanged */
+  const c = coreStats(trades.map((x) => ({ date: x.date, pnl: x.t.pnl, risk: x.t.risk })));
   const pct = (f: (t: Outcome) => boolean) => (n ? (rs.filter(f).length / n) * 100 : 0);
   const isLadder = exit !== "scaleout"; // fixed targets share the ladder's per-unit exitR semantics
   const ladder = (t: Outcome) => t as RunnerTrade;
@@ -227,17 +227,17 @@ function famStats(name: string, trades: { t: Outcome; date: string }[], exit: "l
   return {
     name,
     n,
-    wr: n ? (wins.length / n) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    avgPts: n ? net / n : 0,
-    expR: n ? rs.reduce((a, t) => a + t.pnl / t.risk, 0) / n : 0,
+    wr: c.wr,
+    pf: c.pf,
+    avgPts: c.expPts,
+    expR: c.expR,
     timePct: pct((t) => t.hit === "time"),
     ambPct: pct((t) => t.ambiguous),
     mfeR: n ? rs.reduce((a, t) => a + t.mfeR, 0) / n : 0,
     maeR: n ? rs.reduce((a, t) => a + t.maeR, 0) / n : 0,
     avgHeld: n ? rs.reduce((a, t) => a + t.heldBars, 0) / n : 0,
-    netPts: net,
-    sessions: new Set(trades.map((x) => x.date)).size,
+    netPts: c.netPts,
+    sessions: c.sessions,
     avgExitR: isLadder ? (n ? rs.reduce((a, t) => a + ladder(t).exitR, 0) / n : 0) : 0,
     fullLossPct: pct((t) => (isLadder ? ladder(t).exitR <= -0.999 : scale(t).fullLoss)),
     bePct: pct((t) => (isLadder ? ladder(t).exitR === 0 : scale(t).banked && scale(t).runnerExitR === 0)),
@@ -374,6 +374,42 @@ async function main() {
     console.log(`              eval: ${accountLine(evalSim)}`);
     console.log(`              funded: ${accountLine(funded)}`);
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * No train/test split in this study → T1 prints the "all" row per
+   * family; T4 + verdict use the primary cohort (the first selected
+   * family — momentum in "all" mode). The local scoreFixed scorer is NOT
+   * swapped to scoreTrade: it is a fixed-target binary model where a
+   * time-out books a full stop-level loss (heldBars 0, midpoint exit
+   * when touched on the final bar), unlike the engine's closeOf time
+   * exit — semantics differ on time-outs, so it stays. ---- */
+  const primary = perFamily[0];
+  const engineTrades = primary.trades.map(({ t, date }) => ({ date, pnl: t.pnl, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(
+    renderT1(
+      perFamily.map((fam) => ({
+        label: `${fam.def.name} (all)`,
+        stats: coreStats(fam.trades.map(({ t, date }) => ({ date, pnl: t.pnl, risk: t.risk }))),
+      })),
+    ),
+  );
+  const viability = propViability(engineTrades);
+  console.log("\n" + renderT4(viability));
+  const eAll = coreStats(engineTrades);
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: eAll.netPts > 0 && eAll.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: "—",
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

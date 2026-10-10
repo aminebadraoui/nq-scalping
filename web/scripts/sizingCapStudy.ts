@@ -33,6 +33,15 @@ import {
   type MomMinute,
   type MomentumSignal,
 } from "../lib/momentum";
+import {
+  coreStats,
+  wilson95,
+  propViability,
+  renderT1,
+  renderT2,
+  renderT4,
+  renderVerdict,
+} from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST_PTS = 0.5;
@@ -71,6 +80,11 @@ async function main() {
   }
 
   function scoreSignals(minutes: MomMinute[], sigs: MomentumSignal[], date: string, widenFloor: number): Scored[] {
+    // NOTE: kept local, NOT scoreTrade — the local time-exit branch is
+    // unreachable as written (hit stays "stop" with heldBars 0 unless a bar
+    // actually touches the bracket), so no-touch trades are recorded AT the
+    // stop; swapping to scoreTrade's midpoint time exit would change the
+    // trade stream and every downstream day metric.
     const out: Scored[] = [];
     let openUntil = -1;
     for (const s of sigs) {
@@ -249,6 +263,50 @@ async function main() {
     console.log(fmtRow(f === 0 ? "off (structural)" : `floor ${f}`, r, true));
   }
   console.log(`\n  → best TOTAL at floor ${best.floor} (+$${Math.round(best.total).toLocaleString("en-US")})`);
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * Primary cohort = the structural stream (widenFloor 0). The legacy phase
+   * stats above compute expR as net/n ÷ mean-risk (ratio of means), which is
+   * NOT the engine's mean(pnl/risk), so they stay untouched. The script has
+   * no train/test split → only the "all" row; T2 re-renders the phase-1 risk
+   * buckets in the standard row format. ---- */
+  const engineTrades = all.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([{ label: "all", stats: coreStats(engineTrades) }]));
+  {
+    const bucketRows: { rule: string; trades: typeof engineTrades }[] = [];
+    for (const [lo, hi] of edges) {
+      const t = engineTrades.filter((x) => x.risk >= lo && x.risk < hi);
+      if (t.length) bucketRows.push({ rule: `${lo}-${hi} pts`, trades: t });
+    }
+    console.log("\n" + renderT2(bucketRows.map((r) => {
+      const s = coreStats(r.trades);
+      return {
+        rule: r.rule,
+        n: s.n,
+        wr: s.wr,
+        ci: wilson95(s.wins, s.n),
+        pf: s.pf,
+        expPts: s.expPts,
+      };
+    })));
+  }
+  const viability = propViability(engineTrades);
+  console.log("\n" + renderT4(viability));
+  const allStats = coreStats(engineTrades);
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: allStats.netPts > 0 && allStats.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: "—",
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

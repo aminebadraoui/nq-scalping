@@ -20,6 +20,7 @@
 
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { closeOf, type MomMinute } from "../lib/momentum";
+import { scoreTrade, coreStats, renderT1, renderT2, renderT4, renderVerdict, propViability, type EngineTrade } from "../lib/backtestEngine";
 
 type Scored = { n: number; wins: number; exp1r: number; hitTp10: number; medBars: number[]; mae: number[] };
 
@@ -31,6 +32,8 @@ async function main() {
 
   const r1r: Scored = { n: 0, wins: 0, exp1r: 0, hitTp10: 0, medBars: [], mae: [] };
   const f10: Scored = { n: 0, wins: 0, exp1r: 0, hitTp10: 0, medBars: [], mae: [] };
+  const engineTrades1r: EngineTrade[] = [];
+  const engineTradesF10: EngineTrade[] = [];
   const hourET = (t: string): number => (Number(t.slice(0, 2)) + 1) % 24;
   const mmOf = (t: string): number => Number(t.slice(3, 5));
 
@@ -137,6 +140,15 @@ async function main() {
       } else {
         f10.exp1r += -15.5;
       }
+
+      // engine-scored copies for the standard report only — the legacy
+      // win/loss model above stays untouched. The engine agrees with the
+      // legacy model on stop/target outcomes and scores time exits at the
+      // actual midpoint close instead of a full −R loss.
+      const sc1r = scoreTrade(minutes, { dir, entry, stop, target: target1, entryIdx: k, risk });
+      if (sc1r) engineTrades1r.push({ date, pnl: sc1r.pnl, risk });
+      const scF10 = scoreTrade(minutes, { dir, entry, stop: sl15, target: tp10, entryIdx: k, risk: 15 });
+      if (scF10) engineTradesF10.push({ date, pnl: scF10.pnl, risk: 15 });
     }
   }
 
@@ -150,6 +162,43 @@ async function main() {
   };
   fmt(r1r, "1R target ");
   fmt(f10, "TP10/SL15 ");
+
+  /* ==== STANDARD REPORT (consolidated engine) ==== */
+  console.log("\n=== STANDARD REPORT ===");
+  const et1r = coreStats(engineTrades1r);
+  console.log(renderT1([{ label: "all (1R target, engine-scored)", stats: et1r }]));
+  const etF10 = coreStats(engineTradesF10);
+  console.log("\n" + renderT2([
+    {
+      rule: "1R target",
+      n: et1r.n,
+      wr: et1r.wr,
+      ci: et1r.wrCi,
+      pf: et1r.pf,
+      expPts: et1r.expPts,
+      trainTest: "—",
+      compare: `vs TP10/SL15: wr ${etF10.wr.toFixed(1)}% pf ${Number.isFinite(etF10.pf) ? etF10.pf.toFixed(2) : "inf"}`,
+    },
+    {
+      rule: "TP10/SL15",
+      n: etF10.n,
+      wr: etF10.wr,
+      ci: etF10.wrCi,
+      pf: etF10.pf,
+      expPts: etF10.expPts,
+      trainTest: "—",
+      compare: `vs 1R target: wr ${et1r.wr.toFixed(1)}% pf ${Number.isFinite(et1r.pf) ? et1r.pf.toFixed(2) : "inf"}`,
+    },
+  ]));
+  const v = propViability(engineTrades1r);
+  console.log("\n" + renderT4(v));
+  console.log(renderVerdict({
+    edge: et1r.netPts > 0 && et1r.expR > 0 ? "real" : "absent",
+    significance: "—",
+    stability: "—",
+    holdout: "n/a (validation pipeline)",
+    viability: v.pPass === null ? "n/a" : `${v.pPass >= 0.9 ? "PASS" : v.pPass >= 0.7 ? "weak" : "FAIL"} (P=${v.pPass.toFixed(2)})`,
+  }));
 }
 
 main().catch((e) => {

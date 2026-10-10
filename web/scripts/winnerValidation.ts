@@ -9,8 +9,18 @@
 
 import { promises as fs } from "node:fs";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { detectMomentum, detectExpansionScalp, closeOf, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
+import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+import {
+  scoreTrade,
+  coreStats,
+  wilson95,
+  propViability,
+  renderT1,
+  renderT2,
+  renderT4,
+  renderVerdict,
+} from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const RTH_OPEN = "08:30";
@@ -25,39 +35,24 @@ function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string, st
   const stop = entry - dir * risk;
   const target = entry + dir * risk * targetMult;
   if (!(risk > 0) || (dir > 0 && !(stop < entry && entry < target)) || (dir < 0 && !(target < entry && entry < stop))) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + timeExit);
-  if (start > end) return null;
-  let hit: Trade["hit"] = "time";
-  let exit = closeOf(minutes[end]);
-  let held = timeExit;
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) {
-      hit = "stop";
-      exit = stop;
-      held = j - sig.entryIdx;
-      break;
-    }
-    if (tgtHit) {
-      hit = "target";
-      exit = target;
-      held = j - sig.entryIdx;
-      break;
-    }
-  }
-  return { date, dir: sig.dir, risk, pnl: (exit - entry) * dir - cost, hit, held, targetMult };
+  // consolidated engine scorer: pessimistic stop-first, `cost` pts,
+  // parameterized time exit (closeOf midpoint fallback), last-bar signals
+  // dropped — identical to the former local loop. `held` keeps the legacy
+  // convention (a time exit reports the full timeExit, not the last bar).
+  const sc = scoreTrade(
+    minutes,
+    { dir, entry, stop, target, entryIdx: sig.entryIdx, risk },
+    { costPts: cost, holdBars: timeExit },
+  );
+  if (!sc) return null;
+  return { date, dir: sig.dir, risk, pnl: sc.pnl, hit: sc.hit, held: sc.hit === "time" ? timeExit : sc.heldBars, targetMult };
 }
 
 function stats(trades: Trade[]) {
-  const n = trades.length;
-  const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
-  const gw = wins.reduce((a, t) => a + t.pnl, 0);
-  const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-  return { n, wr: n ? (wins.length / n) * 100 : 0, pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0, net: trades.reduce((a, t) => a + t.pnl, 0) };
+  // engine-backed (formulas identical: wins = pnl>0, losses = pnl<=0,
+  // wr = wins/n, pf = gw/gl, net = Σ pnl)
+  const s = coreStats(trades.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+  return { n: s.n, wr: s.wr, pf: s.pf, net: s.netPts };
 }
 
 function sim(trades: Trade[], sizeMult: number) {
@@ -206,6 +201,46 @@ async function main() {
     });
     console.log(`${name.padEnd(24)} | ${byYear.join(" | ")}`);
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * Primary cohort = the new winner config scored at 0.5 pt (raw trades;
+   * size multipliers apply only in the sim layer). The script has no
+   * train/test split (year stability instead) → only the "all" row. ---- */
+  const engineTrades = (scored.get(WINNER) ?? []).map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([{ label: "all", stats: coreStats(engineTrades) }]));
+  {
+    const base = coreStats((scored.get("s1.0  t1   x60 sz1 (base)") ?? []).map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+    console.log("\n" + renderT2(CONFIGS.map((c) => {
+      const trades = (scored.get(c.name) ?? []).map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+      const s = coreStats(trades);
+      return {
+        rule: c.name,
+        n: s.n,
+        wr: s.wr,
+        ci: wilson95(s.wins, s.n),
+        pf: s.pf,
+        expPts: s.expPts,
+        compare: c.name === "s1.0  t1   x60 sz1 (base)" ? "—" : `base WR ${base.wr.toFixed(1)}%`,
+      };
+    })));
+  }
+  const viability = propViability(engineTrades);
+  console.log("\n" + renderT4(viability));
+  const allStats = coreStats(engineTrades);
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: allStats.netPts > 0 && allStats.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: "—",
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 function scoreAll(minutes: MomMinute[], signals: MomentumSignal[], date: string, stopMult: number, targetMult: number, timeExit: number, cost: number): (Trade & { entry: number })[] {

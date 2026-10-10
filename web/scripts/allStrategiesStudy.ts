@@ -16,70 +16,60 @@
  * ------------------------------------------------------------------ */
 
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { detectMomentum, detectExpansionScalp, closeOf, MOM_PROD, EXP_PROD, type MomMinute } from "../lib/momentum";
+import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, type MomMinute } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "../lib/openDrive";
 import { detectSweepReclaimV2 } from "../lib/sweepReclaimV2";
 import { detectBalanceBreak, BALANCE_BREAK_DEFAULTS } from "../lib/balanceBreak";
+import {
+  coreStats,
+  scoreTrade,
+  scoreSequential,
+  wilson95,
+  propViability,
+  renderT1,
+  renderT2,
+  renderT4,
+  renderVerdict,
+  type CoreStats,
+  type ScoreSpec,
+} from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
-const COST = 0.5;
 const TIME_EXIT = 60;
 const TARGET_R = 1;
 
 type Common = { dir: "long" | "short"; entry: number; stop: number | null; risk: number };
-type Trade = { date: string; pnl: number; risk: number };
+type Trade = { date: string; pnl: number; risk: number; heldBars?: number };
 
-function scoreSig(minutes: MomMinute[], sig: Common, idx: number, date: string): Trade | null {
+const specOf = (sig: Common, idx: number): ScoreSpec => {
   const dir = sig.dir === "long" ? 1 : -1;
   const stop = sig.stop ?? sig.entry - dir * sig.risk;
-  const target = sig.entry + dir * sig.risk * TARGET_R;
-  if (!(sig.risk > 0) || (dir > 0 && !(stop < sig.entry && sig.entry < target)) || (dir < 0 && !(target < sig.entry && sig.entry < stop))) return null;
-  const start = idx + 1;
-  const end = Math.min(minutes.length - 1, idx + TIME_EXIT);
-  if (start > end) return null;
-  let exit = closeOf(minutes[end]);
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    if (dir > 0 ? b.low <= stop : b.high >= stop) {
-      exit = stop;
-      break;
-    }
-    if (dir > 0 ? b.high >= target : b.low <= target) {
-      exit = target;
-      break;
-    }
-  }
-  return { date, pnl: (exit - sig.entry) * dir - COST, risk: sig.risk };
+  return { dir, entry: sig.entry, stop, target: sig.entry + dir * sig.risk * TARGET_R, entryIdx: idx, risk: sig.risk };
+};
+
+function scoreSig(minutes: MomMinute[], sig: Common, idx: number, date: string): Trade | null {
+  const sc = scoreTrade(minutes, specOf(sig, idx));
+  return sc ? { date, pnl: sc.pnl, risk: sig.risk, heldBars: sc.heldBars } : null;
 }
 
 function sequential(signals: Array<{ sig: Common; idx: number }>, minutes: MomMinute[], date: string): Trade[] {
-  const out: Trade[] = [];
-  let openUntil = -1;
-  for (const s of signals) {
-    if (s.idx <= openUntil) continue;
-    const sc = scoreSig(minutes, s.sig, s.idx, date);
-    if (!sc) continue;
-    out.push(sc);
-    openUntil = s.idx + TIME_EXIT;
-  }
-  return out;
+  // one-trade-at-a-time over the FULL 60-bar window (the local convention)
+  return scoreSequential(signals.map((s) => ({ entryIdx: s.idx, sig: s.sig })), (w) => scoreSig(minutes, w.sig, w.entryIdx, date), {
+    occupy: "full",
+    window: TIME_EXIT,
+  });
 }
 
-function stats(trades: Trade[]) {
-  const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
-  const gw = wins.reduce((a, t) => a + t.pnl, 0);
-  const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
+/** legacy expR = net ÷ Σrisk (a different formula from the engine's mean
+ *  pnl/risk expR — kept because the legacy table prints this one) */
+const legacyExpR = (trades: Trade[]): number => {
   const net = trades.reduce((a, t) => a + t.pnl, 0);
-  return {
-    n: trades.length,
-    wr: trades.length ? (wins.length / trades.length) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    net,
-    expR: trades.length ? net / trades.reduce((a, t) => a + t.risk, 0) : 0,
-  };
-}
+  const risk = trades.reduce((a, t) => a + t.risk, 0);
+  return risk > 0 ? net / risk : 0;
+};
+
+const stats = (trades: Trade[]): CoreStats => coreStats(trades);
 
 async function main() {
   const dates = await archiveDates();
@@ -153,9 +143,50 @@ async function main() {
     };
     console.log(
       f.key.padEnd(24) +
-        ` | ${String(f.signals).padStart(7)} | ${String(st.n).padStart(4)} | ${st.wr.toFixed(1).padStart(5)}% | ${st.pf.toFixed(2).padStart(5)} | ${st.net.toFixed(0).padStart(8)} | ${st.expR.toFixed(2).padStart(9)} | ${yr("2024").padStart(7)} | ${yr("2025").padStart(7)} | ${yr("2026").padStart(7)}`,
+        ` | ${String(f.signals).padStart(7)} | ${String(st.n).padStart(4)} | ${st.wr.toFixed(1).padStart(5)}% | ${st.pf.toFixed(2).padStart(5)} | ${st.netPts.toFixed(0).padStart(8)} | ${legacyExpR(f.trades).toFixed(2).padStart(9)} | ${yr("2024").padStart(7)} | ${yr("2025").padStart(7)} | ${yr("2026").padStart(7)}`,
     );
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * primary cohort = the live pair (mom+exp); T1 core quality, T2 family
+   * ranking, T4 prop viability, five-slot verdict. ---- */
+  const primary = F("mom+exp (live pair)").trades;
+  const engineTrades = primary.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([{ label: "all", stats: coreStats(engineTrades) }]));
+  const baseline = coreStats(engineTrades);
+  console.log(
+    "\n" +
+      renderT2(
+        families.map((f) => {
+          const st = coreStats(f.trades);
+          return {
+            rule: f.key,
+            n: st.n,
+            wr: st.wr,
+            ci: wilson95(st.wins, st.n),
+            pf: st.pf,
+            expPts: st.expPts,
+            compare: f.key === "mom+exp (live pair)" ? undefined : `live-pair WR ${baseline.wr.toFixed(0)}%`,
+          };
+        }),
+      ),
+  );
+  const viability = propViability(engineTrades);
+  console.log("\n" + renderT4(viability));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: baseline.netPts > 0 && baseline.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: "—",
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

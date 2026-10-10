@@ -40,6 +40,7 @@ import {
   type TripLabel,
 } from "../lib/manualAudit";
 import { unfilledCounterfactual, type Counterfactual } from "../lib/unfilledCounterfactual";
+import { coreStats, propViability, renderT1, renderT4, renderVerdict } from "../lib/backtestEngine";
 
 function loadEnvLocal() {
   const p = path.resolve(process.cwd(), ".env.local");
@@ -499,6 +500,35 @@ async function main() {
     console.log(`  ${i.severity.toUpperCase().padEnd(11)} ${i.title}${tag}`);
   }
   console.log(`\n${narrative}\n`);
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * primary cohort = the matched trades this window. Live journal rows carry
+   * net USD + signal-stop risk, not backtest points: pnl pts are recovered
+   * as netUsd ÷ (2 $/pt × contracts), risk = |sig_stop − sig_entry|. No
+   * train/test split here (rolling window), so T1 prints the all row only. ---- */
+  const engineTrades = trades
+    .filter((t) => t.contracts > 0 && t.riskPts > 0)
+    .map((t) => ({ date: t.day, pnl: t.netUsd / (2 * t.contracts), risk: t.riskPts }));
+  if (engineTrades.length) {
+    const allStats = coreStats(engineTrades);
+    console.log("\n=== STANDARD REPORT ===");
+    console.log(renderT1([{ label: "all", stats: allStats }]));
+    const viability = propViability(engineTrades);
+    console.log("\n" + renderT4(viability));
+    console.log(
+      "\n" +
+        renderVerdict({
+          edge: allStats.netPts > 0 && allStats.expR > 0 ? "real" : "absent",
+          significance: "—",
+          stability: "—",
+          holdout: "n/a (validation pipeline)",
+          viability:
+            viability.pPass === null
+              ? "n/a"
+              : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+        }),
+    );
+  }
   await sql.end();
 }
 

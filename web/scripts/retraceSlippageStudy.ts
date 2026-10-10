@@ -25,6 +25,15 @@
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { scoreScaleOut } from "../lib/runner";
 import { detectExpansionScalp, EXP_PROD, midOf, type MomMinute } from "../lib/momentum";
+import {
+  coreStats,
+  wilson95,
+  propViability,
+  renderT1,
+  renderT2,
+  renderT4,
+  renderVerdict,
+} from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST = 0.5; // pts round-trip slippage+cost inside the scorer
@@ -56,6 +65,7 @@ type Trade = {
   pnlPts: number;
   pnlUsd: number;
   drift: number;
+  risk: number; // stop distance (the signal's risk anchor, shared across offsets)
 };
 
 /** the expansion-retrace fill (limit-or-better), offset-swept */
@@ -117,6 +127,7 @@ function runOffsets(date: string, minutes: MomMinute[], offsets: number[]) {
         pnlPts: t.pnl,
         pnlUsd,
         drift: (fill - s.entry) * dir,
+        risk,
       });
       dayPnl += pnlUsd;
       dayPeak = Math.max(dayPeak, dayPnl);
@@ -250,6 +261,55 @@ async function main() {
     );
   }
   console.log(`\nrejected (retrace never touched): ${base.rejected} of the expansion signals`);
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * Primary cohort = offset 0.0 (broker resting limit = the backtest's own
+   * faithful execution). The local scorer is scoreScaleOut (ladder exits on
+   * a retrace-limit fill) so scoreTrade does NOT apply, and the legacy
+   * summarize() is USD-based with a "decided" WR denominator so it stays
+   * untouched; the engine rows are per-trade PTS on the signal's risk. ---- */
+  const splitDate = split;
+  const eng = (ts: Trade[]) => ts.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.risk }));
+  const engineTrades = eng(base.trades);
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([
+    { label: "all", stats: coreStats(engineTrades) },
+    { label: "train", stats: coreStats(engineTrades.filter((t) => t.date < splitDate)) },
+    { label: "test", stats: coreStats(engineTrades.filter((t) => t.date >= splitDate)) },
+  ]));
+  console.log("\n" + renderT2(sums.map((a) => {
+    const trades = eng(a.trades);
+    const s = coreStats(trades);
+    const tr = coreStats(trades.filter((t) => t.date < splitDate));
+    const te = coreStats(trades.filter((t) => t.date >= splitDate));
+    return {
+      rule: `offset ${a.off.toFixed(1)} pts`,
+      n: s.n,
+      wr: s.wr,
+      ci: wilson95(s.wins, s.n),
+      pf: s.pf,
+      expPts: s.expPts,
+      trainTest: `${tr.wr.toFixed(0)}% / ${te.wr.toFixed(0)}%`,
+      compare: a.off === 0 ? "—" : "offset 0.0 (broker limit)",
+    };
+  })));
+  const viability = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(viability));
+  const trainStats = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const testStats = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: testStats.netPts > 0 && testStats.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(trainStats.wr - testStats.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

@@ -21,13 +21,12 @@
 
 import { promises as fs } from "node:fs";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { detectMomentum, detectExpansionScalp, closeOf, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
+import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { loadEsMinutes, buildEsContext, flushAgreement, breakdownVeto, esDeltaSign, rsBand, type EsContext } from "../lib/esJoin";
+import { scoreTrade, coreStats, renderT1, renderT2, renderT4, renderVerdict, propViability } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
-const COST_PTS = 0.5;
-const HOLD_BARS = 60;
 
 /* ---------------- CLI ---------------- */
 
@@ -62,33 +61,9 @@ type Scored = MomentumSignal & {
 
 function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string): Scored | null {
   const dir = sig.dir === "long" ? 1 : -1;
-  const { entry, stop, target, risk } = sig;
-  if (!(risk > 0) || (dir > 0 && !(stop < entry && entry < target)) || (dir < 0 && !(target < entry && entry < stop))) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + HOLD_BARS);
-  if (start > end) return null;
-  let hit: Scored["hit"] = "time";
-  let exit = closeOf(minutes[end]);
-  let heldBars = end - sig.entryIdx;
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) {
-      hit = "stop";
-      exit = stop;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-    if (tgtHit) {
-      hit = "target";
-      exit = target;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-  }
-  const pnl = (exit - entry) * dir - COST_PTS;
-  return { ...sig, date, pnl, exit, hit, heldBars };
+  const sc = scoreTrade(minutes, { dir, entry: sig.entry, stop: sig.stop, target: sig.target, entryIdx: sig.entryIdx, risk: sig.risk });
+  if (!sc) return null;
+  return { ...sig, date, pnl: sc.pnl, exit: sc.exit, hit: sc.hit, heldBars: sc.heldBars };
 }
 
 /** one trade at a time (mirror of momentumStudy.scoreSequential): a signal
@@ -110,33 +85,21 @@ function scoreSequential(minutes: MomMinute[], signals: MomentumSignal[], date: 
 
 type Stats = { n: number; wins: number; wr: number; pf: number; avgPts: number; netPts: number; lo: number; hi: number; days: number };
 
-function wilson(wins: number, n: number): [number, number] {
-  if (!n) return [0, 0];
-  const z = 1.96;
-  const p = wins / n;
-  const d = 1 + (z * z) / n;
-  const c = p + (z * z) / (2 * n);
-  const s = z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n));
-  return [((c - s) / d) * 100, ((c + s) / d) * 100];
-}
-
+/** WR/PF/expectancy/net/Wilson CI all come from the consolidated engine
+ *  (identical formulas: wins = pnl>0, pf = grossWin/grossLoss, avgPts =
+ *  net/n, Wilson = wilson95). */
 function stats(tr: Scored[]): Stats {
-  const n = tr.length;
-  const wins = tr.filter((t) => t.pnl > 0).length;
-  const gw = tr.filter((t) => t.pnl > 0).reduce((a, t) => a + t.pnl, 0);
-  const gl = Math.abs(tr.filter((t) => t.pnl <= 0).reduce((a, t) => a + t.pnl, 0));
-  const net = tr.reduce((a, t) => a + t.pnl, 0);
-  const [lo, hi] = wilson(wins, n);
+  const s = coreStats(tr.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
   return {
-    n,
-    wins,
-    wr: n ? (wins / n) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    avgPts: n ? net / n : 0,
-    netPts: net,
-    lo,
-    hi,
-    days: new Set(tr.map((t) => t.date)).size,
+    n: s.n,
+    wins: s.wins,
+    wr: s.wr,
+    pf: s.pf,
+    avgPts: s.expPts,
+    netPts: s.netPts,
+    lo: s.wrCi[0],
+    hi: s.wrCi[1],
+    days: s.sessions,
   };
 }
 
@@ -300,6 +263,60 @@ async function main() {
     );
     console.log(`\nsignals dumped → ${o.dump}`);
   }
+
+  /* ==== STANDARD REPORT (consolidated engine) ==== */
+  const engineTrades = allTrades.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  const etAll = coreStats(engineTrades);
+  const etTrain = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const etTest = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([
+    { label: "all (all cards)", stats: etAll },
+    { label: "train", stats: etTrain },
+    { label: "test", stats: etTest },
+  ]));
+
+  const cell = (name: string, tr: Scored[], baseline: Scored[], baselineName: string) => {
+    const s = coreStats(tr.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+    const b = coreStats(baseline.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+    const train = coreStats(tr.filter((t) => t.date < splitDate).map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+    const test = coreStats(tr.filter((t) => t.date >= splitDate).map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+    return {
+      rule: name,
+      n: s.n,
+      wr: s.wr,
+      ci: s.wrCi,
+      pf: s.pf,
+      expPts: s.expPts,
+      trainTest: `${train.wr.toFixed(0)}% / ${test.wr.toFixed(0)}%`,
+      compare: `${baselineName}: wr ${b.wr.toFixed(1)}% pf ${Number.isFinite(b.pf) ? b.pf.toFixed(2) : "inf"}`,
+    };
+  };
+  const t2rows = [
+    cell("agree (flush ES)", fes.filter((t) => t.agreement === "agree"), fes, "baseline all ES flush"),
+    cell("diverge (flush ES)", fes.filter((t) => t.agreement === "diverge"), fes, "baseline all ES flush"),
+    cell("neutral (flush ES)", fes.filter((t) => t.agreement === "neutral"), fes, "baseline all ES flush"),
+    cell("no ES twin (flush)", flushTrades.filter((t) => t.agreement === undefined), flushTrades, "baseline all flush"),
+    cell("delta pos (flush ES)", fes.filter((t) => t.esDelta === "pos"), fes, "baseline all ES flush"),
+    cell("delta neg (flush ES)", fes.filter((t) => t.esDelta === "neg"), fes, "baseline all ES flush"),
+    cell("delta flat (flush ES)", fes.filter((t) => t.esDelta === "flat"), fes, "baseline all ES flush"),
+    cell("veto kept (gate on)", kept, covered, "baseline covered"),
+    cell("vetoed (gate suppressed)", vetoed, covered, "baseline covered"),
+    cell("rs strong (all cards)", aes.filter((t) => t.rs === "strong"), aes, "baseline ES-covered all"),
+    cell("rs weak (all cards)", aes.filter((t) => t.rs === "weak"), aes, "baseline ES-covered all"),
+    cell("rs neutral (all cards)", aes.filter((t) => t.rs === "neutral"), aes, "baseline ES-covered all"),
+  ];
+  console.log("\n" + renderT2(t2rows));
+
+  const v = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(v));
+  console.log(renderVerdict({
+    edge: etTest.netPts > 0 && etTest.expR > 0 ? "real" : "absent",
+    significance: "—",
+    stability: `train/test WR gap ${Math.abs(etTrain.wr - etTest.wr).toFixed(1)} pts`,
+    holdout: "n/a (validation pipeline)",
+    viability: v.pPass === null ? "n/a" : `${v.pPass >= 0.9 ? "PASS" : v.pPass >= 0.7 ? "weak" : "FAIL"} (P=${v.pPass.toFixed(2)})`,
+  }));
 }
 
 main().catch((e) => {

@@ -36,10 +36,10 @@ import {
   type MomentumSignal,
 } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
+import { scoreTrade, scoreSequential as scoreSequentialEngine, coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
-const COST_PTS = 0.5;
-const HOLD_BARS = 60;
+/* cost/hold now live in the engine's scoreTrade defaults (0.5 pt, 60 bars) */
 
 /* ---------------- CLI ---------------- */
 
@@ -195,51 +195,24 @@ type ScoredTrade = MomentumSignal & {
 
 function scoreSignal(minutes: MomMinute[], sig: MomentumSignal, date: string, regime: RegimeTags, src: ScoredTrade["src"]): ScoredTrade | null {
   const dir = sig.dir === "long" ? 1 : -1;
-  const { entry, stop, target, risk } = sig;
-  if (!(risk > 0) || (dir > 0 && !(stop < entry && entry < target)) || (dir < 0 && !(target < entry && entry < stop))) return null;
-  const start = sig.entryIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.entryIdx + HOLD_BARS);
-  if (start > end) return null;
-  let hit: ScoredTrade["hit"] = "time";
-  let exit = closeOf(minutes[end]);
-  let heldBars = end - sig.entryIdx;
-  let mfe = 0, mae = 0;
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const fav = dir > 0 ? b.high - entry : entry - b.low;
-    const adv = dir > 0 ? entry - b.low : b.high - entry;
-    mfe = Math.max(mfe, fav / risk);
-    mae = Math.max(mae, adv / risk);
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) {
-      hit = "stop";
-      exit = stop;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-    if (tgtHit) {
-      hit = "target";
-      exit = target;
-      heldBars = j - sig.entryIdx;
-      break;
-    }
-  }
-  const pnl = (exit - entry) * dir - COST_PTS;
-  return { ...sig, date, exit, pnl, hit, heldBars, mfeR: mfe, maeR: mae, regime, src };
+  /* canonical engine scorer: pessimistic stop-first, 0.5 pt cost, 60-bar
+   * time exit at closeOf, last-bar signals dropped — semantics identical
+   * to the previous local loop for every valid detector signal */
+  const sc = scoreTrade(minutes, {
+    dir,
+    entry: sig.entry,
+    stop: sig.stop,
+    target: sig.target,
+    entryIdx: sig.entryIdx,
+    risk: sig.risk,
+  });
+  if (!sc) return null;
+  return { ...sig, date, exit: sc.exit, pnl: sc.pnl, hit: sc.hit, heldBars: sc.heldBars, mfeR: sc.mfeR, maeR: sc.maeR, regime, src };
 }
 
 function scoreSequential(minutes: MomMinute[], signals: { sig: MomentumSignal; regime: RegimeTags; src: ScoredTrade["src"] }[], date: string): ScoredTrade[] {
-  const out: ScoredTrade[] = [];
-  let openUntil = -1;
-  for (const { sig, regime, src } of signals) {
-    if (sig.entryIdx <= openUntil) continue;
-    const sc = scoreSignal(minutes, sig, date, regime, src);
-    if (!sc) continue;
-    out.push(sc);
-    openUntil = sc.entryIdx + sc.heldBars;
-  }
-  return out;
+  const tagged = signals.map((x) => ({ ...x, entryIdx: x.sig.entryIdx }));
+  return scoreSequentialEngine(tagged, (x) => scoreSignal(minutes, x.sig, date, x.regime, x.src));
 }
 
 /* ---------------- stats ---------------- */
@@ -250,21 +223,19 @@ type Stats = {
 };
 
 function stats(trades: ScoredTrade[]): Stats {
-  const n = trades.length;
-  const wins = trades.filter((t) => t.pnl > 0);
-  const losses = trades.filter((t) => t.pnl <= 0);
-  const gw = wins.reduce((a, t) => a + t.pnl, 0);
-  const gl = Math.abs(losses.reduce((a, t) => a + t.pnl, 0));
-  const net = trades.reduce((a, t) => a + t.pnl, 0);
+  /* engine coreStats — identical formulas to the previous local version
+   * (wins = pnl>0, pf = grossWin/grossLoss over pnl<=0, exp = net/n,
+   * expR = mean pnl/risk), so the legacy fmt() output is unchanged */
+  const c = coreStats(trades.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
   return {
-    n,
-    wins: wins.length,
-    wr: n ? (wins.length / n) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    avgPts: n ? net / n : 0,
-    expR: n ? trades.reduce((a, t) => a + t.pnl / t.risk, 0) / n : 0,
-    netPts: net,
-    sessions: new Set(trades.map((t) => t.date)).size,
+    n: c.n,
+    wins: c.wins,
+    wr: c.wr,
+    pf: c.pf,
+    avgPts: c.expPts,
+    expR: c.expR,
+    netPts: c.netPts,
+    sessions: c.sessions,
   };
 }
 
@@ -527,6 +498,59 @@ async function main() {
       `eval ${accountLine(evalAll)}`,
     );
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * T1 core quality for the base variant, T2 veto-variant comparison, T4
+   * prop viability, five-slot verdict. ---- */
+  const splitDate = o.split;
+  const engineTrades = perVariant[0].map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  const eAll = coreStats(engineTrades);
+  const eTrain = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const eTest = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(
+    renderT1([
+      { label: "all", stats: eAll },
+      { label: "train", stats: eTrain },
+      { label: "test", stats: eTest },
+    ]),
+  );
+  console.log(
+    "\n" +
+      renderT2(
+        vetoes.map((v, idx) => {
+          const toEngine = (ts: ScoredTrade[]) => ts.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+          const s = coreStats(toEngine(perVariant[idx]));
+          const sTr = coreStats(toEngine(perVariant[idx].filter((t) => t.date < splitDate)));
+          const sTe = coreStats(toEngine(perVariant[idx].filter((t) => t.date >= splitDate)));
+          return {
+            rule: v.name,
+            n: s.n,
+            wr: s.wr,
+            ci: wilson95(s.wins, s.n),
+            pf: s.pf,
+            expPts: s.expPts,
+            trainTest: `${sTr.wr.toFixed(0)}% / ${sTe.wr.toFixed(0)}%`,
+            compare: idx === 0 ? "—" : `base ${eAll.wr.toFixed(0)}% WR`,
+          };
+        }),
+      ),
+  );
+  const viability = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(viability));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: eTest.netPts > 0 && eTest.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(eTrain.wr - eTest.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 
   if (o.dump) {
     await fs.writeFile(

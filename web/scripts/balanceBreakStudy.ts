@@ -26,6 +26,8 @@ import {
 } from "../lib/balanceBreak";
 import { closeOf, type MomMinute } from "../lib/momentum";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+// consolidated engine: canonical scorer + standard T1/T2/T4 + verdict
+import { scoreTrade as engineScoreTrade, coreStats, propViability, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST_PTS = 0.5;
@@ -47,6 +49,24 @@ function scoreTrade(minutes: MomMinute[], sig: BalanceBreakSignal, date: string)
   const dir = sig.dir === "long" ? 1 : -1;
   const { entry, stop, target, risk } = sig;
   if (!(risk > 0)) return null;
+  // the consolidated engine validates stop < entry < target (the old loop
+  // did not): delegate only when the geometry is valid, so a degenerate
+  // edge-mode signal (target beyond the entry side) keeps its historical
+  // replay byte-for-byte through the fallback below.
+  const validGeom = dir > 0 ? stop < entry && entry < target : target < entry && entry < stop;
+  if (validGeom) {
+    const sc = engineScoreTrade(
+      minutes,
+      { dir, entry, stop, target, entryIdx: sig.failIdx, risk },
+      { costPts: COST_PTS, holdBars: HOLD_BARS },
+    );
+    if (sc) {
+      return { date, hourET: sig.hourET, dir: sig.dir, entry, stop, risk: sc.risk, pnl: sc.pnl, hit: sc.hit, heldBars: sc.heldBars };
+    }
+    return null;
+  }
+
+  // degenerate geometry: the historical loop, unchanged
   const start = sig.failIdx + 1;
   const end = Math.min(minutes.length - 1, sig.failIdx + HOLD_BARS);
   if (start > end) return null;
@@ -91,12 +111,9 @@ function replay(minutes: MomMinute[], sigs: BalanceBreakSignal[], date: string):
 }
 
 function stats(tt: Scored[]) {
-  const n = tt.length;
-  const wins = tt.filter((t) => t.pnl > 0).length;
-  const gw = tt.reduce((a, t) => a + Math.max(0, t.pnl), 0);
-  const gl = tt.reduce((a, t) => a + Math.max(0, -t.pnl), 0);
-  const expR = n ? tt.reduce((a, t) => a + t.pnl / t.risk, 0) / n : 0;
-  return { n, wr: n ? (wins / n) * 100 : 0, pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0, net: gw - gl, expR };
+  // the standard metric set (identical WR/PF/net/expR formulas)
+  const s = coreStats(tt.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+  return { n: s.n, wr: s.wr, pf: s.pf, net: s.netPts, expR: s.expR };
 }
 
 function fmt(s: ReturnType<typeof stats>): string {
@@ -241,6 +258,56 @@ async function main() {
   for (const [h, tt] of [...byHour.entries()].sort((a, b) => a[0] - b[0])) {
     console.log(`    ${String(h).padStart(2)}:00  ${fmt(stats(tt))}`);
   }
+
+  /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
+   * T1 core quality for the best variant (by test expR), T2 variant
+   * ranking, T4 prop viability, five-slot verdict. ---- */
+  const engineTrades = best.all.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(
+    renderT1([
+      { label: "all", stats: coreStats(engineTrades) },
+      { label: "train", stats: coreStats(engineTrades.filter((t) => t.date < splitDate)) },
+      { label: "test", stats: coreStats(engineTrades.filter((t) => t.date >= splitDate)) },
+    ]),
+  );
+  console.log(
+    "\n" +
+      renderT2(
+        rows.map((r) => {
+          const toEngine = (tt: Scored[]) => tt.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+          const cs = coreStats(toEngine(r.all));
+          const tr = coreStats(toEngine(r.all.filter((t) => t.date < splitDate)));
+          const te = coreStats(toEngine(r.all.filter((t) => t.date >= splitDate)));
+          return {
+            rule: r.label,
+            n: cs.n,
+            wr: cs.wr,
+            ci: cs.wrCi,
+            pf: cs.pf,
+            expPts: cs.expPts,
+            trainTest: `${tr.wr.toFixed(0)}% / ${te.wr.toFixed(0)}%`,
+          };
+        }),
+      ),
+  );
+  const viability = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(viability));
+  const trainCore = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const testCore = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log(
+    "\n" +
+      renderVerdict({
+        edge: testCore.netPts > 0 && testCore.expR > 0 ? "real" : "absent",
+        significance: "—",
+        stability: `train/test WR gap ${(trainCore.wr - testCore.wr).toFixed(1)} pts`,
+        holdout: "n/a (validation pipeline)",
+        viability:
+          viability.pPass === null
+            ? "n/a"
+            : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+  );
 }
 
 main().catch((e) => {

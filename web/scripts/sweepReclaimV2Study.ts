@@ -22,8 +22,9 @@ import {
   type SweepReclaimV2Config,
   type SweepReclaimV2Signal,
 } from "../lib/sweepReclaimV2";
-import { closeOf, type MomMinute } from "../lib/momentum";
+import { type MomMinute } from "../lib/momentum";
 import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+import { scoreTrade as engineScoreTrade, coreStats, renderT1, renderT2, renderT4, renderVerdict, propViability } from "../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const COST_PTS = 0.5;
@@ -43,36 +44,9 @@ type Scored = {
 
 function scoreTrade(minutes: MomMinute[], sig: SweepReclaimV2Signal, date: string): Scored | null {
   const dir = sig.dir === "long" ? 1 : -1;
-  const { entry, stop, target, risk } = sig;
-  if (!(risk > 0)) return null;
-  const start = sig.confirmIdx + 1;
-  const end = Math.min(minutes.length - 1, sig.confirmIdx + HOLD_BARS);
-  if (start > end) return null;
-
-  let hit: Scored["hit"] = "time";
-  let exit = closeOf(minutes[end]);
-  let heldBars = end - sig.confirmIdx;
-
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) {
-      hit = "stop";
-      exit = stop;
-      heldBars = j - sig.confirmIdx;
-      break;
-    }
-    if (tgtHit) {
-      hit = "target";
-      exit = target;
-      heldBars = j - sig.confirmIdx;
-      break;
-    }
-  }
-
-  const pnl = (exit - entry) * dir - COST_PTS;
-  return { date, hourET: sig.hourET, dir: sig.dir, entry, stop, risk, pnl, hit, heldBars };
+  const sc = engineScoreTrade(minutes, { dir, entry: sig.entry, stop: sig.stop, target: sig.target, entryIdx: sig.confirmIdx, risk: sig.risk });
+  if (!sc) return null;
+  return { date, hourET: sig.hourET, dir: sig.dir, entry: sig.entry, stop: sig.stop, risk: sig.risk, pnl: sc.pnl, hit: sc.hit, heldBars: sc.heldBars };
 }
 
 /** one trade at a time — the live trader cannot be in two positions */
@@ -90,17 +64,14 @@ function replay(minutes: MomMinute[], sigs: SweepReclaimV2Signal[], date: string
 }
 
 function stats(tt: Scored[]) {
-  const n = tt.length;
-  const wins = tt.filter((t) => t.pnl > 0).length;
-  const gw = tt.reduce((a, t) => a + Math.max(0, t.pnl), 0);
-  const gl = tt.reduce((a, t) => a + Math.max(0, -t.pnl), 0);
-  const expR = n ? tt.reduce((a, t) => a + t.pnl / t.risk, 0) / n : 0;
+  // WR/PF/net/expR come from the consolidated engine (identical formulas)
+  const s = coreStats(tt.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
   return {
-    n,
-    wr: n ? (wins / n) * 100 : 0,
-    pf: gl > 0 ? gw / gl : gw > 0 ? Infinity : 0,
-    net: gw - gl,
-    expR,
+    n: s.n,
+    wr: s.wr,
+    pf: s.pf,
+    net: s.netPts,
+    expR: s.expR,
   };
 }
 
@@ -242,6 +213,50 @@ async function main() {
     }
     console.log();
   }
+
+  /* ==== STANDARD REPORT (consolidated engine) ==== */
+  const baseCohort = results[0]; // v1 (reclaim entry) — the pre-sweep baseline
+  const engineTrades = baseCohort.trades.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
+  const etAll = coreStats(engineTrades);
+  const etTrain = coreStats(engineTrades.filter((t) => t.date < splitDate));
+  const etTest = coreStats(engineTrades.filter((t) => t.date >= splitDate));
+  console.log("\n=== STANDARD REPORT ===");
+  console.log(renderT1([
+    { label: "all (base v1)", stats: etAll },
+    { label: "train", stats: etTrain },
+    { label: "test", stats: etTest },
+  ]));
+
+  const baseStats = stats(baseCohort.trades);
+  const t2rows = rows.map((r) => {
+    const cs = coreStats(r.all.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+    const train = coreStats(r.all.filter((t) => t.date < splitDate).map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+    const test = coreStats(r.all.filter((t) => t.date >= splitDate).map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk })));
+    return {
+      rule: r.label,
+      n: cs.n,
+      wr: cs.wr,
+      ci: cs.wrCi,
+      pf: cs.pf,
+      expPts: cs.expPts,
+      trainTest: `${train.wr.toFixed(0)}% / ${test.wr.toFixed(0)}%`,
+      compare:
+        r.idx === 0
+          ? "— (baseline)"
+          : `vs base v1: wr ${baseStats.wr.toFixed(1)}% pf ${Number.isFinite(baseStats.pf) ? baseStats.pf.toFixed(2) : "inf"} expR ${baseStats.expR >= 0 ? "+" : ""}${baseStats.expR.toFixed(3)}`,
+    };
+  });
+  console.log("\n" + renderT2(t2rows));
+
+  const v = propViability(engineTrades, { splitDate });
+  console.log("\n" + renderT4(v));
+  console.log(renderVerdict({
+    edge: etTest.netPts > 0 && etTest.expR > 0 ? "real" : "absent",
+    significance: "—",
+    stability: `train/test WR gap ${Math.abs(etTrain.wr - etTest.wr).toFixed(1)} pts`,
+    holdout: "n/a (validation pipeline)",
+    viability: v.pPass === null ? "n/a" : `${v.pPass >= 0.9 ? "PASS" : v.pPass >= 0.7 ? "weak" : "FAIL"} (P=${v.pPass.toFixed(2)})`,
+  }));
 }
 
 main().catch((e) => {
