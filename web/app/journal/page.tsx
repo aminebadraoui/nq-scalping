@@ -162,9 +162,21 @@ type ManualRow = {
   fees_usd: number | null;
   entry_at: string;
   exit_at: string;
+  /** audit label: bot | bot-suspect | ambiguous | manual (lib/manualAudit.ts) */
+  label?: string;
+  evidence?: {
+    reason: string;
+    nearestSignal: string | null;
+    dtMin: number | null;
+    dPx: number | null;
+    dQty: number | null;
+    strictCandidates: number;
+  } | null;
 };
 
 type ManualDay = { day: string; n: number; net: number; gross: number };
+
+type ManualSummary = Record<string, number>;
 
 type AccountHead = {
   net: number;
@@ -240,6 +252,24 @@ const RESULT_STYLE: Record<string, string> = {
   win: "text-long",
   loss: "text-short",
   flat: "text-zinc-500",
+};
+
+const MANUAL_LABEL_STYLE: Record<string, string> = {
+  bot: "border-long/50 bg-long/10 text-long",
+  "bot-suspect": "border-warn/50 bg-warn/10 text-warn",
+  ambiguous: "border-info/50 bg-info/10 text-info",
+  manual: "border-zinc-700 bg-zinc-800/40 text-zinc-500",
+};
+
+const manualEvidenceTitle = (m: ManualRow): string => {
+  const e = m.evidence;
+  if (!e) return m.label ?? "";
+  const parts = [e.reason];
+  if (e.nearestSignal) parts.push(`signal ${e.nearestSignal}`);
+  if (e.dtMin !== null) parts.push(`Δt ${e.dtMin}m`);
+  if (e.dPx !== null) parts.push(`Δpx ${e.dPx >= 0 ? "+" : ""}${e.dPx}`);
+  if (e.dQty !== null) parts.push(`Δqty ${e.dQty}`);
+  return parts.join(" · ");
 };
 
 const fmtUsd = (n: number | null) => {
@@ -402,6 +432,7 @@ export default function JournalPage() {
   const [manual, setManual] = useState<ManualRow[]>([]);
   const [manualDays, setManualDays] = useState<ManualDay[]>([]);
   const [manualTotal, setManualTotal] = useState<number | null>(null);
+  const [manualSummary, setManualSummary] = useState<ManualSummary | null>(null);
   const [account, setAccount] = useState<AccountHead | null>(null);
   const [streaks, setStreaks] = useState<StreakRow[]>([]);
   const [drawdowns, setDrawdowns] = useState<DrawdownRow[]>([]);
@@ -436,6 +467,7 @@ export default function JournalPage() {
         setManual(t.manual ?? []);
         setManualDays(t.manualDays ?? []);
         setManualTotal(typeof t.manualTotal === "number" ? t.manualTotal : null);
+        setManualSummary(t.manualSummary ?? null);
         setAccount(t.account ?? null);
         setStreaks(t.streaks ?? []);
         setDrawdowns(t.drawdowns ?? []);
@@ -1119,6 +1151,19 @@ export default function JournalPage() {
                   {manualTotal === null ? "—" : fmtUsd(manualTotal)} gross
                 </span>
                 <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-400">{manualDays.length} days</span>
+                {manualSummary && (
+                  <>
+                    <span className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn" title="trips a signal matches strictly (time+qty+price) but was never paired — likely bot trades that lost their card">
+                      {manualSummary["bot-suspect"] ?? 0} suspect
+                    </span>
+                    <span className="rounded border border-info/50 bg-info/10 px-1.5 py-0.5 text-info" title="a same-side signal sits within 15 min but outside strict tolerances">
+                      {manualSummary.ambiguous ?? 0} ambiguous
+                    </span>
+                    <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-400" title="no same-side signal within 15 min">
+                      {manualSummary.manual ?? 0} manual
+                    </span>
+                  </>
+                )}
               </div>
             </div>
             <div className="max-h-[240px] overflow-y-auto">
@@ -1131,6 +1176,7 @@ export default function JournalPage() {
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">entry → exit</th>
                     <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">P&L</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal" title="cross-referenced against every recorded signal — see the hover evidence">label</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1150,6 +1196,15 @@ export default function JournalPage() {
                       <td className={`px-2 py-0.5 text-right ${(Number(m.pnl_net_usd ?? m.pnl_usd)) >= 0 ? "text-long" : "text-short"}`}>
                         {fmtUsd(Number(m.pnl_net_usd ?? m.pnl_usd))}
                       </td>
+                      <td className="px-2 py-0.5">
+                        {m.label && m.label !== "manual" ? (
+                          <span className={`rounded border px-1 py-0.5 text-[8px] uppercase ${MANUAL_LABEL_STYLE[m.label] ?? MANUAL_LABEL_STYLE.manual}`} title={manualEvidenceTitle(m)}>
+                            {m.label}
+                          </span>
+                        ) : (
+                          <span className="text-zinc-600" title={manualEvidenceTitle(m)}>manual</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1157,7 +1212,8 @@ export default function JournalPage() {
               {manual.length === 0 && <p className="py-2 font-mono text-xs text-zinc-600">no manual trades imported — run scripts/importTradovateTrades.ts with the Tradovate fills export</p>}
             </div>
             <p className="mt-1 font-mono text-[9px] text-zinc-600">
-              source: MFF/Tradovate fills export (round trips no signal explains) · P&L shown NET (commissions included, $0.95/side/contract)
+              source: MFF/Tradovate fills export (round trips no signal explains) · P&L shown NET (commissions included, $0.95/side/contract) ·
+              labels cross-referenced against every recorded signal (bot-suspect = strict time+qty+price match, never paired · ambiguous = signal within 15 min) — hover a label for the evidence
             </p>
           </section>
 

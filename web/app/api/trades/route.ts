@@ -3,6 +3,12 @@ import { familyOf } from "@/lib/tradeStats";
 import { edgeStatuses, REPLAY_EXPR_BASELINES } from "@/lib/edgeMonitor";
 import { streakTable, drawdownTable, hourMatrix, hourTable } from "@/lib/journalMetrics";
 import { listDaybookDaysRemote, readDaybookDayRemote, type DaybookDaySummary, type DaybookRecord } from "@/lib/daybook";
+import {
+  auditManualTrips,
+  auditSummary,
+  type ManualTrip,
+  type SignalRef,
+} from "@/lib/manualAudit";
 
 export const dynamic = "force-dynamic";
 
@@ -240,6 +246,9 @@ export async function GET(request: Request) {
       : null;
 
     // ---- manual bucket (MFF/Tradovate round trips no signal explains) ----
+    // every trip is cross-referenced with ALL recorded signals and
+    // labeled (bot / bot-suspect / ambiguous / manual) with evidence —
+    // lib/manualAudit.ts, the same engine as scripts/manualTradeAudit.ts
     const dayFloor = new Date(w0).toISOString().slice(0, 10);
     const manualRows = (await db`
       select * from manual_trades
@@ -255,6 +264,32 @@ export async function GET(request: Request) {
     const manualTotal = manualDays.length
       ? Math.round(manualDays.reduce((s, d) => s + Number(d.net ?? 0), 0) * 100) / 100
       : 0;
+
+    // ---- manual-trade audit labels (cross-reference with signals) ----
+    const sigRefs = (await db`
+      select key, ts, day, side, size, entry from signals
+      where day >= ${dayFloor}`) as Array<Record<string, unknown>>;
+    const signalList: SignalRef[] = sigRefs.map((s) => ({
+      key: String(s.key),
+      day: String(s.day),
+      ts: Number(s.ts),
+      side: String(s.side) === "long" ? "long" : "short",
+      contracts: Number(String(s.size ?? "").match(/^(\d+)\s*MNQ/)?.[1] ?? 0),
+      entry: Number(s.entry) || null,
+    }));
+    const trips: ManualTrip[] = manualRows.map((r) => ({
+      key: String(r.key),
+      day: String(r.day),
+      direction: String(r.direction) === "long" ? "long" : "short",
+      qty: Number(r.qty ?? 0),
+      entryPrice: Number(r.entry_price ?? 0),
+      exitPrice: Number(r.exit_price ?? 0),
+      entryAtMs: Date.parse(String(r.entry_at)),
+      matchedSignal: null,
+    }));
+    const audit = auditManualTrips(trips, signalList);
+    const manualLabeled = manualRows.map((r, i) => ({ ...r, label: audit[i]?.evidence.label ?? "manual", evidence: audit[i]?.evidence ?? null }));
+    const manualSummary = auditSummary(audit);
 
     const analysis = await db`select * from trade_analysis order by run_at desc limit 1`;
     const a = analysis[0] as (typeof analysis)[number] | undefined;
@@ -373,9 +408,10 @@ export async function GET(request: Request) {
       drawdowns,
       matrix,
       hours,
-      manual: manualRows,
+      manual: manualLabeled,
       manualDays,
       manualTotal,
+      manualSummary,
       scoreboard,
       scoreRange: rangeDays > 0 ? `${rangeDays}d` : "all",
       analysis: a
