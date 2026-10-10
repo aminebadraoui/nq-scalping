@@ -98,6 +98,10 @@ export type WinLossRow = {
 };
 
 export const BLOB_CHARS = 60;
+/** integer variables with ≤ this many distinct values bin per value
+ *  (contracts 1–30, hourET, domClusters) — quantiles are for
+ *  continuous or wide integer domains */
+export const DISTINCT_VALUE_BINS = 30;
 
 const isBlob = (v: unknown): boolean => {
   if (typeof v === "string") {
@@ -200,6 +204,9 @@ export function patternFor(
   const rows = values.map((v, i) => ({ v, r: results[i] }));
   if (flagsOnly) for (const x of rows) if (x.v === undefined) x.v = false;
   let cells: CellStats[] = [];
+  /** integer variables with ≤ this many distinct values bin PER VALUE
+   *  (contracts 1–30, hourET, domClusters…) instead of quantiles */
+  let perValue = false;
 
   if (type === "presence") {
     const presentRows = rows.filter((x) => x.v !== undefined);
@@ -209,20 +216,35 @@ export function patternFor(
     const nums = rows
       .map((x) => ({ ...x, nv: num(x.v) }))
       .filter((x): x is typeof x & { nv: number } => x.nv !== null);
-    const thresholds = quantileThresholds(nums.map((x) => x.nv));
-    const byBin = new Map<string, typeof nums>();
-    for (const x of nums) {
-      const label = binLabelOf(x.nv, thresholds);
-      const arr = byBin.get(label) ?? [];
-      arr.push(x);
-      byBin.set(label, arr);
+    const distinct = new Set(nums.map((x) => x.nv));
+    const smallIntDomain = distinct.size <= DISTINCT_VALUE_BINS && [...distinct].every((v) => Number.isInteger(v));
+    if (smallIntDomain) {
+      perValue = true;
+      const byVal = new Map<number, typeof nums>();
+      for (const x of nums) {
+        const arr = byVal.get(x.nv) ?? [];
+        arr.push(x);
+        byVal.set(x.nv, arr);
+      }
+      cells = [...byVal.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([v, arr]) => mkCell(arr.map((x) => ({ v: x.v, r: x.r })), String(v), v));
+    } else {
+      const thresholds = quantileThresholds(nums.map((x) => x.nv));
+      const byBin = new Map<string, typeof nums>();
+      for (const x of nums) {
+        const label = binLabelOf(x.nv, thresholds);
+        const arr = byBin.get(label) ?? [];
+        arr.push(x);
+        byBin.set(label, arr);
+      }
+      cells = [...byBin.entries()]
+        .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+        .map(([label, arr]) => {
+          const mean = arr.reduce((s, x) => s + x.nv, 0) / arr.length;
+          return mkCell(arr.map((x) => ({ v: x.v, r: x.r })), label, Math.round(mean * 100) / 100);
+        });
     }
-    cells = [...byBin.entries()]
-      .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
-      .map(([label, arr]) => {
-        const mean = arr.reduce((s, x) => s + x.nv, 0) / arr.length;
-        return mkCell(arr.map((x) => ({ v: x.v, r: x.r })), label, Math.round(mean * 100) / 100);
-      });
   } else {
     const byCat = new Map<string, typeof rows>();
     for (const x of rows) {
@@ -257,6 +279,8 @@ export function patternFor(
           : direction === "down"
             ? `lower → more wins (${(bottom.wr * 100).toFixed(0)}% vs ${(top.wr * 100).toFixed(0)}%)`
             : "no direction — flat across buckets";
+    } else {
+      directionLabel = perValue ? "not enough rows per value to judge direction" : "no clear direction";
     }
   } else if (type === "presence" && famCtx) {
     // family-balanced present/absent: an "absent" feature usually just
@@ -382,7 +406,10 @@ export function patternFor(
     }
   }
 
-  cells.sort((a, b) => b.liftPp - a.liftPp || b.n - a.n);
+  // display order: per-value integers keep their natural 1..30 order;
+  // everything else sorts strongest cell first
+  if (perValue) cells.sort((a, b) => Number(a.label) - Number(b.label));
+  else cells.sort((a, b) => b.liftPp - a.liftPp || b.n - a.n);
   return {
     key, kind, type, baselineWr, n: nTotal, cells, direction, directionLabel, effectPp, strength, perFamily,
     pValue, qValue: null, stable: null, verdict: "exploratory",

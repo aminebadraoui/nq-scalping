@@ -321,7 +321,8 @@ export default function PatternExplorer() {
       <p className="mb-2 font-mono text-[9px] leading-snug text-zinc-600">
         ↑ higher values win more · ↓ lower values win more · ⚡ prefers one value · → flat · effect = lift spread between the two extreme cells (pp) ·
         p = Mann-Whitney (numeric) / Fisher extreme 2×2 (categorical) / CMH by family (presence) · q = Benjamini-Hochberg FDR across all variables ·
-        significant = q &lt; 0.10 and not contradicted by the time split · stable = same direction in both halves (≥2pp each) · POST-HOC anatomy correlates with the result by construction
+        significant = q &lt; 0.10 and not contradicted by the time split · stable = same direction in both halves (≥2pp each) · POST-HOC anatomy correlates with the result by construction ·
+        integers with ≤30 distinct values (contracts, hour) bin per value, not brackets
       </p>
 
       {!loaded && <p className="font-mono text-xs text-zinc-600">loading…</p>}

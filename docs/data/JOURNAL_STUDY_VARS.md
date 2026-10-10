@@ -253,6 +253,7 @@ applies a fixed, documented statistical discipline to every variable:
 
 | Layer | Method | Threshold |
 |---|---|---|
+| Binning | 4 equal-count quantiles for continuous/wide domains; **one cell per distinct value** for integer domains ≤ 30 values (contracts 1–30, hourET, domClusters) | — |
 | Direction | numeric: top vs bottom quantile win rate · categorical: best vs worst cell · presence: present vs absent **within each family**, then combined | ≥ 2pp to count as a direction |
 | Effect | lift spread between the two extreme cells (percentage points) | reported always; belief is gated by p/q/stability |
 | p-value | **Mann-Whitney U** (numeric, raw values, two-sided, tie-corrected) · **Fisher exact** on the extreme 2×2 (categorical) · **Cochran-Mantel-Haenszel** stratified by family (presence) | — |

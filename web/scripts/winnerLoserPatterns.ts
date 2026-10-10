@@ -265,6 +265,7 @@ async function main() {
 
   console.log(
     "\nmethods: p — Mann-Whitney (numeric, raw values) · Fisher exact on the extreme 2×2 (categorical) · Cochran-Mantel-Haenszel stratified by family (presence).\n" +
+      "binning — quantiles (4 equal-count) for continuous/wide domains; one cell per distinct value for integer domains ≤30 values (contracts 1–30, hourET, domClusters).\n" +
       "q — Benjamini-Hochberg FDR across every variable tested in this run; [SIG] = q < 0.10.\n" +
       "stability — the direction recomputed on the early vs late half of the time-ordered trades; [STABLE] = same non-flat direction, ≥2pp effect in BOTH halves; 'stability n/a' = a half lacked enough rows.\n" +
       "ranking — significant > stable > exploratory, then |effect|. Reading aids on live journal samples, not a substitute for the archive studies' train/test discipline.\n" +

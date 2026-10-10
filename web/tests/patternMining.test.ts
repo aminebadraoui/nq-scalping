@@ -133,6 +133,60 @@ test("winLossRowsFromDb maps a trades row: features parsed, pre-trade keys injec
 
 const blob = (): string => JSON.stringify({ a: Array.from({ length: 40 }, (_, i) => i) });
 
+/* ---- per-value binning (small integer domains) ---------------------- */
+
+test("contracts-like integers bin per value (1..30), not quantiles", () => {
+  const values: number[] = [];
+  const results: Array<"win" | "loss"> = [];
+  for (let i = 0; i < 60; i++) {
+    const size = (i % 30) + 1;
+    values.push(size);
+    results.push(size <= 15 ? "win" : "loss");
+  }
+  const p = patternFor("contracts", "fire-time", values, results, 0.5, 5, null)!;
+  assert.equal(p.type, "numeric");
+  assert.equal(p.cells.length, 30, "one cell per size");
+  assert.equal(p.cells[0].label, "1");
+  assert.equal(p.cells[29].label, "30");
+  assert.ok(p.cells.every((c) => c.meanValue !== null && Number.isInteger(c.meanValue)));
+});
+
+test("per-value direction: smaller sizes win more → direction down", () => {
+  const values: number[] = [];
+  const results: Array<"win" | "loss"> = [];
+  for (let i = 0; i < 60; i++) {
+    const size = Math.floor(i / 6) + 1; // sizes 1..10, 6 rows each
+    values.push(size);
+    results.push(size <= 5 ? "win" : "loss");
+  }
+  const p = patternFor("contracts", "fire-time", values, results, 0.5, 5, null)!;
+  assert.equal(p.direction, "down");
+  assert.match(p.directionLabel, /lower → more wins/);
+});
+
+test("continuous values still use quantile brackets", () => {
+  const values: number[] = [];
+  const results: Array<"win" | "loss"> = [];
+  for (let i = 0; i < 60; i++) {
+    values.push(1.5 + i * 0.7); // floats — never per-value
+    results.push(i >= 30 ? "win" : "loss");
+  }
+  const p = patternFor("atr14", "fire-time", values, results, 0.5, 5, null)!;
+  assert.equal(p.cells.length, 4, "4 quantile bins");
+  assert.ok(p.cells.every((c) => c.label.includes(",") || c.label.includes("∞")));
+});
+
+test("wide integer domains (>30 distinct) fall back to quantiles", () => {
+  const values: number[] = [];
+  const results: Array<"win" | "loss"> = [];
+  for (let i = 0; i < 200; i++) {
+    values.push(i + 1); // 200 distinct integers
+    results.push(i >= 100 ? "win" : "loss");
+  }
+  const p = patternFor("medVol", "fire-time", values, results, 0.5, 5, null)!;
+  assert.equal(p.cells.length, 4);
+});
+
 /* ---- the statistical foundation (verdict layer) ---------------------- */
 
 test("minePatterns: a clean consistent variable is significant and ranks first", () => {
@@ -143,7 +197,7 @@ test("minePatterns: a clean consistent variable is significant and ranks first",
     const win = v % 60 <= 30 ? v >= 16 : v >= 46;
     rows.push({
       result: (win ? "win" : "loss") as "win" | "loss",
-      flat: { x: v, y: v % 2 }, // y = noise (categorical, near 50/50 both outcomes)
+      flat: { x: v + 0.5, y: v % 2 }, // x = continuous (quantile bins) · y = noise
       anatomy: { family: "a" },
     });
   }
