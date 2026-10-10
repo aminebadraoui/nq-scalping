@@ -32,6 +32,13 @@ import {
 } from "../lib/strategyInsights";
 import { aggregateTrades, familyOf } from "../lib/tradeStats";
 import { edgeStatuses } from "../lib/edgeMonitor";
+import {
+  auditManualTrips,
+  auditSummary,
+  type ManualTrip,
+  type SignalRef,
+  type TripLabel,
+} from "../lib/manualAudit";
 
 function loadEnvLocal() {
   const p = path.resolve(process.cwd(), ".env.local");
@@ -178,11 +185,92 @@ async function existingTitles(): Promise<Set<string>> {
   return new Set(rows.map((r) => String(r.title)));
 }
 
+/* ---- manual-trade audit context for the AI review -------------------- */
+
+export type ManualContext = {
+  total: number;
+  summary: Record<TripLabel, number>;
+  netByLabel: Record<TripLabel, number>;
+  suspects: Array<{ day: string; time: string; side: string; qty: number; entry: number; net: number; nearestSignal: string | null; dtMin: number | null; dPx: number | null; dQty: number | null }>;
+  ambiguous: Array<{ day: string; time: string; side: string; qty: number; entry: number; net: number; nearestSignal: string | null; dtMin: number | null }>;
+  orphanSignals: number;
+};
+
+/** cross-reference the manual trips with every recorded signal (the same
+ *  engine as the journal panel + scripts/manualTradeAudit.ts) so the AI
+ *  knows which trades were manual and which bot trades lost their card.
+ *  Best-effort: a missing manual_trades table yields null. */
+async function loadManualContext(sinceMs: number): Promise<ManualContext | null> {
+  try {
+    const rows = (await sql`
+      select key, day, direction, qty, entry_price, exit_price, entry_at, matched_signal,
+             coalesce(pnl_net_usd, pnl_usd)::numeric(12,2) as net
+      from manual_trades
+      where entry_at >= ${new Date(sinceMs).toISOString()}
+      order by entry_at asc`) as Array<Record<string, unknown>>;
+    const sigRows = (await sql`
+      select key, ts, day, side, size, entry from signals
+      where ts >= ${sinceMs}`) as Array<Record<string, unknown>>;
+    const signals: SignalRef[] = sigRows.map((s) => ({
+      key: String(s.key),
+      day: String(s.day),
+      ts: Number(s.ts),
+      side: String(s.side) === "long" ? "long" : "short",
+      contracts: Number(String(s.size ?? "").match(/^(\d+)\s*MNQ/)?.[1] ?? 0),
+      entry: Number(s.entry) || null,
+    }));
+    const trips: ManualTrip[] = rows.map((r) => ({
+      key: String(r.key),
+      day: String(r.day),
+      direction: String(r.direction) === "long" ? "long" : "short",
+      qty: Number(r.qty ?? 0),
+      entryPrice: Number(r.entry_price ?? 0),
+      exitPrice: Number(r.exit_price ?? 0),
+      entryAtMs: Date.parse(String(r.entry_at)),
+      matchedSignal: r.matched_signal ? String(r.matched_signal) : null,
+    }));
+    const labeled = auditManualTrips(trips, signals);
+    const summary = auditSummary(labeled);
+    const netByLabel: Record<TripLabel, number> = { bot: 0, "bot-suspect": 0, ambiguous: 0, manual: 0 };
+    const netOf = (key: string): number => Number(rows.find((r) => String(r.key) === key)?.net ?? 0);
+    for (const t of labeled) netByLabel[t.evidence.label] += netOf(t.key);
+    const fmt = (t: (typeof labeled)[number]): Record<string, unknown> => ({
+      day: t.day,
+      time: new Date(t.entryAtMs).toISOString().slice(11, 16),
+      side: t.direction,
+      qty: t.qty,
+      entry: t.entryPrice,
+      net: netOf(t.key),
+      nearestSignal: t.evidence.nearestSignal,
+      dtMin: t.evidence.dtMin,
+      dPx: t.evidence.dPx,
+      dQty: t.evidence.dQty,
+    });
+    const paired = new Set(
+      ((await sql`select distinct signal_key from trades where ts >= ${sinceMs}`) as Array<{ signal_key: string }>).map((r) =>
+        String(r.signal_key),
+      ),
+    );
+    return {
+      total: labeled.length,
+      summary,
+      netByLabel,
+      suspects: labeled.filter((t) => t.evidence.label === "bot-suspect").map(fmt) as ManualContext["suspects"],
+      ambiguous: labeled.filter((t) => t.evidence.label === "ambiguous").map(fmt) as ManualContext["ambiguous"],
+      orphanSignals: signals.filter((s) => !paired.has(s.key)).length,
+    };
+  } catch (e) {
+    console.warn(`[insights] manual audit unavailable (${String(e)})`);
+    return null;
+  }
+}
+
 async function llmNarrative(
   rows: AnalyzedTrade[],
   insights: Insight[],
   rejected: Array<{ family: string; n: number }>,
   rejectedTotal: number,
+  manual: ManualContext | null,
 ): Promise<string | null> {
   const url = process.env.ANALYSIS_LLM_URL;
   const key = process.env.ANALYSIS_LLM_KEY;
@@ -220,7 +308,11 @@ async function llmNarrative(
           "improvement per strategy, and one concrete next experiment for the system (a gate, filter or execution change). " +
           "Mention stop-runs and adverse entry drift where relevant. rejectedSignals lists detector candidates vetoed by the " +
           "news gate or applied strategy overrides (and expansion retraces that never filled) — count them when judging " +
-          "how selective the system is. Be skeptical of small samples. Concise markdown, no disclaimers.",
+          "how selective the system is. manualTrades is the cross-referenced manual-trade audit: these are NOT bot " +
+          "performance — report them in their own paragraph, never inside a strategy's numbers. bot-suspect trips match a " +
+          "signal strictly (time+qty+price) but were never paired — likely bot trades that lost their card; flag them " +
+          "explicitly and suggest re-pairing. ambiguous trips need a human look. orphanSignals = cards with no fill at all. " +
+          "Be skeptical of small samples. Concise markdown, no disclaimers.",
       },
       {
         role: "user",
@@ -233,6 +325,7 @@ async function llmNarrative(
           bySide: sideRows,
           findings: insights.map((i) => ({ severity: i.severity, kind: i.kind, title: i.title, finding: i.finding })),
           rejectedSignals: { total: rejectedTotal, byFamily: rejected },
+          manualTrades: manual ?? { total: 0, summary: null, netByLabel: null, suspects: [], ambiguous: [], orphanSignals: 0 },
           trades: tradeLines,
         }),
       },
@@ -326,20 +419,36 @@ async function main() {
     console.log(`  EDGE ${e.status.toUpperCase().padEnd(11)} ${e.family}: ${e.detail}`);
   }
 
+  // ---- manual-trade audit (cross-referenced labels for the review) ----
+  const manual = await loadManualContext(since.getTime());
+  if (manual && manual.total > 0) {
+    console.log(
+      `[insights] manual audit: ${manual.total} trips (suspect ${manual.summary["bot-suspect"]} · ambiguous ${manual.summary.ambiguous} · manual ${manual.summary.manual}) · ${manual.orphanSignals} orphan cards`,
+    );
+  }
+
   // ---- AI narrative ----
   const narrative =
-    (await llmNarrative(trades, insights, rejected, rejectedTotal)) ??
+    (await llmNarrative(trades, insights, rejected, rejectedTotal, manual)) ??
     renderDeterministicNarrative(trades, insights);
   const rejectionLine =
     rejectedTotal > 0
       ? `\n\nVetoed candidates this window: ${rejectedTotal} (${rejected.map((r) => `${r.family}=${r.n}`).join(", ")}) — news blackout, applied overrides, or unfilled expansion retraces.`
       : "";
+  let manualLine = "";
+  if (manual) {
+    const manualNet = manual.netByLabel.manual + manual.netByLabel.ambiguous + manual.netByLabel["bot-suspect"];
+    manualLine = `\n\nManual trades this window: ${manual.total} (suspect ${manual.summary["bot-suspect"]} · ambiguous ${manual.summary.ambiguous} · manual ${manual.summary.manual}) · net ${manualNet >= 0 ? "+" : "−"}$${Math.abs(manualNet).toFixed(0)} — excluded from every bot strategy's numbers above. Bot-suspect trips match a signal strictly but were never paired; they likely belong to the bot families.`;
+  }
   await sql`
     insert into insights (strategy, kind, severity, title, finding, evidence, status, source)
-    values ('all', 'narrative', 'info', 'AI strategy review', ${narrative + rejectionLine}, ${JSON.stringify({
+    values ('all', 'narrative', 'info', 'AI strategy review', ${narrative + rejectionLine + manualLine}, ${JSON.stringify({
       trades: trades.length,
       windowStart: since.toISOString(),
       rejectedTotal,
+      manual: manual
+        ? { total: manual.total, summary: manual.summary, netByLabel: manual.netByLabel, suspects: manual.suspects, ambiguous: manual.ambiguous, orphanSignals: manual.orphanSignals }
+        : null,
     })}, 'proposed', ${process.env.ANALYSIS_LLM_KEY ? 'llm' : 'deterministic'})`;
 
   console.log(`[insights] stored ${stored} new findings + 1 narrative`);
