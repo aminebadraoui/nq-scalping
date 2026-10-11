@@ -34,7 +34,10 @@ export default function GatesPage() {
       <RuleBoard groups={["session", "card"]} title="live gates — session + card rules (from the running server)" />
 
       <section className="mb-8">
-        <h2 className="mb-3 font-mono text-xs uppercase tracking-widest text-zinc-500">the gate inventory</h2>
+        <h2 className="mb-1 font-mono text-xs uppercase tracking-widest text-zinc-500">the gate inventory</h2>
+        <p className="mb-3 text-xs text-zinc-500">
+          Each gate answers one question: should <em>this card</em>, in <em>this context</em>, be allowed to fire?
+        </p>
         <div className="space-y-6">
           {GROUP_ORDER.map((g) => {
             const list = GATES.filter((x) => x.group === g);

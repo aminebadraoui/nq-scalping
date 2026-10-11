@@ -9,9 +9,11 @@
  * /api/gc?action=health → execution.rules (groups: session, card) and
  * execution.feeds / liveFeed (tape gate).
  *
- * Pure data — one home for the regime story. Source: the 2026-10-11
- * architecture review §2.6 (docs/architecture/ARCHITECTURE-REVIEW.md)
- * and the live-pipeline sweep of lib/signalFeed.ts.
+ * Every entry answers one question: should THIS card, in THIS context,
+ * be allowed to fire? Pure data — one home for the regime story.
+ * Source: the 2026-10-11 architecture review §2.6
+ * (docs/architecture/ARCHITECTURE-REVIEW.md) and the live-pipeline
+ * sweep of lib/signalFeed.ts.
  * ------------------------------------------------------------------ */
 
 export type GateGroup = "regime" | "session" | "card" | "account";
@@ -35,7 +37,7 @@ export const GATES: GateEntry[] = [
     id: "signal-window",
     name: "Signal window",
     group: "regime",
-    decides: "the feed only runs Sun 18:00 → Fri 16:00 ET (daily 16–18 halt) — cards cannot exist outside it",
+    decides: "blocks everything outside the trading week — the feed runs Sun 18:00 → Fri 16:00 ET, with a daily 16:00–18:00 halt",
     where: "lib/signalFeed.ts:2284 · lib/marketHours.ts:108-118",
     knob: "hardcoded calendar",
     liveSource: "execution.market",
@@ -44,7 +46,7 @@ export const GATES: GateEntry[] = [
     id: "feed-freshness",
     name: "Feed freshness",
     group: "regime",
-    decides: "no cards when the GoCharting feed is disconnected, younger than 5 minutes, or the last tick is stale",
+    decides: "blocks all cards when the GoCharting feed is disconnected, has fewer than 5 live minutes, or the last tick is stale (closed market / maintenance)",
     where: "lib/signalFeed.ts:594-605",
     knob: "hardcoded",
     liveSource: "execution.liveFeed",
@@ -53,7 +55,7 @@ export const GATES: GateEntry[] = [
     id: "tape-gate",
     name: "Tape gate (candle confirmation)",
     group: "regime",
-    decides: "holds all cards while the trigger bar is tick-built instead of vendor-candle-built; pages the operator at ≥8 unconfirmed bars",
+    decides: "holds every card until the trigger bar is confirmed by the vendor candle feed — tick-built bars are a lossy sample of the real tape; pages the operator at ≥8 unconfirmed bars",
     where: "lib/signalFeed.ts:474-536",
     knob: "hardcoded (TAPE_GATE_TAIL_ALERT=8)",
     liveSource: "execution.liveFeed.tapeGateTail",
@@ -62,7 +64,7 @@ export const GATES: GateEntry[] = [
     id: "feed-flags",
     name: "FEED_* family switches",
     group: "regime",
-    decides: "which strategies exist at all (momentum / RTH / open drive live; the rest off)",
+    decides: "switches whole families on or off — momentum, RTH and open drive live; pullback, sniper, reversal, sweep-reclaim and the alert feeds off until switched",
     where: "lib/signalFeed.ts:112-161",
     knob: "env (Coolify)",
     liveSource: "execution.feeds",
@@ -71,7 +73,7 @@ export const GATES: GateEntry[] = [
     id: "news-blackout",
     name: "News blackout",
     group: "session",
-    decides: "no card inside a release window (FOMC −10/+20 min, BLS −5/+10); funded adds the MFF T1 ±3 min ban; skipped candidates are journaled",
+    decides: "blocks cards inside release windows (FOMC −10/+20 min, BLS −5/+10 min); funded also bans MFF T1 news ±3 min — skipped candidates are journaled, never silently lost",
     where: "lib/newsGate.ts calendar · lib/accountGuard.ts:319-333",
     knob: "hardcoded calendar (refreshed annually)",
     liveSource: "",
@@ -80,7 +82,7 @@ export const GATES: GateEntry[] = [
     id: "bar-freshness",
     name: "Bar freshness + dedupe",
     group: "session",
-    decides: "the trigger must be the just-closed bar, and one card per day/bar/strategy (the day's first momentum card is marked 1st today)",
+    decides: "only the just-closed bar can fire (no repaint), and one card per day/bar/strategy; the day's first momentum card is marked 1st today",
     where: "lib/signalFeed.ts:959 · dedupe sets :432-437",
     knob: "hardcoded",
     liveSource: "",
@@ -89,7 +91,7 @@ export const GATES: GateEntry[] = [
     id: "strategy-overrides",
     name: "Self-improvement overrides",
     group: "card",
-    decides: "approved strategy_overrides rows filter the next card without a deploy: family enable, hour veto, trend filter, min break fraction/range, max risk, first-of-day only",
+    decides: "the self-improvement actuator — approved DB rows filter the next card without a redeploy: family on/off, hour veto, trend filter, min break fraction/range, max risk, first-of-day only",
     where: "lib/signalFeed.ts:981-1020 → lib/strategyOverrides.ts:90-165",
     knob: "DB (strategy_overrides table, 5-min cache)",
     liveSource: "execution.rules",
@@ -98,7 +100,7 @@ export const GATES: GateEntry[] = [
     id: "ticket-veto",
     name: "Ticket expectancy veto",
     group: "card",
-    decides: "vetoes a momentum card when its measured cell expectancy is below the bar (unmeasured cells fail open)",
+    decides: "skips a momentum card whose measured cell expectancy is below the bar — unmeasured cells fail OPEN, so a veto never invents a block",
     where: "lib/ticketVeto.ts:33-55",
     knob: "env (TICKET_MIN_EXP_PTS, 0 = off)",
     liveSource: "",
@@ -107,7 +109,7 @@ export const GATES: GateEntry[] = [
     id: "rth-counter-gate",
     name: "RTH counter-signal gate",
     group: "card",
-    decides: "skips an RTH entry when it sits within PTS of an opposite-side winner in the last MIN minutes (owner-approved, 651-session validated)",
+    decides: "skips an RTH entry that sits within N points of an opposite-side winner from the last M minutes — the tape just proved the other direction (owner-approved, 651-session validated)",
     where: "lib/signalFeed.ts:1636-1672 · lib/rthExitLog.ts",
     knob: "env (RTH_COUNTER_GATE_MIN/_PTS, 0 = off)",
     liveSource: "",
@@ -116,7 +118,7 @@ export const GATES: GateEntry[] = [
     id: "rth-daily-cap",
     name: "RTH daily card cap",
     group: "card",
-    decides: "skips RTH cards beyond the first N of the day (the gap-only validation: first-3 keeps the consistency cap safe at real frictions)",
+    decides: "caps RTH to the first N cards of the day — first-3 keeps the +$900 consistency cap safe at real frictions",
     where: "lib/signalFeed.ts:1673-1704",
     knob: "env (RTH_MAX_CARDS_PER_DAY, 0 = off)",
     liveSource: "",
@@ -125,7 +127,7 @@ export const GATES: GateEntry[] = [
     id: "card-gate",
     name: "Card gate (box pipeline)",
     group: "card",
-    decides: "reversal card only: every directional box agrees + all 3 required ingredients + ≥4/6 present + 2 footprint filters",
+    decides: "reversal card only: every directional box must agree, all 3 required ingredients present, ≥4/6 confirmation, and both footprint filters pass",
     where: "lib/signals.ts:161-174",
     knob: "hardcoded",
     liveSource: "",
@@ -134,7 +136,7 @@ export const GATES: GateEntry[] = [
     id: "crossed-prices",
     name: "Crossed-stop / crossed-limit at dispatch",
     group: "card",
-    decides: "refuses the order when the tape already traded through the stop or limit (1 pt) before dispatch",
+    decides: "refuses the order when the tape already traded through its stop or limit (1 pt) before dispatch — the price no longer exists",
     where: "lib/crossTrade.ts:579-597 (+ feed + re-send copies)",
     knob: "hardcoded",
     liveSource: "",
@@ -143,7 +145,7 @@ export const GATES: GateEntry[] = [
     id: "kill-switch",
     name: "Trading halt (kill switch)",
     group: "account",
-    decides: "operator hard stop: all orders refused, cards become info-only; resume is password-gated",
+    decides: "the operator's hard stop: every order refused, cards become info-only; resuming requires the admin password",
     where: "lib/tradingHalt.ts · lib/crossTrade.ts:565",
     knob: "operator file (trading-halt.json)",
     liveSource: "execution.tradingHalt",
