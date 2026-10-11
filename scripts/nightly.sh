@@ -160,6 +160,15 @@ log "--- mine strategy insights (self-improvement) ---"
 INSIGHTS_RC=$?
 log "strategyInsights exit=$INSIGHTS_RC"
 
+log "--- decay watch (journal-only control chart) ---"
+# Rolling 100-trade WR/expR windows per family vs the playbook baselines.
+# Prints WATCH lines when the latest window drops >2σ below baseline.
+# Research output only — never changes a live feed (medallion-ideas #7).
+DECAY_RC=0
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/decayWatch.ts 2>&1 | tail -20
+DECAY_RC=${PIPESTATUS[0]}
+log "decayWatch exit=$DECAY_RC"
+
 log "--- AI macro briefing (post-close) ---"
 # DeepSeek situation analysis over the macro context + the day's tape →
 # one `macro_briefings` row for the dashboard card. Reads the live-written
@@ -209,10 +218,22 @@ log "--- weekly risk-stack backtest (Fridays only) ---"
 # account rules). Weekly cadence: it re-validates the protection math as
 # the archive grows; ~1 min on the warm cache.
 RISKSTACK_RC=0
+BREADTH_RC=0
+FDR_RC=0
 if [ "$(date +%u)" = "5" ]; then
   "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/riskStackStudy.ts --offline 2>&1 | tail -14
   RISKSTACK_RC=${PIPESTATUS[0]}
   log "riskStack exit=$RISKSTACK_RC"
+
+  log "--- weekly breadth audit + FDR ledger (Fridays only) ---"
+  # Breadth accounting (effective independent bets per family) and the
+  # false-discovery ledger (the repo's tested-hypothesis count and the
+  # Bonferroni bar for future gates). Research output only.
+  "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/breadthAudit.ts 2>&1 | tail -12
+  BREADTH_RC=${PIPESTATUS[0]}
+  "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/fdrLedger.ts 2>&1 | tail -10
+  FDR_RC=${PIPESTATUS[0]}
+  log "breadthAudit exit=$BREADTH_RC fdrLedger exit=$FDR_RC"
 else
   log "not Friday — skipping the weekly risk-stack backtest"
 fi
@@ -233,5 +254,8 @@ if [ "$ANALYSIS_RC" -ne 0 ]; then FINAL_RC=$ANALYSIS_RC; fi
 if [ "$INSIGHTS_RC" -ne 0 ]; then FINAL_RC=$INSIGHTS_RC; fi
 if [ "${BRIEFING_RC:-0}" -ne 0 ]; then FINAL_RC=$BRIEFING_RC; fi
 if [ "$RISKSTACK_RC" -ne 0 ]; then FINAL_RC=$RISKSTACK_RC; fi
-log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC divstore=$DIVSTORE_RC reconcile=$RECONCILE_RC scoresig=$SCORESIG_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC briefing=${BRIEFING_RC:-0} riskstack=$RISKSTACK_RC) ==="
+if [ "${DECAY_RC:-0}" -ne 0 ]; then FINAL_RC=$DECAY_RC; fi
+if [ "${BREADTH_RC:-0}" -ne 0 ]; then FINAL_RC=$BREADTH_RC; fi
+if [ "${FDR_RC:-0}" -ne 0 ]; then FINAL_RC=$FDR_RC; fi
+log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC divstore=$DIVSTORE_RC reconcile=$RECONCILE_RC scoresig=$SCORESIG_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC briefing=${BRIEFING_RC:-0} riskstack=$RISKSTACK_RC decay=${DECAY_RC:-0} breadth=${BREADTH_RC:-0} fdr=${FDR_RC:-0}) ==="
 exit $FINAL_RC
