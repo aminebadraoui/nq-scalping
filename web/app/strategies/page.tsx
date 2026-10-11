@@ -2,12 +2,15 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { LiveStrategiesSection, type FeedFlags } from "@/components/docs/LiveStrategies";
+import { StrategyRegistrySection } from "@/components/StrategyRegistrySection";
+import type { FeedFlags } from "@/components/docs/LiveStrategies";
 
-/** one place in the dashboard that shows EXACTLY how the live signal engine
- *  works: the loop, the two kinds of signals, the shared gates, and each
- *  strategy condition-by-condition with its LIVE on/off state read from the
- *  running server (/api/gc?action=health). */
+/** One place in the dashboard that shows EXACTLY how the live signal engine
+ *  works: the loop, the two kinds of signals, the shared gates — and each
+ *  strategy condition-by-condition, RENDERED FROM THE STRATEGY REGISTRY
+ *  (lib/strategies/registry.ts: the same config objects the feed trades),
+ *  with its LIVE on/off state read from the running server
+ *  (/api/gc?action=health). */
 
 const PIPELINE = [
   {
@@ -28,14 +31,15 @@ const PIPELINE = [
     title: "Two kinds of signals",
     body: (
       <>
-        <b className="text-zinc-200">Direct detectors</b> — the active strategies (momentum, RTH, open drive/pullback/sniper,
-        sweep-reclaim, unusual-volume watch). Each one is a self-contained detector with its own precise conditions (listed
-        card-by-card below) that fires only on the just-completed minute bar.{" "}
-        <b className="text-zinc-200">The box pipeline</b> — the reversal card (currently OFF): three independent boxes — order
-        flow (the location → absorption → divergence → reclaim sequence), price action (premium/discount) and options/gamma
-        (context — reported, never votes). Every directional box must agree on the direction; then the card gate requires all
-        3 required ingredients (location, mechanism, trigger) plus ≥1 confirmation (4/6 ingredients present), and finally two
-        footprint filters (the stack must not oppose the trade, and the entry bar's delta must print in the trade direction).
+        <b className="text-zinc-200">Direct detectors</b> — the active strategies (momentum flush + expansion, RTH, open
+        drive; pullback and sniper shipped but off). Each one is a self-contained detector with its own precise conditions
+        (rendered card-by-card below from the registry) that fires only on the just-completed minute bar.{" "}
+        <b className="text-zinc-200">The box pipeline</b> — the reversal card (currently OFF): three independent boxes —
+        order flow (the location → absorption → divergence → reclaim sequence), price action (premium/discount) and
+        options/gamma (context — reported, never votes). Every directional box must agree on the direction; then the card
+        gate requires all 3 required ingredients (location, mechanism, trigger) plus ≥1 confirmation (4/6 ingredients
+        present), and finally two footprint filters (the stack must not oppose the trade, and the entry bar's delta must
+        print in the trade direction).
       </>
     ),
   },
@@ -99,8 +103,9 @@ export default function StrategiesPage() {
         <h1 className="text-3xl font-bold tracking-tight text-zinc-50 sm:text-4xl">How the live feed actually works</h1>
         <p className="mt-3 max-w-3xl text-base leading-relaxed text-zinc-400">
           One place for the whole picture: the engine loop, the two kinds of signals, every gate a card passes before it is
-          sent, and each strategy condition-by-condition — with its <strong className="text-zinc-200">live ON/OFF state</strong>{" "}
-          read from this server's environment right now.
+          sent, and each strategy condition-by-condition — rendered from the strategy registry (the same config objects the
+          feed trades) with its <strong className="text-zinc-200">live ON/OFF state</strong> read from this server's
+          environment right now.
         </p>
         <p className="mt-3 font-mono text-[11px] text-zinc-500">
           {feeds
@@ -133,13 +138,17 @@ export default function StrategiesPage() {
         </div>
       </section>
 
-      {/* the strategies, condition by condition, live flags */}
-      <LiveStrategiesSection feeds={feeds} />
+      {/* the strategies, condition by condition, live flags — from the registry */}
+      <StrategyRegistrySection feeds={feeds} />
 
       <p className="mt-12 border-t border-zinc-800 pt-6 font-mono text-[11px] text-zinc-600">
         Educational research only — not financial advice. The same strategy details (with the research and sources) are on the{" "}
         <Link href="/docs" className="text-zinc-400 hover:text-zinc-200">
           docs page
+        </Link>
+        , the studies that measured each strategy are on the{" "}
+        <Link href="/studies" className="text-zinc-400 hover:text-zinc-200">
+          studies page
         </Link>
         , and the live data lives on the{" "}
         <Link href="/" className="text-zinc-400 hover:text-zinc-200">

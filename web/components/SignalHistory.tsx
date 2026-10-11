@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { cdtToET } from "@/lib/times";
 import { flattenFeatures } from "@/lib/tradeLedger";
 import { groupFeatures } from "@/lib/featureGroups";
+import { familyName } from "@/lib/familyNames";
 
 type CompactCandidate = {
   side: "bid" | "ask";
@@ -47,6 +49,8 @@ export type HistoryEntry = {
   dom?: DomContext | null;
   /** the full feature vector recorded at fire time — signal inputs + study-only context */
   features?: Record<string, unknown> | null;
+  /** strategy family id when the feed passes it top-level (otherwise read from features.family) */
+  family?: string;
   /** post-fire price-replay score: win | loss | time | open | "" (unscored) */
   outcome?: string;
   exitPrice?: number | null;
@@ -204,6 +208,10 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
           const active = activeId === id;
           const groups = groupFeatures(flattenFeatures(e.features));
           const featOpen = featIds.has(id);
+          // the strategy family: featureRegistry.ts records it inside the
+          // features vector; the feed may also pass it top-level
+          const familyId =
+            typeof e.features?.family === "string" ? e.features.family : typeof e.family === "string" ? e.family : "";
           return (
             <div
               key={id}
@@ -230,6 +238,16 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
                 {e.day} {e.timeET || "—"} NY
               </span>
               <span className="flex items-center gap-1.5">
+                {familyId ? (
+                  <Link
+                    href={`/strategies#strategy-${familyId}`}
+                    onClick={(ev) => ev.stopPropagation()}
+                    title={`strategy family ${familyId} — open the live strategy card`}
+                    className="rounded border border-zinc-700 px-1 py-0.5 text-[9px] text-zinc-400 transition-colors hover:border-zinc-500 hover:text-zinc-200"
+                  >
+                    {familyName(familyId)}
+                  </Link>
+                ) : null}
                 {e.outcome && OUTCOME_LABEL[e.outcome] ? (
                   <span title={outcomeTitle(e)} className={`rounded border px-1 py-0.5 text-[9px] font-semibold ${OUTCOME_STYLE[e.outcome] ?? "border-zinc-700 text-zinc-500"}`}>
                     {OUTCOME_LABEL[e.outcome]}

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { studies, byCategory, CATEGORIES, bestConfigs, type StudyCategory } from "@/lib/studies";
 import studyContent from "@/lib/studyContent.json";
+import { strategiesForStudy } from "@/lib/strategies/registry";
 import Markdown from "@/components/studies/Markdown";
 import StudiesSearch from "@/components/studies/StudiesSearch";
 
@@ -21,9 +22,15 @@ const CATEGORY_TONE: Record<StudyCategory, string> = {
   ops: "text-zinc-300 border-zinc-700 bg-zinc-900/60",
 };
 
+// live-strategy linkage: the registry's reverse index maps a study id to
+// the strategies it measured (lib/strategies/registry.ts) — data-driven,
+// no hand-maintained map
+const strategiesFor = (studyId: string) => strategiesForStudy(studyId);
+
 function StudyCard({ study }: { study: (typeof studies)[number] }) {
   const content = (studyContent as Record<string, string>)[study.id] ?? "";
   const cat = CATEGORIES.find((c) => c.id === study.category);
+  const linked = strategiesFor(study.id);
   return (
     <article id={`study-${study.id}`} data-search={`${study.id} ${study.title} ${study.question}`} className="contents scroll-mt-20">
       <details className="group rounded-lg border border-zinc-800 bg-zinc-900/30">
@@ -40,6 +47,21 @@ function StudyCard({ study }: { study: (typeof studies)[number] }) {
           </div>
           <h3 className="mt-2 text-sm font-semibold text-zinc-100">{study.title}</h3>
           <p className="mt-1 text-xs leading-relaxed text-zinc-400">{study.question}</p>
+          {linked.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-zinc-500">
+              <span>live strategy →</span>
+              {linked.map((s) => (
+                <Link
+                  key={s.id}
+                  href={`/strategies#strategy-${s.id}`}
+                  className="text-long hover:underline"
+                  title={`${s.id} — open the live strategy card`}
+                >
+                  {s.id}
+                </Link>
+              ))}
+            </div>
+          )}
         </summary>
         <div className="border-t border-zinc-800/60 px-4 pb-4 pt-3">
           {content ? (

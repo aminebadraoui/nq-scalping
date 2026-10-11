@@ -248,8 +248,8 @@ export default function DashboardPage() {
       {/* header */}
       <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="mb-1 font-mono text-xs uppercase tracking-[0.25em] text-long">NQ scalping · sweep-reclaim</p>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-50">Sweep-Reclaim</h1>
+          <p className="mb-1 font-mono text-xs uppercase tracking-[0.25em] text-long">live strategies · tick to card</p>
+          <h1 className="text-2xl font-bold tracking-tight text-zinc-50">NQ scalping · momentum · RTH · open drive</h1>
         </div>
         <span className={`flex items-center gap-2 font-mono text-xs ${live?.connected ? "text-long" : "text-short"}`}>
           <span className={`inline-block h-2 w-2 rounded-full ${live?.connected ? "bg-long shadow-[0_0_8px_rgba(52,211,153,0.9)]" : "bg-short"}`} />

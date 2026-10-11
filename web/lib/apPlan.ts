@@ -3,6 +3,14 @@
  * study CLIs (scripts/apRulesStudy.ts, scripts/apChallengeTiming.ts,
  * scripts/apPlanSweep.ts).
  *
+ * NOTE (architecture review P1, 2026-10-11): the day-plan GUARD rules
+ * (daily floor, profit arm, give-back, dd600→half) now live once in
+ * lib/risk/guardCore.ts and are shared by the live guard
+ * (lib/accountGuard.ts) and the guard replay (lib/guardReplay.ts).
+ * This module keeps its OWN simplified rule loop because the studies
+ * deliberately sweep different defaults here (e.g. LOSS_HALT −$300 vs
+ * the live −$250) — its numbers are research knobs, not the live stack.
+ *
  * Pools (switchable):
  *   "ap"   A+ only — momentum A+ (both triggers on the same bar) +
  *          RTH A+ (>=65% one-sided) — the two A+ tiers the cards print

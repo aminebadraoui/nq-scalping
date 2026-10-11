@@ -28,6 +28,16 @@ import path from "path";
 import { RAPID_EOD_50K } from "./propRules";
 import { dbEnabled, getDb } from "./gcdb";
 import { appendDaybook } from "./daybook";
+import {
+  guardConfigFromEnv,
+  targetReached,
+  floorMarginHalts,
+  consistencyHalts,
+  dailyFloorHalts,
+  profitArmStep,
+  givebackStep,
+  ddHalfStep,
+} from "./risk/guardCore";
 
 export type GuardStage = "eval" | "funded";
 
@@ -381,10 +391,15 @@ function maybeCommitEod(state: GuardState, equity: number, now = new Date()) {
 
 /** The single entry point: feed it the current account snapshot (from the
  *  CrossTrade API via lib/crossGuard.ts) each poll; it returns whether the
- *  executor may open a new trade right now. */
+ *  executor may open a new trade right now.
+ *
+ *  The day-plan RULES are pure predicates in lib/risk/guardCore.ts — this
+ *  function only sequences them over the live state (architecture review
+ *  P1: live and replay can no longer drift). */
 export function guardCheck(snap: { equity: number; realized: number } | null, now = new Date()): GuardDecision {
   const s = mem();
   const isNews = inNewsWindow(now);
+  const cfg = guardConfigFromEnv();
 
   if (snap === null || !Number.isFinite(snap.equity) || !Number.isFinite(snap.realized)) {
     return { verdict: "no-data", reason: "account equity unreadable — halting" };
@@ -398,7 +413,8 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
 
   // profit target: reached = pass — stop (eval: start+target; funded: target from 0)
   const targetPx = s.stage === "funded" ? s.profitTarget : s.startBalance + s.profitTarget;
-  if (equity >= targetPx) {
+  const targetHit = s.stage === "funded" ? targetReached(equity, s.profitTarget) : targetReached(equity - s.startBalance, s.profitTarget);
+  if (targetHit) {
     return {
       verdict: "halt-target",
       reason: `equity $${equity.toFixed(0)} ≥ target $${targetPx.toFixed(0)} — target reached, stop`,
@@ -406,16 +422,16 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
   }
 
   // EOD floor: never let a new trade risk crossing it
-  if (equity <= s.floor + GUARD_MARGIN()) {
+  if (floorMarginHalts(equity, s.floor, cfg.guardMargin)) {
     return {
       verdict: "halt-floor",
-      reason: `equity $${equity.toFixed(0)} within $${GUARD_MARGIN()} of floor $${s.floor.toFixed(0)} — halt (${s.locked ? "locked" : "trailing"})`,
+      reason: `equity $${equity.toFixed(0)} within $${cfg.guardMargin} of floor $${s.floor.toFixed(0)} — halt (${s.locked ? "locked" : "trailing"})`,
     };
   }
 
   // consistency (eval only): today's realized profit must stay under the cap —
   // a single day over 30% of target fails the eval no matter what other days do
-  if (s.stage === "eval" && s.dayPnl >= s.consistencyCap) {
+  if (consistencyHalts(s.stage, s.dayPnl, s.consistencyCap)) {
     return {
       verdict: "halt-consistency",
       reason: `today's realized P&L $${s.dayPnl.toFixed(0)} ≥ consistency cap $${s.consistencyCap} — stop for the day`,
@@ -427,11 +443,10 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
   // (it needs a peak above its floor) — a red day bleeds with no
   // intraday floor. The 2026-10-04/05 session (−$1,405) motivated it;
   // the apPlan sweep (2026-10-05) made −$250 the measured default.
-  const dailyFloor = num(process.env.DAILY_LOSS_FLOOR, 250);
-  if (dailyFloor > 0 && s.dayPnl <= -dailyFloor) {
+  if (dailyFloorHalts(s.dayPnl, cfg.dailyFloor)) {
     return {
       verdict: "halt-daily-floor",
-      reason: `day P&L $${s.dayPnl.toFixed(0)} ≤ −$${dailyFloor.toFixed(0)} (DAILY_LOSS_FLOOR) — halt new entries for the day`,
+      reason: `day P&L $${s.dayPnl.toFixed(0)} ≤ −$${cfg.dailyFloor.toFixed(0)} (DAILY_LOSS_FLOOR) — halt new entries for the day`,
     };
   }
 
@@ -439,39 +454,34 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
   // more trade is allowed — a win grants another, the FIRST loss after
   // arming ends the day (apPlan full-pool study 2026-10-05). Realized P&L
   // only moves on fills, so a drop = a losing close (one position at a time).
-  const arm = num(process.env.PROFIT_ARM, 400);
-  if (arm > 0) {
-    if (!s.profitArmed && s.dayPnl >= arm) {
-      s.profitArmed = true;
-      save();
-    }
-    if (s.profitArmed && s.lastDayPnl !== null && s.dayPnl < s.lastDayPnl) {
+  if (cfg.profitArm > 0) {
+    const wasArmed = s.profitArmed;
+    const pa = profitArmStep(s.profitArmed, s.lastDayPnl, s.dayPnl, cfg.profitArm);
+    s.profitArmed = pa.armed;
+    if (!wasArmed && pa.armed) save();
+    if (pa.halt) {
       return {
         verdict: "halt-profit-arm",
         reason:
-          `day P&L $${s.dayPnl.toFixed(0)} — first loss after arming at +$${arm.toFixed(0)} (peak since arm $${s.lastDayPnl.toFixed(0)}) — stop for the day`,
+          `day P&L $${s.dayPnl.toFixed(0)} — first loss after arming at +$${cfg.profitArm.toFixed(0)} (peak since arm $${s.lastDayPnl!.toFixed(0)}) — stop for the day`,
       };
     }
-    s.lastDayPnl = s.dayPnl;
+    s.lastDayPnl = pa.lastDayPnl;
   }
 
   // give-back protection: halt new entries once today's P&L has given back
   // more than max(floor, pct × dayPeak) from the day's peak — the 648-session
   // replay found pct 0.5 / floor $250 keeps 90% of total profit while cutting
   // the worst day from −$742 to −$496 (see docs/research/daily-giveback-protection-2026-10-02.md).
-  s.dayPeak = Math.max(s.dayPeak, s.dayPnl);
-  const gbPct = num(process.env.GUARD_GIVEBACK_PCT, 0.5);
-  const gbFloor = num(process.env.GUARD_GIVEBACK_FLOOR, 250);
-  if (gbPct > 0 && s.dayPeak > gbFloor) {
-    const givebackLimit = Math.max(gbFloor, gbPct * s.dayPeak);
-    if (s.dayPnl <= s.dayPeak - givebackLimit) {
-      return {
-        verdict: "halt-giveback",
-        reason:
-          `day P&L $${s.dayPnl.toFixed(0)} gave back $${(s.dayPeak - s.dayPnl).toFixed(0)} from peak $${s.dayPeak.toFixed(0)} ` +
-          `(limit $${givebackLimit.toFixed(0)}) — halt new entries for the day`,
-      };
-    }
+  const gb = givebackStep(s.dayPeak, s.dayPnl, cfg.givebackPct, cfg.givebackFloor);
+  s.dayPeak = gb.dayPeak;
+  if (gb.halt) {
+    return {
+      verdict: "halt-giveback",
+      reason:
+        `day P&L $${s.dayPnl.toFixed(0)} gave back $${(s.dayPeak - s.dayPnl).toFixed(0)} from peak $${s.dayPeak.toFixed(0)} ` +
+        `(limit $${gb.limit.toFixed(0)}) — halt new entries for the day`,
+    };
   }
 
   if (s.stage === "funded" && isNews) {
@@ -481,17 +491,11 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
   // day-plan drawdown halving (dd600→half): while the challenge drawdown
   // from the trailing reference is >= DD_HALF_AT, sizing halves (crossGuard
   // reads this flag); restored at DD_FULL_AT (hysteresis). DD_HALF_AT=0 off.
-  const ddHi = num(process.env.DD_HALF_AT, 600);
-  const ddLo = num(process.env.DD_FULL_AT, 300);
-  if (ddHi > 0) {
-    const dd = Math.max(0, s.highWater - equity);
-    if (!s.ddHalved && dd >= ddHi) {
-      s.ddHalved = true;
-      save();
-    } else if (s.ddHalved && dd <= ddLo) {
-      s.ddHalved = false;
-      save();
-    }
+  const dd = Math.max(0, s.highWater - equity);
+  const nextHalved = ddHalfStep(s.ddHalved, dd, cfg.ddHi, cfg.ddLo);
+  if (nextHalved !== s.ddHalved) {
+    s.ddHalved = nextHalved;
+    save();
   }
 
   return {

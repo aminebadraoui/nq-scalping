@@ -6,6 +6,7 @@ import { type StreakRow, type DrawdownRow, type HourCell, type HourRow } from "@
 import { flattenFeatures, ledgerCsv, type LedgerRow as DeepTradeRow, type LedgerVariable } from "@/lib/tradeLedger";
 import { groupFeatures } from "@/lib/featureGroups";
 import PatternExplorer from "@/components/PatternExplorer";
+import ExecLogPanel from "@/components/ExecLogPanel";
 
 /* ------------------------------------------------------------------ *
  * Trade journal — the dedicated surface for the self-improving loop:
@@ -743,6 +744,12 @@ export default function JournalPage() {
           )}
         </section>
       </div>
+
+      {/* execution log — the executor's own records (order attempts,
+          watcher decisions); display-only, polled from /api/exec-log */}
+      <section className="mb-5">
+        <ExecLogPanel />
+      </section>
 
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-5">
         {/* left column: narrative + insights */}
