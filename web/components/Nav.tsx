@@ -3,19 +3,23 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-/* Seven surfaces: the working dashboard, the trade journal (the
- * self-improving loop), the live rules board, the theory lab, the sweep
- * audit, the study archive, and the research. */
+/* Seven surfaces, organized by STAGE (what the system does) with a
+ * Live | Backtest | Studies mode inside each stage tab:
+ *   Overview — the working dashboard, everything live at a glance
+ *   Strategies — what we trade (registry, sweeps, studies)
+ *   Gates — the regime a strategy may execute in (windows, vetoes, filters)
+ *   Execution — orders, fills, the executor's records
+ *   Risk — account protection + sizing (one rule set, every stage)
+ *   Journal — the loop: trades, insights, overrides
+ *   Docs — the research narrative + course */
 const links = [
-  { href: "/", label: "Dashboard", note: "live working surface" },
-  { href: "/rules", label: "Rules", note: "every live halt/veto with its current state" },
-  { href: "/strategies", label: "Strategies", note: "how the live signal feed works, condition by condition" },
-  { href: "/course", label: "Course", note: "learn to trade the system manually — strategies, inputs & gates, execution, risk" },
-  { href: "/journal", label: "Journal", note: "trades, win/loss analysis, AI review + gates" },
-  { href: "/lab", label: "Lab", note: "test entry theories against the collected sessions" },
-  { href: "/backtest", label: "Backtest", note: "walk-forward threshold sweep + overfit audit" },
-  { href: "/studies", label: "Studies", note: "every backtest study, its question, and how to regenerate it" },
-  { href: "/docs", label: "Docs", note: "the research" },
+  { href: "/", label: "Overview", note: "live working surface", stage: null },
+  { href: "/strategies", label: "Strategies", note: "what we trade — live, backtest, studies", stage: true },
+  { href: "/gates", label: "Gates", note: "the regime a strategy can execute in", stage: true },
+  { href: "/execution", label: "Execution", note: "orders, fills, the executor", stage: true },
+  { href: "/risk", label: "Risk", note: "account protection + sizing", stage: true },
+  { href: "/journal", label: "Journal", note: "trades, win/loss analysis, AI review", stage: null },
+  { href: "/docs", label: "Docs", note: "the research", stage: null },
 ];
 
 const docAnchors = [
@@ -29,6 +33,7 @@ const docAnchors = [
 export default function Nav() {
   const pathname = usePathname();
   const onDocs = pathname.startsWith("/docs");
+  const stage = links.find((l) => l.stage && pathname.startsWith(l.href));
   return (
     <header className="sticky top-0 z-50 border-b border-zinc-800/80 bg-zinc-950/85 backdrop-blur">
       <div className="mx-auto flex w-full max-w-[1800px] items-center justify-between gap-4 px-4 py-3">
@@ -70,6 +75,33 @@ export default function Nav() {
           </span>
         </nav>
       </div>
+
+      {/* stage sub-tabs: Live | Backtest | Studies */}
+      {stage && (
+        <div className="border-t border-zinc-800/60 bg-zinc-950/60">
+          <div className="mx-auto flex w-full max-w-[1800px] items-center gap-1 px-4 py-1.5">
+            {[
+              { href: stage.href, label: "Live" },
+              { href: `${stage.href}/backtest`, label: "Backtest" },
+              { href: `${stage.href}/studies`, label: "Studies" },
+            ].map((m) => {
+              const active = m.href === stage.href ? pathname === stage.href : pathname.startsWith(m.href);
+              return (
+                <Link
+                  key={m.href}
+                  href={m.href}
+                  className={`rounded px-2.5 py-0.5 font-mono text-[11px] transition-colors ${
+                    active ? "bg-zinc-800 text-long" : "text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+                  }`}
+                >
+                  {m.label}
+                </Link>
+              );
+            })}
+            <span className="ml-auto hidden font-mono text-[10px] text-zinc-600 lg:block">{stage.note}</span>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

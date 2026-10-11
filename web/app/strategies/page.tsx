@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { StrategyRegistrySection } from "@/components/StrategyRegistrySection";
+import { StageTabs } from "@/components/StageTabs";
 import type { FeedFlags } from "@/components/docs/LiveStrategies";
 
 /** One place in the dashboard that shows EXACTLY how the live signal engine
@@ -119,6 +120,8 @@ export default function StrategiesPage() {
           </Link>
         </p>
       </header>
+
+      <StageTabs base="/strategies" />
 
       {/* the pipeline, step by step */}
       <section className="mb-10 rounded-lg border border-zinc-800 bg-zinc-900/40 p-5">
