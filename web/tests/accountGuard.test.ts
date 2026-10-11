@@ -112,11 +112,13 @@ test("eval: consistency records best-day P&L across rollovers", () => {
   assert.equal(guardState().bestDayPnl, 600);
 });
 
-test("funded: consistency cap does NOT apply (no consistency rule when funded)", () => {
+test("funded: the +$900/day consistency cap APPLIES (the same rules run on funded)", () => {
   setStage("funded");
   guardCheck(snap(0), at(9 * 60 + 30));
-  const d = guardCheck(snap(1_000), at(12 * 60)); // realized +$1,000 today
-  assert.equal(d.verdict, "ok");
+  const below = guardCheck(snap(500), at(12 * 60)); // realized +$500 today
+  assert.equal(below.verdict, "ok");
+  const d = guardCheck(snap(1_000), at(13 * 60)); // realized +$1,000 today → over the cap
+  assert.equal(d.verdict, "halt-consistency");
 });
 
 test("funded: floor locks at $100 and stops trailing", () => {

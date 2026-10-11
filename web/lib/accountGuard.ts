@@ -6,7 +6,8 @@
  *      the end-of-day close, never intraday, never down. It locks at $100
  *      once reached (funded stage) — below that the account is breached.
  *   2. Profit target ($3,000 over start): reaching it = pass — stop trading.
- *   3. Consistency (eval only): no single day's realized profit may exceed
+ *   3. Consistency (+$900/day cap on EVERY stage — the same rules apply
+ *      on funded, 2026-10-11): no single day's realized profit may exceed
  *      30% of the total target → $900/day cap. A $901 day breaks the rule
  *      even if every other day is tiny, so the guard halts once today's
  *      realized P&L reaches the cap.
@@ -433,9 +434,10 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
     };
   }
 
-  // consistency (eval only): today's realized profit must stay under the cap —
-  // a single day over 30% of target fails the eval no matter what other days do
-  if (consistencyHalts(s.stage, s.dayPnl, s.consistencyCap)) {
+  // consistency (+$900/day, every stage — the same rules apply on funded):
+  // a single day over 30% of target fails the eval no matter what other
+  // days do, so the guard halts once today's realized P&L reaches the cap
+  if (consistencyHalts(s.dayPnl, s.consistencyCap)) {
     return {
       verdict: "halt-consistency",
       reason: `today's realized P&L $${s.dayPnl.toFixed(0)} ≥ consistency cap $${s.consistencyCap} — stop for the day`,

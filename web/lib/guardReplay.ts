@@ -120,7 +120,7 @@ export function guardReplay(
         halt = "target";
       } else if (floorMarginHalts(equity, floor, cfg.guardMargin)) {
         halt = "margin";
-      } else if (consistencyHalts(stage, dayPnl, cfg.consistencyCap)) {
+      } else if (consistencyHalts(dayPnl, cfg.consistencyCap)) {
         halt = "consistency";
       } else if (dailyFloorHalts(dayPnl, cfg.dailyFloor)) {
         halt = "loss";

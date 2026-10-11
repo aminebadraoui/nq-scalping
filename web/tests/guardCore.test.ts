@@ -26,10 +26,10 @@ test("floorMarginHalts", () => {
   assert.equal(floorMarginHalts(48_501, 48_000, 500), false, "just outside the margin");
 });
 
-test("consistencyHalts is eval-only", () => {
-  assert.equal(consistencyHalts("eval", 900, 900), true);
-  assert.equal(consistencyHalts("eval", 899, 900), false);
-  assert.equal(consistencyHalts("funded", 900, 900), false);
+test("consistencyHalts: the +$900/day cap applies on every stage; 0 = off", () => {
+  assert.equal(consistencyHalts(900, 900), true);
+  assert.equal(consistencyHalts(899, 900), false);
+  assert.equal(consistencyHalts(900, 0), false, "0 = off");
 });
 
 test("dailyFloorHalts: 0 = off (the live convention, now shared with replay)", () => {

@@ -95,9 +95,11 @@ export function floorMarginHalts(equity: number, floor: number, margin: number):
   return equity <= floor + margin;
 }
 
-/** consistency (eval only): a single day over 30% of target fails the eval */
-export function consistencyHalts(stage: GuardStage, dayPnl: number, cap: number): boolean {
-  return stage === "eval" && dayPnl >= cap;
+/** consistency cap (+$900/day): the same rule applies on EVERY stage
+ *  (2026-10-11 owner decision — eval and funded trade under the same
+ *  rules; the cap also forces ≥4 days to the +$3,000 target). 0 = off. */
+export function consistencyHalts(dayPnl: number, cap: number): boolean {
+  return cap > 0 && dayPnl >= cap;
 }
 
 /** daily loss floor: 0 = off (the live convention) */

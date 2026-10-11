@@ -9,23 +9,23 @@
  * $100 lock applied to eval). This module is the single source:
  *
  *   · every numeric value derives from RAPID_EOD_50K (lib/propRules.ts)
- *   · the STAGE differences are expressed exactly once:
- *       eval    — starts at $50,000 nominal, target +$3,000, 30%
- *                 consistency ($900/day cap), min 4 days, floor trails
- *                 forever (no lock)
- *       funded  — starts at $0, the floor locks at $100 once reached,
- *                 no consistency cap, first payout at the $2,100 buffer,
- *                 then one per +$500, 90/10 split
- *   · the funded trading-halt target is profitTarget (+$3,000 from $0)
- *     — the same value the LIVE guard has always used (accountGuard.ts
- *     guardCheck). The $2,100 buffer is a PAYOUT threshold, not a
- *     trading halt.
+ *   · the SAME trading rules apply on every stage (owner decision
+ *     2026-10-11 — "keep it simple, the goal is to pass challenges"):
+ *     halt-target +$3,000 from the start balance, +$900/day consistency
+ *     cap (which forces ≥4 days to the target), $2,000 EOD-trailing
+ *     max loss. The ONLY stage differences are the nominal start
+ *     balance (eval $50,000 / funded $0) and MFF's funded floor-lock:
+ *       funded  — the floor locks at $100 once reached (the moment the
+ *                 $2,100 first-payout buffer clears); first payout at
+ *                 $2,100, then one per +$500, 90/10 split
+ *   · the funded $2,100 buffer is a PAYOUT threshold, not a trading
+ *     halt — the +$3,000 halt always clears it with one payout step
+ *     of headroom.
  *
- * NOTE (flagged for owner confirmation against MFF's current terms):
- * PLAYBOOK.md's line "the EVAL floor locks at the starting balance"
- * matches NO code path (live eval trails forever); propAccount.ts
- * (simulateAccount) locks the floor at $100 for BOTH stages and should
- * gate that on stage === "funded" when its WIP is committed.
+ * NOTE (still flagged for the owner's WIP): PLAYBOOK.md's line "the EVAL
+ * floor locks at the starting balance" matches NO code path (eval trails
+ * forever), and propAccount.ts (simulateAccount) locks the floor at $100
+ * for BOTH stages — it should gate that on stage === "funded".
  *
  * Pure + client-safe. Unit-tested in tests/challengeRules.test.ts.
  * gcdata/prop_sim.py mirrors these values — change both together.
@@ -78,9 +78,9 @@ export const EVAL_RULES: ChallengeRules = {
 export const FUNDED_RULES: ChallengeRules = {
   stage: "funded",
   startBalance: 0,
-  profitTarget: RAPID_EOD_50K.profitTarget, // +$3,000 from $0 — the live halt-target (payouts are separate)
+  profitTarget: RAPID_EOD_50K.profitTarget, // +$3,000 from $0 — the same halt-target as eval
   maxLoss: RAPID_EOD_50K.maxLoss,
-  consistencyCap: null,
+  consistencyCap: Math.round(RAPID_EOD_50K.profitTarget * RAPID_EOD_50K.consistency), // same rules on funded
   minDays: 1,
   lockAt: 100,
   buffer: RAPID_EOD_50K.buffer,

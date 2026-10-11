@@ -20,13 +20,14 @@ test("every numeric value derives from RAPID_EOD_50K", () => {
   assert.equal(FUNDED_RULES.buffer, RAPID_EOD_50K.buffer);
 });
 
-test("the stage differences are expressed once and are correct", () => {
+test("the trading rules are IDENTICAL across stages; only the start balance and the funded lock differ", () => {
   assert.equal(EVAL_RULES.startBalance, 50_000);
   assert.equal(FUNDED_RULES.startBalance, 0);
+  assert.equal(EVAL_RULES.profitTarget, FUNDED_RULES.profitTarget, "same +$3,000 halt-target");
   assert.equal(EVAL_RULES.consistencyCap, 900);
-  assert.equal(FUNDED_RULES.consistencyCap, null, "funded has no consistency cap");
+  assert.equal(FUNDED_RULES.consistencyCap, 900, "the +$900/day cap applies on funded too");
   assert.equal(EVAL_RULES.lockAt, null, "eval floor trails forever (the live behavior)");
-  assert.equal(FUNDED_RULES.lockAt, 100, "funded floor locks at $100 once reached");
+  assert.equal(FUNDED_RULES.lockAt, 100, "MFF funded floor-lock at $100 (the $2,100 buffer moment)");
   assert.equal(EVAL_RULES.minDays, 4);
 });
 
