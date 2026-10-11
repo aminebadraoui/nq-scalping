@@ -83,7 +83,7 @@ export const studies: Study[] = [
     category: "momentum",
     script: "scripts/hourExpectancyStudy.ts",
     cli: cli("scripts/hourExpectancyStudy.ts"),
-    doc: "docs/research/hourExpectancyStudy.md",
+    doc: "",
     engine: true,
   },
   {
@@ -171,7 +171,7 @@ export const studies: Study[] = [
     category: "momentum",
     script: "scripts/counterBiasVeto.ts",
     cli: cli("scripts/counterBiasVeto.ts"),
-    doc: "docs/research/counterBiasVeto.md",
+    doc: "",
     engine: true,
   },
   {
