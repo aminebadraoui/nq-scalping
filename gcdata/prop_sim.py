@@ -151,6 +151,9 @@ def main():
 
     TARGET, MAXLOSS, CONS, MINDAYS = 3000, 2000, 0.30, 4
     BUFFER, PAYOUT = 2100, 500
+    # NOTE: these mirror web/lib/risk/challengeRules.ts (the single source
+    # shared with the live guard) — eval: 3000/2000/0.30/4, no floor lock;
+    # funded: floor locks at $100, buffer 2100, payout 500. Change both together.
 
     print("\n=== EVAL (real sequence, walk-with-reset over 2.5y) ===")
     print(f"{'$R/trade':>9} {'MNQ@4.25':>9} {'passes':>7} {'blows':>6} {'median days':>12} {'p10':>5} {'p90':>5}")

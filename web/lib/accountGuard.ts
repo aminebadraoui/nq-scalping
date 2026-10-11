@@ -38,6 +38,7 @@ import {
   givebackStep,
   ddHalfStep,
 } from "./risk/guardCore";
+import { rulesForStage } from "./risk/challengeRules";
 
 export type GuardStage = "eval" | "funded";
 
@@ -126,10 +127,13 @@ export function guardStateFile(env: Record<string, string | undefined> = process
 
 function seed(): GuardState {
   const stage = guardStage();
-  const startBalance = stage === "funded" ? num(process.env.MFF_START_BALANCE, 0) : num(process.env.MFF_START_BALANCE, 50_000);
-  const maxLoss = num(process.env.MFF_MAX_LOSS, RAPID_EOD_50K.maxLoss);
-  const profitTarget = num(process.env.MFF_PROFIT_TARGET, RAPID_EOD_50K.profitTarget);
-  const lockAt = num(process.env.MFF_LOCK_AT, 100);
+  // challenge rules: the single source for the firm's per-stage numbers
+  // (lib/risk/challengeRules.ts) — env overrides stay on top
+  const r = rulesForStage(stage);
+  const startBalance = num(process.env.MFF_START_BALANCE, r.startBalance);
+  const maxLoss = num(process.env.MFF_MAX_LOSS, r.maxLoss);
+  const profitTarget = num(process.env.MFF_PROFIT_TARGET, r.profitTarget);
+  const lockAt = num(process.env.MFF_LOCK_AT, r.lockAt ?? 100);
   const floor = startBalance - maxLoss;
   // The $100 lock only applies to the FUNDED stage (which starts at $0 and
   // trails up). Eval starts at $50k, so its floor starts at $48k — no lock.
