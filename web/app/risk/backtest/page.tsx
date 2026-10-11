@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { StageLayout } from "@/components/stage/StageLayout";
 import { StudyPane } from "@/components/stage/StudyPane";
+import { BestConfigsTable } from "@/components/studies/BestConfigsTable";
 
 /** Risk → Backtest: the risk studies + the risk research CLIs. */
 export default function RiskBacktestPage() {
@@ -18,6 +19,7 @@ export default function RiskBacktestPage() {
         </>
       }
     >
+      <BestConfigsTable studyIds={["sizing-optimizer"]} compact />
       <StudyPane categories={["risk"]} compact />
 
       <section className="mt-8 rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">

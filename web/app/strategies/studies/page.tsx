@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { StageLayout } from "@/components/stage/StageLayout";
 import { StudyPane } from "@/components/stage/StudyPane";
+import { BestConfigsTable } from "@/components/studies/BestConfigsTable";
+
+const STRATEGY_BEST: string[] = ["momentum-study", "expansion-study", "rth-optimizer", "side-filter-study", "seasonal-almanac", "bias-time-of-day"];
 
 /** Strategies → Studies: the strategy-family studies with full content. */
 export default function StrategiesStudiesPage() {
@@ -17,6 +20,7 @@ export default function StrategiesStudiesPage() {
         </>
       }
     >
+      <BestConfigsTable studyIds={STRATEGY_BEST} compact />
       <StudyPane categories={["momentum", "rth", "bias", "reversal"]} />
     </StageLayout>
   );

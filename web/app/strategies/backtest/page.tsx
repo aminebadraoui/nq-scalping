@@ -1,5 +1,8 @@
 import { StageLayout } from "@/components/stage/StageLayout";
+import { BestConfigsTable } from "@/components/studies/BestConfigsTable";
 import BacktestView from "@/components/backtest/BacktestView";
+
+const STRATEGY_BEST: string[] = ["momentum-study", "expansion-study", "rth-optimizer", "side-filter-study", "seasonal-almanac", "bias-time-of-day"];
 
 /** Strategies → Backtest: the full walk-forward sweep + overfit audit. */
 export default function StrategiesBacktestPage() {
@@ -16,6 +19,7 @@ export default function StrategiesBacktestPage() {
         </>
       }
     >
+      <BestConfigsTable studyIds={STRATEGY_BEST} compact />
       <BacktestView />
     </StageLayout>
   );

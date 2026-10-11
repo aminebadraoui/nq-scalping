@@ -3,7 +3,7 @@
  * Server component: safe to render inside server pages. */
 
 import Link from "next/link";
-import { studies, CATEGORIES, type StudyCategory } from "@/lib/studies";
+import { studies, CATEGORIES, bestConfigs, type StudyCategory } from "@/lib/studies";
 import studyContent from "@/lib/studyContent.json";
 import { strategiesForStudy } from "@/lib/strategies/registry";
 import Markdown from "@/components/studies/Markdown";
@@ -24,6 +24,7 @@ export function StudyCard({ study }: { study: (typeof studies)[number] }) {
   const content = (studyContent as Record<string, string>)[study.id] ?? "";
   const cat = CATEGORIES.find((c) => c.id === study.category);
   const linked = strategiesForStudy(study.id);
+  const hasBest = bestConfigs.some((b) => b.studyId === study.id);
   return (
     <article id={`study-${study.id}`} data-search={`${study.id} ${study.title} ${study.question}`} className="contents scroll-mt-20">
       <details className="group rounded-lg border border-zinc-800 bg-zinc-900/30">
@@ -31,6 +32,15 @@ export function StudyCard({ study }: { study: (typeof studies)[number] }) {
           <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono">
             <span className="text-zinc-500">{study.date || "undated"}</span>
             <span className={`rounded border px-1.5 py-0.5 ${CATEGORY_TONE[study.category]}`}>{cat?.label ?? study.category}</span>
+            {hasBest && (
+              <Link
+                href="/studies#best-configs"
+                className="rounded border border-emerald-800 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-300"
+                title="this study holds a verified best result — see best results at a glance"
+              >
+                ★ best
+              </Link>
+            )}
             {study.engine && (
               <span className="rounded border border-emerald-800 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-300" title="script prints the === STANDARD REPORT === block (T1/T2/T4 + verdict)">
                 standard ✓

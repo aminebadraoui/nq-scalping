@@ -1,5 +1,6 @@
 import { StageLayout } from "@/components/stage/StageLayout";
 import { StudyPane } from "@/components/stage/StudyPane";
+import { BestConfigsTable } from "@/components/studies/BestConfigsTable";
 
 /** Execution → Backtest: execution is live-only; what backtests know
  *  about it is the FILL MODEL (slippage, drift, limit vs market). */
@@ -18,6 +19,7 @@ export default function ExecutionBacktestPage() {
         </>
       }
     >
+      <BestConfigsTable studyIds={[]} compact />
       <StudyPane categories={["execution"]} compact />
     </StageLayout>
   );
