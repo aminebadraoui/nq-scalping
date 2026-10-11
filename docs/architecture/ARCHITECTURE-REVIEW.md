@@ -25,6 +25,7 @@
 | P3 · Research-database scripts | ✅ done | `web/scripts/breadthAudit.ts` · `decayWatch.ts` · `fdrLedger.ts` (decay watch wired into `scripts/nightly.sh` daily; breadth + FDR on Fridays) |
 | P4 · Research machinery (blend, capacity) | ✅ done | `web/scripts/chipBlendStudy.ts` · `capacityTable.ts` |
 | P5 · Frontend clarity fixes | ✅ done | signal-card family chips, dashboard H1, exec-log panel + `/api/exec-log`, studies back-links via the registry reverse index |
+| Methodology · research loop (no-loop rule) | ✅ done | `docs/architecture/RESEARCH-LOOP.md` + the T0 `Stack` row (`backtestEngine.renderT0` injects it) |
 
 Deferred by design (owner WIP in `signalFeed.ts`, `daybook.ts`, `propAccount.ts`):
 the live feed's plan-constant migration (D3) and daybook `config` audit

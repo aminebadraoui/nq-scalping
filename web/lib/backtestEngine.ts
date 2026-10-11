@@ -490,9 +490,28 @@ export function renderVerdict(slots: { edge?: string; significance?: string; sta
   return `VERDICT: ${parts.join(" · ")}`;
 }
 
-/** T0 — the study card. */
+/** T0 — the study card.
+ *
+ *  Every study must declare its STACK: which ONE layer it varies against
+ *  the frozen production stack (docs/architecture/RESEARCH-LOOP.md).
+ *  renderT0 injects the Stack row when the caller didn't supply one —
+ *  an undeclared varying layer is printed as-is, never guessed. */
+export const PRODUCTION_STACK =
+  "signals *_PROD (registry) · gates default set · risk challengeRules+guardCore · fill 0.5pt/close-entry";
+
 export function renderT0(fields: Record<string, string>): string {
+  const entries: [string, string][] = Object.entries(fields);
+  const hasStack = entries.some(([k]) => k === "Stack");
+  const stackRow: [string, string] = ["Stack", fields["Stack"] ?? `${PRODUCTION_STACK} — varying layer NOT declared`];
+  const rows = hasStack
+    ? entries
+    : (() => {
+        const idx = entries.findIndex(([k]) => k === "CLI");
+        const copy = [...entries];
+        copy.splice(idx === -1 ? copy.length : idx, 0, stackRow);
+        return copy;
+      })();
   const L = ["| Field | Value |", "|---|---|"];
-  for (const [k, v] of Object.entries(fields)) L.push(`| ${k} | ${v} |`);
+  for (const [k, v] of rows) L.push(`| ${k} | ${v} |`);
   return L.join("\n");
 }

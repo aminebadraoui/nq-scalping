@@ -99,6 +99,7 @@ the T2 row format for any cell/segment comparison.
 | Split | 70/30 by date (train < date ≤ test) + frozen holdout if any |
 | Significance | Wilson 95% CI on WR · DSR/PBO if swept · FDR if pattern-mined |
 | Model (if any) | per-start-time logistic L2 / none |
+| Stack | which ONE layer this study varies, against the frozen production stack (signals `*_PROD` · gates default set · risk `challengeRules`+`guardCore` · fill 0.5 pt/close) — `renderT0` injects this row if not declared; see `docs/architecture/RESEARCH-LOOP.md` |
 | CLI | `web/scripts/<name>.ts` |
 
 ### T1 — Core quality table (THE table; identical columns in every study)

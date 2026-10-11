@@ -271,4 +271,17 @@ describe("renderers", () => {
     assert.ok(t0.startsWith("| Field | Value |"));
     assert.ok(t0.includes("| Cost model | 0.5 pt round-trip |"));
   });
+
+  it("renderT0 injects the Stack row when the caller didn't declare one (RESEARCH-LOOP rule 1)", () => {
+    const t0 = renderT0({ "Instrument / session": "NQ 1-min · ETH", "CLI": "scripts/x.ts" });
+    assert.ok(t0.includes("| Stack |"), "a Stack row must always exist");
+    assert.ok(t0.includes("varying layer NOT declared"), "an undeclared varying layer is printed, never guessed");
+    assert.ok(t0.indexOf("| Stack |") < t0.indexOf("| CLI |"), "Stack sits before CLI per the standard's field order");
+  });
+
+  it("renderT0 keeps a caller-supplied Stack row verbatim", () => {
+    const t0 = renderT0({ "Stack": "varying minBreakRangeR; everything else production", "CLI": "scripts/x.ts" });
+    assert.ok(t0.includes("| Stack | varying minBreakRangeR; everything else production |"));
+    assert.ok(!t0.includes("varying layer NOT declared"));
+  });
 });
