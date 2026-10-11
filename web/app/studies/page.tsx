@@ -182,6 +182,35 @@ export default function StudiesPage() {
             </tbody>
           </table>
         </div>
+        <details className="mt-3">
+          <summary className="cursor-pointer font-mono text-[10px] text-zinc-500 hover:text-zinc-300">
+            notation — what s0.35_t2.25_x60 means
+          </summary>
+          <div className="mt-2 grid gap-2 text-[11px] leading-relaxed text-zinc-400 sm:grid-cols-2">
+            <div>
+              <p className="mb-1 text-zinc-200">STOP × TARGET × TIME grid coordinates</p>
+              <ul className="list-inside list-disc space-y-1">
+                <li><b className="text-zinc-300">s</b> — stop multiplier: the stop sits at <code className="text-zinc-300">s × R</code> from entry, where R is the signal&apos;s own designed risk (its natural stop distance). <code className="text-zinc-300">s0.35</code> = tighten the natural stop to 35% of it.</li>
+                <li><b className="text-zinc-300">t</b> — target multiplier: the target sits at <code className="text-zinc-300">t × R</code>. <code className="text-zinc-300">t2.25</code> = target at 2.25× the signal&apos;s designed risk.</li>
+                <li><b className="text-zinc-300">x</b> — time exit in minutes (1-min bars): neither stop nor target hit within x minutes → exit at the market. <code className="text-zinc-300">x60</code> = 60-minute cap.</li>
+              </ul>
+            </div>
+            <div>
+              <p className="mb-1 text-zinc-200">How to read the trade-off</p>
+              <ul className="list-inside list-disc space-y-1">
+                <li>Reward:risk = <b className="text-zinc-300">t ÷ s</b> — e.g. s0.35_t2.25 = <b className="text-zinc-300">6.4 : 1</b>.</li>
+                <li>Smaller <b className="text-zinc-300">s</b> → tighter stop → lower win rate, cheaper losses.</li>
+                <li>Larger <b className="text-zinc-300">t</b> → further target → lower win rate, bigger winners.</li>
+                <li>Smaller <b className="text-zinc-300">x</b> → more time exits.</li>
+                <li>The base grid config is <code className="text-zinc-300">s1.0_t1.0_x60</code> (1R / 1R / 60 min).</li>
+              </ul>
+              <p className="mt-1 text-zinc-500">
+                Sweeps are points-level research input — the validated pick is the coordinate that survives DSR/PBO and the
+                frozen holdout, not the argmax of one metric.
+              </p>
+            </div>
+          </div>
+        </details>
       </section>
 
       {/* contents */}
