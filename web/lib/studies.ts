@@ -746,3 +746,105 @@ export const studies: Study[] = [
 ];
 
 export const byCategory = (c: StudyCategory): Study[] => studies.filter((s) => s.category === c);
+
+/* ------------------------------------------------------------------ *
+ * Best configs at a glance — the verified winners per study.
+ * Sources: the committed validation reports
+ * (web/app/api/backtest/validation/reports/*.validation.json) and the
+ * study docs cited in each note. Only rows whose numbers were read
+ * directly from those artifacts live here.
+ * ------------------------------------------------------------------ */
+
+export type BestConfig = {
+  studyId: string; // anchors to the study card (#study-<id>)
+  study: string; // short display name
+  config: string; // the config / rule / window
+  n: number | null;
+  wr: number | null; // percent
+  pf: number | null;
+  expPts: number | null;
+  note: string; // evidence line
+};
+
+export const bestConfigs: BestConfig[] = [
+  {
+    studyId: "momentum-study",
+    study: "Momentum flush",
+    config: "MOM_PROD — s0.35_t2.25_x60 (the live pick)",
+    n: 1458,
+    wr: 67.0,
+    pf: null,
+    expPts: null,
+    note: "DSR 1.000 · PBO 0.242 · holdout PASS +$328 (65.3% · SR 0.48) · edge real, selection gray — pick on plateaus, not the argmax (validation report 2026-10-04)",
+  },
+  {
+    studyId: "expansion-study",
+    study: "Huge-bar expansion",
+    config: "EXP_PROD — s0.4_t1.75_x45 (frozen argmax)",
+    n: 3056,
+    wr: 77.1,
+    pf: null,
+    expPts: null,
+    note: "DSR 1.000 · PBO 0.001 · holdout PASS +$802 (72.5% · SR 1.08) · selection rock-stable",
+  },
+  {
+    studyId: "rth-optimizer",
+    study: "RTH soft-continuation",
+    config: "SOFT_PROD — s0.45_t1.75_x45 (doc pick)",
+    n: 3176,
+    wr: 70.4,
+    pf: null,
+    expPts: null,
+    note: "DSR 1.000 · PBO 0.003 · holdout PASS +$1,587 (74.4% · SR 1.59) · the strongest validated family",
+  },
+  {
+    studyId: "side-filter-study",
+    study: "Side filter — #1 cell",
+    config: "ONLY LONGS — gap 0.5–1.5% DOWN + overnight tape (ALN early) + no FOMC",
+    n: 57,
+    wr: 88.0,
+    pf: null,
+    expPts: 5.19,
+    note: "CI [77–94] · train/test 88% / 88% · opposite side +2.12 — the highest-certainty one-sided statement in the archive",
+  },
+  {
+    studyId: "side-filter-study",
+    study: "Side filter — baseline",
+    config: "the card itself — all 3,298 replayed trades",
+    n: 3298,
+    wr: 76.8,
+    pf: 2.93,
+    expPts: 2.39,
+    note: "longs 78.6% / PF 3.26 / +2.56 · shorts 75.0% / 2.65 / +2.22",
+  },
+  {
+    studyId: "seasonal-almanac",
+    study: "Seasonal almanac",
+    config: "prime entry window 02:00–07:00 ET (hours 3–7)",
+    n: null,
+    wr: 83.0,
+    pf: null,
+    expPts: null,
+    note: "card WR 79.8–83% across hours 3–7 · ~95% of all drift · FOMC day = best overlay cell 83.8% WR (train)",
+  },
+  {
+    studyId: "bias-time-of-day",
+    study: "Bias time-of-day",
+    config: "daily-bias call at 09:15 pre-open (56.3% acc, +2.5 lift)",
+    n: null,
+    wr: 56.3,
+    pf: null,
+    expPts: null,
+    note: "best NY-side cell; overnight best 02:05 (57.9%) · group NY-open 54.8% [51.3–58.2] · afternoon calls falsified",
+  },
+  {
+    studyId: "sizing-optimizer",
+    study: "Sizing optimizer",
+    config: "s0.35 / t2.25 / x60 — the pick stands at measured cost",
+    n: null,
+    wr: null,
+    pf: null,
+    expPts: null,
+    note: "cost-fragile (lit hypothesis 2 CONFIRMED): the whole profile is conditional on real costs; plateau-pick, not a needle",
+  },
+];

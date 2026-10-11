@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { studies, byCategory, CATEGORIES, type StudyCategory } from "@/lib/studies";
+import { studies, byCategory, CATEGORIES, bestConfigs, type StudyCategory } from "@/lib/studies";
 import studyContent from "@/lib/studyContent.json";
 import Markdown from "@/components/studies/Markdown";
 import StudiesSearch from "@/components/studies/StudiesSearch";
@@ -25,7 +25,7 @@ function StudyCard({ study }: { study: (typeof studies)[number] }) {
   const content = (studyContent as Record<string, string>)[study.id] ?? "";
   const cat = CATEGORIES.find((c) => c.id === study.category);
   return (
-    <article data-search={`${study.id} ${study.title} ${study.question}`} className="contents">
+    <article id={`study-${study.id}`} data-search={`${study.id} ${study.title} ${study.question}`} className="contents scroll-mt-20">
       <details className="group rounded-lg border border-zinc-800 bg-zinc-900/30">
         <summary className="cursor-pointer list-none p-4 transition-colors hover:bg-zinc-900/40 [&::-webkit-details-marker]:hidden">
           <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono">
@@ -140,6 +140,47 @@ export default function StudiesPage() {
               card under <a href="#validation" className="text-long underline decoration-zinc-700 underline-offset-2">validation</a>.
             </p>
           </div>
+        </div>
+      </section>
+
+      {/* best configs at a glance */}
+      <section className="mb-8 rounded-lg border border-emerald-900/60 bg-emerald-950/10 p-4">
+        <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-emerald-400">best configs at a glance</p>
+        <p className="mb-3 text-[11px] text-zinc-500">
+          The verified winners per study — picks, filter cells, and windows whose numbers come straight from the committed
+          validation reports and the study docs. Click a study to jump to its card.
+        </p>
+        <div className="overflow-x-auto rounded border border-zinc-800">
+          <table className="w-full border-collapse text-[11px] leading-relaxed">
+            <thead>
+              <tr className="border-b border-zinc-800 text-left text-zinc-400">
+                <th className="px-2 py-1.5 font-semibold">study</th>
+                <th className="px-2 py-1.5 font-semibold">best config</th>
+                <th className="px-2 py-1.5 text-right font-semibold">n</th>
+                <th className="px-2 py-1.5 text-right font-semibold">WR</th>
+                <th className="px-2 py-1.5 text-right font-semibold">PF</th>
+                <th className="px-2 py-1.5 text-right font-semibold">exp pts</th>
+                <th className="px-2 py-1.5 font-semibold">evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bestConfigs.map((b) => (
+                <tr key={`${b.studyId}-${b.config}`} className="border-b border-zinc-800/50 align-top">
+                  <td className="px-2 py-1.5">
+                    <a href={`#study-${b.studyId}`} className="text-emerald-300 hover:underline">
+                      {b.study}
+                    </a>
+                  </td>
+                  <td className="px-2 py-1.5 text-zinc-300">{b.config}</td>
+                  <td className="px-2 py-1.5 text-right text-zinc-400">{b.n?.toLocaleString() ?? "—"}</td>
+                  <td className="px-2 py-1.5 text-right text-zinc-300">{b.wr !== null ? `${b.wr.toFixed(1)}%` : "—"}</td>
+                  <td className="px-2 py-1.5 text-right text-zinc-300">{b.pf !== null ? b.pf.toFixed(2) : "—"}</td>
+                  <td className="px-2 py-1.5 text-right text-zinc-300">{b.expPts !== null ? `+${b.expPts.toFixed(2)}` : "—"}</td>
+                  <td className="px-2 py-1.5 text-zinc-500">{b.note}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </section>
 
