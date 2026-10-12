@@ -70,9 +70,93 @@ test("ctSnapshot caches within the 30s window and null-caches on failure", async
 
   // failure → null-cached (fail closed), display keeps the last good value
   __resetCtAccountForTest();
-  const bad = await ctSnapshot({ fetchFn: failFetch() });
+  const bad = await ctSnapshot({ fetchFn: failFetch(), retryDelayMs: 0 });
   assert.equal(bad.accounts, null);
   assert.equal(ctSnapshotDisplay(), null);
+});
+
+test("ctSnapshot retries a degraded read (null balances) and resolves the first usable row", async () => {
+  __resetCtAccountForTest();
+  setEnv(BASE_ENV);
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    // attempt 1: the vendor's refresh-flap shape — row present, balances null
+    if (calls === 1) return jsonFetch({ accounts: [{ name: ACCT, netLiq: null, realizedPnl: null, openPnl: 0 }] })(input, init);
+    return jsonFetch({ accounts: [{ name: ACCT, netLiq: 50100, realizedPnl: 42.5 }] })(input, init);
+  };
+  const snap = await ctSnapshot({ fetchFn, retryDelayMs: 0 });
+  assert.equal(calls, 2);
+  assert.equal(snap.accounts?.[0]?.netLiq, 50100);
+  assert.equal(ctSnapshotDisplay()?.accounts?.[0]?.realizedPnl, 42.5);
+});
+
+test("ctSnapshot retries after a hard fetch failure and resolves on a later attempt", async () => {
+  __resetCtAccountForTest();
+  setEnv(BASE_ENV);
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    if (calls === 1) return failFetch(503)(input, init);
+    return jsonFetch({ accounts: [{ name: ACCT, netLiq: 50100, realizedPnl: 42.5 }] })(input, init);
+  };
+  const snap = await ctSnapshot({ fetchFn, retryDelayMs: 0 });
+  assert.equal(calls, 2);
+  assert.equal(snap.accounts?.[0]?.netLiq, 50100);
+});
+
+test("ctSnapshot null-caches only after EVERY attempt is degraded (fail closed)", async () => {
+  __resetCtAccountForTest();
+  setEnv(BASE_ENV);
+  let calls = 0;
+  const degraded: typeof fetch = (input, init) => {
+    calls++;
+    return jsonFetch({ accounts: [{ name: ACCT, netLiq: null, realizedPnl: null }] })(input, init);
+  };
+  const snap = await ctSnapshot({ fetchFn: degraded, retryDelayMs: 0 });
+  assert.equal(calls, 3);
+  assert.equal(snap.accounts, null);
+  assert.equal(ctSnapshotDisplay(), null);
+});
+
+test("ctSnapshot null-caches when every attempt hard-fails", async () => {
+  __resetCtAccountForTest();
+  setEnv(BASE_ENV);
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return failFetch(500)(input, init);
+  };
+  const snap = await ctSnapshot({ fetchFn, retryDelayMs: 0 });
+  assert.equal(calls, 3);
+  assert.equal(snap.accounts, null);
+});
+
+test("ctSnapshot retries when the configured account row is missing from the list", async () => {
+  __resetCtAccountForTest();
+  setEnv(BASE_ENV);
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    if (calls <= 2) return jsonFetch({ accounts: [{ name: "SOMEONE_ELSE", netLiq: 5, realizedPnl: 0 }] })(input, init);
+    return jsonFetch({ accounts: [{ name: ACCT, netLiq: 50100, realizedPnl: 0 }] })(input, init);
+  };
+  const snap = await ctSnapshot({ fetchFn, retryDelayMs: 0 });
+  assert.equal(calls, 3);
+  assert.equal(snap.accounts?.[0]?.netLiq, 50100);
+});
+
+test("ctSnapshot does not retry a usable first read", async () => {
+  __resetCtAccountForTest();
+  setEnv(BASE_ENV);
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return jsonFetch({ accounts: [{ name: ACCT, netLiq: 50100, realizedPnl: 0 }] })(input, init);
+  };
+  const snap = await ctSnapshot({ fetchFn, retryDelayMs: 0 });
+  assert.equal(calls, 1);
+  assert.equal(snap.accounts?.[0]?.netLiq, 50100);
 });
 
 test("ctFills parses orderId/instrument/fees and falls back to the last good list", async () => {

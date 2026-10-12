@@ -80,16 +80,58 @@ async function fetchSnapshotRaw(fetchFn: typeof fetch): Promise<CtSnapshotAccoun
   return j.accounts ?? [];
 }
 
+/** Is this accounts array a USABLE read for the configured account? A
+ *  usable read has the account row AND finite netLiq/realizedPnl (the two
+ *  fields the guard maps). The vendor's snapshot endpoint flaps between
+ *  real numbers and a degraded "balance refresh in progress" state that
+ *  returns HTTP 200 with the row but NULL balances — that degraded shape
+ *  is exactly as unusable as a fetch error and must be retried, not
+ *  cached. */
+function snapshotUsable(accounts: CtSnapshotAccount[] | null, account: string): boolean {
+  if (!Array.isArray(accounts)) return false;
+  const row = accountRow({ at: 0, accounts }, account);
+  return !!row && Number.isFinite(row.netLiq) && Number.isFinite(row.realizedPnl);
+}
+
+const SNAP_MAX_ATTEMPTS = 3;
+const SNAP_RETRY_BASE_MS = 1_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 /** the shared snapshot read: cached 30s, refreshed on expiry, null-cached
- *  on failure (the same fail-closed shape the guard relied on). */
-export async function ctSnapshot(opts?: { fetchFn?: typeof fetch }): Promise<CtSnapshot> {
+ *  on failure (the same fail-closed shape the guard relied on).
+ *
+ *  2026-10-12 fix — retry degraded reads: the CrossTrade snapshot API
+ *  intermittently returns the account row with netLiq/realizedPnl = null
+ *  (or an empty body) even though the numbers exist moments later. One
+ *  degraded sample used to null-cache for 30s and halt the gate for
+ *  hours. Now up to SNAP_MAX_ATTEMPTS reads are taken (small backoff
+ *  between them) and a null-cache happens ONLY when every attempt came
+ *  back degraded or failed — the gate still fails closed, but only when
+ *  the account is genuinely unreadable. */
+export async function ctSnapshot(opts?: { fetchFn?: typeof fetch; retryDelayMs?: number }): Promise<CtSnapshot> {
   if (snapCache && Date.now() - snapCache.at < SNAPSHOT_TTL_MS) return snapCache;
-  try {
-    const accounts = await fetchSnapshotRaw(opts?.fetchFn ?? fetch);
-    snapCache = { at: Date.now(), accounts };
-  } catch {
-    snapCache = { at: Date.now(), accounts: null };
+  const fetchFn = opts?.fetchFn ?? fetch;
+  const account = configuredAccount();
+  for (let attempt = 1; attempt <= SNAP_MAX_ATTEMPTS; attempt++) {
+    try {
+      const accounts = await fetchSnapshotRaw(fetchFn);
+      if (snapshotUsable(accounts, account)) {
+        snapCache = { at: Date.now(), accounts };
+        return snapCache;
+      }
+      // 200 with null balances / missing row / empty list — retry
+    } catch {
+      // HTTP error, empty body, or timeout — retry
+    }
+    if (attempt < SNAP_MAX_ATTEMPTS) {
+      await sleep(opts?.retryDelayMs ?? attempt * SNAP_RETRY_BASE_MS);
+    }
   }
+  // every attempt failed or came back degraded — null-cache (fail closed)
+  snapCache = { at: Date.now(), accounts: null };
   return snapCache;
 }
 
