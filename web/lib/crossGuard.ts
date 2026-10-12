@@ -159,7 +159,12 @@ export async function crossGuardSizeMult(): Promise<number> {
 
 let pollStarted = false;
 
-export function startCrossGuardPoll(intervalMs = 60_000): void {
+/** 25s cadence (2026-10-12): the snapshot cache TTL is 30s, so the old
+ *  60s poll left the cache STALE at card time and every card paid a
+ *  fresh REST hop before dispatch (applyDayTier reads the same cache).
+ *  25s < 30s keeps the cache warm — the tick-time sizing read becomes a
+ *  cache hit and the dispatch pre-flight is the only fresh read. */
+export function startCrossGuardPoll(intervalMs = 25_000): void {
   if (pollStarted || !enabled()) return;
   pollStarted = true;
   setInterval(() => {
@@ -175,4 +180,16 @@ export function startCrossGuardPoll(intervalMs = 60_000): void {
       }
     })();
   }, intervalMs);
+}
+
+/** boot warm (2026-10-12): preload the account snapshot + guard
+ *  hydration before the feed starts, so the session's FIRST card skips
+ *  the cold REST/DB hops. Called from instrumentation, best-effort. */
+export async function warmGuardState(): Promise<void> {
+  if (!enabled()) return;
+  try {
+    await Promise.all([fetchSnapshot(), hydrateGuardFromDb({ force: true })]);
+  } catch {
+    /* warm is best-effort — the gate re-reads fresh at placement */
+  }
 }

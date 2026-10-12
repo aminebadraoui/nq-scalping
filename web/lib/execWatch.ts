@@ -20,9 +20,16 @@
  *
  * Send failures alert immediately with the reason; with verified retry
  * armed the same card stays registered so the 90s check re-sends it
- * after the broker verification. Fill reads are cached 60s. No new
- * polling loop: the signal feed's 30s tick calls checkExpectations()
- * (the runner-tracker pattern).
+ * after the broker verification. Fill reads are cached 5s. The check
+ * runs on its OWN 5s timer (startWatchTimers, booted from
+ * instrumentation) — never on the feed tick, so the dispatch-critical
+ * loop carries no watcher work — and pushed broker FILL events from the
+ * CrossTrade WebSocket stream (lib/ctStream.ts) trigger an IMMEDIATE
+ * confirm pass (onPushedEntryFill → checkExpectations({immediate}))
+ * that only MATCHES fills: it closes the submit→fill leg, registers
+ * time exits at the true fill time and runs the protection sweep, but
+ * it can never re-send or drop a pending card (the no-fill branches
+ * stay behind the 90s gate).
  * ------------------------------------------------------------------ */
 
 import { sendTelegram } from "./notify";
@@ -64,7 +71,10 @@ const CHECK_AFTER_MS = 90_000;
 const GIVE_UP_MS = 10 * 60_000;
 const RETRY_INTERVAL_MS = 90_000;
 const MAX_RESEND_ATTEMPTS = 3;
-const FILL_CACHE_MS = 60_000;
+/** 5s (was 60s): the pushed-fill immediate pass needs a fresh-ish fill
+ *  list to match against; 5s keeps the REST load low while making the
+ *  5s timer's confirm passes accurate. */
+const FILL_CACHE_MS = 5_000;
 const MATCH_WINDOW_MS = 5 * 60_000;
 const MNQ = "MNQ";
 
@@ -148,28 +158,46 @@ export async function findWorkingStop(dir: "long" | "short"): Promise<{ ok: bool
   return { ok: true, found: stopCoversPosition(r.orders, dir) };
 }
 
-/** signed MNQ position from the fill-reconciled read (null = flat or
- *  unreadable — callers treat unreadable as "keep waiting"). */
-async function readMnqPosition(): Promise<{ qty: number; dir: "long" | "short" } | null> {
+/** shared short-TTL positions read for the OBSERVATIONAL paths (the
+ *  protection sweep and the RTH winner-exit poll). Deliberately NOT used
+ *  by the entry choke point (crossTrade.restFlatGate stays a fresh read —
+ *  a stale flat answer could stack a position) nor by the re-send
+ *  verification (verifyAbsent stays fresh — a stale clean book could
+ *  double a position). Load-sharing only where staleness is harmless. */
+let positionsCache: { at: number; rows: Array<Record<string, unknown>> | null } | null = null;
+const POSITIONS_TTL_MS = 2_000;
+
+async function fetchPositionsCached(): Promise<Array<Record<string, unknown>> | null> {
+  if (positionsCache && Date.now() - positionsCache.at < POSITIONS_TTL_MS) return positionsCache.rows;
   const key = process.env.CROSSTRADE_KEY ?? "";
   const account = process.env.CROSSTRADE_ACCOUNT ?? "";
+  let rows: Array<Record<string, unknown>> | null = null;
   try {
     const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`, {
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       signal: AbortSignal.timeout(15_000),
     });
     const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
-    if (!j.success) return null;
-    let qty = 0;
-    for (const p of j.data ?? []) {
-      if (!String(p.instrument ?? p.contractName ?? "").includes(MNQ)) continue;
-      qty += Number(p.netPos ?? p.qty ?? 0);
-    }
-    if (qty === 0) return null;
-    return { qty, dir: qty > 0 ? "long" : "short" };
+    rows = j.success ? j.data ?? [] : null;
   } catch {
-    return null;
+    rows = null;
   }
+  positionsCache = { at: Date.now(), rows };
+  return rows;
+}
+
+/** signed MNQ position from the fill-reconciled read (null = flat or
+ *  unreadable — callers treat unreadable as "keep waiting"). */
+async function readMnqPosition(): Promise<{ qty: number; dir: "long" | "short" } | null> {
+  const rows = await fetchPositionsCached();
+  if (rows === null) return null;
+  let qty = 0;
+  for (const p of rows) {
+    if (!String(p.instrument ?? p.contractName ?? "").includes(MNQ)) continue;
+    qty += Number(p.netPos ?? p.qty ?? 0);
+  }
+  if (qty === 0) return null;
+  return { qty, dir: qty > 0 ? "long" : "short" };
 }
 
 /** stop-slippage alarm (2026-10-08 −$1,056 event): when a tracked trade
@@ -283,23 +311,13 @@ function setOpenRthPos(p: OpenRthPos | null): void {
 }
 
 async function readMnqHeld(): Promise<number> {
-  const key = process.env.CROSSTRADE_KEY ?? "";
-  const account = process.env.CROSSTRADE_ACCOUNT ?? "";
-  try {
-    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`, {
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
-    if (!j.success) return -1;
-    let held = 0;
-    for (const p of j.data ?? []) {
-      if (String(p.instrument ?? p.contractName ?? "").includes(MNQ)) held += Number(p.qty ?? p.quantity ?? 0);
-    }
-    return held;
-  } catch {
-    return -1; // read failure — retry next poll, never guess
+  const rows = await fetchPositionsCached();
+  if (rows === null) return -1;
+  let held = 0;
+  for (const p of rows) {
+    if (String(p.instrument ?? p.contractName ?? "").includes(MNQ)) held += Number(p.qty ?? p.quantity ?? 0);
   }
+  return held;
 }
 
 async function pollRthExit(): Promise<void> {
@@ -349,6 +367,34 @@ function enabled(): boolean {
   );
 }
 
+/** the 5s fill-expectation timer (2026-10-12): checkExpectations used to
+ *  ride the feed tick, quantizing fill confirmation behind the 15s poll
+ *  (effective 90–105s). Its own 5s cadence + the pushed-fill immediate
+ *  pass cut fill→watcher latency from ~90s to <1s on the fill path. The
+ *  CHECK_AFTER_MS gate is unchanged — only the check FREQUENCY moved. */
+let watchTimerStarted = false;
+export function startWatchTimers(intervalMs = 5_000): void {
+  if (watchTimerStarted || !enabled()) return;
+  watchTimerStarted = true;
+  const timer = setInterval(() => {
+    void checkExpectations().catch(() => {});
+  }, intervalMs);
+  if (typeof timer.unref === "function") timer.unref();
+}
+
+/** pushed entry FILL from the CrossTrade order stream (lib/ctStream.ts):
+ *  a fill means the position exists NOW. Sweep protection immediately
+ *  (the 10s watchdog otherwise waits) and run an immediate confirm pass
+ *  so time exits register at the TRUE fill time and the submit→fill leg
+ *  closes — the immediate pass only matches fills, never re-sends. */
+export async function onPushedEntryFill(action: string, order: Record<string, unknown>): Promise<void> {
+  if (!enabled()) return;
+  const side = String(action ?? "").toLowerCase();
+  if (side !== "buy" && side !== "sell") return; // stop/target legs are not entry fills
+  void checkProtection().catch(() => {});
+  void checkExpectations({ immediate: true }).catch(() => {});
+}
+
 function autoRetry(): boolean {
   return process.env.AUTO_RETRY_VERIFIED !== "0";
 }
@@ -357,8 +403,8 @@ async function alert(text: string) {
   await sendTelegram(text, { parseMode: "HTML" }).catch(() => {});
 }
 
-async function fetchFills(): Promise<Array<{ ts: number; action: string; qty: number; price: number }>> {
-  if (fillCache && Date.now() - fillCache.at < FILL_CACHE_MS) return fillCache.fills;
+async function fetchFills(force = false): Promise<Array<{ ts: number; action: string; qty: number; price: number }>> {
+  if (!force && fillCache && Date.now() - fillCache.at < FILL_CACHE_MS) return fillCache.fills;
   try {
     const res = await fetch("https://app.crosstrade.io/v1/api/tv/fills", {
       headers: {
@@ -551,8 +597,38 @@ export function registerSendFailure(key: string, label: string, reason: string) 
   void alert(text);
 }
 
-/** called from the feed tick: the 90s verification + optional re-send */
-export async function checkExpectations(): Promise<void> {
+/** single-flight guard: the 5s timer and the pushed-fill immediate pass
+ *  must never run concurrently (two in-flight passes could both re-send
+ *  the same card). A request that lands mid-flight sets a rerun flag. */
+let checking = false;
+let rerunRequested = false;
+
+/** called from the 5s watcher timer and (immediate) from the pushed
+ *  broker FILL event: the 90s verification + optional re-send. The
+ *  IMMEDIATE pass only MATCHES fills — it closes the submit→fill leg,
+ *  registers limit fills/time exits at the true fill time and sweeps
+ *  protection; the no-fill branches (re-send, give-up, alert) stay
+ *  behind the CHECK_AFTER_MS gate so a just-placed card can never be
+ *  dropped or re-sent early. */
+export async function checkExpectations(opts?: { immediate?: boolean }): Promise<void> {
+  if (checking) {
+    rerunRequested = true;
+    return;
+  }
+  checking = true;
+  try {
+    await checkExpectationsOnce(opts);
+  } finally {
+    checking = false;
+    if (rerunRequested) {
+      rerunRequested = false;
+      void checkExpectations().catch(() => {});
+    }
+  }
+}
+
+async function checkExpectationsOnce(opts?: { immediate?: boolean }): Promise<void> {
+  const immediate = opts?.immediate === true;
   if (!enabled()) return;
   // the kill switch flipped mid-flight: cancel any resting limit so it
   // can never fill after the halt, and drop the pending cards quietly
@@ -583,7 +659,7 @@ export async function checkExpectations(): Promise<void> {
       }
       continue;
     }
-    if (now - e.ts < CHECK_AFTER_MS) continue;
+    if (!immediate && now - e.ts < CHECK_AFTER_MS) continue;
     if (now - e.ts > GIVE_UP_MS) {
       if (e.limit?.orderId) {
         const c = await cancelOrder(e.limit.orderId);
@@ -596,7 +672,7 @@ export async function checkExpectations(): Promise<void> {
       }
       continue;
     }
-    fills = fills ?? (await fetchFills());
+    fills = immediate ? await fetchFills(true) : (fills ?? (await fetchFills()));
     const matchedFill = fills ? findMatchingFill(e, fills, now) : null;
     if (matchedFill) {
       pending.delete(key);
@@ -631,6 +707,13 @@ export async function checkExpectations(): Promise<void> {
       void checkProtection().catch(() => {});
       continue;
     }
+
+    // the IMMEDIATE (pushed-fill) pass only MATCHES fills — no match means
+    // the fill hasn't hit the broker's fill list yet; the regular 5s
+    // timer will confirm it. Never fall through to the re-send/drop
+    // branches on an immediate pass (a just-placed card must not be
+    // re-sent or given up early).
+    if (immediate) continue;
 
     // resting-limit lifecycle: a limit card whose send succeeded waits for
     // the fill (no verify, no resend — the working order IS the intended

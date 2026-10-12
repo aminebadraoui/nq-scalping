@@ -28,6 +28,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
 import { RAPID_EOD_50K } from "./propRules";
 import { dbEnabled, getDb } from "./gcdb";
+import { withTimeout } from "./asyncTimeout";
 import { appendDaybook } from "./daybook";
 import {
   guardConfigFromEnv,
@@ -303,47 +304,74 @@ export function hydrateFieldsFrom(db: Partial<GuardState>, currentAccount: strin
  *  account with no row yet, or a stale row for another account that was
  *  correctly ignored) and FALSE when the DB was configured but
  *  unreachable — the caller treats a FALSE mid-day (realized ≠ 0)
- *  as a fail-closed halt instead of silently re-baselining the day. */
-export async function hydrateGuardFromDb(): Promise<boolean> {
+ *  as a fail-closed halt instead of silently re-baselining the day.
+ *
+ *  SHORT-TTL LATCH (2026-10-12): the in-memory guard state is
+ *  authoritative between reads — the DB round-trip exists only to sync
+ *  a redeploy. Re-querying on EVERY placement put two Neon statements
+ *  between detection and the order POST; the result is now latched for
+ *  HYDRATE_TTL_MS (a latched failure keeps failing closed — a DB blip
+ *  can never soften the gate). `force` re-reads (boot warm). */
+const HYDRATE_TTL_MS = 10_000;
+const HYDRATE_TIMEOUT_MS = 5_000;
+let hydrateLatch: { at: number; ok: boolean } | null = null;
+
+export function __resetHydrateLatchForTest(): void {
+  hydrateLatch = null;
+}
+
+export async function hydrateGuardFromDb(opts?: { force?: boolean; timeoutMs?: number }): Promise<boolean> {
   if (!dbEnabled()) return true;
+  if (!opts?.force && hydrateLatch && Date.now() - hydrateLatch.at < HYDRATE_TTL_MS) return hydrateLatch.ok;
   try {
-    await getDb().unsafe(GUARD_DB_SQL);
-    const rows = (await getDb()`select state from guard_state where id = 1`) as unknown as Array<{
-      state: unknown;
-    }>;
-    if (!rows.length) {
-      mem().dayBaselineOk = true; // fresh account — an empty baseline is legitimate
-      return true;
-    }
-    const raw = rows[0].state;
-    const db = (typeof raw === "string" ? JSON.parse(raw) : raw) as Partial<GuardState>;
-    const s = mem();
-    const h = hydrateFieldsFrom(db, currentAccountName());
-    if (h === null) {
-      // another account's row — ignore it wholesale (see hydrateFieldsFrom)
-      mem().dayBaselineOk = true;
-      return true;
-    }
-    s.highWater = Math.max(Number(h.highWater ?? 0), s.highWater);
-    s.floor = Math.max(Number(h.floor ?? 0), s.floor);
-    if (h.locked !== undefined) s.locked = h.locked;
-    if (h.lastCommitDay) s.lastCommitDay = h.lastCommitDay;
-    if (h.dayKey) {
-      s.dayKey = h.dayKey;
-      s.dayStartRealized = Number(h.dayStartRealized ?? 0);
-    }
-    s.bestDayPnl = Math.max(Number(h.bestDayPnl ?? 0), s.bestDayPnl);
-    s.dayPeak = Math.max(Number(h.dayPeak ?? 0), s.dayPeak);
-    if (h.profitArmed !== undefined) s.profitArmed = h.profitArmed;
-    if (h.lastDayPnl !== undefined && h.lastDayPnl !== null) s.lastDayPnl = Number(h.lastDayPnl);
-    if (h.ddHalved !== undefined) s.ddHalved = h.ddHalved;
-    s.dayPnl = 0; // recomputed by guardCheck from dayStartRealized
-    s.dayBaselineOk = true;
-    return true;
+    const ok = await withTimeout(
+      (async () => {
+        await getDb().unsafe(GUARD_DB_SQL);
+        const rows = (await getDb()`select state from guard_state where id = 1`) as unknown as Array<{
+          state: unknown;
+        }>;
+        if (!rows.length) {
+          mem().dayBaselineOk = true; // fresh account — an empty baseline is legitimate
+          return true;
+        }
+        const raw = rows[0].state;
+        const db = (typeof raw === "string" ? JSON.parse(raw) : raw) as Partial<GuardState>;
+        const s = mem();
+        const h = hydrateFieldsFrom(db, currentAccountName());
+        if (h === null) {
+          // another account's row — ignore it wholesale (see hydrateFieldsFrom)
+          mem().dayBaselineOk = true;
+          return true;
+        }
+        s.highWater = Math.max(Number(h.highWater ?? 0), s.highWater);
+        s.floor = Math.max(Number(h.floor ?? 0), s.floor);
+        if (h.locked !== undefined) s.locked = h.locked;
+        if (h.lastCommitDay) s.lastCommitDay = h.lastCommitDay;
+        if (h.dayKey) {
+          s.dayKey = h.dayKey;
+          s.dayStartRealized = Number(h.dayStartRealized ?? 0);
+        }
+        s.bestDayPnl = Math.max(Number(h.bestDayPnl ?? 0), s.bestDayPnl);
+        s.dayPeak = Math.max(Number(h.dayPeak ?? 0), s.dayPeak);
+        if (h.profitArmed !== undefined) s.profitArmed = h.profitArmed;
+        if (h.lastDayPnl !== undefined && h.lastDayPnl !== null) s.lastDayPnl = Number(h.lastDayPnl);
+        if (h.ddHalved !== undefined) s.ddHalved = h.ddHalved;
+        s.dayPnl = 0; // recomputed by guardCheck from dayStartRealized
+        s.dayBaselineOk = true;
+        return true;
+      })(),
+      opts?.timeoutMs ?? HYDRATE_TIMEOUT_MS,
+      "guard hydration",
+    );
+    hydrateLatch = { at: Date.now(), ok };
+    return ok;
   } catch {
     // best-effort — the bootstrapped state still governs; the caller
-    // decides whether a missing day baseline is safe
+    // decides whether a missing day baseline is safe. Latched FALSE keeps
+    // the fail-closed posture for HYDRATE_TTL_MS (a timed-out DB must not
+    // flip to "hydrated" on the next call inside the same dispatch).
     mem().dayBaselineOk = false;
+    hydrateLatch = { at: Date.now(), ok: false };
     return false;
   }
 }

@@ -14,6 +14,7 @@
  * ------------------------------------------------------------------ */
 
 import { reactToPushedStopRejection } from "./crossTrade";
+import { onPushedEntryFill } from "./execWatch";
 
 let started = false;
 let sock: WebSocket | null = null;
@@ -64,6 +65,12 @@ function connect(): void {
     const status = String(o.ordStatus ?? o.orderState ?? "");
     if (status === "Rejected") {
       void reactToPushedStopRejection(String(o.id ?? ""), String(o.action ?? "")).catch(() => {});
+    } else if (status === "Filled") {
+      // pushed ENTRY fill (2026-10-12): confirm it immediately instead of
+      // waiting for the 5s timer + fill-cache refresh — time exits then
+      // register at the TRUE fill time and the protection sweep runs now.
+      // The immediate pass only matches fills; it can never re-send/drop.
+      void onPushedEntryFill(String(o.action ?? ""), o).catch(() => {});
     }
   };
   next.onclose = () => {

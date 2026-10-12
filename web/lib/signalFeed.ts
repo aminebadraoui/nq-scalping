@@ -34,7 +34,7 @@ import { readOptionsFromSnapshot, wallsFromRead, type OptionsRead } from "./opti
 import { applyWallStop } from "./wallStop";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
 import { detectSoftMomentum, SOFT_PROD } from "./softMomentum";
-import { momentumSize, cappedContracts, daySizeMultiplier, parseSizeTiers, DEFAULT_SIZE_TIERS } from "./propRules";
+import { momentumSize, cappedContracts, daySizeMultiplier, parseSizeTiers, DEFAULT_SIZE_TIERS, PROP_RISK_PER_TRADE } from "./propRules";
 import {
   loadCollectedContext,
   computeSignal,
@@ -62,7 +62,7 @@ import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
 import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
-import { registerExpectation, registerSendFailure, checkExpectations, attachLimitOrderId } from "./execWatch";
+import { registerExpectation, registerSendFailure, attachLimitOrderId } from "./execWatch";
 import { stopCrossedAtDispatch, limitCrossedAtDispatch } from "./crossTrade";
 import { tradingHalted } from "./tradingHalt";
 import { counterGateDecision, counterGateParams } from "./rthExitLog";
@@ -120,18 +120,28 @@ export function barCloseMs(bar: { t: string; du?: string } | undefined): number 
  *  · close > max → a new bar appeared → fire
  *  · close == max → remember the source at max; fire only on the
  *    tick→candle confirmation flip (once)
+ *  · close == max, already candle-confirmed, but the vendor REVISED the
+ *    tail (barsRevision bumped) → fire again — a revision can flip the
+ *    tape gate or change a detector output, and the event path must
+ *    re-evaluate exactly like the poll path did (barsRevision is the
+ *    same signal the detector caches key on).
  *  · close < max → a backward tail oscillation → ignore
  *  Repeat frames and oscillation re-advances can never fire twice. */
 export function eventTickDecision(
-  prev: { maxCloseMs: number; srcAtMax: string },
-  next: { closeMs: number; barSrc: string },
-): { fire: boolean; maxCloseMs: number; srcAtMax: string } {
-  if (next.closeMs > prev.maxCloseMs) return { fire: true, maxCloseMs: next.closeMs, srcAtMax: next.barSrc };
+  prev: { maxCloseMs: number; srcAtMax: string; revAtMax?: number },
+  next: { closeMs: number; barSrc: string; revision?: number },
+): { fire: boolean; maxCloseMs: number; srcAtMax: string; revAtMax: number } {
+  const prevRev = prev.revAtMax ?? 0;
+  const rev = next.revision ?? 0;
+  if (next.closeMs > prev.maxCloseMs) return { fire: true, maxCloseMs: next.closeMs, srcAtMax: next.barSrc, revAtMax: rev };
   if (next.closeMs === prev.maxCloseMs) {
     const flip = prev.srcAtMax === "tick" && next.barSrc === "candle";
-    return { fire: flip, maxCloseMs: prev.maxCloseMs, srcAtMax: flip ? "candle" : prev.srcAtMax };
+    if (flip) return { fire: true, maxCloseMs: prev.maxCloseMs, srcAtMax: "candle", revAtMax: rev };
+    const revised = prev.srcAtMax === "candle" && next.barSrc === "candle" && rev > prevRev;
+    if (revised) return { fire: true, maxCloseMs: prev.maxCloseMs, srcAtMax: "candle", revAtMax: rev };
+    return { fire: false, maxCloseMs: prev.maxCloseMs, srcAtMax: prev.srcAtMax, revAtMax: prevRev };
   }
-  return { fire: false, maxCloseMs: prev.maxCloseMs, srcAtMax: prev.srcAtMax };
+  return { fire: false, maxCloseMs: prev.maxCloseMs, srcAtMax: prev.srcAtMax, revAtMax: prevRev };
 }
 
 /** pure poll-backstop decision: the interval tick is the safety net only.
@@ -452,11 +462,36 @@ class SignalFeed {
    *  close epoch the subscription has seen + the confirmation source of
    *  that bar, so a live-state emit only triggers a tick when the tail
    *  advances past the max or confirms at the max — backward oscillations
-   *  and repeat footprint frames are skipped */
+   *  and repeat footprint frames are skipped. revAtMax tracks the buffer
+   *  revision at the max so a vendor REVISION of the confirmed tail
+   *  re-fires the tick (same close, new revision — the poll path always
+   *  re-evaluated revisions; the event path must too). */
   private eventTickMaxClose = 0;
   private eventTickSrcAtMax = "";
+  private eventTickRevAtMax = 0;
   private eventTickLast = 0;
   private pollSkipLoggedAt = 0;
+  /** coalesced pending tick: a tick that arrived while another was
+   *  running is QUEUED (last one wins), never dropped — a dropped event
+   *  tick would permanently lose its bar (the max already advanced and
+   *  the poll backstop skips it). */
+  private pendingTick: "boot" | "poll" | "event" | "tick" | null = null;
+  /** per-tick memo epoch — the O(n) chip helpers (esContext, gaps, mid)
+   *  are computed once per tick and shared by the three card checkers */
+  private tickEpoch = 0;
+  private tickMemo: {
+    epoch: number;
+    fp: FootprintMinute[];
+    es: EsContext | null;
+    gaps: ReturnType<typeof gapInventory>;
+    nqMid: number[];
+  } | null = null;
+  /** per-tick tape-gate hold memo — the tail/hold are pure functions of
+   *  the footprint, computed once per tick and shared by every scan */
+  private tapeHoldMemo: { epoch: number; fp: FootprintMinute[]; tail: number; hold: boolean } | null = null;
+  /** display-snapshot timer — the heavy computeSignal runs on this 30s
+   *  cadence for the dashboard/API, OFF the dispatch-critical tick */
+  private displayTimer: ReturnType<typeof setInterval> | null = null;
   private ctxCache: { date: string; ctx: CollectedContext } | null = null;
   private lastCtxLoad = 0;
   private sent = new Set<string>();
@@ -519,12 +554,23 @@ class SignalFeed {
    *  unconfirmed bars grows past TAPE_GATE_TAIL_ALERT (see
    *  tapeGateDecision). */
   private tapeGateHoldsCore(fp: FootprintMinute[], scan: string): boolean {
-    const tail = tapeTailCount(fp);
+    // per-tick memo: tail + hold are pure functions of the footprint —
+    // all three card checkers share one computation per tick (the alert
+    // paging below stays per-scan so its throttles keep working)
     const now = Date.now();
-    const d = tapeGateDecision(tail, fp.length, now, this.tapeGateAlertedAt);
-    if (!d.hold) return false;
+    let tail: number;
+    let hold: boolean;
+    if (this.tapeHoldMemo && this.tapeHoldMemo.epoch === this.tickEpoch && this.tapeHoldMemo.fp === fp) {
+      tail = this.tapeHoldMemo.tail;
+      hold = this.tapeHoldMemo.hold;
+    } else {
+      tail = tapeTailCount(fp);
+      hold = tapeGateDecision(tail, fp.length, now, this.tapeGateAlertedAt).hold;
+      this.tapeHoldMemo = { epoch: this.tickEpoch, fp, tail, hold };
+    }
+    if (!hold) return false;
     this.logTapeGate(scan);
-    if (d.alert) {
+    if (tapeGateDecision(tail, fp.length, now, this.tapeGateAlertedAt).alert) {
       if (marketOpenAt(now)) {
         // the self-heal ladder (lib/live.ts) works the same stall the
         // pager sees: hold the page while an episode is young and the
@@ -593,10 +639,37 @@ class SignalFeed {
     return c;
   }
 
+  /** per-tick memo for the O(n) chip helpers — momentum/RTH/open each
+   *  rebuilt them (esContext twice, gapInventory three times, nqMid
+   *  twice) every tick. Keyed by tick epoch + footprint identity: a
+   *  mid-tick bar revision still recomputes, cross-tick staleness is
+   *  impossible (the epoch advances every tick), and the three checkers
+   *  share one computation per tick. */
+  private tickChips(fp: FootprintMinute[]): { es: EsContext | null; gaps: ReturnType<typeof gapInventory>; nqMid: number[] } {
+    if (this.tickMemo && this.tickMemo.epoch === this.tickEpoch && this.tickMemo.fp === fp) {
+      return { es: this.tickMemo.es, gaps: this.tickMemo.gaps, nqMid: this.tickMemo.nqMid };
+    }
+    const m = {
+      epoch: this.tickEpoch,
+      fp,
+      es: this.esContextRaw(fp),
+      gaps: gapInventory(fp),
+      nqMid: fp.map((x) => (x.high + x.low) / 2),
+    };
+    this.tickMemo = m;
+    return { es: m.es, gaps: m.gaps, nqMid: m.nqMid };
+  }
+
   /** cross-asset context from the live ES twin buffer, aligned to the NQ
    *  feed-clock minutes (the same utcToFeedStamp conversion the footprint
-   *  uses). Null while the ES twin has fewer than 30 usable bars. */
+   *  uses). Null while the ES twin has fewer than 30 usable bars.
+   *  Memoized per tick (tickChips) — the ES buffer mutates between
+   *  ticks, so a cross-tick cache would serve stale chips. */
   private esContext(fp: FootprintMinute[]): EsContext | null {
+    return this.tickChips(fp).es;
+  }
+
+  private esContextRaw(fp: FootprintMinute[]): EsContext | null {
     const es = getLive().state.es;
     const mins = es.cur ? [...es.minutes, es.cur] : es.minutes;
     if (mins.length < 30) return null;
@@ -624,17 +697,17 @@ class SignalFeed {
   }
 
   /** build the current signal — from LIVE data only, or null when closed/stale */
-  async buildSnapshot(): Promise<SignalSnapshot | null> {
-    const ctx = await this.ctx();
+  /** cheap feed-freshness probe — the liveOk/lastNote/bar health WITHOUT
+   *  the heavy snapshot compute (aggregate/mechanism/price-action only
+   *  feed the reversal card and the dashboard). Runs on EVERY tick so the
+   *  health flags stay live; the heavy build runs on the 30s display
+   *  cadence (refreshSnapshot), on boot, and on demand (pushNow). */
+  private probeFreshness(): boolean {
     const live = getLive().state;
-    let gamma = getOptionsFeed().snapshot();
-    if (!gamma) gamma = await optionsSnapshot().catch(() => null);
-
     const liveMins = live.cur ? [...live.minutes, live.cur] : live.minutes;
     const lastTickMs = live.ticks.length ? live.ticks[live.ticks.length - 1].ms : 0;
     const fresh =
       live.connected && liveMins.length >= MIN_LIVE_MINUTES && Date.now() - lastTickMs < STALE_MS;
-
     if (!fresh) {
       this.liveOk = false;
       this.lastNote = !live.connected
@@ -642,13 +715,22 @@ class SignalFeed {
         : liveMins.length < MIN_LIVE_MINUTES
           ? "market opening — not enough live minutes yet"
           : "market closed — last print is stale";
-      return null;
+      return false;
     }
+    this.liveOk = true;
+    this.lastNote = "live";
+    return true;
+  }
+
+  async buildSnapshot(): Promise<SignalSnapshot | null> {
+    const ctx = await this.ctx();
+    if (!this.probeFreshness()) return null;
+    const live = getLive().state;
+    let gamma = getOptionsFeed().snapshot();
+    if (!gamma) gamma = await optionsSnapshot().catch(() => null);
 
     const minutes = cachedFootprint(live.minutes, live.barsRevision, live.cur ? live.cur : null);
     if (!minutes.length) return null;
-    this.liveOk = true;
-    this.lastNote = "live";
 
     const last = minutes[minutes.length - 1];
     const lastPrice = live.snapshot?.ltp ?? last.c ?? last.high ?? 0;
@@ -852,8 +934,8 @@ class SignalFeed {
     this.reclaimSent.add(key);
     if (this.reclaimSent.size > 500) this.reclaimSent = new Set([...this.reclaimSent].slice(-250));
 
-    // position size for a fixed dollar risk (PROP_RISK_PER_TRADE, default $170)
-    const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+    // position size for a fixed dollar risk (PROP_RISK_PER_TRADE, default $100 — lib/propRules.ts PROP_RISK_PER_TRADE, the one plan constant)
+    const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || PROP_RISK_PER_TRADE;
     const rawContracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, setup.risk)));
     const tiered = await this.applyDayTier(
       { contracts: rawContracts, dollarRisk: rawContracts * setup.risk * 2, capped: false },
@@ -946,14 +1028,11 @@ class SignalFeed {
     if (!live.connected || live.minutes.length < 30) return;
     const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (this.tapeGateHolds(fp, "momentum")) return;
-    // cross-asset context for the measured ES chips (null while the twin
-    // buffer is too young — chips simply don't print)
-    const esCtx = this.esContext(fp);
-    const nqMid = fp.map((m) => (m.high + m.low) / 2);
-    // price-gap inventory for the journal-only gap chips (Naso hypotheses)
-    const gaps = gapInventory(fp);
-    // Asia/London ranges are too thin — chips simply don't print)
+    // cross-asset context + gap inventory + mids — computed ONCE per tick
+    // and shared by momentum/RTH/open (tickChips memo)
+    const { es: esCtx, nqMid, gaps } = this.tickChips(fp);
     // ladder management for open scale-out runners (CrossTrade backend only,
+    // no new polling — reuses this tick's completed minutes)
     // no new polling — reuses this tick's completed minutes)
     if (crossTradeEnabled()) void runnerTracker.evaluate(fp).catch(() => {});
     if (!FEED_MOMENTUM) return;
@@ -1122,7 +1201,7 @@ class SignalFeed {
       // position size grounded in the Rapid EOD 50k rules (lib/propRules.ts):
       // the day plan: $100 risk budget, 30-micro cap, $2/pt MNQ.
       // FIXED_CONTRACTS overrides with an exact contract count.
-      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 100;
+      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || PROP_RISK_PER_TRADE;
       const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
       const prof = momentumProfile();
       const profBracket = prof.enabled ? applyProfile(s.dir, s.entry, s.risk, prof) : null;
@@ -1157,6 +1236,58 @@ class SignalFeed {
         const dirSign = s.dir === "long" ? 1 : -1;
         const level = s.entry - dirSign * EXP_RETRACE_PTS;
         const armedIdx = fp.length - 1;
+        // BROKER-ARMED path (2026-10-12): when CrossTrade is live and the
+        // limit mode holds (single-leg), rest the limit at the broker THE
+        // MOMENT THE CARD FIRES — the faithful execution of
+        // retraceSlippageStudy's 0.0-pt cell (the model rests the limit
+        // from the signal and counts a touch as a fill). Placing only
+        // AFTER the touch bar closed meant the tape had already traded
+        // through the level — live under-filled vs the model
+        // (limit_expired). The executor's crossed gates refuse a broken
+        // bracket; the watcher's limit lifecycle cancels at expiry,
+        // window close, or kill switch. Brackets are pre-built from the
+        // LIMIT (fill-anchored by construction — a resting limit can only
+        // fill at or better).
+        const brokerLimit = crossTradeEnabled() && retraceUseLimit(scaleOut);
+        if (brokerLimit) {
+          const risk = s.risk;
+          const intent: OrderIntent = {
+            symbol: symbol(),
+            dir: s.dir,
+            contracts: size.contracts,
+            entry: level,
+            stop: level - dirSign * risk,
+            target: level + dirSign * risk,
+            timeET: et,
+          };
+          const expireAtMs = Date.now() + EXP_RETRACE_BARS * 60_000;
+          registerExpectation({
+            key: `mom|${key}`,
+            ts: Date.now(),
+            label: `momentum ${s.dir} ${et} (retrace limit)`,
+            intent,
+            scaleOut,
+            limit: { price: level, expireAtMs },
+          });
+          const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+          const armText = [
+            `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace — broker limit resting · ${et} NY</b>`,
+            ``,
+            `<code>LIMIT   ${fmtPx(level)}   (signal close ${fmtPx(s.entry)} ∓ ${EXP_RETRACE_PTS.toFixed(1)} pt)</code>`,
+            `<code>STOP    fill ∓ ${risk.toFixed(2)} pts · TARGET fill ± ${risk.toFixed(2)} pts (1R)</code>`,
+            `<code>SIZE    ${sizeStrArm}</code>`,
+            ``,
+            `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}limit rests at the broker for up to ${EXP_RETRACE_BARS} min, cancelled if untraded`,
+            `<i>${STATS.momentum.expRetrace}</i>`,
+          ].join("\n");
+          const res = await this.push(armText);
+          if (!res.sent) this.lastError = res.reason;
+          void this.placeMomentumOrder(key, intent, scaleOut, et, " (retrace)", level).then((res) => {
+            if (res.ok && res.orderId) attachLimitOrderId(`mom|${key}`, res.orderId);
+          });
+          console.log(`[expRetrace] broker limit placed ${s.dir} @ ${fmtPx(level)} · ${et} NY · expires after ${EXP_RETRACE_BARS} bars`);
+          continue;
+        }
         this.expRetracePending = {
           key,
           day: s.d,
@@ -1585,10 +1716,7 @@ class SignalFeed {
     if (!live.connected || live.minutes.length < 30) return;
     const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (this.tapeGateHolds(fp, "rth")) return;
-    const esCtx = this.esContext(fp);
-    const nqMid = fp.map((m) => (m.high + m.low) / 2);
-    // price-gap inventory for the journal-only gap chips (Naso hypotheses)
-    const gaps = gapInventory(fp);
+    const { es: esCtx, nqMid, gaps } = this.tickChips(fp);
     if (nb) console.log(`[news] ${nb} blackout — skipping RTH cards (candidates recorded)`);
     for (const s of detectSoftMomentumMemo(fp, SOFT_PROD, live.barsRevision)) {
       if (s.breakIdx !== fp.length - 1) continue;
@@ -1732,7 +1860,7 @@ class SignalFeed {
       }
       if (this.rthSent.size > 200) this.rthSent = new Set([...this.rthSent].slice(-100));
 
-      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 100;
+      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || PROP_RISK_PER_TRADE;
       const cap = Number(process.env.RTH_RISK_CAP ?? "100");
       const prof = rthProfile();
       const lim = rthLimitParams();
@@ -1911,7 +2039,7 @@ class SignalFeed {
     const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (this.tapeGateHolds(fp, "open")) return;
     // price-gap inventory for the journal-only gap chips (Naso hypotheses)
-    const gaps = gapInventory(fp);
+    const { gaps } = this.tickChips(fp);
 
     // ---- open-window diagnostic: the archive says the drive fires ~87% of
     //      days, but the live record has zero open cards — log the scan's
@@ -2021,7 +2149,7 @@ class SignalFeed {
       this.openSent.add(key);
       if (this.openSent.size > 200) this.openSent = new Set([...this.openSent].slice(-100));
 
-      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || 100;
+      const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || PROP_RISK_PER_TRADE;
       const cap = Number(process.env.OPEN_RISK_CAP ?? "100");
       const fixed = fixedContracts(0);
       const budget = cap > 0 ? Math.min(riskBudget, cap) : riskBudget;
@@ -2249,7 +2377,7 @@ class SignalFeed {
     this.pullbackWatch = null;
     if (!FEED_PULLBACK_TICKET) return;
     const et = utcToET(ev.t, live.minutes[live.minutes.length - 1]?.du);
-    const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+    const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || PROP_RISK_PER_TRADE;
     const contracts = Math.max(1, Math.floor(contractsForRisk(riskPerTrade, Math.abs(ev.entry - ev.stop))));
     const sizeStr = `${contracts} MNQ · risk $${Math.round(contracts * Math.abs(ev.entry - ev.stop) * RAPID_EOD_50K.pointValue)}`;
     const text = [
@@ -2294,8 +2422,16 @@ class SignalFeed {
   }
 
   async tick(source: "boot" | "poll" | "event" | "tick" = "tick"): Promise<void> {
-    if (this.ticking) return;
+    if (this.ticking) {
+      // non-lossy coalescing: a tick that arrives while one runs is
+      // QUEUED (last source wins), never dropped. A dropped event tick
+      // would permanently lose its bar — the max already advanced and
+      // the poll backstop skips it.
+      this.pendingTick = source;
+      return;
+    }
     this.ticking = true;
+    this.tickEpoch += 1;
     startCycle(source);
     let err: string | null = null;
     try {
@@ -2320,9 +2456,14 @@ class SignalFeed {
         finishCycle("signal window closed");
         return;
       }
-      // ---- telemetry stage 1: getData = assemble the live signal context
+      // ---- telemetry stage 1: getData = feed-freshness probe. The heavy
+      //      snapshot (computeSignal — aggregate/mechanism/price-action)
+      //      feeds ONLY the reversal card (FEED_REVERSAL, OFF on the live
+      //      feed) and the /api/signal dashboard, so it moved to the 30s
+      //      display cadence (refreshSnapshot) instead of riding the
+      //      dispatch-critical tick.
       let t0 = performance.now();
-      const snap = await this.buildSnapshot();
+      this.probeFreshness();
       markStage("getData", performance.now() - t0);
       // ---- telemetry: bar age = last completed bar close → now (the
       //      continuous detection-lag metric the event tick attacks)
@@ -2331,10 +2472,13 @@ class SignalFeed {
         if (closeMs !== null) markBarAge(Math.max(0, Date.now() - closeMs));
       }
       this.lastRun = Date.now();
-      if (snap) {
-        this.lastSnapshot = snap;
-        this.lastError = null;
-        await this.maybeSend(snap);
+      if (FEED_REVERSAL) {
+        const snap = await this.buildSnapshot();
+        if (snap) {
+          this.lastSnapshot = snap;
+          this.lastError = null;
+          await this.maybeSend(snap);
+        }
       }
       // ---- telemetry stage 3: compute = each detector/gate check
       //      (feedCheck rides along inside tapeGateHolds; dispatch is
@@ -2360,7 +2504,8 @@ class SignalFeed {
       // by the signal engine, so this can never change a decision
       // (fire-and-forget; DB hiccups are swallowed inside).
       void updateLiveOutcomes(getLive().state.minutes).catch(() => {});
-      void checkExpectations().catch(() => {});
+      // (fill expectations now run on their own 5s timer in lib/execWatch,
+      //  not on the feed tick — no quantization behind the feed cadence)
       void checkTimeExits().catch(() => {});
     } catch (e) {
       this.lastError = String(e);
@@ -2368,6 +2513,26 @@ class SignalFeed {
     } finally {
       finishCycle(err ?? undefined);
       this.ticking = false;
+      const queued = this.pendingTick;
+      this.pendingTick = null;
+      if (queued) void this.tick(queued);
+    }
+  }
+
+  /** the heavy snapshot for the dashboard + reversal card, decoupled from
+   *  the dispatch tick so computeSignal can never sit between detection
+   *  and the order POST. 30s cadence (it used to run on every 15s tick)
+   *  + boot + on demand (pushNow). */
+  private async refreshSnapshot(): Promise<void> {
+    if (this.ticking) return; // never compete with a live tick
+    try {
+      const snap = await this.buildSnapshot();
+      if (snap) {
+        this.lastSnapshot = snap;
+        this.lastError = null;
+      }
+    } catch {
+      /* display-only — a failed snapshot must never disturb the loop */
     }
   }
 
@@ -2417,6 +2582,11 @@ class SignalFeed {
     // re-attach to any runners left open by a previous process
     void runnerTracker.load();
     this.tick("boot");
+    // the heavy display snapshot (dashboard /api/signal + the reversal
+    // card) runs on its own 30s cadence — OFF the dispatch tick
+    this.displayTimer = setInterval(() => {
+      void this.refreshSnapshot().catch(() => {});
+    }, 30_000);
     // the interval is the BACKSTOP: it sleeps while the tail's close is
     // not newer than the max the events have seen, and fires the moment
     // the buffer rolls a bar the emits missed (or the tail is unparseable)
@@ -2454,9 +2624,13 @@ class SignalFeed {
       const last = st.minutes[st.minutes.length - 1];
       const closeMs = barCloseMs(last) ?? 0;
       const barSrc = last?.source ?? "";
-      const d = eventTickDecision({ maxCloseMs: this.eventTickMaxClose, srcAtMax: this.eventTickSrcAtMax }, { closeMs, barSrc });
+      const d = eventTickDecision(
+        { maxCloseMs: this.eventTickMaxClose, srcAtMax: this.eventTickSrcAtMax, revAtMax: this.eventTickRevAtMax },
+        { closeMs, barSrc, revision: st.barsRevision },
+      );
       this.eventTickMaxClose = d.maxCloseMs;
       this.eventTickSrcAtMax = d.srcAtMax;
+      this.eventTickRevAtMax = d.revAtMax;
       if (!d.fire) return;
       const now = Date.now();
       if (now - this.eventTickLast < 250) return; // stampede throttle

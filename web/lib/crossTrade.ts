@@ -559,9 +559,6 @@ export async function placeCrossTradeOrderREST(
   targetChildId?: string | number;
 }> {
   const g0 = performance.now();
-  const guard = await crossGuardGate();
-  const guardMs = performance.now() - g0;
-  if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
   const orderId = opts.limitPrice !== undefined ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-lmt` : undefined;
@@ -607,12 +604,31 @@ export async function placeCrossTradeOrderREST(
   // (signalFeed.retraceUseLimit; CROSSTRADE_LIMIT_ENTRIES=0 opts out) —
   // and the watcher's fill verification instead of a pre-trade quote check.
 
-  // telemetry: open the submit→fill leg BEFORE the remaining gates so the
+  // PRE-FLIGHT PARALLELIZATION (2026-10-12): the account guard
+  // (snapshot REST + guard-state DB hydration) and the flat gate
+  // (positions REST) are independent read-only pre-checks — they used to
+  // run serially, adding two full round trips between detection and the
+  // order POST. They now run concurrently; the POST stays strictly last,
+  // and every verdict stays fail-closed exactly as before (either check
+  // failing refuses the placement).
+  let guardMs = 0;
+  let flatMs = 0;
+  const guardP = crossGuardGate().then((v) => {
+    guardMs = performance.now() - g0;
+    return v;
+  });
+  const fT0 = performance.now();
+  const flatP = restFlatGate(cfg).then((v) => {
+    flatMs = performance.now() - fT0;
+    return v;
+  });
+  const [guard, flat] = await Promise.all([guardP, flatP]);
+  if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
+
+  // telemetry: open the submit→fill leg before the remaining gates so the
   // flat-gate phase can attach (lib/execLatency.ts)
   const fillId = noteOrderSubmit(opts.label ?? describeIntent(intent), intent.dir, intent.contracts, { guardMs });
-  const flatT0 = performance.now();
-  const flat = await restFlatGate(cfg);
-  markOrderPhase(fillId, "flat", performance.now() - flatT0);
+  markOrderPhase(fillId, "flat", flatMs);
   if (!flat.ok) return { ok: false, reason: flat.reason };
 
   let payload: RESTPlacePayload;
@@ -839,8 +855,6 @@ async function restFlatGate(cfg: CrossTradeConfig): Promise<{ ok: boolean; reaso
 export async function placeCrossTradeScaleOutREST(
   intent: OrderIntent,
 ): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
-  const guard = await crossGuardGate();
-  if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
   const { bank, runner } = splitScaleOut(intent);
@@ -861,7 +875,9 @@ export async function placeCrossTradeScaleOutREST(
     return { ok: true, reason: "dry-run (logged only)", bankOrderId, runnerOrderId, runnerQty: runner.contracts };
   }
 
-  const flat = await restFlatGate(cfg);
+  // pre-flight parallelization (same as the single-leg path): guard ‖ flat
+  const [guard, flat] = await Promise.all([crossGuardGate(), restFlatGate(cfg)]);
+  if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
   if (!flat.ok) return { ok: false, reason: flat.reason };
 
   let bankPayload: RESTPlacePayload;

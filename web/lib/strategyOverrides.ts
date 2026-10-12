@@ -19,6 +19,7 @@
  * ------------------------------------------------------------------ */
 
 import { dbEnabled, getDb } from "./gcdb";
+import { withTimeout } from "./asyncTimeout";
 
 export type Override = {
   id: number;
@@ -50,7 +51,11 @@ export async function getOverrides(): Promise<Override[]> {
   if (cache && Date.now() - loadedAt < CACHE_MS) return cache;
   if (!dbEnabled()) return cache ?? [];
   try {
-    const rows = await getDb()`select id, family, gate, value from strategy_overrides where active = true`;
+    const rows = await withTimeout(
+      getDb()`select id, family, gate, value from strategy_overrides where active = true`,
+      3_000,
+      "strategy overrides load",
+    );
     cache = rows.map((r) => ({
       id: Number(r.id),
       family: String(r.family),

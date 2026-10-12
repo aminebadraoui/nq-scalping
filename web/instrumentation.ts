@@ -38,8 +38,11 @@ export async function register(): Promise<void> {
   try {
     // guard day-P&L keep-alive: day tracking stays live between entries
     // (the entry gate itself is unchanged — the poll's verdict is logged)
-    const { startCrossGuardPoll } = await import("./lib/crossGuard");
+    // — plus the boot warm: snapshot + hydration preload so the first
+    // card of the session skips cold REST/DB hops (best-effort)
+    const { startCrossGuardPoll, warmGuardState } = await import("./lib/crossGuard");
     startCrossGuardPoll();
+    void warmGuardState().catch(() => {});
   } catch {
     /* ignore */
   }
@@ -47,9 +50,10 @@ export async function register(): Promise<void> {
     // RTH winner-exit poll: feeds the counter-signal gate's recent-exit
     // log (bracket exits are exchange-side; flat transitions reveal them)
     // — also the 10s protection watchdog (working-stop verification +
-    // naked-position repair)
-    const { startRthExitPoll } = await import("./lib/execWatch");
+    // naked-position repair) and the 5s fill-expectation timer
+    const { startRthExitPoll, startWatchTimers } = await import("./lib/execWatch");
     startRthExitPoll();
+    startWatchTimers();
   } catch {
     /* ignore */
   }
