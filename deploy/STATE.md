@@ -458,6 +458,38 @@ wider stop grid and the user's approval. Scratch studies
     live-exec libs changed, so the exec gate (`scripts/exec-gate.sh`) is
     unaffected; the feature is inert until the operator acts.
 
+## Funded-account switch + MFF_STAGE env (2026-10-11)
+
+- **Event:** account switched to the new SIM FUNDED account
+  `MFFUSFREOD706880008` via the dashboard override (Coolify base
+  `CROSSTRADE_ACCOUNT` still `MFFUEVREOD706880007`; the runtime override
+  wins). The switch's snapshot detection could not confirm a new account
+  (fresh funded account reports realized $0) → protections KEPT.
+- **Symptom:** false HALTED — `floor: equity $0 within $500 of floor
+  $51009`. The new account's netLiq is $0 (correct: funded starts at $0,
+  `FUNDED_RULES.startBalance = 0`), judged against the OLD eval
+  account's trailing floor 51,009.2 (highWater 53,009.2 − 2,000 MLL,
+  committed at the 2026-10-11 EOD close). Phantom `day +$899` came from
+  the old account's day baseline (−$899 → realized 0 − (−899) = +899;
+  bestDayPnl 899.4). Stage was still `eval` — `MFF_STAGE` was never set.
+- **Fix (owner-approved):** Coolify app env `MFF_STAGE=funded` added via
+  API (2026-10-11 23:08 UTC) → force redeploy (same commit `5896095`,
+  env-only change; a plain restart does NOT re-bake env) → password-gated
+  force guard reset via `/api/exec-settings` (`guardDb: cleared` —
+  state file + Neon `guard_state` row dropped, reseeded funded).
+- **Post-state (verified via health):** stage `funded`, startBalance 0,
+  floor −$2,000, highWater 0, status TRADING (all gates clear), day
+  baseline fresh (dayKey 2026-10-11, dayPnl 0). Funded semantics now
+  live: floor trails up only at EOD closes (equity − 2,000) and locks at
+  $100 once reached; +$3,000 halt-target from $0; $900/day consistency
+  cap applies on funded too; T1 news ban only if `MFF_T1_NEWS` is set.
+- **Lesson:** switching to a funded account requires BOTH the `MFF_STAGE`
+  env change AND the guard reset, in that order (a reset before the env
+  change reseeds eval and stays halted; the persisted state file/Db row
+  resurrect the old stage across redeploys until cleared). Confirm MFFU
+  activated the funded account before letting orders flow — orders on an
+  un-activated account reject at the broker (harmless, no fill).
+
 ## Protection stack, kill switch + fill-model reckoning (2026-10-08, deployed)
 
 Canonical records: docs/research/naked-stop-incident-2026-10-08.md
