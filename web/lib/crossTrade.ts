@@ -1068,39 +1068,69 @@ export function __resetLatchForTest() {
  * UNKNOWN — the watchdog re-verifies on its next poll instead.
  * ------------------------------------------------------------------ */
 
+/** pure payload builder for cancel_and_bracket (unit-tested). The re-arm
+ *  wraps an OPEN position, so QTY is a required API field — the 2026-10-12
+ *  recurrence disabled the naked-repair path exactly because the payload
+ *  shipped without it (live 400: "Missing required field(s) for
+ *  cancelandbracket: QTY"). Returns {error} instead of throwing so the
+ *  caller can refuse cleanly. */
+export function buildReArmBracketPayload(
+  args: { symbol: string; dir: "long" | "short"; stopPrice: number; targetPrice: number; qty: number },
+  cfg: CrossTradeConfig,
+): { instrument: string; action: "buy" | "sell"; takeProfit: string; stopLoss: string; qty: number } | { error: string } {
+  const instrument = mapInstrument(args.symbol, cfg.instrument);
+  if (!instrument) return { error: `crossTrade: cannot map symbol "${args.symbol}"` };
+  if (!Number.isFinite(args.stopPrice) || !Number.isFinite(args.targetPrice)) {
+    return { error: `crossTrade: invalid re-arm bracket — stop ${args.stopPrice} target ${args.targetPrice}` };
+  }
+  if (!Number.isFinite(args.qty) || args.qty <= 0) {
+    return { error: `crossTrade: invalid re-arm qty ${args.qty}` };
+  }
+  return {
+    instrument,
+    action: args.dir === "long" ? "buy" : "sell",
+    takeProfit: args.targetPrice.toFixed(2),
+    stopLoss: args.stopPrice.toFixed(2),
+    qty: Math.floor(args.qty),
+  };
+}
+
 /** re-arm a bracket around an OPEN position (cancel_and_bracket).
  *  `dir` names the PROTECTED side (long → action buy). The stop must be
  *  anchored beyond the CURRENT market or Tradovate rejects it again —
- *  the caller re-anchors it; the target is absolute and always valid. */
+ *  the caller re-anchors it; the target is absolute and always valid.
+ *  QTY is sized from the LIVE position when the caller omits it (an
+ *  under/over-sized bracket is rejected or wrong). */
 export async function rearmCrossTradeBracketREST(args: {
   symbol: string;
   dir: "long" | "short";
   stopPrice: number;
   targetPrice: number;
+  qty?: number;
 }): Promise<{ ok: boolean; reason: string }> {
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
-  const instrument = mapInstrument(args.symbol, cfg.instrument);
-  if (!instrument) return { ok: false, reason: `crossTrade: cannot map symbol "${args.symbol}"` };
-  if (!Number.isFinite(args.stopPrice) || !Number.isFinite(args.targetPrice)) {
-    return { ok: false, reason: `crossTrade: invalid re-arm bracket — stop ${args.stopPrice} target ${args.targetPrice}` };
-  }
   if (!live) {
-    console.log(`[crossTrade] DRY-RUN(REST) RE-ARM ${args.dir} ${instrument} stop ${args.stopPrice.toFixed(2)} target ${args.targetPrice.toFixed(2)}`);
+    console.log(`[crossTrade] DRY-RUN(REST) RE-ARM ${args.dir} ${args.symbol} stop ${args.stopPrice.toFixed(2)} target ${args.targetPrice.toFixed(2)}`);
     return { ok: true, reason: "dry-run (logged only)" };
   }
+  let qty: number | null | undefined = args.qty;
+  if (qty === undefined) {
+    const held = await readMnqQtyREST();
+    qty = held !== null ? Math.abs(held) : null;
+  }
+  if (typeof qty !== "number" || !Number.isFinite(qty) || qty <= 0) {
+    return { ok: false, reason: "crossTrade: cannot size the re-arm — no open MNQ position to bracket" };
+  }
+  const payload = buildReArmBracketPayload({ ...args, qty }, cfg);
+  if ("error" in payload) return { ok: false, reason: payload.error };
   try {
     const res = await fetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/orders/cancel_and_bracket`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
-        body: JSON.stringify({
-          instrument,
-          action: args.dir === "long" ? "buy" : "sell",
-          takeProfit: args.targetPrice.toFixed(2),
-          stopLoss: args.stopPrice.toFixed(2),
-        }),
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(15_000),
       },
     );
@@ -1118,7 +1148,7 @@ export async function rearmCrossTradeBracketREST(args: {
     if (j && j.success === false) {
       return { ok: false, reason: `re-arm rejected: ${String(j.error ?? bodyText).slice(0, 160)}` };
     }
-    return { ok: true, reason: `re-armed ${instrument} ${args.dir}` };
+    return { ok: true, reason: `re-armed ${payload.instrument} ${args.dir}` };
   } catch (e) {
     return { ok: false, reason: `re-arm UNKNOWN (network: ${String(e)}) — verify the order list manually` };
   }
@@ -1227,6 +1257,29 @@ export async function readMnqFlatREST(): Promise<boolean | null> {
       qty += Number(p.netPos ?? p.qty ?? 0);
     }
     return qty === 0;
+  } catch {
+    return null;
+  }
+}
+
+/** signed MNQ net position qty from the same read as readMnqFlatREST —
+ *  the re-arm's cancel_and_bracket QTY must match the OPEN position.
+ *  null = unreadable (callers fall back or fail closed). */
+export async function readMnqQtyREST(): Promise<number | null> {
+  const cfg = loadConfig();
+  try {
+    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`, {
+      headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
+    if (!j.success) return null;
+    let qty = 0;
+    for (const p of j.data ?? []) {
+      if (!String(p.instrument ?? p.contractName ?? "").includes("MNQ")) continue;
+      qty += Number(p.netPos ?? p.qty ?? 0);
+    }
+    return qty;
   } catch {
     return null;
   }
@@ -1405,7 +1458,19 @@ async function reactToBadStopLeg(o: ActiveBracket, entryStatus: string, stopStat
   // stop shows Canceled with the account flat) — confirm a position
   // actually exists before repairing.
   const flat = await readMnqFlatREST();
-  if (flat === true) return; // normal OCO completion, nothing to repair
+  if (flat === true) {
+    // the book went flat while we reacted — a fast OCO completion or the
+    // owner's manual close. Until 2026-10-12 this branch returned
+    // silently, which is exactly why the 10:28 repair left no trace.
+    void logExec({
+      key: o.key,
+      label: o.label,
+      attempt: "watch",
+      outcome: "repair_aborted_flat",
+      reason: `stop leg ${stopStatus} but the account is already flat (fast OCO or manual close) — no repair needed`,
+    });
+    return;
+  }
   void logExec({ key: o.key, label: o.label, attempt: "watch", outcome: "stop_missing", reason: `stop leg ${stopStatus} after entry ${entryStatus}` });
   void repairNakedPosition(o.intent, o.label, o.key);
 }

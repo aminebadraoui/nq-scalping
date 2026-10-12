@@ -170,6 +170,30 @@ async function readMnqPosition(): Promise<{ qty: number; dir: "long" | "short" }
   return { qty, dir: qty > 0 ? "long" : "short" };
 }
 
+/** the exit-fill window for the slippage alarm (2026-10-12 recurrence):
+ *  the fills stream is not account-scoped and carries multi-day history.
+ *  After the 2026-10-11 account switch, "last fill ever" compared a flat
+ *  transition on a 30885 tape against Friday's 31185.25 fill and raised
+ *  275.6/308.3-pt phantom slips. A fill outside this window cannot be
+ *  today's exit. */
+export const EXIT_SLIP_WINDOW_MS = 15 * 60_000;
+
+/** pure exit-fill picker for the slippage alarm: the LAST opposite-side
+ *  fill inside the exit window, or null (no phantom alarm on stale
+ *  history). Unit-tested. */
+export function pickExitFill(
+  fills: Array<{ ts: number; action: string; qty: number; price?: number }>,
+  dir: "long" | "short",
+  now: number,
+  windowMs: number = EXIT_SLIP_WINDOW_MS,
+): { ts: number; action: string; qty: number; price?: number } | null {
+  const want = dir === "long" ? "Sell" : "Buy";
+  const exits = fills.filter((f) => f.action === want && Number.isFinite(f.ts) && f.ts <= now && f.ts >= now - windowMs);
+  if (!exits.length) return null;
+  exits.sort((a, b) => a.ts - b.ts);
+  return exits[exits.length - 1];
+}
+
 /** stop-slippage alarm (2026-10-08 −$1,056 event): when a tracked trade
  *  goes flat, compare the exit fill against the intended stop. A fill
  *  far beyond the stop means the stop-market chased a gap — the risk
@@ -177,11 +201,8 @@ async function readMnqPosition(): Promise<{ qty: number; dir: "long" | "short" }
  *  journal so execution quality is visible, not just P&L. */
 async function checkExitSlippage(intent: OrderIntent): Promise<void> {
   const fills = await fetchFills();
-  const want = intent.dir === "long" ? "Sell" : "Buy";
-  const exits = fills.filter((f) => f.action === want);
-  if (!exits.length) return;
-  exits.sort((a, b) => a.ts - b.ts);
-  const exit = exits[exits.length - 1];
+  const exit = pickExitFill(fills, intent.dir, Date.now());
+  if (!exit || exit.price === undefined) return;
   const verdict = classifyExitFill(intent, exit.price);
   if (verdict !== "stop_slipped") return;
   const gap = intent.dir === "long" ? intent.stop - exit.price : exit.price - intent.stop;

@@ -50,6 +50,7 @@ export type ExecLogEntry = {
     | "limit_cancel_failed"
     | "limit_cancelled_giveup"
     | "bracket_rejected_cancel_entry"
+    | "repair_aborted_flat"
     | "stop_missing"
     | "stop_rearmed"
     | "stop_rearm_failed"

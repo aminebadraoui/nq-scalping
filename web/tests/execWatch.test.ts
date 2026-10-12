@@ -4,7 +4,7 @@
  * naked-position repair from the 2026-10-08 incident. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { stopCoversPosition, classifyExitFill } from "../lib/execWatch";
+import { stopCoversPosition, classifyExitFill, pickExitFill, EXIT_SLIP_WINDOW_MS } from "../lib/execWatch";
 import { rearmStopPrice } from "../lib/crossTrade";
 
 test("rearmStopPrice: long anchors the stop just BELOW the tape (Tradovate-valid)", () => {
@@ -94,4 +94,36 @@ test("classifyExitFill: exit near the target → target (normal)", () => {
 
 test("classifyExitFill: stop-out near the trigger → null (intended outcome)", () => {
   assert.equal(classifyExitFill({ dir: "short", stop: 31238.76, target: 31216.05 }, 31239.0), null);
+});
+
+/* ---- exit-fill window (2026-10-12 phantom-slip recurrence) ---- */
+
+test("pickExitFill: last opposite-side fill inside the window wins", () => {
+  const now = 1_000_000;
+  const older = { ts: now - 5_000, action: "Sell", qty: 7, price: 100 };
+  const newer = { ts: now - 2_000, action: "Sell", qty: 7, price: 101 };
+  assert.deepEqual(pickExitFill([older, newer], "long", now), newer);
+});
+
+test("pickExitFill: stale history outside the window is ignored (the Friday-31185.25 shape)", () => {
+  // 2026-10-12: a flat transition on a ~30885 tape was compared against a
+  // Friday fill at 31185.25 → "275.6/308.3 pts slipped" phantom alarms.
+  const now = Date.now();
+  const fills = [{ ts: now - 3 * 24 * 3600_000, action: "Sell", qty: 7, price: 31185.25 }];
+  assert.equal(pickExitFill(fills, "long", now), null);
+});
+
+test("pickExitFill: wrong side, non-finite ts, or empty fills → null", () => {
+  const now = Date.now();
+  assert.equal(pickExitFill([{ ts: now - 1_000, action: "Buy", qty: 7, price: 100 }], "long", now), null);
+  assert.equal(pickExitFill([{ ts: Number.NaN, action: "Sell", qty: 7, price: 100 }], "long", now), null);
+  assert.equal(pickExitFill([], "short", now), null);
+});
+
+test("pickExitFill: default window is the shipped EXIT_SLIP_WINDOW_MS (15 min)", () => {
+  const now = Date.now();
+  const inside = { ts: now - EXIT_SLIP_WINDOW_MS, action: "Sell", qty: 7, price: 100 };
+  const outside = { ts: now - EXIT_SLIP_WINDOW_MS - 1, action: "Sell", qty: 7, price: 100 };
+  assert.deepEqual(pickExitFill([inside], "long", now), inside);
+  assert.equal(pickExitFill([outside], "long", now), null);
 });

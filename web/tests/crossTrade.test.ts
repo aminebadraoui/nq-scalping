@@ -14,6 +14,7 @@ import {
   stopCrossedAtDispatch,
   limitCrossedAtDispatch,
   reanchorBracketForFill,
+  buildReArmBracketPayload,
   MNQ_TICK,
   type CrossTradeConfig,
 } from "../lib/crossTrade";
@@ -317,4 +318,40 @@ test("reanchorBracketForFill: healthy fill (no drift) → null", () => {
 
 test("reanchorBracketForFill: non-finite fill → null", () => {
   assert.equal(reanchorBracketForFill(intent(), Number.NaN), null);
+});
+
+/* ---- re-arm payload (cancel_and_bracket) — the 2026-10-12 recurrence ---- */
+
+test("re-arm payload: cancel_and_bracket carries QTY (the missing-QTY 400 regression)", () => {
+  // live 2026-10-12: {"success":false,"error":"Missing required field(s) for cancelandbracket: QTY"}
+  const p = buildReArmBracketPayload({ symbol: "NQZ26", dir: "short", stopPrice: 30886.0, targetPrice: 30854.84, qty: 7 }, CFG);
+  assert.ok(!("error" in p));
+  if ("error" in p) return;
+  assert.deepEqual(p, { instrument: "MNQZ6", action: "sell", takeProfit: "30854.84", stopLoss: "30886.00", qty: 7 });
+});
+
+test("re-arm payload: action follows the protected side, qty floors to whole contracts", () => {
+  const long = buildReArmBracketPayload({ symbol: "NQZ26", dir: "long", stopPrice: 100.25, targetPrice: 110.5, qty: 3.9 }, CFG);
+  if ("error" in long) {
+    assert.fail("unexpected error");
+    return;
+  }
+  assert.equal(long.action, "buy");
+  assert.equal(long.qty, 3);
+  const short = buildReArmBracketPayload({ symbol: "NQZ26", dir: "short", stopPrice: 100.25, targetPrice: 110.5, qty: 7 }, CFG);
+  if ("error" in short) {
+    assert.fail("unexpected error");
+    return;
+  }
+  assert.equal(short.action, "sell");
+  assert.equal(short.stopLoss, "100.25");
+  assert.equal(short.takeProfit, "110.50");
+});
+
+test("re-arm payload: bad symbol, non-finite prices, or non-positive qty refuse", () => {
+  assert.ok("error" in buildReArmBracketPayload({ symbol: "ESZ26", dir: "long", stopPrice: 1, targetPrice: 2, qty: 1 }, CFG));
+  assert.ok("error" in buildReArmBracketPayload({ symbol: "NQZ26", dir: "long", stopPrice: Number.NaN, targetPrice: 2, qty: 1 }, CFG));
+  assert.ok("error" in buildReArmBracketPayload({ symbol: "NQZ26", dir: "long", stopPrice: 1, targetPrice: Infinity, qty: 1 }, CFG));
+  assert.ok("error" in buildReArmBracketPayload({ symbol: "NQZ26", dir: "long", stopPrice: 1, targetPrice: 2, qty: 0 }, CFG));
+  assert.ok("error" in buildReArmBracketPayload({ symbol: "NQZ26", dir: "long", stopPrice: 1, targetPrice: 2, qty: Number.NaN }, CFG));
 });
