@@ -63,6 +63,26 @@
 - `scripts/exec-gate.sh <base> <head>` — the shared gate logic used by
   both the hook and CI.
 
+## 3b. Deploy window (2026-10-12)
+
+Every push to `main` redeploys the executor. A redeploy restarts the
+Node process and resets IN-MEMORY execution state: pending fill
+expectations, registered time exits, the 60s flat-entry latch, the
+sent-dedupe sets, the event-tick monotonic state — and the live buffer
+re-seeds, so no card can fire for several minutes. The backtest has no
+such gaps.
+
+- **Deploy outside the signal window by default**: during the daily
+  16:00–18:00 ET halt (the cleanest slot — window closed, sessions
+  reset) or on weekends. A mid-RTH deploy is an execution-knob change
+  in everything but name: only when necessary, with the operator at the
+  dashboard, and with the book verified flat first.
+- A redeploy does NOT reset the guard floor/day counters (Neon
+  `guard_state` + the state file restore them) or the kill switch
+  (`trading-halt.json` survives).
+- Env changes need a redeploy to take effect (Coolify re-bakes the env
+  into the container) — the same window discipline applies to them.
+
 ## 4. Scratch studies
 
 `web/scripts/*.ts` files marked SCRATCH (e.g. `openStrategyLab.ts`,

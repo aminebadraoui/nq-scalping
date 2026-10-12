@@ -22,8 +22,11 @@ fi
 SCHEDULE="${CRON_SCHEDULE:-45 17 * * 1-5}"
 RECONCILE_SCHEDULE="${CRON_RECONCILE:-50 16 * * 1-5}"
 # the Macro tab's AI interpretation: one daily slot (the combined read
-# absorbed the retired AI briefing; post-close also runs in nightly.sh)
-INTERPRET="${CRON_INTERPRET:-20 9 * * 1-5}"
+# absorbed the retired AI briefing; post-close also runs in nightly.sh).
+# 08:45 ET (was 09:20): still pre-open, but OUT of the 09:15–09:30 open
+# ramp so the shared VPS never competes with the executor's warm-up for
+# the 9:30 open (the only scheduled job that touched the live window).
+INTERPRET="${CRON_INTERPRET:-45 8 * * 1-5}"
 LOG="/app/gcdata/data/nightly_cron.log"
 RLOG="/app/gcdata/data/reconcile_cron.log"
 ILOG="/app/gcdata/data/interpret_cron.log"

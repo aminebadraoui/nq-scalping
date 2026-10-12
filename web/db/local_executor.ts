@@ -21,7 +21,7 @@
  * Env (web/.env.local, gitignored):
  *   CROSSTRADE_URL / CROSSTRADE_KEY / CROSSTRADE_ACCOUNT   required
  *   EXECUTE_LIVE=1                            place real orders (else dry-run)
- *   PROP_RISK_PER_TRADE=170                   $ risk per trade
+ *   PROP_RISK_PER_TRADE=100                   $ risk per trade (lib/propRules.ts PROP_RISK_PER_TRADE)
  *   GOCHARTING_*                              from ../gcdata/.env (live feed)
  *
  * Keep EXECUTE_LIVE=0 on the VPS — the Telegram feed must only ANNOUNCE, never
@@ -33,7 +33,7 @@ import path from "node:path";
 import { getLive } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
 import { detectOneSidedReclaim } from "../lib/reclaimSetup";
-import { contractsForRisk } from "../lib/propRules";
+import { contractsForRisk, PROP_RISK_PER_TRADE } from "../lib/propRules";
 import { placeOrder } from "../lib/executor";
 import { crossGuardGate } from "../lib/crossGuard";
 import { crossTradeEnabled } from "../lib/crossTrade";
@@ -61,7 +61,7 @@ loadEnvLocal();
 
 const POLL_MS = 5000;
 const live = getLive();
-const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || 170;
+const riskPerTrade = Number(process.env.PROP_RISK_PER_TRADE) || PROP_RISK_PER_TRADE;
 const symbol = () => process.env.GOCHARTING_SYMBOL || "NQZ26";
 const fired = new Set<string>();
 /** window state for the transition logs (log once per open/close) */

@@ -11,10 +11,10 @@ stages the execution tab shows:
 
 | Stage | Meaning | Measured at |
 |---|---|---|
-| `getData` | assemble the live signal context (snapshot, footprint, VWAP, levels) | `signalFeed.tick()` → `buildSnapshot()` |
+| `getData` | the feed-freshness probe (connected, ≥5 live mins, last tick <5 min). Since 2026-10-12 the heavy snapshot (computeSignal) moved to a 30s display cadence and no longer rides the dispatch tick — it feeds only the reversal card (OFF) and the /api/signal dashboard | `signalFeed.tick()` → `probeFreshness()` |
 | `feedCheck` | tape-gate freshness check — is the just-completed bar candle-confirmed? | timed wrapper around `tapeGateHolds` |
 | `compute` | the seven detector/gate checks (momentum, RTH, open drive, …) with a per-check breakdown | `signalFeed.tick()` check loop |
-| `dispatch` | send the order to CrossTrade + wait for the placement ack | `executor.placeOrder/placeScaleOut` (single choke point) |
+| `dispatch` | send the order to CrossTrade + wait for the placement ack. Since 2026-10-12 the guard (snapshot REST + guard-state hydration) and the flat gate (positions REST) run CONCURRENTLY before the POST — the stage wall clock covers both pre-flights plus the place | `executor.placeOrder/placeScaleOut` (single choke point) |
 | `cross trade execute` | submit → broker fill, from the broker's own fill timestamp | `crossTrade` submit registry + `execWatch` fill match |
 
 Plus two lag metrics that are the whole point of the exercise:
@@ -29,8 +29,11 @@ Plus two lag metrics that are the whole point of the exercise:
   `SIGNAL_EVENT_TICK=1` is live. Only meaningful while bars are
   completing — it drifts up over market-closed stretches and acts as a
   feed-stall indicator there.
-- **fill → watcher saw it** — how long the 90s fill-check cycle took to
-  notice a broker fill (poll quantization, informational).
+- **fill → watcher saw it** — since 2026-10-12 the fill-expectation check
+  runs on its OWN 5s timer (not the feed tick) and pushed broker FILL
+  events from the CrossTrade order stream trigger an immediate confirm
+  pass, so the fill leg closes in <1s on the push path; the 90s
+  `CHECK_AFTER_MS` gate only bounds the no-fill branches now.
 
 ## Where the data lives
 
