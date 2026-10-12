@@ -30,13 +30,20 @@
  *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/sizeDownStudy.ts [--offline] [--max N] [--iters 2000] \
  *     [--split 2026-01-01] [--budget 50] [--cap 5] [--target 200] \
- *     [--dump out.json] [--sweep] [--cell-iters 500]
+ *     [--loss-floor 250] [--floor-sweep] [--dump out.json] \
+ *     [--sweep] [--cell-iters 500]
  *
  * --sweep runs the risk-layer grid instead of the single-config report:
  * budget {25,40,50,60,75,100,125,150,200,250} × cap {2..30} × daily arm
  * {off,200,300,400} = 400 cells; each cell gets the same §4.1 bootstrap
  * (--cell-iters reshuffles, default 500) and the frontier printer lists
  * every cell with zero breaches and green-band drawdown, fastest first.
+ *
+ * --loss-floor L adds the loss side to the daily arm (halt new trades once
+ * the day is ≤ −$L; the live guard's DAILY_LOSS_FLOOR default is 250).
+ * --floor-sweep keeps the replay and sweeps floors {0,100,150,200,250,300,
+ * 400} at the given budget/cap/target, printing the loss-floor dimension
+ * table (worst day, mean day, pass time, breaches, halts per floor).
  * ------------------------------------------------------------------ */
 
 import { promises as fs } from "node:fs";
@@ -75,13 +82,15 @@ const COMM_PER_SIDE = 0.95; // $0.95/side — reported as a haircut note, not in
 /* ---------------- CLI ---------------- */
 
 function parseArgs(argv: string[]) {
-  const o: { offline: boolean; max?: number; iters: number; split: string; budget: number; cap: number; target: number; dump?: string; sweep: boolean; cellIters: number } = {
+  const o: { offline: boolean; max?: number; iters: number; split: string; budget: number; cap: number; target: number; lossFloor: number; floorSweep: boolean; dump?: string; sweep: boolean; cellIters: number } = {
     offline: false,
     iters: 2000,
     split: "2026-01-01",
     budget: 50,
     cap: 5,
     target: 200,
+    lossFloor: 0,
+    floorSweep: false,
     sweep: false,
     cellIters: 500,
   };
@@ -94,6 +103,8 @@ function parseArgs(argv: string[]) {
     else if (a === "--budget") o.budget = Number(argv[++i]);
     else if (a === "--cap") o.cap = Number(argv[++i]);
     else if (a === "--target") o.target = Number(argv[++i]);
+    else if (a === "--loss-floor") o.lossFloor = Number(argv[++i]);
+    else if (a === "--floor-sweep") o.floorSweep = true;
     else if (a === "--dump") o.dump = argv[++i];
     else if (a === "--sweep") o.sweep = true;
     else if (a === "--cell-iters") o.cellIters = Number(argv[++i]);
@@ -123,24 +134,28 @@ function tradeable(trades: EngineTrade[], budget: number): EngineTrade[] {
   return trades.filter((t) => t.risk <= budget / POINT_VALUE);
 }
 
-/** daily profit arm: once a day's cumulative P&L reaches `target`, skip
- *  every later trade that day (the trade that crosses it counts). */
-function applyDailyTarget(dollars: DollarizedTrade[], target: number): { kept: DollarizedTrade[]; haltedDays: number; skipped: number } {
+/** day halts, two-sided: once a day's cumulative P&L reaches +`target`
+ *  (profit side) or −`lossFloor` (loss side), skip every later trade that
+ *  day (the trade that crosses it counts). Zero = side off. */
+function applyDailyTarget(dollars: DollarizedTrade[], target: number, lossFloor = 0): { kept: DollarizedTrade[]; haltedDays: number; skipped: number; lossDays: number } {
   const sorted = [...dollars].sort((a, b) => a.date.localeCompare(b.date));
   const kept: DollarizedTrade[] = [];
   const dayPnl = new Map<string, number>();
   const triggered = new Set<string>();
+  const lossTriggered = new Set<string>();
   let skipped = 0;
   for (const t of sorted) {
-    if ((dayPnl.get(t.date) ?? 0) >= target) {
+    const d = dayPnl.get(t.date) ?? 0;
+    if ((target > 0 && d >= target) || (lossFloor > 0 && d <= -lossFloor)) {
       triggered.add(t.date);
+      if (lossFloor > 0 && d <= -lossFloor) lossTriggered.add(t.date);
       skipped++;
       continue;
     }
     kept.push(t);
-    dayPnl.set(t.date, (dayPnl.get(t.date) ?? 0) + t.pnl);
+    dayPnl.set(t.date, d + t.pnl);
   }
-  return { kept, haltedDays: triggered.size, skipped };
+  return { kept, haltedDays: triggered.size, skipped, lossDays: lossTriggered.size };
 }
 
 /** dollars per trade under a budget + contract cap (mirrors dollarize). */
@@ -404,6 +419,70 @@ async function runSweep(prod: EngineTrade[], o: { cellIters: number; dump?: stri
   }
 }
 
+/* ---------------- loss-floor sweep (--floor-sweep) ---------------- */
+
+const FLOORS = [0, 100, 150, 200, 250, 300, 400];
+
+async function runFloorSweep(prod: EngineTrade[], o: { budget: number; cap: number; target: number; dump?: string }): Promise<void> {
+  const rules: PropRules = { ...RAPID_EOD_50K, maxMicro: o.cap };
+  const tradeable = prod.filter((t) => t.risk <= o.budget / POINT_VALUE);
+  const sized = dollarize(
+    tradeable.map((t) => ({ date: t.date, pnlPts: t.pnl, riskPts: t.risk })),
+    o.budget,
+    { maxMicro: o.cap, pointValue: POINT_VALUE },
+  );
+  console.log(`loss-floor sweep: b$${o.budget} · cap ${o.cap} · profit arm +$${o.target || "off"} · floors ${FLOORS.join("/")} · 1,000 iters/floor`);
+  const t0 = Date.now();
+  const rows: Record<string, unknown>[] = [];
+  for (const floor of FLOORS) {
+    const arm = applyDailyTarget(sized, o.target, floor);
+    const daily = dailySeries(arm.kept);
+    const b = bootstrap(daily, rules, 1000, 0x5eed);
+    const dd = maxDdUsd(arm.kept);
+    const ev = simulateAccount(arm.kept.map((t) => ({ date: t.date, pnl: t.pnl })), "eval", 0, rules);
+    rows.push({
+      floor,
+      n: arm.kept.length,
+      worstDay: Math.round(Math.min(...daily)),
+      meanDay: Math.round(mean(daily)),
+      bestDay: Math.round(Math.max(...daily)),
+      medPass: pctl(b.daysToPass, 0.5),
+      p10Pass: pctl(b.daysToPass, 0.1),
+      p90Pass: pctl(b.daysToPass, 0.9),
+      pEvalBreach: b.evalBreach / b.iters,
+      pFundBreach: b.fundBreach / b.iters,
+      ddRatio: dd / RAPID_EOD_50K.maxLoss,
+      lossHalts: arm.lossDays,
+      profitHalts: arm.haltedDays - arm.lossDays,
+      medPayout: pctl(b.daysToPayout, 0.5),
+      chronoPassDay: ev.passDay,
+      chronoBreach: ev.breachDay,
+    });
+  }
+  console.log(`${((Date.now() - t0) / 1000).toFixed(0)}s\n`);
+  console.log("| loss floor | n trades | worst day | mean day | best day | P(eval breach) | P(fund breach) | pass med [p10–p90] | payout med | maxDD ÷ MLL | loss-halts | profit-halts | chrono pass |");
+  console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+  for (const r of rows) {
+    const x = r as Record<string, number | string>;
+    console.log(
+      `| ${x.floor === 0 ? "off" : "$" + x.floor} | ${x.n} | $${x.worstDay} | $${x.meanDay} | $${x.bestDay} | ${((x.pEvalBreach as number) * 100).toFixed(1)}% | ${((x.pFundBreach as number) * 100).toFixed(1)}% | ` +
+        `${x.medPass} [${x.p10Pass}–${x.p90Pass}] | ${x.medPayout} | $${Math.round((x.ddRatio as number) * 2000)} (${Math.round((x.ddRatio as number) * 100)}%) | ${x.lossHalts} | ${x.profitHalts} | ${x.chronoPassDay ?? (x.chronoBreach ? "BREACH " + x.chronoBreach : "—")} |`,
+    );
+  }
+  // verification: the live default floor (250) at 10k iters, different seed
+  const arm250 = applyDailyTarget(sized, o.target, 250);
+  const b250 = bootstrap(dailySeries(arm250.kept), rules, 10000, 0xbadc0de);
+  console.log(
+    `\nverify floor $250 (live DAILY_LOSS_FLOOR default) · 10,000 iters · P(eval pass)=${((b250.evalPass / b250.iters) * 100).toFixed(2)}% · ` +
+      `P(eval breach)=${((b250.evalBreach / b250.iters) * 100).toFixed(2)}% · P(fund breach)=${((b250.fundBreach / b250.iters) * 100).toFixed(2)}% · ` +
+      `P(1st payout)=${((b250.fundPayout / b250.iters) * 100).toFixed(2)}% · days→pass med ${pctl(b250.daysToPass, 0.5)} [p10 ${pctl(b250.daysToPass, 0.1)}–p90 ${pctl(b250.daysToPass, 0.9)}]`,
+  );
+  if (o.dump) {
+    await fs.writeFile(o.dump, JSON.stringify({ generated: new Date().toISOString(), config: { budget: o.budget, cap: o.cap, target: o.target }, floors: rows }, null, 1));
+    console.log(`\ndumped → ${o.dump}`);
+  }
+}
+
 /* ---------------- main ---------------- */
 
 async function main() {
@@ -451,10 +530,16 @@ async function main() {
     return;
   }
 
+  /* ---- floor-sweep mode: the daily-loss-floor dimension ---- */
+  if (o.floorSweep) {
+    await runFloorSweep(prod, { budget: o.budget, cap: o.cap, target: o.target, dump: o.dump });
+    return;
+  }
+
   /* ---- the configs, dollarized ---- */
   const c1 = dollarize(prod.map((t) => ({ date: t.date, pnlPts: t.pnl, riskPts: t.risk })), PROD_BUDGET, { maxMicro: PROD_MAX_MICRO, pointValue: POINT_VALUE });
   const c2 = dollarize(tradeable.map((t) => ({ date: t.date, pnlPts: t.pnl, riskPts: t.risk })), o.budget, { maxMicro: o.cap, pointValue: POINT_VALUE });
-  const arm = o.target > 0 ? applyDailyTarget(c2, o.target) : { kept: c2, haltedDays: 0, skipped: 0 };
+  const arm = o.target > 0 || o.lossFloor > 0 ? applyDailyTarget(c2, o.target, o.lossFloor) : { kept: c2, haltedDays: 0, skipped: 0, lossDays: 0 };
   const c3 = arm.kept;
   const haltedPts = c3.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
 
