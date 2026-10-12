@@ -9,18 +9,27 @@
  *   momentum  (failed-flush breakout / huge-bar expansion, market):
  *     fill at the next bar's OPEN, brackets at the SIGNAL prices
  *     (absolute REST brackets — a drifted fill compresses the stop),
- *     instant −0.5 OCO when the fill lands beyond the target, no
- *     time exit (trade runs to stop/target), $100 budget sizing.
- *   expansion retrace (limit): armed 1 pt behind the huge-bar close,
- *     fill at the limit or better within 5 bars (gap-through = the
- *     bar's open), brackets rebuilt FROM THE FILL (1R), $100 budget.
+ *     then the LIVE fill-anchored RE-BRACKET when the compression
+ *     drops below half the planned risk (crossTrade.reanchorBracketForFill
+ *     — modeled since 2026-10-12), instant −0.5 OCO when the fill lands
+ *     beyond the target, no time exit (trade runs to stop/target),
+ *     $100 budget sizing.
+ *   expansion retrace (limit): armed 1 pt behind the huge-bar close AT
+ *     THE BROKER when the card fires (the live path since 2026-10-12 —
+ *     the faithful 0.0-pt cell of retraceSlippageStudy), fill at the
+ *     limit or better within 5 bars (gap-through = the bar's open),
+ *     brackets rebuilt FROM THE FILL (1R), $100 budget.
  *   open drive (market at the open): fill at the next bar's open,
  *     brackets at the signal prices (TP15/SL35 style), $100 budget.
  *
- * Stop-outs: first-touch scan where the exit fills at the stop PRICE
- * (slip=N — the old assumption everywhere) vs the slippage model
- * (slip=Y — the stop-market chases the flush to the bar's close,
- * optionally capped), the same model that broke the RTH config.
+ * FILL MODEL DECLARED ON BOTH SIDES: entry = limit-or-better / open
+ * market fill with the live re-bracket; exit = stop PRICE (slip=N) or
+ * the stop-market chase model (slip=Y). The live 60s flat-entry latch
+ * is a same-bar refusal at minute granularity — replay cannot express
+ * two entries in one bar, so the latch is a no-op here and NOT modeled.
+ * The live time-exit profiles are OFF → the honest horizon is
+ * Infinity; 60 bars is kept for comparison against the published
+ * studies.
  *
  * Run from web/ (env GC_REMOTE_URL):
  *   node --import ../scripts/ts-loader.mjs ./scripts/fillAudit.ts
@@ -116,9 +125,23 @@ function scoreFamily(minutes: MomMinute[], sigs: MomentumSignal[], date: string,
     const nb = minutes[s.entryIdx + 1];
     if (!nb) continue;
     const fill = entryLag === "close" ? s.entry : openOf(nb);
-    const stop = s.stop;
-    const target = s.target;
+    let stop = s.stop;
+    let target = s.target;
     if (!(dir > 0 ? stop < s.entry && s.entry < target : target < s.entry && s.entry < stop)) continue;
+    // fill-anchored RE-BRACKET (2026-10-12): the live burst verifier
+    // re-anchors a drifted fill whose signal-anchored stop compressed
+    // below half the planned risk (lib/crossTrade.ts reanchorBracketForFill
+    // + burstPollOnce) — the trade then carries the PLANNED risk from the
+    // fill. The old model scored the compressed stop as if the repair
+    // didn't exist and overstated the damage of every drifted fill.
+    const drift = (fill - s.entry) * dir;
+    if (drift < 0) {
+      const compressed = Math.abs(fill - stop);
+      if (compressed < 0.5 * s.risk) {
+        stop = fill - dir * s.risk;
+        target = fill + dir * s.risk;
+      }
+    }
     // fill beyond the absolute target → instant OCO (the live drift case)
     const beyondTarget = dir > 0 ? fill >= target : fill <= target;
     const pnl = beyondTarget ? -0.5 : scoreFromFill(minutes, fill, s.entryIdx + 2, stop, target, dir, slip, slipCap, horizonBars);

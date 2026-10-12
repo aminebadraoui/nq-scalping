@@ -51,6 +51,14 @@ export type ScoreOpts = {
    *  "drop" (default, momentumStudy convention) or "time" (lib/backtest's
    *  historical convention: a −cost time exit at entry) */
   onNoBars?: "drop" | "time";
+  /** STOP-SIDE SLIPPAGE (fill-model-integrity discipline, 2026-10-08):
+   *  a stop is a market order — it fills at the next traded price, not at
+   *  the trigger. `stopSlipPts` moves the stop-out fill this many points
+   *  AGAINST the trade (default 0 = the legacy idealization). Studies
+   *  sweep the parameter (rthDriftOptimizer template) and calibrate it
+   *  from the live slippage-alarm journal — never leave an idealized 0
+   *  undeclared in a study header. */
+  stopSlipPts?: number;
 };
 
 export const DEFAULT_COST = 0.5;
@@ -84,6 +92,7 @@ export function scoreTrade(minutes: ScoreBar[], spec: ScoreSpec, opts?: ScoreOpt
   const costPts = opts?.costPts ?? DEFAULT_COST;
   const holdBars = opts?.holdBars ?? DEFAULT_HOLD;
   const tclose = opts?.timeClose ?? defaultClose;
+  const stopSlip = opts?.stopSlipPts ?? 0;
 
   const start = entryIdx + 1;
   const end = Math.min(minutes.length - 1, entryIdx + holdBars);
@@ -116,7 +125,7 @@ export function scoreTrade(minutes: ScoreBar[], spec: ScoreSpec, opts?: ScoreOpt
     if (j === start && stopHit && tgtHit) ambiguous = true;
     if (stopHit) {
       hit = "stop";
-      exit = stop;
+      exit = dir > 0 ? stop - stopSlip : stop + stopSlip;
       heldBars = j - entryIdx;
       break;
     }
@@ -144,16 +153,22 @@ export function scoreTrade(minutes: ScoreBar[], spec: ScoreSpec, opts?: ScoreOpt
 export function scoreSequential<T extends { entryIdx: number }, O extends { heldBars?: number }>(
   signals: T[],
   score: (s: T) => O | null,
-  opts?: { occupy?: "held" | "full"; window?: number },
+  opts?: { occupy?: "held" | "full"; window?: number; minGapBars?: number },
 ): O[] {
   const occupy = opts?.occupy ?? "held";
   const out: O[] = [];
   let openUntil = -1;
+  let lastEntryIdx = -Infinity;
   for (const s of signals) {
     if (s.entryIdx <= openUntil) continue;
+    // the live flat-gate 60s entry latch: no placement within 60s of the
+    // previous entry. At minute-bar granularity that is ≈ minGapBars bars
+    // (a card in bar N+1 fires ≥60s after bar N). Default 0 = legacy.
+    if (opts?.minGapBars && s.entryIdx - lastEntryIdx < opts.minGapBars) continue;
     const sc = score(s);
     if (!sc) continue;
     out.push(sc);
+    lastEntryIdx = s.entryIdx;
     openUntil = s.entryIdx + (occupy === "full" ? (opts?.window ?? sc.heldBars ?? 0) : sc.heldBars ?? 0);
   }
   return out;

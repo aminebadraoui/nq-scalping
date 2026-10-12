@@ -80,6 +80,32 @@ describe("scoreTrade", () => {
     assert.ok(Math.abs(r.mfeR - (114 - 108) / 3) < 1e-9);
     assert.ok(Math.abs(r.maeR - (108 - 104) / 3) < 1e-9);
   });
+
+  it("stopSlipPts: a stop-out fills past the trigger against the trade (both sides)", () => {
+    const minutes = [{ high: 108.5, low: 107.5, c: 108 }, { high: 109, low: 104.5, c: 105 }];
+    // long: stop 105, slip 1 → fills at 104
+    const longR = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 115, entryIdx: 0, risk: 3 }, { stopSlipPts: 1 });
+    assert.ok(longR);
+    assert.equal(longR.hit, "stop");
+    assert.equal(longR.exit, 104);
+    assert.equal(longR.pnl, 104 - 108 - DEFAULT_COST);
+    // short: stop 111, slip 1.5 → fills at 112.5
+    const shortR = scoreTrade(
+      [{ high: 109, low: 106, c: 108 }, { high: 112, low: 108, c: 111 }],
+      { dir: -1, entry: 108, stop: 111, target: 101, entryIdx: 0, risk: 3 },
+      { stopSlipPts: 1.5 },
+    );
+    assert.ok(shortR);
+    assert.equal(shortR.hit, "stop");
+    assert.equal(shortR.exit, 112.5);
+  });
+
+  it("stopSlipPts defaults to 0 (the legacy exact-stop model)", () => {
+    const minutes = [{ high: 108.5, low: 107.5, c: 108 }, { high: 109, low: 104.5, c: 105 }];
+    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 115, entryIdx: 0, risk: 3 });
+    assert.ok(r);
+    assert.equal(r.exit, 105);
+  });
 });
 
 describe("scoreSequential", () => {
@@ -108,6 +134,33 @@ describe("scoreSequential", () => {
       { occupy: "full", window: 10 },
     );
     assert.equal(calls, 2); // entryIdx 5 inside 1+10 window; 20 scored
+    assert.equal(scored.length, 2);
+  });
+
+  it("minGapBars: models the live 60s flat-entry latch (no entry within N bars of the last)", () => {
+    let calls = 0;
+    const scored = scoreSequential(
+      [{ entryIdx: 1 }, { entryIdx: 2 }, { entryIdx: 4 }],
+      () => {
+        calls++;
+        return { exit: 110, pnl: 1, hit: "target", heldBars: 0, risk: 3, mfeR: 0, maeR: 0, runPts: 0, hit2R: false, hit3R: false, ambiguous: false };
+      },
+      { minGapBars: 2 },
+    );
+    assert.equal(calls, 2); // entryIdx 2 within 2 bars of 1 → skipped; 4 scored
+    assert.equal(scored.length, 2);
+  });
+
+  it("minGapBars default 0 keeps legacy behavior (no gap filter)", () => {
+    let calls = 0;
+    const scored = scoreSequential(
+      [{ entryIdx: 1 }, { entryIdx: 2 }],
+      () => {
+        calls++;
+        return { exit: 110, pnl: 1, hit: "target", heldBars: 0, risk: 3, mfeR: 0, maeR: 0, runPts: 0, hit2R: false, hit3R: false, ambiguous: false };
+      },
+    );
+    assert.equal(calls, 2);
     assert.equal(scored.length, 2);
   });
 });
