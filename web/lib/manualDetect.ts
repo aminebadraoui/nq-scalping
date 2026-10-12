@@ -33,7 +33,7 @@
 import { dbEnabled, getDb } from "./gcdb";
 import { appendDaybook } from "./daybook";
 import { ctFills, ctOrders, ctOrdersHistory, ctPositions, type CtFill, type CtOrderHist } from "./ctAccount";
-import { execTradesMemory } from "./execTracker";
+import { execTradesMemory, getExecTrades } from "./execTracker";
 import { placedLimitOrderIds } from "./execWatch";
 import { sendTelegram } from "./notify";
 
@@ -350,8 +350,12 @@ function alertOnce(key: string, text: string): void {
   void sendTelegram(text, { parseMode: "HTML" }).catch(() => {});
 }
 
-function trackedTrades(): TrackedTrade[] {
-  return execTradesMemory()
+/** the bot's tracked trades — memory AND the persisted ledger (Neon
+ *  exec_trades), so a redeploy never turns the bot's own history into
+ *  "manual" rows. */
+async function trackedTrades(): Promise<TrackedTrade[]> {
+  const rows = await getExecTrades(200);
+  return rows
     .filter((r) => r.status === "filled" || r.status === "closed")
     .map((r) => ({
       orderId: r.orderId,
@@ -369,16 +373,41 @@ function openTrackedTrade(): boolean {
 /** one detection pass — call on the 10s timer. Best-effort, never throws. */
 export async function checkManualActions(): Promise<void> {
   try {
+    // positions first: the held side decides whether a one-sided manual
+    // group is a REAL open position or an exit that left the fill window
+    const posRows = await ctPositions();
+    let held: "long" | "short" | null = null;
+    let posNet = 0;
+    if (posRows) {
+      const mnq = posRows.filter((p) => {
+        const qty = Number(p.netPos ?? p.qty ?? 0);
+        const ins = String(p.instrument ?? p.contractName ?? "");
+        return qty !== 0 && ins.toUpperCase().includes(MNQ);
+      });
+      posNet = mnq.reduce((s, p) => s + Number(p.netPos ?? p.qty ?? 0), 0);
+      if (posNet !== 0) held = posNet > 0 ? "long" : "short";
+    }
+
     const fills = await ctFills();
-    const tracked = trackedTrades();
+    const tracked = await trackedTrades();
     if (fills) {
       const { manual } = classifyManualFills(fills, tracked);
       // parentage-aware grouping (orders history), chronological fallback
       const groups = groupManualFills(manual, await ctOrdersHistory());
       for (const [oid, fs] of groups) {
-        const pair = pairManualGroup(fs);
+        let pair = pairManualGroup(fs);
         const key = `fill|${oid}`;
         const existing = getMemory().find((r) => r.key === key);
+        let zombieClosed = false;
+        if (!pair.closed) {
+          const lastTs = Math.max(...fs.map((f) => f.ts));
+          // flat (or opposite) account + an old one-sided group = the exit
+          // fills rolled out of the session window — close without net
+          if (held !== pair.side && Date.now() - lastTs > 15 * 60_000) {
+            zombieClosed = true;
+            pair = { ...pair, closed: true, pnlUsd: null };
+          }
+        }
         const row: ManualActionRow = {
           key,
           kind: "manual_trade",
@@ -393,9 +422,11 @@ export async function checkManualActions(): Promise<void> {
           orderId: String(oid),
           fills: fs.map((f) => ({ ts: f.ts, action: f.action, qty: f.qty, price: f.price })),
           closed: pair.closed,
-          note: pair.closed
-            ? "manual round trip — fills belong to no tracked trade"
-            : "manual position open — fills belong to no tracked trade",
+          note: zombieClosed
+            ? "exit fills outside the session fill window — net unknown"
+            : pair.closed
+              ? "manual round trip — fills belong to no tracked trade"
+              : "manual position open — fills belong to no tracked trade",
           updatedAt: Date.now(),
         };
         upsertMemory(row);
@@ -403,13 +434,13 @@ export async function checkManualActions(): Promise<void> {
         if (!existing) {
           alertOnce(
             key,
-            `🖐 <b>MANUAL ${pair.closed ? "TRADE" : "POSITION OPEN"}</b> — <code>${oid}</code>\n` +
+            `🖐 <b>MANUAL ${pair.closed && !zombieClosed ? "TRADE" : "POSITION OPEN"}</b> — <code>${oid}</code>\n` +
               `${pair.side.toUpperCase()} ${pair.qty} MNQ${pair.entryPrice !== null ? ` @ ${pair.entryPrice.toFixed(2)}` : ""}` +
-              (pair.closed && pair.pnlUsd !== null
+              (pair.closed && !zombieClosed && pair.pnlUsd !== null
                 ? ` → ${pair.exitPrice?.toFixed(2)} · net ${pair.pnlUsd >= 0 ? "+" : "−"}$${Math.abs(pair.pnlUsd).toFixed(2)}`
                 : ""),
           );
-        } else if (!existing.closed && pair.closed) {
+        } else if (!existing.closed && pair.closed && !zombieClosed) {
           alertOnce(
             `${key}|close`,
             `🖐 <b>MANUAL TRADE CLOSED</b> — <code>${oid}</code> ${pair.side.toUpperCase()} ${pair.qty} → ${pair.exitPrice?.toFixed(2)} · net ${pair.pnlUsd !== null && pair.pnlUsd >= 0 ? "+" : "−"}$${Math.abs(pair.pnlUsd ?? 0).toFixed(2)}`,
@@ -419,18 +450,11 @@ export async function checkManualActions(): Promise<void> {
     }
 
     // positions: an MNQ position with no tracked trade and no manual row
-    const posRows = await ctPositions();
-    if (posRows) {
-      const mnq = posRows.filter((p) => {
-        const qty = Number(p.netPos ?? p.qty ?? 0);
-        const ins = String(p.instrument ?? p.contractName ?? "");
-        return qty !== 0 && ins.toUpperCase().includes(MNQ);
-      });
-      const net = mnq.reduce((s, p) => s + Number(p.netPos ?? p.qty ?? 0), 0);
+    if (posNet !== 0 && !openTrackedTrade()) {
       const hasManualOpen = getMemory().some((r) => r.kind === "manual_trade" && !r.closed);
-      if (net !== 0 && !openTrackedTrade() && !hasManualOpen) {
+      if (!hasManualOpen) {
         const now = Date.now();
-        const key = `pos|${nyDay(now)}|${net > 0 ? "long" : "short"}`;
+        const key = `pos|${nyDay(now)}|${posNet > 0 ? "long" : "short"}`;
         if (!getMemory().some((r) => r.key === key)) {
           const row: ManualActionRow = {
             key,
@@ -438,8 +462,8 @@ export async function checkManualActions(): Promise<void> {
             at: now,
             day: nyDay(now),
             timeET: nyTime(now),
-            side: net > 0 ? "long" : "short",
-            qty: Math.abs(net),
+            side: posNet > 0 ? "long" : "short",
+            qty: Math.abs(posNet),
             entryPrice: null,
             exitPrice: null,
             pnlUsd: null,
