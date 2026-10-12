@@ -136,12 +136,13 @@ const RULES: RuleSet[] = [
   { name: "+tiers", exit: "ladder", tiers: [{ threshold: 600, multiplier: 1 / 3 }, { threshold: 300, multiplier: 2 / 3 }], giveBack: null },
   { name: "+giveback", exit: "ladder", tiers: [], giveBack: { pct: 0.5, floor: 250 } },
   { name: "full", exit: "ladder", tiers: [{ threshold: 600, multiplier: 1 / 3 }, { threshold: 300, multiplier: 2 / 3 }], giveBack: { pct: 0.5, floor: 250 } },
-  // the EXACT live stack (2026-10-12): MOM+EXP+RTH only (open family off
-  // live — no FEED_OPEN env), single-leg fixed exits (scale-out off),
-  // RTH 2.5R limit-bracket target, live sizing from env. The guard stack
+  // the EXACT live stack (2026-10-12): all four families (FEED_MOMENTUM /
+  // FEED_RTH / FEED_OPEN all default true, FEED_UNUSUAL_VOLUME off),
+  // single-leg fixed exits (scale-out off), RTH 2.5R limit-bracket target,
+  // open TP15/SL35, live sizing from env. The guard stack
   // (floor/arm/consistency/dd600/giveback) is applied downstream through
   // guardReplay — the SAME module the live executor's rules come from.
-  { name: "live", exit: "fixed", tiers: [], giveBack: null, families: ["momentum", "expansion", "rth"], rthTargetR: 2.5 },
+  { name: "live", exit: "fixed", tiers: [], giveBack: null, families: ["momentum", "expansion", "rth", "open"], rthTargetR: 2.5 },
 ];
 
 const TIER_OF = (dayPnl: number, tiers: RuleSet["tiers"]) => {
