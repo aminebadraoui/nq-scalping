@@ -102,33 +102,43 @@ function symbol(): string {
   return process.env.GOCHARTING_SYMBOL || "NQZ26";
 }
 
-/** pure event-tick decision: fire only when a NEW completed bar appeared
- *  or the last bar flipped from tick-built to candle-confirmed. Frames
- *  that re-merge without changing either are skipped — GoCharting streams
- *  footprint frames every few seconds and each advances the global
- *  candle-refresh clock, so comparing that clock stamps a tick per frame
- *  (measured 16/min instead of the intended ~2/bar). */
+/** close epoch (ms) of a completed minute bar from its UTC du+t stamps;
+ *  null when unparseable. The tail's du/t basis makes plain key compare
+ *  unreliable (the vendor frame re-replaces the tail with a lagging
+ *  candle, oscillating the tail between two stamps), so both cadence
+ *  rules compare CLOSE EPOCHS monotonically instead. */
+export function barCloseMs(bar: { t: string; du?: string } | undefined): number | null {
+  if (!bar || !/^\d{2}:\d{2}$/.test(bar.t) || !bar.du) return null;
+  const [y, mo, d] = bar.du.split("-").map(Number);
+  const [hh, mm] = bar.t.split(":").map(Number);
+  const ms = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** pure event-tick decision: fire only when the tail bar's close epoch
+ *  ADVANCED (a new completed bar appeared) or the same-close bar flipped
+ *  from tick-built to candle-confirmed. Backward oscillations (the vendor
+ *  frame re-replacing the tail with its lagging candle) and repeat frames
+ *  are skipped — comparing the global candle-refresh clock stamped a tick
+ *  per frame (measured 16/min instead of the intended ~2/bar). */
 export function eventTickDecision(
-  prev: { barKey: string; barSrc: string },
-  next: { barKey: string; barSrc: string },
+  prev: { closeMs: number; barSrc: string },
+  next: { closeMs: number; barSrc: string },
 ): "fire" | "skip" {
-  if (next.barKey !== prev.barKey) return "fire";
-  if (next.barSrc === "candle" && prev.barSrc !== "candle") return "fire";
+  if (next.closeMs > prev.closeMs) return "fire";
+  if (next.closeMs === prev.closeMs && next.barSrc === "candle" && prev.barSrc !== "candle") return "fire";
   return "skip";
 }
 
 /** pure poll-backstop decision: the interval tick is the safety net only.
- *  Skip while the last completed bar is candle-confirmed and fresh — the
- *  event ticks own those moments; the poll resumes the moment the bar
- *  ages (emits died) or stays unconfirmed (the tape-gate/heal path). */
-export function pollBackstopSkip(lastBar: { t: string; du?: string; source?: string } | undefined, now: number): boolean {
-  if (!lastBar || lastBar.source !== "candle") return false;
-  if (!/^\d{2}:\d{2}$/.test(lastBar.t) || !lastBar.du) return false;
-  const [y, mo, d] = lastBar.du.split("-").map(Number);
-  const [hh, mm] = lastBar.t.split(":").map(Number);
-  const closeMs = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
-  if (!Number.isFinite(closeMs)) return false;
-  return now - closeMs < 45_000;
+ *  Skip while the tail's close epoch is not newer than the last event's
+ *  — the events already saw this bar (or an older one), so a poll adds
+ *  nothing. The poll fires the moment the buffer rolls a bar the emits
+ *  missed (tail advances) or the tail is unparseable (never guess). */
+export function pollBackstopSkip(lastBar: { t: string; du?: string } | undefined, lastEventCloseMs: number): boolean {
+  const close = barCloseMs(lastBar);
+  if (close === null) return false;
+  return close <= lastEventCloseMs;
 }
 
 /** env feature flags: FEED_* — "1/true/yes/on" enables, "0/false/no/off" disables. */
@@ -435,10 +445,10 @@ class SignalFeed {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   /** event-driven tick state (SIGNAL_EVENT_TICK=1): the last completed
-   *  bar key + confirmation source the subscription saw, so a live-state
-   *  emit only triggers a tick when a NEW bar completed or the last bar
-   *  flipped tick→candle — never on every footprint frame or trade print */
-  private eventTickBarKey = "";
+   *  bar's CLOSE EPOCH + confirmation source the subscription saw, so a
+   *  live-state emit only triggers a tick when the tail advances (a new
+   *  bar) or flips tick→candle at the same close — backward oscillations
+  private eventTickCloseMs = 0;
   private eventTickBarSrc = "";
   private eventTickLast = 0;
   private ctxCache: { date: string; ctx: CollectedContext } | null = null;
@@ -2310,14 +2320,8 @@ class SignalFeed {
       // ---- telemetry: bar age = last completed bar close → now (the
       //      continuous detection-lag metric the event tick attacks)
       {
-        const mins = getLive().state.minutes;
-        const lastMin = mins[mins.length - 1];
-        if (lastMin && /^\d{2}:\d{2}$/.test(lastMin.t) && lastMin.du) {
-          const [y, mo, d] = lastMin.du.split("-").map(Number);
-          const [hh, mm] = lastMin.t.split(":").map(Number);
-          const closeMs = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
-          if (Number.isFinite(closeMs)) markBarAge(Math.max(0, Date.now() - closeMs));
-        }
+        const closeMs = barCloseMs(getLive().state.minutes.at(-1));
+        if (closeMs !== null) markBarAge(Math.max(0, Date.now() - closeMs));
       }
       this.lastRun = Date.now();
       if (snap) {
@@ -2413,29 +2417,30 @@ class SignalFeed {
     this.timer = setInterval(() => {
       const now = Date.now();
       if (!signalWindowOpen(now)) return;
-      if (pollBackstopSkip(getLive().state.minutes.at(-1), now)) return;
+      if (pollBackstopSkip(getLive().state.minutes.at(-1), this.eventTickCloseMs)) return;
       void this.tick();
     }, refreshSeconds() * 1000);
     this.startEventTick();
   }
 
   /** SIGNAL_EVENT_TICK=1 — zero-latency detection: instead of waiting for
-   *  the next poll, run the tick the moment the live state shows a new
-   *  completed bar or the last bar flipping to candle-confirmed (the tape
-   *  gate still holds cards until confirmation, so this fires exactly when
-   *  the first tradeable moment arrives). Footprint frames that merge
-   *  nothing no longer trigger (eventTickDecision). The interval stays as
-   *  the safety net. OFF by default — enablement is an execution-knob
-   *  change and needs the owner's env approval first
-   *  (web/EXEC_CHANGE_POLICY.md rule 4). */
+   *  the next poll, run the tick the moment the live state shows a NEW
+   *  completed bar (tail close advanced) or the tail flipping to
+   *  candle-confirmed (the tape gate still holds cards until confirmation,
+   *  so this fires exactly when the first tradeable moment arrives).
+   *  Backward tail oscillations and frames that merge nothing are skipped
+   *  (eventTickDecision). The interval stays as the safety net — it fires
+   *  the moment the buffer rolls a bar the emits missed. OFF by default —
+   *  enablement is an execution-knob change and needs the owner's env
+   *  approval first (web/EXEC_CHANGE_POLICY.md rule 4). */
   private startEventTick(): void {
     if (!feedFlag("SIGNAL_EVENT_TICK", false)) return;
     getLive().subscribe((st) => {
       const last = st.minutes[st.minutes.length - 1];
-      const barKey = last ? `${last.du ?? ""}|${last.t}` : "";
+      const closeMs = barCloseMs(last) ?? 0;
       const barSrc = last?.source ?? "";
-      if (eventTickDecision({ barKey: this.eventTickBarKey, barSrc: this.eventTickBarSrc }, { barKey, barSrc }) === "skip") return;
-      this.eventTickBarKey = barKey;
+      if (eventTickDecision({ closeMs: this.eventTickCloseMs, barSrc: this.eventTickBarSrc }, { closeMs, barSrc }) === "skip") return;
+      this.eventTickCloseMs = closeMs;
       this.eventTickBarSrc = barSrc;
       const now = Date.now();
       if (now - this.eventTickLast < 250) return; // stampede throttle
