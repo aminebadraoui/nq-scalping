@@ -65,11 +65,24 @@ let positionsCache: { at: number; rows: Record<string, unknown>[] | null } | nul
  * RTH signals outright — the pre-flight flat check (GET positions) got a
  * pacing refusal and the gate failed the card instantly, with no retry.
  *
+ * Vendor contract (docs: crosstrade.io/docs/api/rate-limiting):
+ *   · CrossTrade budget 3 req/s (burst 20), shared REST + WS RPC;
+ *     incoming WS frames are free; ~7s pause fully recharges.
+ *   · broker_rate_limited is the Tradovate passthrough: p-ticket
+ *     (endpoint hourly cap — early retries GROW the wait), the login's
+ *     5,000 req/h user-level 429 (every request restarts the hour), or
+ *     CrossTrade's own governor pacing (no penalty, flat hint).
+ *   · Every refusal carries retryAfter in the body + Retry-After header.
+ *     HONOR IT — blind fixed backoff can extend a broker penalty.
+ *
  * ctFetch therefore:
- *   · spaces CrossTrade REST calls by CT_MIN_GAP_MS (our polls never
- *     burst the vendor — bursts are what trip the pacing),
- *   · retries pacing refusals with exponential backoff + jitter (a few
- *     seconds usually rides the window out; nothing else changes),
+ *   · spaces CrossTrade REST calls by CT_MIN_GAP_MS (no bursts),
+ *   · retries pacing refusals, sleeping max(backoff, retryAfter) —
+ *     bounded by retryAfterCapMs so one refusal can never stall a card,
+ *   · after a refusal survives the retry budget, opens a PENALTY
+ *     COOLDOWN: the poll helpers serve their last-known state without
+ *     fetching until it clears (polls stop feeding a penalized login;
+ *     critical reads — flat gate, place, verifyAbsent — still try),
  *   · never retries non-pacing responses — 400/401/403 come back
  *     instantly, exactly like the raw fetch they replace.
  *
@@ -90,11 +103,42 @@ function ctGapMs(): number {
   return ctGapOverride ?? CT_MIN_GAP_MS;
 }
 
-/** is this response a CrossTrade pacing refusal (safe to retry a READ,
- *  and for writes the ONLY automatic retry)? */
+/** which vendor pacing shape is this? (docs name three, plus the
+ *  snapshot contention 429) */
+export type CtRateLimitKind = "ct_pacing" | "broker" | "snapshot_pending";
+
+export function classifyCtRateLimit(status: number, text: string): CtRateLimitKind | null {
+  const t = text.slice(0, 500);
+  if (t.includes("snapshot_refresh_pending")) return "snapshot_pending";
+  if (t.includes("broker_rate_limited")) return "broker";
+  if (status === 429) return "ct_pacing";
+  return null;
+}
+
+/** is this response a pacing refusal at all (safe to retry a READ, and
+ *  for writes the ONLY automatic retry)? */
 export function isCtRateLimited(status: number, bodyText: string): boolean {
-  if (status === 429) return true;
-  return bodyText.slice(0, 400).includes("broker_rate_limited");
+  return classifyCtRateLimit(status, bodyText) !== null;
+}
+
+/** the vendor's own wait hint: body `retryAfter` (seconds), then the
+ *  Retry-After header (whole seconds per the docs). null when absent. */
+export function parseRetryAfterMs(
+  status: number,
+  text: string,
+  headers?: { get?: (k: string) => string | null } | null,
+): number | null {
+  const fromBody = /"retryAfter"\s*:\s*(\d+(?:\.\d+)?)/.exec(text)?.[1];
+  if (fromBody !== undefined) {
+    const n = Number(fromBody);
+    if (Number.isFinite(n) && n > 0) return Math.round(n * 1000);
+  }
+  const h = headers?.get?.("retry-after");
+  if (h) {
+    const n = Number(h);
+    if (Number.isFinite(n) && n > 0) return Math.round(n * 1000);
+  }
+  return null;
 }
 
 export type CtFetchOpts = {
@@ -104,6 +148,9 @@ export type CtFetchOpts = {
   backoffBaseMs?: number;
   /** retry on HTTP 503 as well (reads only — default false) */
   retryOn503?: boolean;
+  /** cap on the retryAfter wait (default 15s) — a long broker penalty
+   *  must fail the call, not stall a card */
+  retryAfterCapMs?: number;
 };
 
 /** fetch one CrossTrade REST endpoint with pacing awareness. Returns the
@@ -119,11 +166,18 @@ export async function ctFetch(
   const extra = Math.max(0, opts?.extraRetries ?? 2);
   const backoffBase = opts?.backoffBaseMs ?? ctBackoffOverride ?? 1200;
   const retryOn503 = opts?.retryOn503 === true;
+  const retryAfterCap = opts?.retryAfterCapMs ?? 15_000;
   let status = 0;
   let text = "";
+  let lastKind: CtRateLimitKind | null = null;
+  let lastRetryAfterMs: number | null = null;
   for (let attempt = 0; attempt <= extra; attempt++) {
     if (attempt > 0) {
-      const wait = backoffBase * 2 ** (attempt - 1) + Math.random() * 300;
+      // honor the vendor's own wait hint when present — the docs are
+      // explicit that early retries against a broker penalty grow it
+      const base = backoffBase * 2 ** (attempt - 1) + Math.random() * 300;
+      const wait =
+        lastRetryAfterMs !== null ? Math.min(retryAfterCap, Math.max(base, lastRetryAfterMs)) : base;
       await sleep(wait);
     }
     // spacing: never let CrossTrade calls burst (pacing is per login and
@@ -136,9 +190,60 @@ export async function ctFetch(
     text = await readBody(res);
     const paced = isCtRateLimited(status, text) || (retryOn503 && status === 503);
     if (!paced) return { status, text };
-    console.warn(`[crossTrade] vendor pacing (HTTP ${status}) on ${url.split("/").pop()} — retry ${attempt + 1}/${extra}`);
+    lastKind = classifyCtRateLimit(status, text);
+    lastRetryAfterMs = parseRetryAfterMs(status, text, headersOf(res));
+    console.warn(`[crossTrade] vendor pacing (HTTP ${status}${lastKind ? ` · ${lastKind}` : ""}) on ${url.split("/").pop()} — retry ${attempt + 1}/${extra}`);
   }
+  // every attempt was paced — open the penalty cooldown so the polls
+  // stop feeding the penalized login (critical reads still retry)
+  if (lastKind) noteCtPenalty(lastKind, lastRetryAfterMs);
   return { status, text };
+}
+
+/** Response.headers with the test-mock shape tolerated. */
+function headersOf(res: Response): { get?: (k: string) => string | null } | null {
+  const h = (res as { headers?: unknown }).headers;
+  if (h && typeof (h as { get?: unknown }).get === "function") {
+    return h as { get: (k: string) => string | null };
+  }
+  return null;
+}
+
+/* ---- penalty cooldown (circuit breaker for the polls) -------------- */
+
+const PENALTY_STALE_MAX_MS = 5 * 60_000;
+let ctPenaltyUntil = 0;
+let ctPenaltyKind: CtRateLimitKind | null = null;
+/** TEST ONLY: override the penalty wait clamp. */
+let ctPenaltyMinOverride: number | null = null;
+let ctPenaltyMaxOverride: number | null = null;
+
+/** is the penalty cooldown active? While active, the poll helpers serve
+ *  their last-known state WITHOUT fetching — every request sent during a
+ *  broker penalty restarts the login's hour clock (vendor docs). */
+export function ctPenaltyActive(): boolean {
+  return Date.now() < ctPenaltyUntil;
+}
+
+export function ctPenaltyInfo(): { kind: CtRateLimitKind | null; untilMs: number } {
+  return { kind: ctPenaltyKind, untilMs: ctPenaltyUntil };
+}
+
+function noteCtPenalty(kind: CtRateLimitKind, retryAfterMs: number | null): void {
+  // broker penalties are the Tradovate passthrough — a 30s floor lets a
+  // spent login budget breathe (every request restarts its hour clock),
+  // while CrossTrade's own pacing and the snapshot contention clear in
+  // seconds. The window self-extends while the vendor keeps refusing.
+  const min = ctPenaltyMinOverride ?? (kind === "broker" ? 30_000 : kind === "snapshot_pending" ? 5_000 : 8_000);
+  const max = ctPenaltyMaxOverride ?? 300_000;
+  const wait = Math.min(max, Math.max(min, retryAfterMs ?? min));
+  ctPenaltyUntil = Math.max(ctPenaltyUntil, Date.now() + wait);
+  ctPenaltyKind = kind;
+  console.warn(`[crossTrade] penalty cooldown ${Math.round(wait / 1000)}s (${kind}) — polls serving cached state, critical reads may retry`);
+}
+
+function penaltyPaused(): boolean {
+  return ctPenaltyActive();
 }
 
 /** read the body as text; json-only mocks (unit tests) fall back to their
@@ -167,6 +272,62 @@ export function configuredAccount(env: Record<string, string | undefined> = proc
 
 function enabled(env: Record<string, string | undefined> = process.env): boolean {
   return !!env.CROSSTRADE_URL && !!env.CROSSTRADE_KEY && !!env.CROSSTRADE_ACCOUNT;
+}
+
+/* ---- WebSocket mirror (order/position events, 2026-10-12) ---------- *
+ * The vendor's own guidance: subscribe once and apply events by ID —
+ * incoming frames are free, REST polling spends the shared budget. The
+ * stream (lib/ctStream.ts) feeds this mirror; the poll helpers serve it
+ * while it is fresh (frames within WS_FRESH_MS and hydrated by a REST
+ * seed). On reconnect/resync the hydration flag resets, so the next read
+ * re-seeds over REST exactly once — a stale mirror can never blind the
+ * protection sweep, because freshness expires into the REST path.
+ * -------------------------------------------------------------------- */
+
+type CtWsMirror = {
+  ordersHydratedAt: number;
+  positionsHydratedAt: number;
+  lastFrameAt: number;
+  orders: Map<string, Record<string, unknown>>;
+  positions: Map<string, Record<string, unknown>>;
+};
+
+let wsMirror: CtWsMirror = {
+  ordersHydratedAt: 0,
+  positionsHydratedAt: 0,
+  lastFrameAt: 0,
+  orders: new Map(),
+  positions: new Map(),
+};
+
+const WS_FRESH_MS = 30_000;
+
+/** the stream reconnected/resynced: the mirror is un-hydrated until the
+ *  next REST read re-seeds it (replayed events are not complete). */
+export function ctWsMarkResync(): void {
+  wsMirror.ordersHydratedAt = 0;
+  wsMirror.positionsHydratedAt = 0;
+}
+
+/** any WS frame keeps the mirror's liveness clock warm (pnl/status too). */
+export function ctWsHeartbeat(): void {
+  wsMirror.lastFrameAt = Date.now();
+}
+
+/** an orderUpdate/positionUpdate frame: upsert by id. Frames before the
+ *  first hydration are ignored — a half-seeded mirror lies. */
+export function ctApplyWsFrame(kind: "order" | "position", row: Record<string, unknown>): void {
+  wsMirror.lastFrameAt = Date.now();
+  const hydrated = kind === "order" ? wsMirror.ordersHydratedAt : wsMirror.positionsHydratedAt;
+  if (hydrated === 0) return;
+  const key = kind === "order" ? String(row.id ?? "") : String(row.id ?? row.positionId ?? "");
+  if (!key) return;
+  (kind === "order" ? wsMirror.orders : wsMirror.positions).set(key, row);
+}
+
+function wsMirrorFresh(kind: "order" | "position"): boolean {
+  const hydrated = kind === "order" ? wsMirror.ordersHydratedAt : wsMirror.positionsHydratedAt;
+  return hydrated > 0 && Date.now() - wsMirror.lastFrameAt < WS_FRESH_MS;
 }
 
 /* ---- account snapshot (30s) ---------------------------------------- */
@@ -216,6 +377,14 @@ function sleep(ms: number): Promise<void> {
  *  the account is genuinely unreadable. */
 export async function ctSnapshot(opts?: { fetchFn?: typeof fetch; retryDelayMs?: number }): Promise<CtSnapshot> {
   if (snapCache && Date.now() - snapCache.at < SNAPSHOT_TTL_MS) return snapCache;
+  // penalty cooldown: serve the last good snapshot up to 5 min old
+  // (realized P&L only moves on fills — the guard's floor checks are
+  // safe on it) and go silent on the wire so the vendor penalty clears;
+  // no usable cache → fail closed exactly as before.
+  if (penaltyPaused()) {
+    if (snapCache?.accounts && Date.now() - snapCache.at <= PENALTY_STALE_MAX_MS) return snapCache;
+    return { at: Date.now(), accounts: null };
+  }
   const fetchFn = opts?.fetchFn ?? fetch;
   const account = configuredAccount();
   for (let attempt = 1; attempt <= SNAP_MAX_ATTEMPTS; attempt++) {
@@ -283,9 +452,12 @@ async function fetchFillsRaw(fetchFn: typeof fetch): Promise<CtFill[]> {
 }
 
 /** shared fills read: 5s cache; on failure the last successful list is
- *  returned (the watcher's fallback semantics), null when none exists. */
+ *  returned (the watcher's fallback semantics), null when none exists.
+ *  Penalty cooldown: serve the cache without fetching — fills polls must
+ *  not feed a penalized login. */
 export async function ctFills(opts?: { force?: boolean; fetchFn?: typeof fetch }): Promise<CtFill[] | null> {
   if (!opts?.force && fillsCache && Date.now() - fillsCache.at < FILLS_TTL_MS) return fillsCache.fills;
+  if (penaltyPaused()) return fillsCache?.fills ?? null;
   try {
     const fills = await fetchFillsRaw(opts?.fetchFn ?? fetch);
     fillsCache = { at: Date.now(), fills };
@@ -313,12 +485,19 @@ async function fetchPositionsRaw(fetchFn: typeof fetch): Promise<Record<string, 
   return j.data ?? [];
 }
 
-/** shared positions read: 2s cache; failure null-caches (unreadable). */
+/** shared positions read: WS-mirror first (frames are free), then the 2s
+ *  cache, then REST (which re-seeds the mirror). Failure null-caches
+ *  (unreadable). Penalty cooldown: serve the last known rows silently. */
 export async function ctPositions(opts?: { fetchFn?: typeof fetch }): Promise<Record<string, unknown>[] | null> {
+  if (wsMirrorFresh("position")) return [...wsMirror.positions.values()];
   if (positionsCache && Date.now() - positionsCache.at < POSITIONS_TTL_MS) return positionsCache.rows;
+  if (penaltyPaused()) return positionsCache?.rows ?? null;
   try {
     const rows = await fetchPositionsRaw(opts?.fetchFn ?? fetch);
     positionsCache = { at: Date.now(), rows };
+    // REST seed replaces the mirror — the position list is the whole truth
+    wsMirror.positions = new Map(rows.map((r) => [String(r.id ?? r.positionId ?? ""), r]));
+    wsMirror.positionsHydratedAt = Date.now();
     return rows;
   } catch {
     positionsCache = { at: Date.now(), rows: null };
@@ -326,11 +505,16 @@ export async function ctPositions(opts?: { fetchFn?: typeof fetch }): Promise<Re
   }
 }
 
-/* ---- working orders (fresh — protection checks) ---------------------- */
+/* ---- working orders (WS mirror → REST) ------------------------------ */
 
-/** shared orders read: ALWAYS fresh (a stale stop list would blind the
- *  protection sweep). Failure returns null (callers keep waiting). */
+/** shared orders read. The WS mirror serves while fresh (order events
+ *  update it in real time — fresher than any poll); REST re-seeds the
+ *  mirror when the stream is silent or un-hydrated. Failure/unreadable
+ *  returns ok=false (callers keep waiting — never guess a stop list).
+ *  Penalty cooldown: ok=false without fetching. */
 export async function ctOrders(opts?: { fetchFn?: typeof fetch }): Promise<{ ok: boolean; orders: Record<string, unknown>[] }> {
+  if (wsMirrorFresh("order")) return { ok: true, orders: [...wsMirror.orders.values()] };
+  if (penaltyPaused()) return { ok: false, orders: [] };
   try {
     const res = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(configuredAccount())}/orders`,
@@ -344,7 +528,11 @@ export async function ctOrders(opts?: { fetchFn?: typeof fetch }): Promise<{ ok:
     if (res.status < 200 || res.status >= 300) return { ok: false, orders: [] };
     const j = JSON.parse(res.text) as { success?: boolean; data?: Array<Record<string, unknown>> };
     if (!j.success) return { ok: false, orders: [] };
-    return { ok: true, orders: j.data ?? [] };
+    const rows = j.data ?? [];
+    // REST seed replaces the mirror (a working-order list is the whole truth)
+    wsMirror.orders = new Map(rows.map((r) => [String(r.id ?? r.orderId ?? ""), r]));
+    wsMirror.ordersHydratedAt = Date.now();
+    return { ok: true, orders: rows };
   } catch {
     return { ok: false, orders: [] };
   }
@@ -391,6 +579,7 @@ async function fetchOrdersHistRaw(fetchFn: typeof fetch): Promise<CtOrderHist[]>
  *  null on failure (callers fall back to chronological pairing). */
 export async function ctOrdersHistory(opts?: { fetchFn?: typeof fetch }): Promise<CtOrderHist[] | null> {
   if (ordersHistCache && Date.now() - ordersHistCache.at < ORDERS_HIST_TTL_MS) return ordersHistCache.rows;
+  if (penaltyPaused()) return ordersHistCache?.rows ?? null;
   try {
     const rows = await fetchOrdersHistRaw(opts?.fetchFn ?? fetch);
     ordersHistCache = { at: Date.now(), rows };
@@ -401,7 +590,12 @@ export async function ctOrdersHistory(opts?: { fetchFn?: typeof fetch }): Promis
 }
 
 /** TEST ONLY: reset the module caches + the transport pacing state. */
-export function __resetCtAccountForTest(opts?: { gapMs?: number; backoffBaseMs?: number }) {
+export function __resetCtAccountForTest(opts?: {
+  gapMs?: number;
+  backoffBaseMs?: number;
+  penaltyMinMs?: number;
+  penaltyMaxMs?: number;
+}) {
   snapCache = null;
   fillsCache = null;
   positionsCache = null;
@@ -409,4 +603,9 @@ export function __resetCtAccountForTest(opts?: { gapMs?: number; backoffBaseMs?:
   lastCtCallAt = 0;
   ctGapOverride = opts?.gapMs ?? 0;
   ctBackoffOverride = opts?.backoffBaseMs ?? null;
+  ctPenaltyMinOverride = opts?.penaltyMinMs ?? null;
+  ctPenaltyMaxOverride = opts?.penaltyMaxMs ?? null;
+  ctPenaltyUntil = 0;
+  ctPenaltyKind = null;
+  wsMirror = { ordersHydratedAt: 0, positionsHydratedAt: 0, lastFrameAt: 0, orders: new Map(), positions: new Map() };
 }

@@ -17,6 +17,7 @@
 import { sendTelegram } from "./notify";
 import { placeCrossTradeExitREST } from "./crossTrade";
 import { timeExitDecision } from "./profile";
+import { ctPositions } from "./ctAccount";
 
 type TimeExit = {
   key: string;
@@ -46,32 +47,18 @@ export function registerTimeExit(e: { key: string; label: string; symbol: string
 }
 
 async function readHeldMnq(): Promise<number | null> {
-  try {
-    const res = await fetch(
-      `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(process.env.CROSSTRADE_ACCOUNT ?? "")}/positions`,
-      {
-        headers: { Authorization: `Bearer ${process.env.CROSSTRADE_KEY ?? ""}`, "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(15_000),
-      },
-    );
-    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> | Array<{ data?: Array<Record<string, unknown>> }> };
-    if (!j.success) return null;
-    const flat: unknown[] = [];
-    for (const row of (j.data ?? []) as Array<Record<string, unknown>>) {
-      const inner = Array.isArray(row.data) ? (row.data as Array<Record<string, unknown>>) : [row];
-      flat.push(...inner);
-    }
-    let held = 0;
-    for (const p of flat) {
-      const r = p as Record<string, unknown>;
-      const qty = Number(r.netPos ?? r.qty ?? 0);
-      const ins = String(r.instrument ?? r.contractName ?? "");
-      if (qty !== 0 && ins.includes("MNQ")) held += qty;
-    }
-    return held;
-  } catch {
-    return null;
+  // the shared read layer: WS-mirror → 2s cache → REST, penalty-gated —
+  // the 30s exit tick must not spend the vendor budget on its own fetch
+  const rows = await ctPositions();
+  if (rows === null) return null;
+  let held = 0;
+  for (const p of rows) {
+    const r = p as Record<string, unknown>;
+    const qty = Number(r.netPos ?? r.qty ?? 0);
+    const ins = String(r.instrument ?? r.contractName ?? "");
+    if (qty !== 0 && ins.includes("MNQ")) held += qty;
   }
+  return held;
 }
 
 /** called from the feed's 30s tick */

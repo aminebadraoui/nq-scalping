@@ -1363,15 +1363,18 @@ export function rearmStopPrice(dir: "long" | "short", ltp: number | null | undef
 
 /** is the account flat on MNQ? true = confirmed flat, false = position
  *  open, null = unreadable (callers treat unreadable as "keep acting",
- *  never as "all clear"). */
+ *  never as "all clear"). Fresh read — the flat gate and the repair
+ *  paths must see the live book, so this never reads a cache. */
 export async function readMnqFlatREST(): Promise<boolean | null> {
   const cfg = loadConfig();
   try {
-    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`, {
-      headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
+    const res = await ctFetch(
+      `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`,
+      { headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+      { extraRetries: 1, retryOn503: true },
+    );
+    if (res.status < 200 || res.status >= 300) return null;
+    const j = JSON.parse(res.text) as { success?: boolean; data?: Array<Record<string, unknown>> };
     if (!j.success) return null;
     let qty = 0;
     for (const p of j.data ?? []) {
@@ -1386,15 +1389,17 @@ export async function readMnqFlatREST(): Promise<boolean | null> {
 
 /** signed MNQ net position qty from the same read as readMnqFlatREST —
  *  the re-arm's cancel_and_bracket QTY must match the OPEN position.
- *  null = unreadable (callers fall back or fail closed). */
+ *  null = unreadable (callers fall back or fail closed). Fresh read. */
 export async function readMnqQtyREST(): Promise<number | null> {
   const cfg = loadConfig();
   try {
-    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`, {
-      headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
+    const res = await ctFetch(
+      `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`,
+      { headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+      { extraRetries: 1, retryOn503: true },
+    );
+    if (res.status < 200 || res.status >= 300) return null;
+    const j = JSON.parse(res.text) as { success?: boolean; data?: Array<Record<string, unknown>> };
     if (!j.success) return null;
     let qty = 0;
     for (const p of j.data ?? []) {

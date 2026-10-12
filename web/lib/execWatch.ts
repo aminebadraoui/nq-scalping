@@ -636,11 +636,28 @@ export function isRetryableFailure(reason: string): boolean {
   return true;
 }
 
+/** pure expiry-cancel verdict (unit-tested): a failed cancel whose order
+ *  id is ABSENT from a SUCCESSFUL order-list read means the order was
+ *  already removed broker-side (e.g. a vendor-scheduled cancel fired
+ *  first) — expired-clean, not a failure. An unreadable book (ok=false)
+ *  or a still-present order keeps the failure (fail closed). */
+export function expiryCancelVerdict(
+  cancelOk: boolean,
+  cancelReason: string,
+  bookRead: { ok: boolean; orders: Array<Record<string, unknown>> },
+  orderId: string,
+): { outcome: "limit_expired" | "limit_cancel_failed"; reason: string } {
+  if (cancelOk) return { outcome: "limit_expired", reason: cancelReason };
+  if (orderId && bookRead.ok && !bookRead.orders.some((o) => String(o.orderId ?? o.clOrdId ?? o.id ?? "") === orderId)) {
+    return { outcome: "limit_expired", reason: `${cancelReason} — order already gone broker-side` };
+  }
+  return { outcome: "limit_cancel_failed", reason: cancelReason };
+}
+
 /** a place-attempt returned not-ok: alert immediately. With verified
  *  retry armed, the card stays registered so the 90s check re-sends it
  *  after the broker verification. */
-export function registerSendFailure(key: string, label: string, reason: string) {
-  if (!enabled()) return;
+export function registerSendFailure(key: string, label: string, reason: string) {  if (!enabled()) return;
   if (reason.includes("trading halted")) return; // the owner's kill switch — intentional, not a failure to alarm about
   if (alerted.has(key)) return;
   failedKeys.add(key);
@@ -796,10 +813,16 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean }): Promise<vo
       if (now >= e.limit.expireAtMs) {
         pending.delete(key);
         const c = e.limit.orderId ? await cancelOrder(e.limit.orderId) : { ok: false, reason: "no order id — cannot cancel" };
-        void logExec({ key, label: e.label, attempt: "watch", outcome: c.ok ? "limit_expired" : "limit_cancel_failed", reason: c.reason });
+        // 2026-10-12: a failed cancel whose order id is ABSENT from a
+        // successful order-list read is "already gone broker-side" (e.g. a
+        // vendor-scheduled cancel fired first) — treat as expired, not as
+        // a panic. An unreadable book still panics (fail closed).
+        const book = e.limit.orderId ? await ctOrders() : { ok: false, orders: [] as Record<string, unknown>[] };
+        const v = expiryCancelVerdict(c.ok, c.reason, book, e.limit.orderId ?? "");
+        void logExec({ key, label: e.label, attempt: "watch", outcome: v.outcome, reason: v.reason });
         void alert(
-          c.ok
-            ? `⏱ <b>LIMIT EXPIRED — cancelled</b> — <code>${e.label}</code> rested unfilled for ${Math.round((now - e.ts) / 1000)}s`
+          v.outcome === "limit_expired"
+            ? `⏱ <b>LIMIT EXPIRED — cancelled</b> — <code>${e.label}</code> rested unfilled for ${Math.round((now - e.ts) / 1000)}s${c.ok ? "" : " (already gone broker-side)"}`
             : `🚨 <b>LIMIT EXPIRED BUT CANCEL FAILED</b> — <code>${e.label}</code> — ${c.reason} — cancel it manually NOW`,
         );
       }

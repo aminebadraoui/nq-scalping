@@ -15,6 +15,7 @@
 
 import { reactToPushedStopRejection } from "./crossTrade";
 import { onPushedEntryFill } from "./execWatch";
+import { ctApplyWsFrame, ctWsHeartbeat, ctWsMarkResync } from "./ctAccount";
 
 let started = false;
 let sock: WebSocket | null = null;
@@ -49,18 +50,34 @@ function connect(): void {
   next.onopen = () => {
     backoffMs = 5_000;
     lastFrameAt = Date.now();
-    next.send(JSON.stringify({ action: "subscribe", events: ["orders"], origin: "tradovate" }));
+    // (re)connect: the state mirror must re-seed over REST before the
+    // pushed frames are trusted (replayed events are incomplete — the
+    // vendor's resync guidance). Pnl/status frames heartbeat it.
+    ctWsMarkResync();
+    next.send(JSON.stringify({ action: "subscribe", events: ["orders", "executions", "positions"], origin: "tradovate" }));
     next.send(JSON.stringify({ action: "streamPnl", enabled: true, origin: "tradovate" }));
   };
   next.onmessage = (ev) => {
     lastFrameAt = Date.now();
-    let msg: { type?: string; origin?: string; order?: Record<string, unknown> } | null = null;
+    ctWsHeartbeat();
+    let msg: {
+      type?: string;
+      origin?: string;
+      order?: Record<string, unknown>;
+      position?: Record<string, unknown>;
+      execution?: Record<string, unknown>;
+    } | null = null;
     try {
-      msg = JSON.parse(String(ev.data)) as { type?: string; origin?: string; order?: Record<string, unknown> };
+      msg = JSON.parse(String(ev.data)) as { type?: string; origin?: string; order?: Record<string, unknown>; position?: Record<string, unknown>; execution?: Record<string, unknown> };
     } catch {
       return;
     }
-    if (!msg || msg.type !== "orderUpdate" || msg.origin !== "tradovate") return;
+    if (!msg || msg.origin !== "tradovate") return;
+    // free frames keep the shared state mirror current (lib/ctAccount) —
+    // the poll helpers serve it instead of spending the REST budget
+    if (msg.type === "orderUpdate" && msg.order) ctApplyWsFrame("order", msg.order);
+    if (msg.type === "positionUpdate" && msg.position) ctApplyWsFrame("position", msg.position);
+    if (msg.type !== "orderUpdate") return;
     const o = msg.order ?? {};
     const status = String(o.ordStatus ?? o.orderState ?? "");
     if (status === "Rejected") {

@@ -155,3 +155,39 @@ test("verifyAbsent rides out broker_rate_limited on both reads and confirms clea
   assert.equal(calls, 4); // 2 pacing retries on orders, then the two clean reads
   assert.deepEqual(v, { clean: true, reason: "no working order, no position — verified absent" });
 });
+
+/* ---- expiry-cancel verdict (already-gone broker-side is not a panic) ---- */
+
+test("expiryCancelVerdict: ok cancel is expired-clean", async () => {
+  const { expiryCancelVerdict } = await import("../lib/execWatch");
+  const v = expiryCancelVerdict(true, "cancelled", { ok: true, orders: [] }, "ord-1");
+  assert.deepEqual(v, { outcome: "limit_expired", reason: "cancelled" });
+});
+
+test("expiryCancelVerdict: failed cancel + id absent from a readable book is expired-clean", async () => {
+  const { expiryCancelVerdict } = await import("../lib/execWatch");
+  const v = expiryCancelVerdict(
+    false,
+    "cancel rejected: order not found",
+    { ok: true, orders: [{ id: "other-2" }] },
+    "ord-1",
+  );
+  assert.equal(v.outcome, "limit_expired");
+  assert.match(v.reason, /already gone broker-side/);
+});
+
+test("expiryCancelVerdict: still-present order or unreadable book stays a failure (fail closed)", async () => {
+  const { expiryCancelVerdict } = await import("../lib/execWatch");
+  assert.equal(
+    expiryCancelVerdict(false, "cancel rejected", { ok: true, orders: [{ orderId: "ord-1" }] }, "ord-1").outcome,
+    "limit_cancel_failed",
+  );
+  assert.equal(
+    expiryCancelVerdict(false, "cancel rejected", { ok: false, orders: [] }, "ord-1").outcome,
+    "limit_cancel_failed",
+  );
+  assert.equal(
+    expiryCancelVerdict(false, "no order id — cannot cancel", { ok: true, orders: [] }, "").outcome,
+    "limit_cancel_failed",
+  );
+});

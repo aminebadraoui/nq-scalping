@@ -6,14 +6,20 @@ import { test } from "node:test";
 import assert from "node:assert";
 import {
   accountRow,
+  classifyCtRateLimit,
   configuredAccount,
+  ctApplyWsFrame,
   ctFetch,
   ctFills,
   ctOrders,
+  ctPenaltyActive,
   ctPositions,
   ctSnapshot,
   ctSnapshotDisplay,
+  ctWsHeartbeat,
+  ctWsMarkResync,
   isCtRateLimited,
+  parseRetryAfterMs,
   __resetCtAccountForTest,
   type CtSnapshotAccount,
 } from "../lib/ctAccount";
@@ -333,4 +339,142 @@ test("ctSnapshot rides out a pacing refusal before the degraded-shape loop", asy
   assert.equal(calls, 2); // one pacing retry inside ctFetch, then the usable read
   assert.equal(snap.accounts?.[0]?.netLiq, 50100);
   assert.equal(ctSnapshotDisplay()?.accounts?.[0]?.realizedPnl, 42.5);
+});
+
+/* ---- vendor retryAfter + penalty cooldown (2026-10-12 doc contract) ---- */
+
+test("classifyCtRateLimit names the three vendor shapes", () => {
+  assert.equal(classifyCtRateLimit(429, '{"success":false,"error":"broker_rate_limited","detail":"…"}'), "broker");
+  assert.equal(classifyCtRateLimit(429, '{"success":false,"error":"rate_limited","retryAfter":2}'), "ct_pacing");
+  assert.equal(classifyCtRateLimit(429, '{"error":"snapshot_refresh_pending","retryAfter":1}'), "snapshot_pending");
+  assert.equal(classifyCtRateLimit(400, "{}"), null);
+});
+
+test("parseRetryAfterMs reads the body field and the header", () => {
+  assert.equal(parseRetryAfterMs(429, '{"retryAfter": 2}', null), 2000);
+  assert.equal(parseRetryAfterMs(429, '{"retryAfter": 0.5}', null), 500);
+  assert.equal(parseRetryAfterMs(429, "{}", { get: (k) => (k === "retry-after" ? "3" : null) }), 3000);
+  assert.equal(parseRetryAfterMs(429, "{}", null), null);
+});
+
+test("ctFetch honors the vendor retryAfter instead of the fixed backoff", async () => {
+  __resetCtAccountForTest();
+  const t0 = Date.now();
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return calls === 1
+      ? textFetch({ success: false, error: "rate_limited", retryAfter: 0.04 }, 429)(input, init)
+      : textFetch({ ok: true }, 200)(input, init);
+  };
+  const res = await ctFetch(
+    "https://app.crosstrade.io/x",
+    {},
+    { extraRetries: 1, backoffBaseMs: 1, retryAfterCapMs: 100 },
+    fetchFn,
+  );
+  const elapsed = Date.now() - t0;
+  assert.equal(calls, 2);
+  assert.equal(res.status, 200);
+  assert.ok(elapsed >= 35, `slept only ${elapsed}ms — retryAfter not honored`);
+});
+
+test("ctFetch caps the retryAfter wait so a long penalty cannot stall a card", async () => {
+  __resetCtAccountForTest();
+  const t0 = Date.now();
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return calls === 1
+      ? textFetch({ success: false, error: "broker_rate_limited", retryAfter: 60 }, 429)(input, init)
+      : textFetch({ ok: true }, 200)(input, init);
+  };
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 1, backoffBaseMs: 1, retryAfterCapMs: 60 }, fetchFn);
+  const elapsed = Date.now() - t0;
+  assert.equal(calls, 2);
+  assert.ok(elapsed < 2000, `took ${elapsed}ms — the 60s hint must be capped`);
+});
+
+test("a surviving pacing refusal opens a penalty cooldown that pauses the polls", async () => {
+  __resetCtAccountForTest({ penaltyMinMs: 50, penaltyMaxMs: 100 });
+  setEnv(BASE_ENV);
+  // exhaust a broker refusal → penalty opens
+  const refused: typeof fetch = (input, init) => textFetch({ success: false, error: "broker_rate_limited", retryAfter: 60 }, 429)(input, init);
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0, backoffBaseMs: 1 }, refused);
+  assert.equal(ctPenaltyActive(), true);
+  // polls must serve their last-known state WITHOUT fetching
+  let pollCalls = 0;
+  const counting: typeof fetch = (input, init) => {
+    pollCalls++;
+    return textFetch({ accounts: [{ name: ACCT, netLiq: 50100, realizedPnl: 42.5 }] }, 200)(input, init);
+  };
+  await ctSnapshot({ fetchFn: counting, retryDelayMs: 0 });
+  await ctFills({ force: true, fetchFn: counting });
+  await ctPositions({ fetchFn: counting });
+  const ord = await ctOrders({ fetchFn: counting });
+  assert.equal(pollCalls, 0, "polls fetched during the penalty cooldown");
+  assert.deepEqual(ord, { ok: false, orders: [] });
+  // after the cooldown passes, polls fetch again
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(ctPenaltyActive(), false);
+  await ctSnapshot({ fetchFn: counting, retryDelayMs: 0 });
+  assert.equal(pollCalls, 1);
+});
+
+test("ctSnapshot during a penalty serves the last good cache, null-caches without one", async () => {
+  __resetCtAccountForTest({ penaltyMinMs: 80, penaltyMaxMs: 100 });
+  setEnv(BASE_ENV);
+  const good: typeof fetch = (input, init) => textFetch({ accounts: [{ name: ACCT, netLiq: 50100, realizedPnl: 42.5 }] }, 200)(input, init);
+  await ctSnapshot({ fetchFn: good, retryDelayMs: 0 }); // warm the cache
+  const refused: typeof fetch = (input, init) => textFetch({ success: false, error: "broker_rate_limited", retryAfter: 60 }, 429)(input, init);
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0, backoffBaseMs: 1 }, refused);
+  let calls = 0;
+  const counting: typeof fetch = (input, init) => {
+    calls++;
+    return textFetch({ accounts: [{ name: ACCT, netLiq: 99999, realizedPnl: 1 }] }, 200)(input, init);
+  };
+  const snap = await ctSnapshot({ fetchFn: counting, retryDelayMs: 0 });
+  assert.equal(calls, 0);
+  assert.equal(snap.accounts?.[0]?.netLiq, 50100); // the cached truth, not a fetch
+  // cold caches (no good snapshot) still fail closed during a penalty
+  __resetCtAccountForTest({ penaltyMinMs: 80, penaltyMaxMs: 100 });
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0, backoffBaseMs: 1 }, refused);
+  const cold = await ctSnapshot({ fetchFn: counting, retryDelayMs: 0 });
+  assert.equal(cold.accounts, null);
+});
+
+/* ---- WebSocket state mirror (frames are free, polls serve them) ---- */
+
+test("ctOrders/ctPositions serve the WS mirror once hydrated, REST re-seeds after resync", async () => {
+  __resetCtAccountForTest();
+  setEnv(BASE_ENV);
+  let restCalls = 0;
+  const restFetch: typeof fetch = (input, init) => {
+    restCalls++;
+    const url = String(input);
+    if (url.includes("/orders")) return textFetch({ success: true, data: [{ id: "o1", ordStatus: "Working", instrument: "MNQZ6" }] }, 200)(input, init);
+    return textFetch({ success: true, data: [{ id: "p1", netPos: 3, contractName: "MNQZ6" }] }, 200)(input, init);
+  };
+  // frames before hydration are ignored (a half-seeded mirror lies)
+  ctApplyWsFrame("order", { id: "ghost", ordStatus: "Working" });
+  const ord1 = await ctOrders({ fetchFn: restFetch });
+  assert.equal(restCalls, 1);
+  assert.equal(ord1.orders.length, 1); // REST seed, ghost ignored
+  // fresh mirror: frames flow, polls stop fetching
+  ctWsHeartbeat();
+  ctApplyWsFrame("order", { id: "o2", ordStatus: "Working", instrument: "MNQZ6" });
+  const ord2 = await ctOrders({ fetchFn: restFetch });
+  assert.equal(restCalls, 1, "mirror should serve without REST");
+  assert.equal(ord2.orders.length, 2);
+  const pos1 = await ctPositions({ fetchFn: restFetch });
+  assert.equal(restCalls, 2); // positions mirror not yet hydrated → one REST seed
+  assert.equal(pos1?.[0]?.netPos, 3);
+  ctApplyWsFrame("position", { id: "p1", netPos: 2, contractName: "MNQZ6" });
+  const pos2 = await ctPositions({ fetchFn: restFetch });
+  assert.equal(restCalls, 2, "positions mirror should serve without REST");
+  assert.equal(pos2?.[0]?.netPos, 2);
+  // resync: hydration drops → the next read re-seeds over REST
+  ctWsMarkResync();
+  await ctOrders({ fetchFn: restFetch });
+  assert.equal(restCalls, 3);
 });
