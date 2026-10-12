@@ -419,6 +419,24 @@ wider stop grid and the user's approval. Scratch studies
   scale-out opt-in (`CROSSTRADE_SCALEOUT=1`). Validated by
   `scripts/apPlanSweep.ts --pool all` (eval pass ~10 trading days, funded
   blow 0.3% vs 73.9% at the 2R plan).
+- **Size-down profile + flatten arm (applied 2026-10-12, owner-approved)** —
+  two Coolify app-env changes, redeployed 17:39 UTC the same day:
+  `MAX_MICRO_CONTRACTS=8` (executor per-order contract cap, was default 30 —
+  the frontier profile's cap-8; tight-stop weak-edge bucket trimmed) and
+  `FLATTEN_AT_LOSS=250` (the flatten arm: live day P&L ≤ −$250 flattens at
+  market — cancel-all + FLATTEN webhook, verify/retry/alert). Evidence:
+  `docs/research/sizing-frontier-2026-10-12.md` +
+  `docs/research/loss-floor-fit-2026-10-12.md` +
+  `docs/research/flatten-arm-2026-10-12.md`; code `[backtested:
+  scripts/riskStackStudy.ts --offline]` commit `1928e4b`.
+  `FLATTEN_AT_PROFIT` deliberately unset (the one-more-trade arm stays).
+  Note: the cap applies PER ORDER PAYLOAD, so scale-out legs cap
+  separately (bank leg truncation only on tight stops, always smaller).
+  Also on 2026-10-12: Coolify root user's `team_user` role was
+  `member` (which 403s root API tokens via the ApiAbility middleware) —
+  promoted to `admin`; instance `allowed_ips` untouched (original 6-IP
+  list); the temporary agent API token used for the change was deleted
+  afterwards.
 - **Time exits (2026-10-05, `lib/timeExit.ts`)** — profile orders register
   a bar-based exit on the feed tick: past exitAt with a position still
   open → bracketless REST market exit (OCO brackets cancel on the
