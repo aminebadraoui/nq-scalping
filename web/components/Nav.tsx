@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-/* Seven surfaces, organized by STAGE (what the system does) with a
+/* Surfaces, organized by STAGE (what the system does) with a
  * Live | Backtest | Studies mode inside each stage tab:
  *   Overview — the working dashboard, everything live at a glance
+ *   Macro — market context: every macro box + its guides and AI reads
  *   Strategies — what we trade (registry, sweeps, studies)
  *   Gates — the regime a strategy may execute in (windows, vetoes, filters)
  *   Execution — orders, fills, the executor's records
@@ -14,6 +15,7 @@ import { usePathname } from "next/navigation";
  *   Docs — the research narrative + course */
 const links = [
   { href: "/", label: "Overview", note: "live working surface", stage: null },
+  { href: "/macro", label: "Macro", note: "market context — guides + AI interpretations", stage: null },
   { href: "/strategies", label: "Strategies", note: "what we trade — live, backtest, studies", stage: true },
   { href: "/gates", label: "Gates", note: "the regime a strategy can execute in", stage: true },
   { href: "/execution", label: "Execution", note: "orders, fills, the executor", stage: true },
