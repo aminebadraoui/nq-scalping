@@ -1,4 +1,4 @@
-# Deploy state (last verified 2026-09-30)
+# Deploy state (last verified 2026-10-12)
 
 ## Live resources
 
@@ -7,13 +7,31 @@
 | Dashboard | **https://nq-dashboard.31.97.138.30.sslip.io** (Let's Encrypt TLS, force-HTTPS) |
 | Coolify project | `scalping` → uuid `9d49tnuvlot2wcj9fl7nqyjc`, env `production` |
 | Coolify app | `nq-dashboard` → uuid `vwtqdqezxw3lpmpzq76drgb1` (dockerfile build pack, base `/web`, port 3000, health check `/` on 3000, no volumes) |
+| Coolify compose app | `nq-jobs` → uuid `mqfjwjodtmje4lfnjq1gteax` (jobs.Dockerfile, cron: 16:50 ET reconcile, 17:45 ET nightly, 08:45 ET interpret — Mon–Fri) |
 | GitHub repo | `git@github.com:aminebadraoui/nq-scalping.git` (private) |
 | Neon org | `nq-scalping` → `org-falling-cell-25919411` (free) |
-| Neon project | `nq-store` → `summer-poetry-26619129`, region aws-us-east-1, pg 18 |
-| Neon branch | `main` → `br-billowing-truth-b8uofwsa` (recreated 2026-09-28 to reset the 5 GB/mo transfer quota) |
-| DATABASE_URL | **secret** — `web/.env.local` (gitignored) and Coolify app env (plain var, not "shown once") |
+| Neon project | **current: `little-tree-arpu7v0m`, region aws-us-west-2, pg 18** (switched ~2026-10-08; old project `summer-poetry-26619129` aws-us-east-1 is retired/superseded) |
+| DATABASE_URL | **secret** — `web/.env.local` (gitignored) AND Coolify app env AND Coolify `nq-jobs` env — all three verified pointing at `little-tree-arpu7v0m` (2026-10-12) |
 | R2 bucket | `nq-history` (Cloudflare account `437b14872d288fb1221f5492055c0b91`) — full 2.5y history, gzipped objects + `manifest.json` index |
-| GC_REMOTE_URL | `https://pub-d68008dba02c4ad190e9814f6c41cbef.r2.dev` (public r2.dev URL of `nq-history`); set in `web/.env.local` (localhost) and Coolify app env (deployed) |
+| GC_REMOTE_URL | `https://pub-d68008dba02c4ad190e9814f6c41cbef.r2.dev` (public r2.dev URL of `nq-history`); set in `web/.env.local` (localhost) and Coolify app env (deployed). ⚠️ NOT set on the `nq-jobs` compose app env — its Friday risk-stack step logs "no session inventory (set GC_REMOTE_URL)" (riskstack=1). Add it in Coolify to restore the weekly sim. |
+
+## Database split (as of the 2026-10-08 transfer-cap fix)
+
+The new Neon project carries the OPERATIONAL tables only — the bulk
+market-data history stays in R2 by design:
+
+- **In Neon** (`little-tree-arpu7v0m`): `signals`, `exec_log`, `exec_trades`,
+  `guard_state`, `trades`, `reconcile_runs`, `trade_analysis`, `manual_trades`,
+  `strategy_overrides`, sheets/events/profiles — plus the live-written
+  `candles_1m` minutes. Live writes (dashboard container) verified 2026-10-12.
+- **In R2 only**: the full session archive (bars + tick clusters).
+  `sessions` and `footprint_ticks` are INTENTIONALLY empty in Neon: the bulk
+  candle/footprint ingest is OFF (`scripts/nightly.sh` → `--profiles --events`
+  only) because the 21-day tick re-ingest + readthrough blew the 5 GiB/mo
+  quota (2026-10-08 incident). `gcdb.dbLoadDay` returns null without ticks so
+  `gcdata` falls back to the R2 archive — candles-only backfill would be
+  dropped, tick backfill would re-trigger the cap. Do not re-ingest bulk
+  tables without re-reading that incident (`docs/research/naked-stop-incident-2026-10-08.md` + `web/lib/liveStore.ts` header).
 
 ## Data flow
 

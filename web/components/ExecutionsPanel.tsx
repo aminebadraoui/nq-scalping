@@ -44,6 +44,28 @@ type ExecResponse = {
   note?: string;
 };
 
+type ManualRow = {
+  key: string;
+  kind: "manual_trade" | "manual_order";
+  at: number;
+  day: string;
+  timeET: string;
+  side: "long" | "short" | "";
+  qty: number;
+  entryPrice: number | null;
+  exitPrice: number | null;
+  pnlUsd: number | null;
+  orderId: string;
+  closed: boolean;
+  note: string;
+};
+
+type ManualResponse = {
+  ok: boolean;
+  rows: ManualRow[];
+  summary?: { n: number; trades: number; open: number; orders: number; netUsd: number };
+};
+
 const fmt = (n: number | null | undefined, digits = 2): string =>
   n === null || n === undefined || !Number.isFinite(n) ? "—" : n.toFixed(digits);
 
@@ -73,6 +95,8 @@ const STATUS_LABEL: Record<ExecRow["status"], string> = {
 export default function ExecutionsPanel() {
   const [rows, setRows] = useState<ExecRow[]>([]);
   const [summary, setSummary] = useState<ExecResponse["summary"] | null>(null);
+  const [manual, setManual] = useState<ManualRow[]>([]);
+  const [manualSummary, setManualSummary] = useState<ManualResponse["summary"] | null>(null);
   const [loaded, setLoaded] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -86,6 +110,14 @@ export default function ExecutionsPanel() {
           setRows(j.rows ?? []);
           setSummary(j.summary ?? null);
           setLoaded(true);
+        })
+        .catch(() => {});
+      fetch("/api/manual", { cache: "no-store" })
+        .then((r) => r.json())
+        .then((j: ManualResponse) => {
+          if (cancelled || !j.ok) return;
+          setManual(j.rows ?? []);
+          setManualSummary(j.summary ?? null);
         })
         .catch(() => {});
     };
@@ -172,6 +204,74 @@ export default function ExecutionsPanel() {
         entry/exit are broker fill prices · fees = real fill fees when the fill export carries them, else the
         reconcile fallback ($0.95/side) · the nightly reconcile is the historical record (Journal tab)
       </p>
+
+      {/* ---- manual actions — what the account did that the bot didn't ---- */}
+      <div className="mt-4 border-t border-zinc-800 pt-3">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-warn">
+            Manual actions — fills/orders the bot cannot account for
+          </h3>
+          {manualSummary && manualSummary.n > 0 && (
+            <span className="font-mono text-[10px] text-zinc-500">
+              {manualSummary.trades} trade(s) · {manualSummary.open} open · {manualSummary.orders} order(s) · net{" "}
+              <span className={netTone(manualSummary.netUsd)}>{fmtUsd(manualSummary.netUsd)}</span>
+            </span>
+          )}
+        </div>
+        {manual.length === 0 ? (
+          <p className="font-mono text-xs text-zinc-600">no manual activity — every MNQ fill/order belongs to a tracked trade</p>
+        ) : (
+          <div className="max-h-[260px] overflow-x-auto overflow-y-auto rounded border border-zinc-800">
+            <table className="w-full border-collapse font-mono text-xs">
+              <thead className="sticky top-0 z-10 bg-panel">
+                <tr className="text-left text-zinc-500">
+                  <th className="border-b border-zinc-800 px-2 py-1 font-normal">time (NY)</th>
+                  <th className="border-b border-zinc-800 px-2 py-1 font-normal">kind</th>
+                  <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">side · qty</th>
+                  <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">entry</th>
+                  <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">exit</th>
+                  <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">net $</th>
+                  <th className="border-b border-zinc-800 px-2 py-1 font-normal">tradovate</th>
+                  <th className="border-b border-zinc-800 px-2 py-1 font-normal">note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {manual.map((m) => (
+                  <tr key={m.key} className="align-top text-zinc-400">
+                    <td className="px-2 py-1 whitespace-nowrap text-zinc-500">{fmtTime(m.at)}</td>
+                    <td className="px-2 py-1 whitespace-nowrap">
+                      <span
+                        className={`rounded border px-1 py-0.5 text-[9px] ${
+                          m.kind === "manual_order"
+                            ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                            : m.closed
+                              ? "border-zinc-600 bg-zinc-800/40 text-zinc-300"
+                              : "border-warn/50 bg-warn/10 text-warn"
+                        }`}
+                      >
+                        {m.kind === "manual_order" ? "order" : m.closed ? "trade" : "OPEN"}
+                      </span>
+                    </td>
+                    <td className="px-2 py-1 whitespace-nowrap text-right">
+                      {m.side ? (
+                        <span className={m.side === "long" ? "text-long" : "text-short"}>{m.side.toUpperCase()}</span>
+                      ) : (
+                        "—"
+                      )}{" "}
+                      {m.qty || "—"}
+                    </td>
+                    <td className="px-2 py-1 text-right">{fmt(m.entryPrice)}</td>
+                    <td className="px-2 py-1 text-right">{fmt(m.exitPrice)}</td>
+                    <td className={`px-2 py-1 text-right font-semibold ${netTone(m.pnlUsd ?? 0)}`}>{fmtUsd(m.pnlUsd)}</td>
+                    <td className="px-2 py-1 whitespace-nowrap text-zinc-500">{m.orderId ? <span className="text-zinc-400">{m.orderId}</span> : "—"}</td>
+                    <td className="px-2 py-1 break-words text-zinc-500">{m.note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </section>
   );
 }

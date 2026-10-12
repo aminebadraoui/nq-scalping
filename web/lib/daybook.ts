@@ -296,6 +296,26 @@ export type DaybookExecTrade = {
   result: string;
 };
 
+/** manual-action record (lib/manualDetect.ts) — manual round trips and
+ *  working orders the bot did not place. */
+export type DaybookManualAction = {
+  t: "manualAction";
+  at: number;
+  key: string;
+  kind: string;
+  eventAt: number;
+  day: string;
+  timeET: string;
+  side: string;
+  qty: number;
+  entryPrice: number | null;
+  exitPrice: number | null;
+  pnlUsd: number | null;
+  orderId: string;
+  closed: boolean;
+  note: string;
+};
+
 export type DaybookEnd = {
   t: "dayend";
   at: number;
@@ -322,6 +342,7 @@ export type DaybookRecord =
   | DaybookSignal
   | DaybookExec
   | DaybookExecTrade
+  | DaybookManualAction
   | DaybookGuard
   | DaybookHeal
   | DaybookLatency

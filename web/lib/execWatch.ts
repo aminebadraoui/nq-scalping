@@ -591,6 +591,16 @@ export function attachLimitOrderId(key: string, orderId: string) {
   if (e?.limit) e.limit.orderId = orderId;
 }
 
+/** the broker-facing order ids WE placed (resting-limit entries) — the
+ *  manual-action detector excludes them (display-only read). */
+export function placedLimitOrderIds(): string[] {
+  const out: string[] = [];
+  for (const e of pending.values()) {
+    if (e.limit?.orderId) out.push(e.limit.orderId);
+  }
+  return out;
+}
+
 /** pure decision helper (unit-tested): what to do when the 90s check
  *  finds no fill for a card. Only a FAILED send may be re-sent, and
  *  only when the broker verifies absent. */

@@ -18,6 +18,7 @@
 import { ctSnapshot, ctPositions, configuredAccount, accountRow } from "@/lib/ctAccount";
 import { guardState } from "@/lib/accountGuard";
 import { getExecTrades } from "@/lib/execTracker";
+import { getManualActions } from "@/lib/manualDetect";
 import { stageForAccountName } from "@/lib/risk/challengeRules";
 
 export const dynamic = "force-dynamic";
@@ -55,6 +56,14 @@ export async function GET() {
   const todayRows = trades.filter((t) => t.day === today);
   const todayNet = Math.round(todayRows.reduce((sum, t) => sum + t.netUsd, 0) * 100) / 100;
 
+  // manual-action summary for the shared account strip (detector in
+  // lib/manualDetect.ts — entries/exits/flattens/orders the bot didn't make)
+  const manual = await getManualActions(100);
+  const manualToday = manual.filter((m) => m.day === today);
+  const manualNet = Math.round(
+    manualToday.filter((m) => m.closed).reduce((s, m) => s + (m.pnlUsd ?? 0), 0) * 100,
+  ) / 100;
+
   return Response.json({
     ok: true,
     now: new Date().toISOString(),
@@ -89,5 +98,6 @@ export async function GET() {
     position,
     trades: trades.slice(0, 50),
     today: { rows: todayRows, netUsd: todayNet },
+    manual: { count: manualToday.length, netUsd: manualNet, rows: manualToday.slice(0, 50) },
   });
 }

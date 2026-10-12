@@ -58,6 +58,15 @@ export async function register(): Promise<void> {
     /* ignore */
   }
   try {
+    // manual-action detector: manual MNQ round trips + working orders
+    // the bot never placed (independent of EXECUTE_LIVE — display/alert
+    // only, never touches the book)
+    const { startManualDetect } = await import("./lib/manualDetect");
+    startManualDetect();
+  } catch {
+    /* ignore */
+  }
+  try {
     // CrossTrade WebSocket order-event stream: pushed Rejected/Cancelled
     // events reach the protection layer in <1s, no polling
     const { startCtOrderStream } = await import("./lib/ctStream");

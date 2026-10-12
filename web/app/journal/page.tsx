@@ -516,6 +516,7 @@ export default function JournalPage() {
   const [deepVars, setDeepVars] = useState<LedgerVariable[]>([]);
   const [deepSource, setDeepSource] = useState<string>("");
   const [liveExecs, setLiveExecs] = useState<LiveExecRow[]>([]);
+  const [manualLive, setManualLive] = useState<{ count: number; netUsd: number } | null>(null);
   const [showAllVars, setShowAllVars] = useState(false);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [acctFilter, setAcctFilter] = useState<string>("all");
@@ -528,8 +529,9 @@ export default function JournalPage() {
       fetch("/api/insights").then((r) => r.json()),
       fetch("/api/trades/table").then((r) => r.json()),
       fetch("/api/executions", { cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/manual", { cache: "no-store" }).then((r) => r.json()),
     ])
-      .then(([t, i, l, e]) => {
+      .then(([t, i, l, e, m]) => {
         setRun(t.runs?.[0] ?? null);
         setAnalysis(t.analysis ?? null);
         setTrades(t.trades ?? []);
@@ -553,6 +555,13 @@ export default function JournalPage() {
         setDeepVars(l.variables ?? []);
         setDeepSource(l.source ?? "");
         setLiveExecs(Array.isArray(e.rows) ? e.rows : []);
+        if (Array.isArray(m.rows)) {
+          const today = m.rows.filter((r: { day: string }) => r.day === new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date()));
+          setManualLive({
+            count: today.length,
+            netUsd: Math.round(today.filter((r: { closed: boolean }) => r.closed).reduce((s: number, r: { pnlUsd: number | null }) => s + (r.pnlUsd ?? 0), 0) * 100) / 100,
+          });
+        }
         setLoaded(true);
       })
       .catch(() => {});
@@ -1289,6 +1298,14 @@ export default function JournalPage() {
               <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Manual trades</h2>
               <div className="flex gap-2 font-mono text-[10px]">
                 <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-400">{manual.length} trips</span>
+                {manualLive && manualLive.count > 0 && (
+                  <span
+                    className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn"
+                    title="live manual-action detector — fills/orders the bot cannot account for today"
+                  >
+                    ⚡ live: {manualLive.count} today · {manualLive.netUsd >= 0 ? "+" : "−"}${Math.abs(manualLive.netUsd).toFixed(2)}
+                  </span>
+                )}
                 <span className={`rounded border px-1.5 py-0.5 ${(manualTotal ?? 0) >= 0 ? "border-long/40 text-long" : "border-short/40 text-short"}`}>
                   {manualTotal === null ? "—" : fmtUsd(manualTotal)} gross
                 </span>

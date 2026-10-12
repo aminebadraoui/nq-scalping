@@ -34,6 +34,7 @@ type AccountPayload = {
   } | null;
   position: { dir: "long" | "short"; qty: number } | null;
   today: { netUsd: number; rows: number };
+  manual: { count: number; netUsd: number } | null;
 } | null;
 
 const usd = (n: number | null | undefined) =>
@@ -106,6 +107,17 @@ export function AccountLine({ payload, className = "" }: { payload: AccountPaylo
       )}
       {" · "}today{" "}
       <span className={(today?.netUsd ?? 0) >= 0 ? "text-long" : "text-short"}>{usd(today?.netUsd)}</span>
+      {payload.manual && payload.manual.count > 0 && (
+        <>
+          {" · "}
+          <span
+            title={`manual actions detected today (${payload.manual.count}) — entries/exits/orders the bot did not make · net ${usd(payload.manual.netUsd)}`}
+            className="text-warn"
+          >
+            ⚠ manual {payload.manual.count}
+          </span>
+        </>
+      )}
     </span>
   );
 }
