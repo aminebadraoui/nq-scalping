@@ -27,6 +27,8 @@ import type { FootprintMinute } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, midOf, type MomentumSignal } from "./momentum";
 import { buildEsContext, esCardChips, type EsContext, type EsMinute } from "./esJoin";
 import { seasonalChips } from "./seasonal";
+import { sideFilterChips } from "./sideFilter";
+import { alnPattern, type ChipMinute } from "./biasChips";
 import { roundNumberChips } from "./roundNumbers";
 import { gapInventory, gapChips } from "./gapTracker";
 import { wallProxChips } from "./wallProx";
@@ -35,16 +37,16 @@ import { applyWallStop } from "./wallStop";
 import { detectOpenDrive, OPEN_PROD, PULLBACK_PROD, SNIPER_PROD } from "./openDrive";
 import { detectSoftMomentum, SOFT_PROD } from "./softMomentum";
 import { momentumSize, cappedContracts, daySizeMultiplier, parseSizeTiers, DEFAULT_SIZE_TIERS, PROP_RISK_PER_TRADE } from "./propRules";
+import { kellyLiveChip, kellyChipLabel, type KellyChip } from "./kellyLive";
 import {
   loadCollectedContext,
   computeSignal,
-  liveMinutesToFootprint,
   liveVwap,
   type CollectedContext,
   type SignalSnapshot,
 } from "./signalEngine";
 import { detectOneSidedReclaim } from "./reclaimSetup";
-import { contractsForRisk, RAPID_EOD_50K } from "./propRules";
+import { contractsForRisk, RAPID_EOD_50K, planMaxMicro } from "./propRules";
 import { rvol, isUnusualVolume } from "./volumeProfile";
 import { utcToET, cdtToET, utcToFeedStamp } from "./times";
 import { placeOrder, placeScaleOut, type OrderIntent } from "./executor";
@@ -224,7 +226,7 @@ export const FEED_GAP_ALERTS = feedFlag("FEED_GAP_ALERTS", false);
  *  $170-budget sizing. FIXED_CONTRACTS env overrides everything. */
 function fixedContracts(defaultN: number): number {
   const f = Number(process.env.FIXED_CONTRACTS) || 0;
-  return f > 0 ? Math.min(30, f) : defaultN;
+  return f > 0 ? Math.min(planMaxMicro(), f) : defaultN;
 }
 
 const CONTEXT_TTL_MS = 10 * 60 * 1000;
@@ -453,6 +455,28 @@ function signalFeatures(s: Record<string, unknown>, extra: Record<string, unknow
 function fmtPx(n: number, dp = 2): string {
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
+}
+
+/** Kelly chip for a card (KELLY_MODE=1) — the self-updating edge estimate
+ *  from the signals table (lib/kellyLive.ts). JOURNAL-ONLY: the chip prints
+ *  on the card and lands in features jsonb; sizing follows it only when
+ *  KELLY_LIVE_USE=1 (default OFF — a rule-4 env approval, not this path).
+ *  Best-effort by design: any failure returns null and the flat day plan
+ *  sizes the card, exactly as today. */
+async function kellyCardChip(family: string, flatRisk: number): Promise<KellyChip | null> {
+  if (process.env.KELLY_MODE !== "1") return null;
+  try {
+    return await kellyLiveChip(family, { flatRisk });
+  } catch {
+    return null;
+  }
+}
+
+/** KELLY_LIVE_USE=1 switches the card's dollar risk from the flat budget to
+ *  the Kelly-suggested risk. OFF by default; never enabled without the
+ *  rule-4 env approval. Stand-aside chips (edge gone) never size a card. */
+function kellySizes(kelly: KellyChip | null): boolean {
+  return !!kelly && !kelly.skip && process.env.KELLY_LIVE_USE === "1";
 }
 
 class SignalFeed {
@@ -775,8 +799,18 @@ class SignalFeed {
       ? await Promise.all([crossGuardDayPnl(), crossGuardSizeMult()])
       : [0, 1];
     const mult = daySizeMultiplier(dayPnl, sizeTiers) * ddMult;
-    const contracts = Math.max(1, Math.round(size.contracts * mult));
-    return { contracts, dollarRisk: contracts * riskPts * 2, capped: size.capped, mult };
+    // the LIVE contract cap — the ONE source (lib/propRules.ts
+    // planMaxMicro, MAX_MICRO_CONTRACTS env): clamp HERE so every card
+    // path (momentum, RTH, open, fixed, kelly) carries the exact size the
+    // executor will actually place — card, Telegram and order agree.
+    const cap = planMaxMicro();
+    let contracts = Math.max(1, Math.round(size.contracts * mult));
+    let capped = size.capped;
+    if (contracts > cap) {
+      contracts = cap;
+      capped = true;
+    }
+    return { contracts, dollarRisk: contracts * riskPts * 2, capped, mult };
   }
 
   /** announce cards? Live feeds always do; dry-run feeds (local dev) are
@@ -1031,8 +1065,10 @@ class SignalFeed {
     // cross-asset context + gap inventory + mids — computed ONCE per tick
     // and shared by momentum/RTH/open (tickChips memo)
     const { es: esCtx, nqMid, gaps } = this.tickChips(fp);
+    // session ALN pattern for the one-sided side-filter chips (null while
+    // Asia/London ranges are too thin — chips simply don't print)
+    const aln = alnPattern(fp as unknown as ChipMinute[]);
     // ladder management for open scale-out runners (CrossTrade backend only,
-    // no new polling — reuses this tick's completed minutes)
     // no new polling — reuses this tick's completed minutes)
     if (crossTradeEnabled()) void runnerTracker.evaluate(fp).catch(() => {});
     if (!FEED_MOMENTUM) return;
@@ -1052,6 +1088,7 @@ class SignalFeed {
         const fam = s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
         const es = esCardChips(esCtx, nqMid, s, true);
         const seasonal = seasonalChips(s);
+        const sf = sideFilterChips({ t: s.t, d: s.d, hourET: s.hourET, aln });
         const rn = roundNumberChips(s);
         const gch = gapChips(fp, s, gaps);
         const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
@@ -1066,7 +1103,7 @@ class SignalFeed {
           verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
           headline: `NQ momentum ${s.dir}`,
           reason: `news blackout — ${nb}`,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features, ...seasonal.features, ...rn.features, ...gch.features, ...wall.features }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features, ...seasonal.features, ...sf.features, ...rn.features, ...gch.features, ...wall.features }),
         });
       }
       console.log(`[news] ${nb} blackout — skipping momentum card (${sigs.filter((s) => s.breakIdx === fp.length - 1).length} candidates recorded)`);
@@ -1081,13 +1118,15 @@ class SignalFeed {
       const firstToday = !this.cardedDays.has(s.d);
       const es = esCardChips(esCtx, nqMid, s, true);
       const seasonal = seasonalChips(s);
+      // one-sided side-filter chips (measured cells — labels only, no gates)
+      const sf = sideFilterChips({ t: s.t, d: s.d, hourET: s.hourET, aln });
       // journal-only context chips (Naso hypotheses — labels only, no gates):
       // round numbers, price gaps, gamma-wall proximity
       const rn = roundNumberChips(s);
       const gch = gapChips(fp, s, gaps);
       const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
-      const chipLine = [...seasonal.labels, ...es.labels, ...rn.labels, ...gch.labels, ...wall.labels].length
-        ? `${[...seasonal.labels, ...es.labels, ...rn.labels, ...gch.labels, ...wall.labels].join(" · ")} · `
+      const chipLine = [...seasonal.labels, ...sf.labels, ...es.labels, ...rn.labels, ...gch.labels, ...wall.labels].length
+        ? `${[...seasonal.labels, ...sf.labels, ...es.labels, ...rn.labels, ...gch.labels, ...wall.labels].join(" · ")} · `
         : "";
 
       // ---- self-improvement gates (strategy_overrides) — the approved
@@ -1125,6 +1164,7 @@ class SignalFeed {
             gates: this.gateSnapshot(ov),
             ...es.features,
             ...seasonal.features,
+            ...sf.features,
             ...rn.features,
             ...gch.features,
             ...wall.features,
@@ -1170,6 +1210,7 @@ class SignalFeed {
             gates: this.gateSnapshot(ov),
             ...es.features,
             ...seasonal.features,
+            ...sf.features,
           }),
         });
         continue;
@@ -1199,8 +1240,12 @@ class SignalFeed {
       }
 
       // position size grounded in the Rapid EOD 50k rules (lib/propRules.ts):
-      // the day plan: $100 risk budget, 30-micro cap, $2/pt MNQ.
+      // the day plan: $100 risk budget, $2/pt MNQ, contract cap from the
+      // ONE source — planMaxMicro() (MAX_MICRO_CONTRACTS, default 30µ) —
+      // applied in applyDayTier so the card always equals the placed order.
       // FIXED_CONTRACTS overrides with an exact contract count.
+      // Kelly mode (KELLY_MODE=1): the chip computes the self-updating
+      // edge-suggested risk; KELLY_LIVE_USE=1 (OFF) would switch sizing to it.
       const riskBudget = Number(process.env.PROP_RISK_PER_TRADE) || PROP_RISK_PER_TRADE;
       const fixed = Number(process.env.FIXED_CONTRACTS) || 0;
       const prof = momentumProfile();
@@ -1211,10 +1256,14 @@ class SignalFeed {
       const stop = scaleOut ? s.stop : profBracket ? profBracket.stop : s.stop;
       const target = scaleOut ? s.target : profBracket ? profBracket.target : s.target;
       const riskPts = scaleOut ? s.risk : profBracket ? profBracket.riskPts : s.risk;
+      const flatBudget = riskBudget * (prof.enabled && !scaleOut ? prof.sizeMult : 1);
+      const kelly = await kellyCardChip(family, flatBudget);
+      const kellyTxt = kelly ? `${kellyChipLabel(kelly)} (journal) · ` : "";
+      const kellyRisk = kellySizes(kelly) && kelly ? kelly.risk : flatBudget;
       const size = await this.applyDayTier(
         fixed > 0
-          ? { contracts: Math.min(30, fixed), dollarRisk: Math.min(30, fixed) * riskPts * 2, capped: false }
-          : momentumSize(riskPts, riskBudget * (prof.enabled && !scaleOut ? prof.sizeMult : 1)),
+          ? { contracts: fixed, dollarRisk: fixed * riskPts * 2, capped: false }
+          : momentumSize(riskPts, kellyRisk),
         riskPts,
       );
 
@@ -1269,7 +1318,7 @@ class SignalFeed {
             scaleOut,
             limit: { price: level, expireAtMs },
           });
-          const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+          const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
           const armText = [
             `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace — broker limit resting · ${et} NY</b>`,
             ``,
@@ -1306,9 +1355,9 @@ class SignalFeed {
           aPlus,
           firstToday,
           et,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true, gates: this.gateSnapshot(ov), ...es.features, ...rn.features, ...gch.features, ...wall.features }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true, gates: this.gateSnapshot(ov), kelly: kelly ?? undefined, ...es.features, ...rn.features, ...gch.features, ...wall.features }),
         };
-        const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+        const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
         const armText = [
           `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace — resting limit · ${et} NY</b>`,
           ``,
@@ -1319,7 +1368,7 @@ class SignalFeed {
             : `<code>TARGET  +1R from the fill</code>`,
           `<code>SIZE    ~${sizeStrArm} at fill</code>`,
           ``,
-          `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}no market order — waits up to ${EXP_RETRACE_BARS} min for the retrace, skipped if untraded`,
+          `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}${kellyTxt}no market order — waits up to ${EXP_RETRACE_BARS} min for the retrace, skipped if untraded`,
           `<i>${STATS.momentum.expRetrace}</i>`,
         ].join("\n");
         const res = await this.push(armText);
@@ -1349,7 +1398,7 @@ class SignalFeed {
         }
       });
 
-      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
       const evidence =
         s.kind === "expansion"
           ? `huge bar ${s.breakRangeR.toFixed(1)}×ATR · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`
@@ -1367,7 +1416,7 @@ class SignalFeed {
           : `<code>TARGET  ${fmtPx(target)}   ${distTxt(s.entry, target)}${profBracket ? ` (${prof.targetR}R @ ${prof.stopMult}× stop)` : ""}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}${evidence}${wallNote ? ` · ${wallNote}` : ""}`,
+        `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}${kellyTxt}${evidence}${wallNote ? ` · ${wallNote}` : ""}`,
         `<i>${STATS.momentum.stat}</i>`,
       ].join("\n");
       const res = await this.push(text);
@@ -1388,7 +1437,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, gates: this.gateSnapshot(ov), wallStop: wallNote || undefined, ...es.features, ...seasonal.features, ...rn.features, ...gch.features, ...wall.features }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, gates: this.gateSnapshot(ov), wallStop: wallNote || undefined, kelly: kelly ?? undefined, ...es.features, ...seasonal.features, ...sf.features, ...rn.features, ...gch.features, ...wall.features }),
       });
       registerExpectation({
         key: `mom|${key}`,
@@ -1587,10 +1636,10 @@ class SignalFeed {
     // size at fill time (day tier may have moved since the arm)
     const base =
       p.fixed > 0
-        ? { contracts: Math.min(30, p.fixed), dollarRisk: Math.min(30, p.fixed) * risk * 2, capped: false }
+        ? { contracts: p.fixed, dollarRisk: p.fixed * risk * 2, capped: false }
         : momentumSize(risk, p.riskBudget);
     const size = await this.applyDayTier(base, risk);
-    const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (30-micro cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+    const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
     const drift = (entry - p.sEntry) * dirSign;
 
     const intent: OrderIntent = {
@@ -1873,15 +1922,20 @@ class SignalFeed {
         : prof;
       const profBracket = bracket.enabled ? applyProfile(s.dir, s.entry, s.risk, bracket) : null;
       // the day plan: budget sizing (floor($100 ÷ stop$)), no fixed count
+      // Kelly mode (KELLY_MODE=1): the chip computes the self-updating
+      // edge-suggested risk; KELLY_LIVE_USE=1 (OFF) would switch sizing to it.
       const fixed = fixedContracts(0);
       const stop = profBracket ? profBracket.stop : s.stop;
       const target = profBracket ? profBracket.target : s.target;
       const riskPts = profBracket ? profBracket.riskPts : s.risk;
-      const budget = cap > 0 ? Math.min(riskBudget, cap) : riskBudget;
+      const budget = (cap > 0 ? Math.min(riskBudget, cap) : riskBudget) * (bracket.enabled ? bracket.sizeMult : 1);
+      const kelly = await kellyCardChip("rth", budget);
+      const kellyTxt = kelly ? `${kellyChipLabel(kelly)} (journal) · ` : "";
+      const kellyRisk = kellySizes(kelly) && kelly ? kelly.risk : budget;
       const contracts =
         fixed > 0
           ? cappedContracts(fixed, riskPts, cap)
-          : momentumSize(riskPts, budget * (bracket.enabled ? bracket.sizeMult : 1)).contracts;
+          : momentumSize(riskPts, kellyRisk).contracts;
       const size = await this.applyDayTier(
         { contracts, dollarRisk: contracts * riskPts * 2, capped: fixed > 0 && cap > 0 && fixed > contracts },
         riskPts,
@@ -1984,7 +2038,7 @@ class SignalFeed {
         `<code>TARGET  ${fmtPx(target)}   ${distTxt(s.entry, target)}${profBracket ? ` (${bracket.targetR}R @ ${bracket.stopMult}× stop)` : ""}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `${aPlus ? `A+ (${STATS.rth.aPlus}) · ` : ""}${chipLine}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
+        `${aPlus ? `A+ (${STATS.rth.aPlus}) · ` : ""}${chipLine}${kellyTxt}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
         `<i>${STATS.rth.stat}${profBracket ? ` · ${bracket.targetR}R @ ${bracket.stopMult}× stop · ${useLimitEntry ? "limit entry (validated redesign)" : "profile"}` : " · 0.75R plan — journal separately"}</i>`,
       ].join("\n");
       const res = await this.push(text);
@@ -2005,7 +2059,7 @@ class SignalFeed {
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, gates: this.gateSnapshot(ov), ...es.features, ...rn.features, ...gch.features, ...wall.features }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, family: "rth", gates: this.gateSnapshot(ov), kelly: kelly ?? undefined, ...es.features, ...rn.features, ...gch.features, ...wall.features }),
       });
       registerExpectation({
         key: `rth|${key}`,

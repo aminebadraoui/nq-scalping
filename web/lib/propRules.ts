@@ -72,9 +72,11 @@ export type MomentumSize = {
 };
 
 /** Momentum-card sizing, grounded in the Rapid EOD 50k rules:
- *  contracts = riskBudget ÷ (riskPts × $2/MNQ), floored at 1, capped at the
- *  plan's 30-micro contract limit. Dollar risk is what those contracts
- *  actually risk — always ≤ riskBudget. */
+ *  contracts = riskBudget ÷ (riskPts × $2/MNQ), floored at 1, capped at
+ *  `rules.maxMicro` (the PLAN cap — backtests pass explicit values).
+ *  Dollar risk is what those contracts actually risk — always ≤ riskBudget.
+ *  The LIVE layer's env cap (MAX_MICRO_CONTRACTS) is applied by the
+ *  callers through planMaxMicro() — this primitive stays parameterized. */
 export function momentumSize(
   riskPts: number,
   riskBudget = PROP_RISK_PER_TRADE,
@@ -155,6 +157,16 @@ export function cappedContracts(
 ): number {
   if (!(dollarCap > 0) || !(riskPts > 0)) return Math.max(1, fixed);
   return Math.max(1, Math.min(Math.max(1, fixed), Math.floor(dollarCap / (riskPts * pointValue))));
+}
+
+/** The live contract cap: MAX_MICRO_CONTRACTS env overrides the plan's
+ *  30µ (absent/NaN/<1 → the plan cap). The ONE source for both the card
+ *  sizing (lib/signalFeed.ts applyDayTier — so the card, Telegram message
+ *  and order all agree) and the executor's order clamp
+ *  (lib/crossTrade.ts maxContracts). */
+export function planMaxMicro(env: Record<string, string | undefined> = process.env): number {
+  const n = Number(env.MAX_MICRO_CONTRACTS);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : RAPID_EOD_50K.maxMicro;
 }
 
 export function estimateEval(rules: PropRules, riskPerTrade: number): EvalEstimate {

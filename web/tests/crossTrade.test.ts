@@ -17,6 +17,7 @@ import {
   buildReArmBracketPayload,
   flattenViaWebhook,
   flattenArmFire,
+  maxContracts,
   MNQ_TICK,
   type CrossTradeConfig,
 } from "../lib/crossTrade";
@@ -370,4 +371,19 @@ test("flattenViaWebhook: dry-run without EXECUTE_LIVE (no network, logged only)"
 test("flattenArmFire: resolves without network when not live", async () => {
   delete process.env.EXECUTE_LIVE;
   await assert.doesNotReject(flattenArmFire("test: live P&L −260 ≤ −250"));
+});
+
+/* ---------------- the ONE contract cap (planMaxMicro) ---------------- */
+
+test("maxContracts delegates to planMaxMicro — MAX_MICRO_CONTRACTS env, default the plan 30µ", () => {
+  delete process.env.MAX_MICRO_CONTRACTS;
+  assert.equal(maxContracts(), 30, "absent → plan default 30");
+  process.env.MAX_MICRO_CONTRACTS = "8";
+  assert.equal(maxContracts(), 8, "live cap 8");
+  process.env.MAX_MICRO_CONTRACTS = "0"; // invalid → default
+  assert.equal(maxContracts(), 30);
+  process.env.MAX_MICRO_CONTRACTS = "2.7"; // floors
+  assert.equal(maxContracts(), 2);
+  delete process.env.MAX_MICRO_CONTRACTS;
+  assert.equal(maxContracts(), 30);
 });

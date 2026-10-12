@@ -58,6 +58,7 @@ import { tradingHalted } from "./tradingHalt";
 import { noteOrderSubmit, noteOrderAck, markOrderPhase } from "./execLatency";
 import { buildFlattenWebhookPayload, buildCancelAllWebhookPayload } from "./flattenArm";
 import { ctPositions } from "./ctAccount";
+import { planMaxMicro } from "./propRules";
 
 export type CrossTradeConfig = {
   url: string;
@@ -624,11 +625,12 @@ export function reanchorBracketForFill(
 }
 
 /** executor-level micro-contract cap — bounds slippage × size so a
- *  gap-through stop fill cannot cost 10× the planned risk. Default 30
- *  (the current behavior); the study picks the live value. */
+ *  gap-through stop fill cannot cost 10× the planned risk. The ONE
+ *  source is lib/propRules.ts planMaxMicro() (MAX_MICRO_CONTRACTS env,
+ *  default the plan's 30µ) — shared with the card sizing so the card,
+ *  the Telegram message and the placed order always agree. */
 export function maxContracts(): number {
-  const n = Number(process.env.MAX_MICRO_CONTRACTS);
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 30;
+  return planMaxMicro();
 }
 
 /** pure latch decision (unit-tested): elapsed = ms since our entry,
