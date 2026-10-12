@@ -89,6 +89,16 @@ Verification (floor $250, 10,000 iters, different seed): P(eval pass) =
 
 ## Honest bounds
 
+- **Worst days can exceed the floor — the floor halts NEW trades, it does
+  not stop-loss the day.** The trade that crosses −$L still counts, so the
+  realized worst day is bounded by `floor + one trade's loss` (~$100 at
+  this sizing: −$200 at a $100 floor, −$339 at a $250 floor). And the halt
+  freezes the day at its trough: days that historically recovered from
+  below the floor book the dipped amount instead, which is why floors
+  $250–300 can show worst days *worse* than no floor at all (−$339/−$372
+  vs −$332). The floor's real job is stopping a bad day from bleeding
+  further, not capping it at exactly −$L. Live `accountGuard` behaves the
+  same way (guardCheck runs between trades).
 - The floor model is the pure daily-loss halt; the live give-back rule and
   the dd600→half sizing are not in this sweep (`guardReplay` models the
   full stack — a guarded run would sit between "off" and the tightest
