@@ -26,11 +26,13 @@ import {
 } from "./accountGuard";
 import { accountRow, ctSnapshot, ctSnapshotDisplay, type CtSnapshot } from "./ctAccount";
 
-type Snapshot = { equity: number; realized: number; openPnl?: number };
+type Snapshot = { equity: number; realized: number; openPnl?: number; asOf?: number };
 
 /** map the shared ctAccount snapshot to the guard's numbers — equity =
  *  netLiq, realized = realizedPnl, openPnl = live open P&L (the flatten
- *  arm reads it; omitted/NaN when the snapshot lacks it). */
+ *  arm reads it; omitted/NaN when the snapshot lacks it). `asOf` carries
+ *  the cache's read time so the guard can refuse to roll the day over
+ *  on stale data (a penalty-served cache must never rebaseline the day). */
 function mapSnapshot(s: CtSnapshot | null): Snapshot | null {
   if (!s || !s.accounts) return null;
   const acct = accountRow(s, process.env.CROSSTRADE_ACCOUNT ?? "");
@@ -39,6 +41,7 @@ function mapSnapshot(s: CtSnapshot | null): Snapshot | null {
     equity: Number(acct.netLiq),
     realized: Number(acct.realizedPnl),
     openPnl: Number.isFinite(acct.openPnl) ? Number(acct.openPnl) : undefined,
+    asOf: s.at,
   };
 }
 

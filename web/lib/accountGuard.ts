@@ -130,6 +130,12 @@ function currentAccountName(): string {
 /** New York close hour (default 17 = the Globex/maintenance close) */
 const EOD_HOUR = () => num(process.env.MFF_EOD_HOUR, 17);
 
+/** a snapshot older than this is too stale for the day rollover / EOD
+ *  commit — the penalty cooldown serves cached reads, and rebaselining a
+ *  new session on the old session's realized would phantom the day P&L
+ *  (2026-10-12: the 18:00 ET Globex rollover during vendor pacing). */
+export const STALE_SNAPSHOT_MS = 60_000;
+
 /** halt new entries once equity is within this many $ of the floor */
 const GUARD_MARGIN = () => num(process.env.MFF_GUARD_MARGIN, 500);
 
@@ -483,10 +489,21 @@ function maybeCommitEod(state: GuardState, equity: number, now = new Date()) {
  *  CrossTrade API via lib/crossGuard.ts) each poll; it returns whether the
  *  executor may open a new trade right now.
  *
+ *  2026-10-12 — stale-snapshot fail-closed: `asOf` is the snapshot's read
+ *  time. A snapshot older than STALE_SNAPSHOT_MS (the penalty cooldown
+ *  serves cached reads) is treated as unreadable — the day rollover and
+ *  the EOD floor commit must NEVER rebaseline on stale data (the 18:00 ET
+ *  Globex rollover during a vendor pacing window would otherwise baseline
+ *  the new day on the old session's realized, phantom-ing the day P&L).
+ *  Snapshots without `asOf` (replay/tests) are never stale.
+ *
  *  The day-plan RULES are pure predicates in lib/risk/guardCore.ts — this
  *  function only sequences them over the live state (architecture review
  *  P1: live and replay can no longer drift). */
-export function guardCheck(snap: { equity: number; realized: number; openPnl?: number } | null, now = new Date()): GuardDecision {
+export function guardCheck(
+  snap: { equity: number; realized: number; openPnl?: number; asOf?: number } | null,
+  now = new Date(),
+): GuardDecision {
   const s = mem();
   const isNews = inNewsWindow(now);
   const cfg = guardConfigFromEnv();
@@ -495,6 +512,13 @@ export function guardCheck(snap: { equity: number; realized: number; openPnl?: n
     return { verdict: "no-data", reason: "account equity unreadable — halting" };
   }
   const { equity, realized } = snap;
+  if (snap.asOf !== undefined && Number.isFinite(snap.asOf) && now.getTime() - snap.asOf > STALE_SNAPSHOT_MS) {
+    const ageS = Math.round((now.getTime() - snap.asOf) / 1000);
+    return {
+      verdict: "no-data",
+      reason: `snapshot stale (${ageS}s old — vendor pacing/poll pause) — deferring day rollover and verdicts until a fresh read`,
+    };
+  }
 
   // consistency day rollover (calendar date) + today's realized P&L
   maybeRolloverDay(s, realized, now);

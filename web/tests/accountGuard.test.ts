@@ -440,3 +440,36 @@ test("hydrateFieldsFrom: legacy rows without an account field still restore", ()
   assert.ok(h, "pre-account rows keep restoring (backward compatible)");
   assert.equal(h.floor, 48000);
 });
+
+/* ---- stale-snapshot fail-closed (2026-10-12 Globex rollover incident) ---- */
+
+test("stale snapshot never rolls the day over — no-data until a fresh read", () => {
+  setStage("eval");
+  // establish the previous session's day (10:00 ET → the 18:00-anchored key)
+  guardCheck(snap(50_500), at(10 * 60));
+  const beforeKey = guardState().dayKey;
+  const beforeBaseline = guardState().dayStartRealized;
+  const now = at(18 * 60 + 10); // 18:10 ET — the NEW session boundary
+  // a penalty-served cache is 10 minutes old — must NOT rebaseline on it
+  const stale = { equity: 50_500, realized: 50_400, asOf: now.getTime() - 10 * 60_000 };
+  const d = guardCheck(stale, now);
+  assert.equal(d.verdict, "no-data");
+  assert.match(d.reason, /stale/);
+  assert.equal(guardState().dayKey, beforeKey, "day rolled over on a stale snapshot");
+  assert.equal(guardState().dayStartRealized, beforeBaseline, "baseline moved on a stale snapshot");
+  // the fresh read rolls the day over with the NEW session's realized
+  const fresh = { equity: 50_500, realized: 50_400, asOf: now.getTime() };
+  const d2 = guardCheck(fresh, now);
+  assert.equal(d2.verdict, "ok");
+  assert.notEqual(guardState().dayKey, beforeKey);
+  assert.equal(guardState().dayStartRealized, 50_400);
+  assert.equal(guardState().dayPnl, 0);
+});
+
+test("a snapshot without asOf is never stale (replay/tests unchanged)", () => {
+  setStage("eval");
+  const now = at(18 * 60 + 10);
+  const d = guardCheck(snap(50_500), now);
+  assert.equal(d.verdict, "ok");
+  assert.equal(guardState().dayKey, tradingDayKey(now));
+});
