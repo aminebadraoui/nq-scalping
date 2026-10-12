@@ -46,6 +46,72 @@ type TradeRow = {
   loss_label: string;
 };
 
+/** one live execution-ledger row (lib/execTracker.ts, via /api/executions) */
+type LiveExecRow = {
+  key: string;
+  signalId: string;
+  ts: number;
+  day: string;
+  timeET: string;
+  label: string;
+  family: string;
+  side: "long" | "short";
+  contracts: number;
+  sigEntry: number;
+  sigStop: number;
+  sigTarget: number;
+  orderId: string;
+  status: "placed" | "filled" | "closed" | "failed";
+  fillEntry: number | null;
+  fillEntryAt: number | null;
+  exitAvg: number | null;
+  exitFills: Array<{ ts: number; action: string; qty: number; price: number }>;
+  pts: number | null;
+  grossUsd: number;
+  feesUsd: number;
+  netUsd: number;
+  result: "" | "win" | "loss" | "flat";
+};
+
+/** live ledger row → the reconciled-trades table shape (⚡ rows) */
+function liveExecToTrade(e: LiveExecRow): TradeRow {
+  const dirSign = e.side === "long" ? 1 : -1;
+  const drift =
+    e.fillEntry !== null && Number.isFinite(e.sigEntry)
+      ? Math.round((e.fillEntry - e.sigEntry) * dirSign * 100) / 100
+      : null;
+  const lastExit = e.exitFills.length ? e.exitFills[e.exitFills.length - 1].ts : null;
+  const heldMin = e.fillEntryAt !== null && lastExit !== null ? (lastExit - e.fillEntryAt) / 60_000 : null;
+  return {
+    signal_key: e.key,
+    day: e.day,
+    time_et: e.timeET,
+    side: e.side,
+    contracts: e.contracts,
+    verdict: e.label,
+    status: e.status === "closed" ? "matched" : "partial",
+    sig_entry: Number.isFinite(e.sigEntry) ? e.sigEntry : null,
+    sig_stop: Number.isFinite(e.sigStop) ? e.sigStop : null,
+    sig_target: Number.isFinite(e.sigTarget) ? e.sigTarget : null,
+    fill_entry: e.fillEntry,
+    exit_avg: e.exitAvg,
+    gross_usd: e.grossUsd,
+    net_usd: e.netUsd,
+    result: e.status === "closed" ? e.result : "",
+    family: e.family,
+    hour_bucket: "",
+    first_of_day: false,
+    entry_adverse_pts: drift,
+    held_min: heldMin,
+    mfe_pts: null,
+    mae_pts: null,
+    target_reached: false,
+    recovered: false,
+    stop_run: false,
+    loss_label: "",
+  };
+}
+
 type StatRow = {
   group: string;
   label: string;
@@ -449,6 +515,7 @@ export default function JournalPage() {
   const [deepTrades, setDeepTrades] = useState<DeepTradeRow[]>([]);
   const [deepVars, setDeepVars] = useState<LedgerVariable[]>([]);
   const [deepSource, setDeepSource] = useState<string>("");
+  const [liveExecs, setLiveExecs] = useState<LiveExecRow[]>([]);
   const [showAllVars, setShowAllVars] = useState(false);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [acctFilter, setAcctFilter] = useState<string>("all");
@@ -460,8 +527,9 @@ export default function JournalPage() {
       fetch(`/api/trades?range=${scoreRange}`).then((r) => r.json()),
       fetch("/api/insights").then((r) => r.json()),
       fetch("/api/trades/table").then((r) => r.json()),
+      fetch("/api/executions", { cache: "no-store" }).then((r) => r.json()),
     ])
-      .then(([t, i, l]) => {
+      .then(([t, i, l, e]) => {
         setRun(t.runs?.[0] ?? null);
         setAnalysis(t.analysis ?? null);
         setTrades(t.trades ?? []);
@@ -484,6 +552,7 @@ export default function JournalPage() {
         setDeepTrades(l.rows ?? []);
         setDeepVars(l.variables ?? []);
         setDeepSource(l.source ?? "");
+        setLiveExecs(Array.isArray(e.rows) ? e.rows : []);
         setLoaded(true);
       })
       .catch(() => {});
@@ -521,7 +590,13 @@ export default function JournalPage() {
     insights.find((i) => i.kind === "narrative") ?? null;
   const nonNarrative = insights.filter((i) => i.kind !== "narrative");
   const activeOverrides = overrides.filter((o) => o.active);
-  const newestFirst = [...trades].reverse();
+  // ⚡ today's live execution ledger rows sit on top of the nightly
+  // reconcile rows — the journal updates intraday instead of waiting
+  // for the evening jobs container run
+  const liveTradeRows = liveExecs.map(liveExecToTrade);
+  const liveKeys = new Set(liveTradeRows.map((r) => r.signal_key));
+  const liveTodayNet = Math.round(liveTradeRows.reduce((s, t) => s + (t.status === "matched" ? t.net_usd : 0), 0) * 100) / 100;
+  const newestFirst = [...liveTradeRows, ...[...trades].reverse()];
   const maxAbsDay = Math.max(1, ...dayRows.map((d) => Math.abs(d.netUsd)));
 
   /* ---- all-variables trade table ---- */
@@ -556,7 +631,7 @@ export default function JournalPage() {
         <div className="flex flex-wrap gap-2 font-mono text-[10px] text-zinc-500">
           <span className="rounded border border-zinc-800 px-2 py-1">dataset {analysis?.trades_n ?? "—"} trades</span>
           <span className="rounded border border-zinc-800 px-2 py-1">
-            account {fmtUsd(run?.account_realized ?? null)} realized
+            reconcile: {fmtUsd(run?.account_realized ?? null)} realized (history)
           </span>
           <span className="rounded border border-zinc-800 px-2 py-1">{activeOverrides.length} active gates</span>
         </div>
@@ -581,19 +656,53 @@ export default function JournalPage() {
           {scoreRange === "all" ? "all time" : `rolling ${scoreRange} days`} · bot strategies only
         </span>
       </div>
-      {/* the FINAL number — the account itself (latest reconcile snapshot;
-          the LIVE numbers every tab shares come from /api/account below) */}
+      {/* LIVE account — the number every tab shares (/api/account, the
+          CrossTrade snapshot). This is the account's true current state;
+          the reconcile block below is history. */}
+      <div className="mb-5 rounded-md border border-info/30 bg-panel px-4 py-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">LIVE account · CrossTrade → Tradovate</p>
+            <p className="font-mono text-3xl font-bold text-zinc-50">
+              {liveAccount?.account?.netLiq !== null && liveAccount?.account?.netLiq !== undefined
+                ? `$${liveAccount.account.netLiq.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : "…"}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">day P&L (guard)</p>
+            <p className={`font-mono text-2xl font-bold ${(liveAccount?.guard?.dayPnl ?? 0) >= 0 ? "text-long" : "text-short"}`}>
+              {fmtUsd(liveAccount?.guard?.dayPnl ?? null)}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">open P&L</p>
+            <p className={`font-mono text-2xl font-bold ${(liveAccount?.account?.openPnl ?? 0) >= 0 ? "text-long" : "text-short"}`}>
+              {fmtUsd(liveAccount?.account?.openPnl ?? null)}
+            </p>
+          </div>
+          <div className="text-right font-mono text-[10px] text-zinc-400">
+            {liveAccount?.position
+              ? `position ${liveAccount.position.dir.toUpperCase()} ${liveAccount.position.qty} MNQ`
+              : "flat"}
+            <br />
+            <AccountLine payload={liveAccount} />
+          </div>
+        </div>
+      </div>
+      {/* the reconcile snapshot — HISTORY (written by the nightly jobs
+          container; the live numbers above are the ones every tab shares) */}
       {account && (
-        <div className="mb-5 rounded-md border border-zinc-800 bg-panel px-4 py-3">
+        <div className="mb-5 rounded-md border border-zinc-800 bg-panel px-4 py-3 opacity-80">
           <div className="flex flex-wrap items-baseline justify-between gap-3">
             <div>
-              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">Account · net liquidation value</p>
+              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">Last reconcile snapshot · net liquidation value</p>
               <p className="font-mono text-3xl font-bold text-zinc-50">
                 ${account.net.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
             </div>
             <div className="text-right">
-              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">net profit / loss</p>
+              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">net profit / loss (vs start)</p>
               <p className={`font-mono text-2xl font-bold ${account.pnl >= 0 ? "text-long" : "text-short"}`}>
                 {fmtUsd(account.pnl)}{" "}
                 <span className="text-base">({account.pct >= 0 ? "+" : ""}{account.pct.toFixed(2)}%)</span>
@@ -605,9 +714,6 @@ export default function JournalPage() {
               snapshot {account.at.slice(0, 16).replace("T", " ")}Z
             </div>
           </div>
-          <p className="mt-2 border-t border-zinc-800/60 pt-2 font-mono text-[10px] text-zinc-500">
-            live (CrossTrade) — <AccountLine payload={liveAccount} />
-          </p>
         </div>
       )}
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
@@ -617,6 +723,14 @@ export default function JournalPage() {
           tone={(headline?.netUsd ?? 0) >= 0 ? "long" : "short"}
           sub={`gross ${fmtUsd(headline?.grossUsd ?? null)} · fees ${fmtUsd(headline ? -headline.commissions : null)}`}
         />
+        {liveTradeRows.length > 0 && (
+          <GlanceCard
+            label="TODAY · LIVE ⚡"
+            value={fmtUsd(liveTodayNet)}
+            tone={liveTodayNet >= 0 ? "long" : "short"}
+            sub={`${liveTradeRows.filter((r) => r.status === "matched").length} closed · live ledger (updates intraday)`}
+          />
+        )}
         <GlanceCard
           label="BOT GROSS"
           value={fmtUsd(headline?.grossUsd ?? null)}
@@ -1472,7 +1586,14 @@ export default function JournalPage() {
           </section>
 
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
-            <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Trades</h2>
+            <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">
+              Trades{" "}
+              {liveTradeRows.length > 0 && (
+                <span className="font-mono text-[10px] font-normal text-info">
+                  · {liveTradeRows.length} live today ⚡ (intraday ledger — the rest is the nightly reconcile)
+                </span>
+              )}
+            </h2>
             {run?.notes && <p className="mb-2 font-mono text-[10px] text-warn">{run.notes}</p>}
             <div className="max-h-[640px] overflow-auto">
               <table className="w-full border-collapse font-mono text-[10px]">
@@ -1499,6 +1620,11 @@ export default function JournalPage() {
                       <td className="py-1 pr-2 whitespace-nowrap">
                         {t.day.slice(5)} {t.time_et || "—"}
                         {t.first_of_day ? " ★" : ""}
+                        {liveKeys.has(t.signal_key) && (
+                          <span className="ml-1 text-info" title="today's live execution ledger — updates intraday (before the nightly reconcile)">
+                            ⚡
+                          </span>
+                        )}
                       </td>
                       <td className={`px-2 py-1 font-semibold ${t.side === "long" ? "text-long" : "text-short"}`}>
                         {t.side.toUpperCase().slice(0, 1)}
@@ -1540,7 +1666,7 @@ export default function JournalPage() {
               {loaded && trades.length === 0 && <p className="py-2 font-mono text-xs text-zinc-600">no reconciled trades yet</p>}
             </div>
             <p className="mt-2 font-mono text-[9px] text-zinc-600">
-              ★ first of day · ⛔ stop-run · 🎯 target in range before exit · ↩ price crossed back through entry ≤15 min after exit · drift positive = filled worse than signal
+              ⚡ today's live execution ledger (signal → Tradovate fill → $ net, refreshes with the page) · ★ first of day · ⛔ stop-run · 🎯 target in range before exit · ↩ price crossed back through entry ≤15 min after exit · drift positive = filled worse than signal
             </p>
           </section>
         </div>

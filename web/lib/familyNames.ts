@@ -7,7 +7,9 @@
 export const FAMILY_LABEL: Record<string, string> = {
   momentum_flush: "MOM·flush",
   momentum_expansion: "MOM·expansion",
+  momentum: "MOM",
   rth: "RTH",
+  open: "OPEN",
   open_drive: "OPEN DRIVE",
   open_pullback: "OPEN PULL",
   open_sniper: "SNIPER",
