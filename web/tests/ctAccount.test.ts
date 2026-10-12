@@ -7,11 +7,13 @@ import assert from "node:assert";
 import {
   accountRow,
   configuredAccount,
+  ctFetch,
   ctFills,
   ctOrders,
   ctPositions,
   ctSnapshot,
   ctSnapshotDisplay,
+  isCtRateLimited,
   __resetCtAccountForTest,
   type CtSnapshotAccount,
 } from "../lib/ctAccount";
@@ -203,4 +205,132 @@ test("ctOrders returns ok=false with empty list on any failure", async () => {
   assert.deepEqual(bad, { ok: false, orders: [] });
   const ok = await ctOrders({ fetchFn: (input, init) => jsonFetch({ success: true, data: [{ id: 1 }] })(input, init) });
   assert.deepEqual(ok, { ok: true, orders: [{ id: 1 }] });
+});
+
+/* ------------ CrossTrade pacing transport (2026-10-12 broker_rate_limited fix) ------------ */
+
+const textFetch = (payload: unknown, status = 200): typeof fetch =>
+  (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => (typeof payload === "string" ? payload : JSON.stringify(payload)),
+      json: async () => payload,
+    }) as unknown as Response) as unknown as typeof fetch;
+
+test("isCtRateLimited detects the vendor pacing shapes", () => {
+  assert.equal(isCtRateLimited(429, ""), true);
+  assert.equal(isCtRateLimited(200, '{"success":false,"error":"broker_rate_limited","detail":"…"}'), true);
+  assert.equal(isCtRateLimited(200, '{"success":false,"error":"unknown_account"}'), false);
+  assert.equal(isCtRateLimited(400, ""), false);
+  assert.equal(isCtRateLimited(503, ""), false); // 503 rides retryOn503, not the body check
+});
+
+test("ctFetch retries a 429 pacing refusal and returns the eventual read", async () => {
+  __resetCtAccountForTest();
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return calls === 1 ? textFetch("paced", 429)(input, init) : textFetch({ ok: true }, 200)(input, init);
+  };
+  const res = await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 2, backoffBaseMs: 1 }, fetchFn);
+  assert.equal(calls, 2);
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(res.text).ok, true);
+});
+
+test("ctFetch retries a success:false broker_rate_limited body (HTTP 200)", async () => {
+  __resetCtAccountForTest();
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return calls === 1
+      ? textFetch({ success: false, error: "broker_rate_limited", detail: "pacing" }, 200)(input, init)
+      : textFetch({ success: true, data: [] }, 200)(input, init);
+  };
+  const res = await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 1, backoffBaseMs: 1 }, fetchFn);
+  assert.equal(calls, 2);
+  assert.equal(JSON.parse(res.text).success, true);
+});
+
+test("ctFetch never retries non-pacing failures (400 passes through once)", async () => {
+  __resetCtAccountForTest();
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return textFetch({ error: "unknown_account" }, 400)(input, init);
+  };
+  const res = await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 3, backoffBaseMs: 1 }, fetchFn);
+  assert.equal(calls, 1);
+  assert.equal(res.status, 400);
+});
+
+test("ctFetch returns the final pacing refusal once the retry budget is spent", async () => {
+  __resetCtAccountForTest();
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return textFetch({ success: false, error: "broker_rate_limited" }, 200)(input, init);
+  };
+  const res = await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 2, backoffBaseMs: 1 }, fetchFn);
+  assert.equal(calls, 3);
+  assert.match(res.text, /broker_rate_limited/);
+});
+
+test("ctFetch does not retry a 503 on writes unless retryOn503 is set", async () => {
+  __resetCtAccountForTest();
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return textFetch("unavailable", 503)(input, init);
+  };
+  const write = await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 2, backoffBaseMs: 1 }, fetchFn);
+  assert.equal(calls, 1); // a write must never re-POST on an ambiguous 503
+  const read = await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 1, backoffBaseMs: 1, retryOn503: true }, fetchFn);
+  assert.equal(calls, 3);
+  assert.equal(read.status, 503);
+});
+
+test("ctFetch spaces calls by the configured min gap (no bursts)", async () => {
+  __resetCtAccountForTest({ gapMs: 30 });
+  const times: number[] = [];
+  const fetchFn: typeof fetch = (input, init) => {
+    times.push(Date.now());
+    return textFetch("ok", 200)(input, init);
+  };
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  assert.ok(times[1] - times[0] >= 25, `gap1 ${times[1] - times[0]}ms`);
+  assert.ok(times[2] - times[1] >= 25, `gap2 ${times[2] - times[1]}ms`);
+});
+
+test("ctPositions rides out a broker_rate_limited then returns the book", async () => {
+  __resetCtAccountForTest({ backoffBaseMs: 1 });
+  setEnv(BASE_ENV);
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    return calls <= 2
+      ? textFetch({ success: false, error: "broker_rate_limited" }, 200)(input, init)
+      : textFetch({ success: true, data: [{ netPos: 0 }] }, 200)(input, init);
+  };
+  const rows = await ctPositions({ fetchFn });
+  assert.equal(calls, 3); // 2 pacing retries inside ctFetch, then the read
+  assert.deepEqual(rows, [{ netPos: 0 }]);
+});
+
+test("ctSnapshot rides out a pacing refusal before the degraded-shape loop", async () => {
+  __resetCtAccountForTest({ backoffBaseMs: 1 });
+  setEnv(BASE_ENV);
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    if (calls === 1) return textFetch({ success: false, error: "broker_rate_limited" }, 200)(input, init);
+    return textFetch({ accounts: [{ name: ACCT, netLiq: 50100, realizedPnl: 42.5 }] }, 200)(input, init);
+  };
+  const snap = await ctSnapshot({ fetchFn, retryDelayMs: 0 });
+  assert.equal(calls, 2); // one pacing retry inside ctFetch, then the usable read
+  assert.equal(snap.accounts?.[0]?.netLiq, 50100);
+  assert.equal(ctSnapshotDisplay()?.accounts?.[0]?.realizedPnl, 42.5);
 });

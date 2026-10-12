@@ -44,7 +44,7 @@ import { noteOrderFill } from "./execLatency";
 import { signalWindowOpen } from "./marketHours";
 import { newsBlockedNow } from "./newsGate";
 import { noteRthExit } from "./rthExitLog";
-import { ctFills, ctOrders, ctPositions } from "./ctAccount";
+import { ctFetch, ctFills, ctOrders, ctPositions } from "./ctAccount";
 import { trackExecRegister, trackExecFail, trackExecFill, trackExecClose } from "./execTracker";
 import { getMemoryHistory } from "./signalHistory";
 
@@ -471,17 +471,22 @@ export function classifyExitFill(
 /** broker verification: is the MNQ book clean (no working order, no position)?
  *  clean=true is ONLY returned when both reads succeed AND show nothing —
  *  any read failure returns clean=false with the reason. */
-export async function verifyAbsent(): Promise<{ clean: boolean; reason: string }> {
+export async function verifyAbsent(opts?: { fetchFn?: typeof fetch }): Promise<{ clean: boolean; reason: string }> {
   const key = process.env.CROSSTRADE_KEY ?? "";
   const account = process.env.CROSSTRADE_ACCOUNT ?? "";
   const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+  const fetchFn = opts?.fetchFn ?? fetch;
   try {
-    // working orders on the account (a placed-but-unfilled order lives here)
-    const ordRes = await fetch(
+    // working orders on the account (a placed-but-unfilled order lives here).
+    // Pacing-aware (2026-10-12): broker_rate_limited refusals retry with
+    // backoff via ctFetch instead of aborting the verified re-send.
+    const ordRes = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/orders`,
       { headers, signal: AbortSignal.timeout(15_000) },
+      { extraRetries: 2, retryOn503: true },
+      fetchFn,
     );
-    const ordJ = (await ordRes.json()) as { success?: boolean; error?: string; data?: Array<Record<string, unknown>> };
+    const ordJ = JSON.parse(ordRes.text) as { success?: boolean; error?: string; data?: Array<Record<string, unknown>> };
     if (!ordJ.success) return { clean: false, reason: `orders read failed: ${String(ordJ.error ?? "")}` };
     const working = (ordJ.data ?? []).filter((o) =>
       String(o.instrument ?? o.contractName ?? "").includes(MNQ),
@@ -489,11 +494,13 @@ export async function verifyAbsent(): Promise<{ clean: boolean; reason: string }
     if (working.length > 0) return { clean: false, reason: `${working.length} working MNQ order(s) — likely placed` };
 
     // positions (fill-reconciled): the ultimate truth — a filled order shows here
-    const posRes = await fetch(
+    const posRes = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`,
       { headers, signal: AbortSignal.timeout(15_000) },
+      { extraRetries: 2, retryOn503: true },
+      fetchFn,
     );
-    const posJ = (await posRes.json()) as { success?: boolean; error?: string; data?: Array<Record<string, unknown>> };
+    const posJ = JSON.parse(posRes.text) as { success?: boolean; error?: string; data?: Array<Record<string, unknown>> };
     if (!posJ.success) return { clean: false, reason: `positions read failed: ${String(posJ.error ?? "")}` };
     const held = (posJ.data ?? []).filter((p) => {
       const qty = Number(p.netPos ?? p.qty ?? 0);

@@ -127,3 +127,31 @@ test("pickExitFill: default window is the shipped EXIT_SLIP_WINDOW_MS (15 min)",
   assert.deepEqual(pickExitFill([inside], "long", now), inside);
   assert.equal(pickExitFill([outside], "long", now), null);
 });
+
+/* ---- broker verification under vendor pacing (2026-10-12) ---- */
+
+test("verifyAbsent rides out broker_rate_limited on both reads and confirms clean", async () => {
+  const { __resetCtAccountForTest } = await import("../lib/ctAccount");
+  const { verifyAbsent } = await import("../lib/execWatch");
+  __resetCtAccountForTest({ backoffBaseMs: 1 });
+  process.env.CROSSTRADE_KEY = "test-key";
+  process.env.CROSSTRADE_ACCOUNT = "MFFUEVREOD1234";
+  let calls = 0;
+  const jsonText = (payload: unknown, status = 200): typeof fetch =>
+    (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      ({
+        ok: status >= 200 && status < 300,
+        status,
+        text: async () => JSON.stringify(payload),
+        json: async () => payload,
+      }) as unknown as Response) as unknown as typeof fetch;
+  const fetchFn: typeof fetch = (input, init) => {
+    calls++;
+    if (calls <= 2) return jsonText({ success: false, error: "broker_rate_limited", detail: "pacing" })(input, init);
+    if (calls === 3) return jsonText({ success: true, data: [] })(input, init); // orders
+    return jsonText({ success: true, data: [] })(input, init); // positions
+  };
+  const v = await verifyAbsent({ fetchFn });
+  assert.equal(calls, 4); // 2 pacing retries on orders, then the two clean reads
+  assert.deepEqual(v, { clean: true, reason: "no working order, no position — verified absent" });
+});

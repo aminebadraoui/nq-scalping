@@ -56,6 +56,107 @@ let snapCache: CtSnapshot | null = null;
 let fillsCache: { at: number; fills: CtFill[] | null } | null = null;
 let positionsCache: { at: number; rows: Record<string, unknown>[] | null } | null = null;
 
+/* ------------------------------------------------------------------ *
+ * Shared CrossTrade REST transport (2026-10-12 — the broker_rate_limited
+ * fix). The vendor paces ALL /v1/api/tv requests per Tradovate login:
+ * when the login's request budget is spent, every endpoint answers
+ * HTTP 429/503 or {"success":false,"error":"broker_rate_limited"}
+ * instead of serving the read. On 2026-10-12 that killed the last two
+ * RTH signals outright — the pre-flight flat check (GET positions) got a
+ * pacing refusal and the gate failed the card instantly, with no retry.
+ *
+ * ctFetch therefore:
+ *   · spaces CrossTrade REST calls by CT_MIN_GAP_MS (our polls never
+ *     burst the vendor — bursts are what trip the pacing),
+ *   · retries pacing refusals with exponential backoff + jitter (a few
+ *     seconds usually rides the window out; nothing else changes),
+ *   · never retries non-pacing responses — 400/401/403 come back
+ *     instantly, exactly like the raw fetch they replace.
+ *
+ * Reads opt into 503 retries (a proxy hiccup on a GET is harmless to
+ * repeat); WRITES (order place / cancel / re-arm / flatten) retry ONLY
+ * on explicit pacing signals, never on a generic 503 — a 503 after
+ * dispatch is ambiguous and a second POST could double a position.
+ * ------------------------------------------------------------------ */
+
+const CT_MIN_GAP_MS = 400;
+let lastCtCallAt = 0;
+/** TEST ONLY: override the production min-gap (0 in the default reset). */
+let ctGapOverride: number | null = null;
+/** TEST ONLY: override the default pacing backoff base. */
+let ctBackoffOverride: number | null = null;
+
+function ctGapMs(): number {
+  return ctGapOverride ?? CT_MIN_GAP_MS;
+}
+
+/** is this response a CrossTrade pacing refusal (safe to retry a READ,
+ *  and for writes the ONLY automatic retry)? */
+export function isCtRateLimited(status: number, bodyText: string): boolean {
+  if (status === 429) return true;
+  return bodyText.slice(0, 400).includes("broker_rate_limited");
+}
+
+export type CtFetchOpts = {
+  /** extra attempts after the first pacing refusal (default 2) */
+  extraRetries?: number;
+  /** base backoff for pacing retries (default 1200ms; ×2 per attempt, jittered) */
+  backoffBaseMs?: number;
+  /** retry on HTTP 503 as well (reads only — default false) */
+  retryOn503?: boolean;
+};
+
+/** fetch one CrossTrade REST endpoint with pacing awareness. Returns the
+ *  last status+body (a non-pacing response, or the final pacing refusal
+ *  once the retry budget is spent — callers then fail closed as before).
+ *  `fetchFn` is injectable for unit tests (defaults to global fetch). */
+export async function ctFetch(
+  url: string,
+  init: RequestInit & { headers?: Record<string, string> },
+  opts?: CtFetchOpts,
+  fetchFn: typeof fetch = fetch,
+): Promise<{ status: number; text: string }> {
+  const extra = Math.max(0, opts?.extraRetries ?? 2);
+  const backoffBase = opts?.backoffBaseMs ?? ctBackoffOverride ?? 1200;
+  const retryOn503 = opts?.retryOn503 === true;
+  let status = 0;
+  let text = "";
+  for (let attempt = 0; attempt <= extra; attempt++) {
+    if (attempt > 0) {
+      const wait = backoffBase * 2 ** (attempt - 1) + Math.random() * 300;
+      await sleep(wait);
+    }
+    // spacing: never let CrossTrade calls burst (pacing is per login and
+    // our polls + a card's pre-flight can collide into a burst)
+    const gapWait = Math.max(0, lastCtCallAt + ctGapMs() - Date.now());
+    if (gapWait > 0) await sleep(gapWait);
+    lastCtCallAt = Date.now();
+    const res = await fetchFn(url, init);
+    status = res.status;
+    text = await readBody(res);
+    const paced = isCtRateLimited(status, text) || (retryOn503 && status === 503);
+    if (!paced) return { status, text };
+    console.warn(`[crossTrade] vendor pacing (HTTP ${status}) on ${url.split("/").pop()} — retry ${attempt + 1}/${extra}`);
+  }
+  return { status, text };
+}
+
+/** read the body as text; json-only mocks (unit tests) fall back to their
+ *  json() payload so ctFetch works with either Response shape. */
+async function readBody(res: Response): Promise<string> {
+  try {
+    if (typeof res.text === "function") return await res.text();
+  } catch {
+    /* fall through to json */
+  }
+  try {
+    if (typeof res.json === "function") return JSON.stringify(await res.json());
+  } catch {
+    /* empty body */
+  }
+  return "";
+}
+
 function ctKey(env: Record<string, string | undefined> = process.env): string {
   return (env.CROSSTRADE_KEY ?? "").trim();
 }
@@ -71,12 +172,14 @@ function enabled(env: Record<string, string | undefined> = process.env): boolean
 /* ---- account snapshot (30s) ---------------------------------------- */
 
 async function fetchSnapshotRaw(fetchFn: typeof fetch): Promise<CtSnapshotAccount[]> {
-  const res = await fetchFn("https://app.crosstrade.io/v1/api/tv/accounts/snapshot", {
-    headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`snapshot ${res.status}`);
-  const j = (await res.json()) as { accounts?: CtSnapshotAccount[] };
+  const res = await ctFetch(
+    "https://app.crosstrade.io/v1/api/tv/accounts/snapshot",
+    { headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+    { extraRetries: 1, retryOn503: true },
+    fetchFn,
+  );
+  if (res.status < 200 || res.status >= 300) throw new Error(`snapshot ${res.status}`);
+  const j = JSON.parse(res.text) as { accounts?: CtSnapshotAccount[] };
   return j.accounts ?? [];
 }
 
@@ -151,12 +254,14 @@ export function accountRow(snap: CtSnapshot, account: string): CtSnapshotAccount
 /* ---- fills (5s, the watcher's window) ------------------------------- */
 
 async function fetchFillsRaw(fetchFn: typeof fetch): Promise<CtFill[]> {
-  const res = await fetchFn("https://app.crosstrade.io/v1/api/tv/fills", {
-    headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`fills ${res.status}`);
-  const j = (await res.json()) as { data?: Array<{ data?: Array<Record<string, unknown>> }> };
+  const res = await ctFetch(
+    "https://app.crosstrade.io/v1/api/tv/fills",
+    { headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+    { extraRetries: 2, retryOn503: true },
+    fetchFn,
+  );
+  if (res.status < 200 || res.status >= 300) throw new Error(`fills ${res.status}`);
+  const j = JSON.parse(res.text) as { data?: Array<{ data?: Array<Record<string, unknown>> }> };
   const fills: CtFill[] = [];
   for (const env of j.data ?? []) {
     for (const f of env.data ?? []) {
@@ -193,15 +298,17 @@ export async function ctFills(opts?: { force?: boolean; fetchFn?: typeof fetch }
 /* ---- positions (2s, protection sweep) ------------------------------- */
 
 async function fetchPositionsRaw(fetchFn: typeof fetch): Promise<Record<string, unknown>[]> {
-  const res = await fetchFn(
+  const res = await ctFetch(
     `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(configuredAccount())}/positions`,
     {
       headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" },
       signal: AbortSignal.timeout(15_000),
     },
+    { extraRetries: 2, retryOn503: true },
+    fetchFn,
   );
-  if (!res.ok) throw new Error(`positions ${res.status}`);
-  const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
+  if (res.status < 200 || res.status >= 300) throw new Error(`positions ${res.status}`);
+  const j = JSON.parse(res.text) as { success?: boolean; data?: Array<Record<string, unknown>> };
   if (!j.success) throw new Error("positions read failed");
   return j.data ?? [];
 }
@@ -225,15 +332,17 @@ export async function ctPositions(opts?: { fetchFn?: typeof fetch }): Promise<Re
  *  protection sweep). Failure returns null (callers keep waiting). */
 export async function ctOrders(opts?: { fetchFn?: typeof fetch }): Promise<{ ok: boolean; orders: Record<string, unknown>[] }> {
   try {
-    const res = await (opts?.fetchFn ?? fetch)(
+    const res = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(configuredAccount())}/orders`,
       {
         headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" },
         signal: AbortSignal.timeout(15_000),
       },
+      { extraRetries: 2, retryOn503: true },
+      opts?.fetchFn ?? fetch,
     );
-    if (!res.ok) return { ok: false, orders: [] };
-    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
+    if (res.status < 200 || res.status >= 300) return { ok: false, orders: [] };
+    const j = JSON.parse(res.text) as { success?: boolean; data?: Array<Record<string, unknown>> };
     if (!j.success) return { ok: false, orders: [] };
     return { ok: true, orders: j.data ?? [] };
   } catch {
@@ -253,12 +362,14 @@ let ordersHistCache: { at: number; rows: CtOrderHist[] | null } | null = null;
 const ORDERS_HIST_TTL_MS = 30_000;
 
 async function fetchOrdersHistRaw(fetchFn: typeof fetch): Promise<CtOrderHist[]> {
-  const res = await fetchFn("https://app.crosstrade.io/v1/api/tv/orders?activeOnly=false", {
-    headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) throw new Error(`orders ${res.status}`);
-  const j = (await res.json()) as { data?: Array<{ data?: Array<Record<string, unknown>> }> };
+  const res = await ctFetch(
+    "https://app.crosstrade.io/v1/api/tv/orders?activeOnly=false",
+    { headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+    { extraRetries: 1, retryOn503: true },
+    fetchFn,
+  );
+  if (res.status < 200 || res.status >= 300) throw new Error(`orders ${res.status}`);
+  const j = JSON.parse(res.text) as { data?: Array<{ data?: Array<Record<string, unknown>> }> };
   const out: CtOrderHist[] = [];
   for (const env of j.data ?? []) {
     for (const o of env.data ?? []) {
@@ -289,10 +400,13 @@ export async function ctOrdersHistory(opts?: { fetchFn?: typeof fetch }): Promis
   }
 }
 
-/** TEST ONLY: reset the module caches. */
-export function __resetCtAccountForTest() {
+/** TEST ONLY: reset the module caches + the transport pacing state. */
+export function __resetCtAccountForTest(opts?: { gapMs?: number; backoffBaseMs?: number }) {
   snapCache = null;
   fillsCache = null;
   positionsCache = null;
   ordersHistCache = null;
+  lastCtCallAt = 0;
+  ctGapOverride = opts?.gapMs ?? 0;
+  ctBackoffOverride = opts?.backoffBaseMs ?? null;
 }

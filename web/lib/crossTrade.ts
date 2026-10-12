@@ -57,7 +57,7 @@ import { logExec } from "./execLog";
 import { tradingHalted } from "./tradingHalt";
 import { noteOrderSubmit, noteOrderAck, markOrderPhase } from "./execLatency";
 import { buildFlattenWebhookPayload, buildCancelAllWebhookPayload } from "./flattenArm";
-import { ctPositions } from "./ctAccount";
+import { ctFetch, ctPositions } from "./ctAccount";
 import { planMaxMicro } from "./propRules";
 
 export type CrossTradeConfig = {
@@ -849,10 +849,14 @@ type RESTLegResult = {
 
 /** POST one REST leg. 401/403 = auth (pre-dispatch, safe to fall back);
  *  non-2xx or success:false = rejection (pre-dispatch, nothing placed);
- *  network failure = UNKNOWN (do NOT retry — reconcile first). */
+ *  network failure = UNKNOWN (do NOT retry — reconcile first).
+ *  2026-10-12: a pacing refusal (broker_rate_limited / 429) is answered
+ *  BEFORE dispatch, so it retries once via ctFetch — nothing was placed,
+ *  and a refused place is otherwise a lost signal. Generic 503s never
+ *  retry (a 503 after dispatch is ambiguous — a second POST could double). */
 async function postRESTLeg(payload: Omit<RESTPlacePayload, "stopLoss"> & { stopLoss?: string }, cfg: CrossTradeConfig): Promise<RESTLegResult> {
   try {
-    const res = await fetch(
+    const res = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/orders/place`,
       {
         method: "POST",
@@ -860,8 +864,9 @@ async function postRESTLeg(payload: Omit<RESTPlacePayload, "stopLoss"> & { stopL
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(15_000),
       },
+      { extraRetries: 1, backoffBaseMs: 1500 },
     );
-    const bodyText = await res.text();
+    const bodyText = res.text;
     if (res.status === 401 || res.status === 403) {
       return { kind: "auth", reason: `REST unavailable (${res.status})` };
     }
@@ -871,7 +876,7 @@ async function postRESTLeg(payload: Omit<RESTPlacePayload, "stopLoss"> & { stopL
     } catch {
       /* plain text */
     }
-    if (!res.ok) return { kind: "rejected", reason: `REST rejected (${res.status}) ${bodyText.slice(0, 200)}` };
+    if (res.status < 200 || res.status >= 300) return { kind: "rejected", reason: `REST rejected (${res.status}) ${bodyText.slice(0, 200)}` };
     if (j && j.success === false) {
       return { kind: "rejected", reason: `REST rejected: ${String(j.error ?? bodyText).slice(0, 200)}` };
     }
@@ -916,12 +921,21 @@ async function restFlatGate(cfg: CrossTradeConfig): Promise<{ ok: boolean; reaso
     };
   }
   try {
-    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`, {
-      headers: { Authorization: `Bearer ${cfg.key}` },
-      signal: AbortSignal.timeout(15_000),
-    });
-    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> | Array<{ data?: Array<Record<string, unknown>> }> };
-    if (!j.success) return { ok: false, reason: `crossTrade: flat check failed — ${JSON.stringify(j).slice(0, 160)}` };
+    // pacing-aware read (2026-10-12): the vendor paces ALL /v1/api/tv calls
+    // per Tradovate login — when the budget is spent, the flat check came
+    // back {"success":false,"error":"broker_rate_limited"} and the card died
+    // instantly (the last two RTH signals of 2026-10-12). ctFetch retries a
+    // pacing refusal with backoff before this gate fails closed.
+    const res = await ctFetch(
+      `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`,
+      { headers: { Authorization: `Bearer ${cfg.key}` }, signal: AbortSignal.timeout(15_000) },
+      { extraRetries: 2, backoffBaseMs: 1200, retryOn503: true },
+    );
+    if (res.status < 200 || res.status >= 300) {
+      return { ok: false, reason: `crossTrade: flat check failed (HTTP ${res.status}) — ${res.text.slice(0, 160)}` };
+    }
+    const j = JSON.parse(res.text) as { success?: boolean; data?: Array<Record<string, unknown>> | Array<{ data?: Array<Record<string, unknown>> }> };
+    if (!j.success) return { ok: false, reason: `crossTrade: flat check failed — ${res.text.slice(0, 160)}` };
     const flat: unknown[] = [];
     for (const row of (j.data ?? []) as Array<Record<string, unknown>>) {
       const inner = Array.isArray(row.data) ? (row.data as Array<Record<string, unknown>>) : [row];
