@@ -80,12 +80,13 @@ shape). Full suite: 948 tests · 941 pass · 0 fail · `tsc --noEmit` clean.
 
 1. Code ships inert (this commit). Journal shows `flatten_dry` lines when
    the arm would fire (poll verdicts log `[guard] poll: flatten — …`).
-2. **Approved 2026-10-12 (owner): `FLATTEN_AT_LOSS=250` only** — the loss
-   side goes live; `FLATTEN_AT_PROFIT` stays unset (the profit arm's
-   one-more-trade stays) and `MAX_MICRO_CONTRACTS` stays 30µ (cap-8 change
-   deferred). Applied by the owner in the Coolify dashboard for
-   `nq-dashboard` (no CLI/token on the dev machine), outside the signal
-   window per §3b.
+2. **Approved 2026-10-12 (owner): `FLATTEN_AT_LOSS=250` AND
+   `MAX_MICRO_CONTRACTS=8`** — loss-side flatten goes live and the
+   executor contract cap drops to 8 (the size-down profile's cap-8; the
+   per-payload cap trims the weak tight-stop bucket). `FLATTEN_AT_PROFIT`
+   stays unset (the profit arm's one-more-trade stays). Applied by the
+   owner in the Coolify dashboard for `nq-dashboard` (no CLI/token on the
+   dev machine), outside the signal window per §3b.
 3. Deploy in the clean window (§3b: 16:00–18:00 ET or weekend), operator
    at the dashboard, book verified flat.
 4. Rollback: unset the knob + redeploy in the same window — the code is
