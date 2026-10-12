@@ -32,6 +32,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import path from "node:path";
 import { guardState, guardStateFile, persistGuardToDb, __resetGuardForTest } from "./accountGuard";
 import { stageForAccountName } from "./risk/challengeRules";
+import type { GuardStage } from "./risk/guardCore";
 import { dbEnabled, getDb } from "./gcdb";
 
 /** the ONLY env keys the override file may set — anything else is
@@ -228,7 +229,42 @@ export function stageChangeAdvice(beforeAccount: string, typedAccount: string): 
 const CT_SNAPSHOT_URL = "https://app.crosstrade.io/v1/api/tv/accounts/snapshot";
 const SAME_ACCOUNT_TOL = 25; // $ — realized is fill-based; a flat account doesn't drift
 
-type SnapshotAccount = { name?: string; netLiq?: number; realizedPnl?: number };
+type SnapshotAccount = {
+  name?: string;
+  /** the numeric Tradovate account id — the EXACT identity key (names
+   *  are only labels; the id survives renames) */
+  accountId?: string | number | null;
+  environment?: string | null;
+  broker?: string | null;
+  netLiq?: number;
+  openPnl?: number;
+  realizedPnl?: number;
+  weekRealizedPnl?: number;
+};
+
+/** the numeric Tradovate account id, or null when the snapshot omits it */
+const accountIdOf = (a: SnapshotAccount | undefined): string | null => {
+  const v = a?.accountId;
+  return v === undefined || v === null ? null : String(v);
+};
+
+/** Balance-vs-name stage cross-check — the CrossTrade API's second
+ *  opinion on the stage. A LIVE MFFU eval starts at $50,000 and dies
+ *  below its $2,000 trailing floor; a Sim Funded account starts at $0
+ *  and grows from there. A name that contradicts the reported netLiq
+ *  yields a warning the operator sees in the switch result — never a
+ *  silent decision. Returns null when consistent or unknown. */
+export function stageConsistencyWarning(a: SnapshotAccount | undefined, nameStage: GuardStage): string | null {
+  if (!a || !Number.isFinite(Number(a.netLiq))) return null;
+  const liq = Number(a.netLiq);
+  if (nameStage === "funded" && liq >= 45_000) {
+    return `name says funded (SF) but netLiq $${liq.toFixed(0)} matches an eval starting balance — check the account`;
+  }
+  if (nameStage === "eval" && liq < 10_000) {
+    return `name says eval (EV) but netLiq $${liq.toFixed(0)} matches a funded start (or a dead eval) — check the account`;
+  }
+  return null;
+}
 
 async function fetchCrossTradeAccounts(key: string, fetchFn: typeof fetch = fetch): Promise<SnapshotAccount[]> {
   const res = await fetchFn(CT_SNAPSHOT_URL, {
@@ -271,6 +307,23 @@ export async function detectGuardResetFor(
 
   const old = accounts.find((a) => name(a.name ?? "") === name(oldName));
   const oldRealized = realized(old);
+
+  // EXACT identity first: the numeric Tradovate account id beats every
+  // realized-P&L heuristic — same id = same account (keep), different
+  // ids = different account (reset). Names are only labels.
+  const typedId = accountIdOf(typed);
+  const oldId = accountIdOf(old);
+  if (typedId !== null && oldId !== null) {
+    if (typedId === oldId) {
+      const w = stageConsistencyWarning(typed, stageForAccountName(typedAccount));
+      return {
+        action: "keep",
+        reason: `same Tradovate account id ${typedId} under both names — protections kept${w ? ` · ⚠ ${w}` : ""}`,
+      };
+    }
+    return { action: "reset", reason: `Tradovate account id ${oldId} → ${typedId} — different account` };
+  }
+
   if (oldRealized !== null) {
     if (oldRealized === typedRealized) {
       return { action: "keep", reason: "old and new names report the same realized P&L — same Tradovate account, protections kept" };
@@ -283,7 +336,13 @@ export async function detectGuardResetFor(
   const s = guardState();
   const expected = s.dayStartRealized + s.dayPnl;
   if (Math.abs(typedRealized - expected) <= SAME_ACCOUNT_TOL) {
-    return { action: "keep", reason: "realized P&L continues the current day reference — same account under a new name, protections kept" };
+    const w = stageConsistencyWarning(typed, stageForAccountName(typedAccount));
+    return {
+      action: w ? "unverified" : "keep",
+      reason:
+        "realized P&L continues the current day reference — same account under a new name, protections kept" +
+        (w ? ` · ⚠ ${w} — force-reset if this is a new account` : ""),
+    };
   }
   // diverges from the day reference: either a fill landed since the last
   // poll (same account) or a genuinely different account. Re-read once —

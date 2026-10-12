@@ -22,6 +22,7 @@ import {
   resolveEffectiveAccount,
   resolveEffectiveCredentials,
   stageChangeAdvice,
+  stageConsistencyWarning,
   verifyAdminPassword,
   writeExecOverride,
 } from "../lib/execOverrides";
@@ -217,7 +218,10 @@ test("resolveEffectiveCredentials: local overrides win without any fetch", async
 
 /* ---- same-account detection ------------------------------------------ */
 
-function fakeFetch(accounts: Array<{ name: string; realizedPnl?: number }>, ok = true): typeof fetch {
+function fakeFetch(
+  accounts: Array<{ name: string; realizedPnl?: number; accountId?: string | number; netLiq?: number }>,
+  ok = true,
+): typeof fetch {
   return (async () => ({ ok, json: async () => ({ accounts }) })) as unknown as typeof fetch;
 }
 
@@ -303,4 +307,48 @@ test("stageChangeAdvice: an SF↔EV account change forces a reset; same stage do
   assert.equal(stageChangeAdvice("MFFUEVREOD706880007", "MFFUSFREOD706880008")?.action, "reset", "eval→funded resets");
   assert.equal(stageChangeAdvice("MFFUSFREOD706880008", "MFFUEVREOD706880009")?.action, "reset", "funded→eval resets");
   assert.match(stageChangeAdvice("MFFUEVREOD706880007", "MFFUSFREOD706880008")!.reason, /eval → funded/);
+});
+
+test("stageConsistencyWarning: the snapshot's netLiq cross-checks the name-derived stage", () => {
+  assert.equal(stageConsistencyWarning({ netLiq: 76.8 }, "funded"), null, "fresh funded balance is consistent");
+  assert.equal(stageConsistencyWarning({ netLiq: 5_000 }, "funded"), null, "a growing funded balance is fine");
+  assert.match(stageConsistencyWarning({ netLiq: 50_000 }, "funded") ?? "", /eval starting balance/);
+  assert.equal(stageConsistencyWarning({ netLiq: 50_000 }, "eval"), null, "eval starting balance is consistent");
+  assert.match(stageConsistencyWarning({ netLiq: 0 }, "eval") ?? "", /funded start/);
+  assert.equal(stageConsistencyWarning(undefined, "eval"), null);
+  assert.equal(stageConsistencyWarning({}, "eval"), null, "missing netLiq → no opinion");
+});
+
+test("detectGuardResetFor: the Tradovate account id decides same-vs-different exactly", async () => {
+  const same = await detectGuardResetFor(
+    "NEW-LABEL",
+    ENV,
+    fakeFetch([
+      { name: "OLD-ACCT", realizedPnl: 10, accountId: "69251688" },
+      { name: "NEW-LABEL", realizedPnl: 10, accountId: "69251688" },
+    ]),
+  );
+  assert.equal(same.action, "keep", "same id = same account even if names differ");
+  const diff = await detectGuardResetFor(
+    "NEW-ACCT",
+    ENV,
+    fakeFetch([
+      { name: "OLD-ACCT", realizedPnl: 10, accountId: "69251688" },
+      { name: "NEW-ACCT", realizedPnl: 10, accountId: "69251699" },
+    ]),
+  );
+  assert.equal(diff.action, "reset", "different ids = different account even if realized matches");
+});
+
+test("detectGuardResetFor: a balance contradicting the name stage downgrades a continuation-keep to unverified", async () => {
+  const s = guardState();
+  s.dayStartRealized = 0;
+  s.dayPnl = 50;
+  const r = await detectGuardResetFor(
+    "MFFUSFREOD706880008",
+    { ...ENV, CROSSTRADE_ACCOUNT: "MFFUEVREOD706880007" },
+    fakeFetch([{ name: "MFFUSFREOD706880008", realizedPnl: 50, accountId: "69251688", netLiq: 50_000 }]),
+  );
+  assert.equal(r.action, "unverified", "funded-named account reporting a $50k balance needs eyes");
+  assert.match(r.reason, /netLiq/);
 });
