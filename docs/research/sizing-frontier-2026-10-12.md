@@ -65,9 +65,13 @@ P(1st payout) = 100.00% · days→pass med 10 [7–14] · days→payout med 6.
 ### §4.1 — the frontier: fastest safe cell at every budget
 
 400 cells × 500 day-order reshuffles per cell = 200,000 stage-replays.
-**The highest breach rate anywhere in the grid was 0.0%** — including
-$250/cap-30. Breach-impossibility is not the discriminator; floor headroom
-and speed are. 327 of 400 cells satisfy the full green-band filter.
+**The highest shuffled-order breach rate anywhere in the grid was 0.0%** —
+including $250/cap-30 (deep loss days are too few and too scattered to dig
+a $2,000 hole in random orderings). Shuffled orderings are NOT the whole
+story: see the cap dimension below — four $250/cap-30 cells carry maxDD
+> 100% of MLL, i.e. the **chronological replay itself breaches**. The
+discriminators that matter are floor headroom and speed. 327 of 400 cells
+satisfy the green-band filter.
 
 | budget | fastest safe cell | days→pass med [p10–p90] | maxDD ÷ MLL | worst day | mean day |
 |---|---|---|---|---|---|
@@ -92,6 +96,39 @@ keep $150+ cells inside the green band (234–356 halted days).
 Context from the size-down study: the cap-5/$50/+$200 proposal passes in
 24 days [20–29] at 17% maxDD/MLL — deep in the safe zone, but ~2.4× slower
 than the frontier for tail insurance the frontier already provides.
+
+### §4.1b — the cap dimension: perfect cap or no cap?
+
+The cap's only real job is trimming the **tight-stop trades** — the 3.5–6.5
+pt bucket, which the sizing-cap study measured as the weakest edge zone
+(PF 2.11 on the 3–4 pt bucket vs 2.78 at 4+; 38% of trades). The dollar
+budget already caps risk on wide stops, so above the budget's *natural cap*
+(`floor($ ÷ (3.5 × $2))` — the most contracts the formula can ever assign)
+a higher cap is dead code. Below it, every cap step trades ~1 day of speed
+for drawdown. Per budget, no daily arm:
+
+| budget | green-band knee | knee: days / dd% / worst day | no-cap (30µ): days / dd% / worst day |
+|---|---|---|---|
+| $25 | cap 3 | 41d / 9% / −$101 | 41d / 9% / −$101 (cap never binds) |
+| $40 | cap 5 | 24d / 16% / −$171 | 24d / 16% / −$171 (never binds) |
+| $50 | cap 6 | 19d / 19% / −$213 | 19d / 21% / −$231 |
+| $60 | cap 8 | 15d / 26% / −$272 | 15d / 26% / −$272 (never binds) |
+| $75 | cap 10 | 12d / 32% / −$332 | 12d / 32% / −$332 (never binds) |
+| **$100** | **cap 8** | **11d / 29% / −$332** | 10d / 43% / −$462 |
+| **$125** | **cap 10** | **10d / 37% / −$415** | 9d / 55% / −$563 |
+| $150 | cap 6 | 13d / 36% / −$394 | 8d / 66% / −$705 |
+| $200 | cap 6 | 13d / 39% / −$402 | 8d / 88% / −$936 |
+| $250 | cap 6 | 13d / 39% / −$402 | 8d / **102%** / −$1,077 — chronological breach |
+
+**No-cap is never optimal.** Wherever removing the cap changes anything it
+buys ≤ 1 median day of speed for 14–65 points of drawdown; at $250/cap-30
+the maxDD is 102% of the MLL and the historical replay breaches outright
+(4 of the 400 cells carry > 100% MLL, all $250/cap-30). The cap does not
+scale with budget — it stays 6–10 micros at every budget — because its job
+is a quality filter on the weakest trades, not a risk limiter. The "no cap"
+philosophy is only harmless when the budget is so small the cap never binds
+(≤ $75), and that is slower than $100/cap-8 anyway (12d vs 11d at the same
+~30% DD).
 
 `VERDICT: edge real · significance — · stability stable (train/test 76.5/77.8) · holdout n/a (validation pipeline) · viability PASS (P=1.00 · med 10d)`
 
@@ -126,6 +163,12 @@ than the frontier for tail insurance the frontier already provides.
    statement.** Mean day at $50/cap-6 is $164; at $100–125 it is
    $286–360. If the goal is $200/day of realized income, the frontier
    argues for $100/cap-8, not for max-5/$50.
+7. **The perfect cap exists and is small: 8 at $100, 10 at $125 — and
+   "no cap" loses.** Removing the cap buys at most 1 day of speed while
+   pushing drawdown from 29–37% to 43–102% of the MLL; at $250/cap-30 the
+   historical replay breaches. The cap is a quality filter on the
+   weak-edge tight-stop bucket, not a risk limiter, so it should stay
+   6–10 micros no matter how the budget grows.
 
 ## Honest bounds
 
