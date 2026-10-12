@@ -20,9 +20,11 @@
  * ------------------------------------------------------------------ */
 
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
+import { dollarize, simulateAccount, accountLine, type DollarizedTrade } from "../lib/propAccount";
 import { scoreScaleOut, type ScaleOutTrade } from "../lib/runner";
 import { coreStats, wilson95, propViability, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
+import { momentumSize, PROP_RISK_PER_TRADE, planMaxMicro, RAPID_EOD_50K } from "../lib/propRules";
+import { guardReplay } from "../lib/guardReplay";
 import {
   detectMomentum,
   detectExpansionScalp,
@@ -111,18 +113,21 @@ type Trade = {
   pnlUsd: number;
 };
 
-const sizeOf = (fam: FamTag, riskPts: number): number => {
-  if (fam === "momentum" || fam === "expansion") {
-    return Math.max(1, Math.min(30, Math.floor(170 / (riskPts * 2))));
-  }
-  return Math.max(1, Math.min(9, Math.floor(200 / (riskPts * 2)))); // RTH + open: $200 cap
-};
+/** LIVE sizing — no duplicated logic: budget = PROP_RISK_PER_TRADE,
+ *  contracts = momentumSize, then the env cap planMaxMicro() — the same
+ *  chain the live feed runs (applyDayTier → planMaxMicro). */
+const sizeOf = (riskPts: number): number =>
+  Math.min(planMaxMicro(), Math.max(1, momentumSize(riskPts, PROP_RISK_PER_TRADE).contracts));
 
 type RuleSet = {
   name: string;
   exit: "ladder" | "fixed";
   tiers: Array<{ threshold: number; multiplier: number }>;
   giveBack: { pct: number; floor: number } | null;
+  /** families this variant trades (undefined = all four) */
+  families?: FamTag[];
+  /** fixed-exit target for the RTH family (live limit bracket = 2.5R) */
+  rthTargetR?: number;
 };
 
 const RULES: RuleSet[] = [
@@ -131,6 +136,12 @@ const RULES: RuleSet[] = [
   { name: "+tiers", exit: "ladder", tiers: [{ threshold: 600, multiplier: 1 / 3 }, { threshold: 300, multiplier: 2 / 3 }], giveBack: null },
   { name: "+giveback", exit: "ladder", tiers: [], giveBack: { pct: 0.5, floor: 250 } },
   { name: "full", exit: "ladder", tiers: [{ threshold: 600, multiplier: 1 / 3 }, { threshold: 300, multiplier: 2 / 3 }], giveBack: { pct: 0.5, floor: 250 } },
+  // the EXACT live stack (2026-10-12): MOM+EXP+RTH only (open family off
+  // live — no FEED_OPEN env), single-leg fixed exits (scale-out off),
+  // RTH 2.5R limit-bracket target, live sizing from env. The guard stack
+  // (floor/arm/consistency/dd600/giveback) is applied downstream through
+  // guardReplay — the SAME module the live executor's rules come from.
+  { name: "live", exit: "fixed", tiers: [], giveBack: null, families: ["momentum", "expansion", "rth"], rthTargetR: 2.5 },
 ];
 
 const TIER_OF = (dayPnl: number, tiers: RuleSet["tiers"]) => {
@@ -148,6 +159,7 @@ function runDay(rule: RuleSet, date: string, minutes: MomMinute[], signals: Arra
     let halt = false;
     let openUntil = -1;
     for (const { s, fam } of signals) {
+      if (rule.families && !rule.families.includes(fam)) continue; // family filter (live: no open)
       if (s.entryIdx <= openUntil) continue; // one MNQ position at a time (flat rule)
       const dir = s.dir === "long" ? 1 : -1;
       const mb = fam === "rth" ? Math.min(60, Math.max(1, minutes.findIndex((m) => m.t === "15:00") - s.entryIdx)) : 60;
@@ -160,7 +172,7 @@ function runDay(rule: RuleSet, date: string, minutes: MomMinute[], signals: Arra
         pnlPts = (t as ScaleOutTrade).pnl;
         heldBars = t.heldBars;
       } else {
-        const targetR = fam === "rth" ? 0.75 : fam === "open" ? 15 / 35 : 1;
+        const targetR = fam === "rth" ? (rule.rthTargetR ?? 0.75) : fam === "open" ? 15 / 35 : 1;
         const t = scoreFixed(minutes, s.entry, s.stop, dir, s.entryIdx, targetR, mb);
         if (!t) continue;
         pnlPts = t.pnl;
@@ -169,7 +181,7 @@ function runDay(rule: RuleSet, date: string, minutes: MomMinute[], signals: Arra
       if (pnlPts === null) continue;
       if (halt) continue; // give-back halt: skip remaining entries today
       const riskPts = Math.abs(s.entry - s.stop);
-      let contracts = sizeOf(fam, riskPts);
+      let contracts = sizeOf(riskPts);
       const mult = TIER_OF(dayPnl, rule.tiers);
       if (mult < 1) contracts = Math.max(1, Math.round(contracts * mult));
       const pnlUsd = pnlPts * contracts * 2 - 2 * contracts * COMM_PER_SIDE;
@@ -251,12 +263,31 @@ async function main() {
     console.log(`              funded: ${accountLine(r.funded)}`);
   }
 
+  /* ---- the EXACT live stack, guarded: the `live` variant's trades run
+   *      through guardReplay + guardConfigFromEnv — the SAME rule module
+   *      and env knobs the live executor reads (floor 250 · arm 400 ·
+   *      consistency 900 · dd600 · give-back). No duplicated rule logic.
+   *      Flatten-at-−250 is not in guardReplay; its boundary effect is the
+   *      loss-floor sweep (docs/research/loss-floor-fit-2026-10-12.md). */
+  {
+    const liveTrades = accum.find((a) => a.rule.name === "live")!.trades;
+    const liveRows: DollarizedTrade[] = liveTrades.map((t) => ({ date: t.date, pnlPts: t.pnlPts, riskPts: t.riskPts, contracts: t.contracts, pnl: t.pnlUsd }));
+    const gEval = guardReplay(liveRows, "eval");
+    const gFunded = guardReplay(liveRows, "funded");
+    const evalSim = simulateAccount(gEval.rows.map((r) => ({ date: r.date, pnl: r.pnl })), "eval");
+    const fundedSim = simulateAccount(gFunded.rows.map((r) => ({ date: r.date, pnl: r.pnl })), "funded");
+    console.log("\n=== LIVE STACK (exact live config · guardReplay) ===");
+    console.log(`  eval   : ${accountLine(evalSim)}`);
+    console.log(`  funded : ${accountLine(fundedSim)}`);
+    console.log(`  guard  : ${JSON.stringify(gEval.stats)}`);
+  }
+
   /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
-   * primary cohort = the `full` variant (THE LIVE STACK); T1 core quality
-   * (no train/test split — all row only), T2 variant ranking vs the
-   * fixed1R baseline, T4 prop viability, five-slot verdict. ---- */
-  const full = accum.find((a) => a.rule.name === "full")!.trades;
-  const engineTrades = full.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
+   * primary cohort = the `live` variant (the EXACT live stack); T1 core
+   * quality (no train/test split — all row only), T2 variant ranking vs the
+   * fixed1R baseline, T4 prop viability at the live sizing, verdict. ---- */
+  const live = accum.find((a) => a.rule.name === "live")!.trades;
+  const engineTrades = live.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
   const allStats = coreStats(engineTrades);
   console.log("\n=== STANDARD REPORT ===");
   console.log(renderT1([{ label: "all", stats: allStats }]));
@@ -279,7 +310,7 @@ async function main() {
         }),
       ),
   );
-  const viability = propViability(engineTrades);
+  const viability = propViability(engineTrades, { budget: PROP_RISK_PER_TRADE, rules: { ...RAPID_EOD_50K, maxMicro: planMaxMicro() } });
   console.log("\n" + renderT4(viability));
   console.log(
     "\n" +
