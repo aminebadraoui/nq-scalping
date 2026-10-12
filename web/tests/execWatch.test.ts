@@ -191,3 +191,63 @@ test("expiryCancelVerdict: still-present order or unreadable book stays a failur
     "limit_cancel_failed",
   );
 });
+
+/* ---- verified-resend machinery end-to-end (2026-10-12 diagnostic) ---- */
+
+test("checkExpectations: an unfilled card reaches broker verification and logs it", async () => {
+  const os = await import("node:os");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { __resetCtAccountForTest } = await import("../lib/ctAccount");
+  const { registerExpectation, checkExpectations } = await import("../lib/execWatch");
+  __resetCtAccountForTest({ backoffBaseMs: 1 });
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ct-watch-"));
+  process.env.GC_DATA_DIR = tmp;
+  delete process.env.DATABASE_URL; // never touch Neon from a unit test
+  process.env.EXECUTE_LIVE = "1";
+  process.env.CROSSTRADE_KEY = "test-key";
+  process.env.CROSSTRADE_ACCOUNT = "MFFUEVREOD1234";
+  process.env.TELEGRAM_BOT_TOKEN = "1:fake";
+  process.env.TELEGRAM_CHAT_ID = "1";
+  // a window-open timestamp: Sunday 19:30 ET (the daily halt would otherwise skip)
+  const nowMs = Date.parse("2026-10-11T19:30:00-04:00");
+  let ctCalls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("crosstrade.io")) {
+      ctCalls++;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ success: true, data: [] }),
+        json: async () => ({ success: true, data: [] }),
+      } as unknown as Response;
+    }
+    // the Telegram alert attempt — offline-safe failure
+    return { ok: false, status: 404, text: async () => "{}", json: async () => ({}) } as unknown as Response;
+  }) as unknown as typeof fetch;
+  try {
+    registerExpectation({
+      key: "rth|2026-10-11|short|19:28",
+      ts: nowMs - 120_000,
+      label: "rth short 19:28",
+      intent: { symbol: "NQ", dir: "short", contracts: 8, entry: 20000, stop: 20005, target: 19980, timeET: "19:28" },
+      scaleOut: false,
+    });
+    await checkExpectations({ nowMs });
+    // the broker verification (orders + positions reads) is the observable:
+    // the official test loader sets DAYBOOK_OFF=1, so the exec journal is
+    // silenced here — on the VPS the daybook records the verified_absent row.
+    assert.ok(ctCalls >= 2, `expected the broker verification reads (orders+positions), got ${ctCalls} — the machinery stalled before verification`);
+  } finally {
+    globalThis.fetch = realFetch;
+    fs.rmSync(tmp, { recursive: true, force: true });
+    delete process.env.EXECUTE_LIVE;
+    delete process.env.GC_DATA_DIR;
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.TELEGRAM_CHAT_ID;
+    delete process.env.CROSSTRADE_KEY;
+    delete process.env.CROSSTRADE_ACCOUNT;
+  }
+});

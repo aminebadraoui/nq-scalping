@@ -363,6 +363,10 @@ export function startRthExitPoll(intervalMs = 10_000): void {
     void pollRthExit().catch(() => {});
     void checkProtection().catch(() => {});
   }, intervalMs);
+  // boot evidence (2026-10-12): the verified-resend machinery has never
+  // produced a resend row in exec_log — this line proves on the VPS that
+  // the exit/protection poll actually started.
+  console.log(`[execWatch] exit/protection poll started (${intervalMs / 1000}s)`);
 }
 
 function enabled(): boolean {
@@ -388,6 +392,9 @@ export function startWatchTimers(intervalMs = 5_000): void {
     void checkExpectations().catch(() => {});
   }, intervalMs);
   if (typeof timer.unref === "function") timer.unref();
+  // boot evidence (2026-10-12): proves on the VPS that the fill-watch /
+  // verified-resend timer actually started.
+  console.log(`[execWatch] fill-watch timer started (${intervalMs / 1000}s)`);
 }
 
 /** pushed entry FILL from the CrossTrade order stream (lib/ctStream.ts):
@@ -689,8 +696,8 @@ let rerunRequested = false;
  *  registers limit fills/time exits at the true fill time and sweeps
  *  protection; the no-fill branches (re-send, give-up, alert) stay
  *  behind the CHECK_AFTER_MS gate so a just-placed card can never be
- *  dropped or re-sent early. */
-export async function checkExpectations(opts?: { immediate?: boolean }): Promise<void> {
+ *  dropped or re-sent early. `nowMs` is a test hook (defaults to now). */
+export async function checkExpectations(opts?: { immediate?: boolean; nowMs?: number }): Promise<void> {
   if (checking) {
     rerunRequested = true;
     return;
@@ -707,9 +714,10 @@ export async function checkExpectations(opts?: { immediate?: boolean }): Promise
   }
 }
 
-async function checkExpectationsOnce(opts?: { immediate?: boolean }): Promise<void> {
+async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: number }): Promise<void> {
   const immediate = opts?.immediate === true;
   if (!enabled()) return;
+  const now = opts?.nowMs ?? Date.now();
   // the kill switch flipped mid-flight: cancel any resting limit so it
   // can never fill after the halt, and drop the pending cards quietly
   if (tradingHalted()) {
@@ -723,7 +731,6 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean }): Promise<vo
     return;
   }
   if (pending.size === 0) return;
-  const now = Date.now();
   let fills: Array<{ ts: number; action: string; qty: number; price: number }> | null = null;
   for (const [key, e] of [...pending]) {
     // signal window (owner rule): nothing is ever placed outside

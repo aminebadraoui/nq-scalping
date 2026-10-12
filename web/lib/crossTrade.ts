@@ -876,6 +876,16 @@ async function postRESTLeg(payload: Omit<RESTPlacePayload, "stopLoss"> & { stopL
     } catch {
       /* plain text */
     }
+    // 502/500 on a MUTATION may still have reached the broker (vendor
+    // docs: "CrossTrade never resends it, and neither should you until
+    // you have reconciled") — classify as UNKNOWN so the reason says to
+    // reconcile; the verified-resend path re-checks the book first.
+    if (res.status === 502 || res.status === 500) {
+      return {
+        kind: "unknown",
+        reason: `REST UNKNOWN (HTTP ${res.status}) — may have reached the broker; the verified re-send checks the book before retrying`,
+      };
+    }
     if (res.status < 200 || res.status >= 300) return { kind: "rejected", reason: `REST rejected (${res.status}) ${bodyText.slice(0, 200)}` };
     if (j && j.success === false) {
       return { kind: "rejected", reason: `REST rejected: ${String(j.error ?? bodyText).slice(0, 200)}` };

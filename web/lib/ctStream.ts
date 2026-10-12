@@ -22,6 +22,7 @@ let sock: WebSocket | null = null;
 let backoffMs = 5_000;
 let lastFrameAt = 0;
 let livenessTimer: ReturnType<typeof setInterval> | null = null;
+let bootLogged = false;
 
 const STALE_AFTER_MS = 30_000;
 const MAX_BACKOFF_MS = 60_000;
@@ -56,6 +57,10 @@ function connect(): void {
     ctWsMarkResync();
     next.send(JSON.stringify({ action: "subscribe", events: ["orders", "executions", "positions"], origin: "tradovate" }));
     next.send(JSON.stringify({ action: "streamPnl", enabled: true, origin: "tradovate" }));
+    if (!bootLogged) {
+      bootLogged = true;
+      console.log("[ctStream] connected — subscribed orders/executions/positions + streamPnl (tradovate)");
+    }
   };
   next.onmessage = (ev) => {
     lastFrameAt = Date.now();
