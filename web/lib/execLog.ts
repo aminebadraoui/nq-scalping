@@ -31,7 +31,7 @@ let ready = false;
 export type ExecLogEntry = {
   key: string;
   label: string;
-  attempt: "initial" | "resend" | "watch";
+  attempt: "initial" | "resend" | "watch" | "fire" | "verify";
   outcome:
     | "ok"
     | "failed"
@@ -59,7 +59,10 @@ export type ExecLogEntry = {
     | "target_missing"
     | "naked_untracked"
     | "bracket_reanchored"
-    | "stop_slipped";
+    | "stop_slipped"
+    | "flatten_fired"
+    | "flatten_dry"
+    | "not_flat_retry";
   reason: string;
   meta?: Record<string, unknown>;
 };

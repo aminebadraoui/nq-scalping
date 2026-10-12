@@ -15,6 +15,8 @@ import {
   limitCrossedAtDispatch,
   reanchorBracketForFill,
   buildReArmBracketPayload,
+  flattenViaWebhook,
+  flattenArmFire,
   MNQ_TICK,
   type CrossTradeConfig,
 } from "../lib/crossTrade";
@@ -354,4 +356,18 @@ test("re-arm payload: bad symbol, non-finite prices, or non-positive qty refuse"
   assert.ok("error" in buildReArmBracketPayload({ symbol: "NQZ26", dir: "long", stopPrice: 1, targetPrice: Infinity, qty: 1 }, CFG));
   assert.ok("error" in buildReArmBracketPayload({ symbol: "NQZ26", dir: "long", stopPrice: 1, targetPrice: 2, qty: 0 }, CFG));
   assert.ok("error" in buildReArmBracketPayload({ symbol: "NQZ26", dir: "long", stopPrice: 1, targetPrice: 2, qty: Number.NaN }, CFG));
+});
+
+/* ---------------- flatten arm (dry-run paths) ---------------- */
+
+test("flattenViaWebhook: dry-run without EXECUTE_LIVE (no network, logged only)", async () => {
+  delete process.env.EXECUTE_LIVE;
+  const r = await flattenViaWebhook();
+  assert.equal(r.ok, true);
+  assert.match(r.reason, /dry-run/);
+});
+
+test("flattenArmFire: resolves without network when not live", async () => {
+  delete process.env.EXECUTE_LIVE;
+  await assert.doesNotReject(flattenArmFire("test: live P&L −260 ≤ −250"));
 });

@@ -56,6 +56,8 @@ import { getLive } from "./live";
 import { logExec } from "./execLog";
 import { tradingHalted } from "./tradingHalt";
 import { noteOrderSubmit, noteOrderAck, markOrderPhase } from "./execLatency";
+import { buildFlattenWebhookPayload, buildCancelAllWebhookPayload } from "./flattenArm";
+import { ctPositions } from "./ctAccount";
 
 export type CrossTradeConfig = {
   url: string;
@@ -348,6 +350,110 @@ export async function changeCrossTradeOrder(
       ok: false,
       reason: `UNKNOWN (network: ${String(e)}) — check CrossTrade Alert History before acting; no automatic retry`,
     };
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Flatten arm I/O (FLATTEN_AT_PROFIT / FLATTEN_AT_LOSS — both default
+ * OFF; lib/flattenArm.ts holds the pure decision, the guard holds the
+ * once-per-day latch). When the guard returns the "flatten" verdict,
+ * crossGuard calls flattenArmFire: cancel-all + FLATTEN through the
+ * webhook (or the REST flatten per FLATTEN_MODE), verify the account is
+ * flat after FLATTEN_VERIFY_S, retry once via REST, then the manual
+ * alert. A PROTECTIVE exit: it fires even when the trading kill switch
+ * is on (the switch stops ENTRIES, never protective exits).
+ * ------------------------------------------------------------------ */
+
+/** POST one webhook payload (cancel-all / flatten). Same no-retry/UNKNOWN
+ *  semantics as placement: a timeout does NOT establish whether the
+ *  command was processed. */
+async function postFlattenWebhook(payload: Record<string, unknown>): Promise<{ ok: boolean; reason: string }> {
+  const cfg = loadConfig();
+  try {
+    const res = await fetch(cfg.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
+    });
+    return classifyResponse(res.status, await res.text());
+  } catch (e) {
+    return {
+      ok: false,
+      reason: `UNKNOWN (network: ${String(e)}) — check CrossTrade Alert History before acting; no automatic retry`,
+    };
+  }
+}
+
+/** Cancel every resting order, then FLATTEN the linked account at market.
+ *  Dry-run (log only) unless EXECUTE_LIVE=1 — same gate as placement. */
+export async function flattenViaWebhook(): Promise<{ ok: boolean; reason: string }> {
+  const cfg = loadConfig();
+  if (process.env.EXECUTE_LIVE !== "1") {
+    console.log(`[crossTrade] DRY-RUN flatten (cancelallorders + flatten) @ ${cfg.account}`);
+    return { ok: true, reason: "dry-run (logged only)" };
+  }
+  console.log(`[crossTrade] LIVE FLATTEN (cancelallorders + flatten) @ ${cfg.account}`);
+  const cancel = await postFlattenWebhook(buildCancelAllWebhookPayload(cfg));
+  const flat = await postFlattenWebhook(buildFlattenWebhookPayload(cfg));
+  return { ok: cancel.ok && flat.ok, reason: `cancel-all: ${cancel.reason} · flatten: ${flat.reason}` };
+}
+
+/** is the linked account flat? (sum of net positions ≈ 0; unreadable =
+ *  NOT flat — fail closed) */
+async function accountIsFlat(): Promise<boolean> {
+  const rows = await ctPositions();
+  if (rows === null) return false;
+  return rows.reduce((sum, r) => sum + Number(r.netPos ?? r.qty ?? 0), 0) === 0;
+}
+
+/** the flatten-arm ACTION. Called only when the guard returned the
+ *  "flatten" verdict (the guard's once-per-day latch is the de-dupe);
+ *  safe to call again — it verifies instead of re-firing. */
+export async function flattenArmFire(reason: string): Promise<void> {
+  const live = process.env.EXECUTE_LIVE === "1";
+  const mode = (process.env.FLATTEN_MODE ?? "webhook").toLowerCase();
+  const verifyS = Math.max(2, Number(process.env.FLATTEN_VERIFY_S) || 5);
+  await logExec({ key: "flatten", label: "flatten_arm", attempt: "fire", outcome: live ? "flatten_fired" : "flatten_dry", reason });
+  if (!live) {
+    console.log(`[crossTrade] flatten arm DRY-RUN (${reason})`);
+    return;
+  }
+
+  try {
+    if (mode === "rest") {
+      const r = await flattenCrossTradePositionREST();
+      if (!r.ok) {
+        await sendTelegram(`⚠️ flatten arm: REST flatten failed (${r.reason}) — verify manually. Day: ${reason}`);
+        return;
+      }
+    } else if (mode === "both") {
+      const w = await flattenViaWebhook();
+      const r = await flattenCrossTradePositionREST();
+      if (!w.ok || !r.ok) {
+        await sendTelegram(`⚠️ flatten arm: flatten path failed (webhook ${w.reason} · rest ${r.reason}) — verify manually. Day: ${reason}`);
+        return;
+      }
+    } else {
+      const w = await flattenViaWebhook();
+      if (!w.ok) {
+        await sendTelegram(`⚠️ flatten arm: webhook flatten failed (${w.reason}) — verify manually. Day: ${reason}`);
+        return;
+      }
+    }
+
+    // verify flat after FLATTEN_VERIFY_S; one REST retry, then manual
+    await new Promise((r) => setTimeout(r, verifyS * 1000));
+    if (await accountIsFlat()) return;
+    await logExec({ key: "flatten", label: "flatten_arm", attempt: "verify", outcome: "not_flat_retry", reason });
+    const retry = await flattenCrossTradePositionREST();
+    if (retry.ok) {
+      await new Promise((r) => setTimeout(r, verifyS * 1000));
+      if (await accountIsFlat()) return;
+    }
+    await sendTelegram(`🚨🚨 FLATTEN ARM: account still NOT flat after retry — <b>close manually NOW</b> — ${reason}`);
+  } catch (e) {
+    await sendTelegram(`🚨 flatten arm error: ${String(e)} — verify the account manually. Day: ${reason}`);
   }
 }
 

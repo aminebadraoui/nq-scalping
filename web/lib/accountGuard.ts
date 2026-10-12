@@ -41,6 +41,7 @@ import {
   ddHalfStep,
 } from "./risk/guardCore";
 import { rulesForStage, stageForAccountName } from "./risk/challengeRules";
+import { flattenArmStep, flattenArmEnabled } from "./flattenArm";
 
 export type GuardStage = "eval" | "funded";
 
@@ -53,6 +54,7 @@ export type GuardDecision =
   | { verdict: "halt-giveback"; reason: string }
   | { verdict: "halt-daily-floor"; reason: string }
   | { verdict: "halt-profit-arm"; reason: string }
+  | { verdict: "flatten"; reason: string }
   | { verdict: "halt-baseline"; reason: string }
   | { verdict: "no-data"; reason: string };
 
@@ -89,6 +91,10 @@ export type GuardState = {
   profitArmed: boolean;
   /** the last observed day P&L (the arm halts on the first LOSS after arming) */
   lastDayPnl: number | null;
+  /** flatten arm (FLATTEN_AT_*): the day key on which the arm already fired
+   *  ("" = never) — the once-per-day latch, persisted so a redeploy mid-day
+   *  cannot flatten a second time */
+  flattenFiredDay: string;
   /** day-plan drawdown halving: true while the challenge drawdown from the
    *  trailing reference is >= DD_HALF_AT (sizing halves until DD_FULL_AT) */
   ddHalved: boolean;
@@ -173,6 +179,7 @@ function seed(): GuardState {
     dayPeak: 0,
     profitArmed: false,
     lastDayPnl: null,
+    flattenFiredDay: "",
     ddHalved: false,
   };
 }
@@ -479,7 +486,7 @@ function maybeCommitEod(state: GuardState, equity: number, now = new Date()) {
  *  The day-plan RULES are pure predicates in lib/risk/guardCore.ts — this
  *  function only sequences them over the live state (architecture review
  *  P1: live and replay can no longer drift). */
-export function guardCheck(snap: { equity: number; realized: number } | null, now = new Date()): GuardDecision {
+export function guardCheck(snap: { equity: number; realized: number; openPnl?: number } | null, now = new Date()): GuardDecision {
   const s = mem();
   const isNews = inNewsWindow(now);
   const cfg = guardConfigFromEnv();
@@ -502,6 +509,22 @@ export function guardCheck(snap: { equity: number; realized: number } | null, no
       verdict: "halt-target",
       reason: `equity $${equity.toFixed(0)} ≥ target $${targetPx.toFixed(0)} — target reached, stop`,
     };
+  }
+
+  // flatten arm (FLATTEN_AT_PROFIT / FLATTEN_AT_LOSS, both 0 = off): when
+  // the day's LIVE P&L (realized + open) crosses either side, the account
+  // is CLOSED at market instead of only halting new entries — the halt
+  // semantics let the open bracket run, which is why the realized worst
+  // day can overshoot the floor (measured 2026-10-12: −$339 at −$250).
+  // Once-per-day latch; the ACTION lives in lib/crossGuard.ts + lib/
+  // crossTrade.ts (flattenArmFire) — this verdict is the pure decision.
+  if (flattenArmEnabled(cfg)) {
+    const arm = flattenArmStep(cfg, s.dayPnl, snap.openPnl, s.flattenFiredDay, s.dayKey);
+    if (arm.fire !== "none") {
+      s.flattenFiredDay = s.dayKey;
+      save();
+      return { verdict: "flatten", reason: `${arm.reason} (was $${s.dayPnl.toFixed(0)} realized + $${(Number.isFinite(snap.openPnl) ? (snap.openPnl as number) : 0).toFixed(0)} open)` };
+    }
   }
 
   // EOD floor: never let a new trade risk crossing it
