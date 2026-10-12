@@ -130,6 +130,37 @@ philosophy is only harmless when the budget is so small the cap never binds
 (≤ $75), and that is slower than $100/cap-8 anyway (12d vs 11d at the same
 ~30% DD).
 
+### §4.1c — the daily-target dimension: perfect target or no target?
+
+The daily arm (stop taking new trades once the day books +$T) is a pure
+cost at the recommended sizing and a load-bearing necessity only at big
+budgets. At the sweet spots it buys nothing: drawdown and worst day barely
+move, consistency was never binding, and it costs 1–7 days of pass time:
+
+| sizing | no target | t=$200 | t=$300 | t=$400 |
+|---|---|---|---|---|
+| $50 / cap 5 | 20d · dd 17% · mean $154 | 24d · dd 17% · mean $126 | 22d · dd 17% · mean $144 | 21d · dd 17% · mean $150 |
+| $50 / cap 6 | 19d · dd 19% · mean $164 | 23d · dd 19% · mean $131 | 21d · dd 19% · mean $151 | 20d · dd 19% · mean $158 |
+| **$100 / cap 8** | **11d · dd 29% · mean $286** | 18d · dd 28% · mean $168 | 15d · dd 29% · mean $212 | 13d · dd 29% · mean $241 |
+| **$125 / cap 10** | **10d · dd 37% · mean $360** | 17d · dd 35% · mean $182 | 13d · dd 35% · mean $235 | 11d · dd 37% · mean $275 |
+| $150 / cap 10 | 10d · dd 44% (gray) | 17d · dd 35% | 13d · dd 35% | 11d · dd 35% |
+| $200 / cap 10 | 10d · dd 56% (gray) | 16d · dd 39% | 12d · dd 39% | 11d · dd 56% |
+
+The $200 target **caps the mean day near $200 at every budget**, so it
+imposes a hard floor of ~16 days on time-to-pass no matter the sizing —
+the fastest green-band cell with a $200 target anywhere in the grid is
+$200/cap-10 at 16 days, versus 10 days with no target. It also converts a
+$286/day system into a $168/day one (59–68% of days trigger the halt and
+the afternoon is skipped). The arm only earns its keep at $150+ budgets,
+where $300–400 flattens the peaks and pulls maxDD from the gray band into
+the green (44% → 35%) — but those budgets buy no speed over $125 anyway.
+
+**The answer: no target is the perfect target at the recommended sizing;
+$400 is the maximum tolerable if a stop-rule is wanted for discipline
+(11d vs 10d at $125/cap-10); $200 is the most expensive knob in the whole
+proposal.** "Aim for $200/day" is a sizing statement (the $100/cap-8
+profile averages $286/day), not a stop rule.
+
 `VERDICT: edge real · significance — · stability stable (train/test 76.5/77.8) · holdout n/a (validation pipeline) · viability PASS (P=1.00 · med 10d)`
 
 ## What this falsifies and what it confirms
@@ -169,6 +200,15 @@ philosophy is only harmless when the budget is so small the cap never binds
    historical replay breaches. The cap is a quality filter on the
    weak-edge tight-stop bucket, not a risk limiter, so it should stay
    6–10 micros no matter how the budget grows.
+8. **The perfect daily target is "off" — and $200 is the most expensive
+   knob in the proposal.** At the recommended sizing the arm buys nothing
+   measurable (same DD, same worst day, consistency never binding) and
+   costs 1–7 days: 10–11d → 17–18d at $100–125. A $200 target caps the
+   mean day near $200 at ANY budget, so it floors time-to-pass at ~16
+   days grid-wide. If a stop-rule is wanted for discipline, $400 is the
+   maximum tolerable (11d vs 10d at $125/cap-10). The target only becomes
+   necessary above $150 budget, where it keeps DD in the green band — and
+   those budgets buy no speed anyway.
 
 ## Honest bounds
 
