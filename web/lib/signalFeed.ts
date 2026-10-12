@@ -448,6 +448,7 @@ class SignalFeed {
    *  bar's CLOSE EPOCH + confirmation source the subscription saw, so a
    *  live-state emit only triggers a tick when the tail advances (a new
    *  bar) or flips tick→candle at the same close — backward oscillations
+   *  and repeat footprint frames are skipped */
   private eventTickCloseMs = 0;
   private eventTickBarSrc = "";
   private eventTickLast = 0;
