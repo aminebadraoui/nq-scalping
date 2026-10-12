@@ -292,6 +292,27 @@ describe("propViability", () => {
     assert.equal(v.evalTest!.nTrades, 2);
     assert.equal(v.fundedTest!.nTrades, 2);
   });
+
+  it("pass-then-breach counts as a pass, with days-at-pass (first-passage semantics)", () => {
+    // four +$800 days pass the eval at day 4 ($3,200, best 800 ≤ 30%); the
+    // two −$1,100 days that follow dip below the trailing floor (day 6).
+    // simulateAccount nulls passDay when breachDay is set, so the correct
+    // first-passage answer (PASS day 4) must be recovered from the prefix.
+    const t = [
+      { date: "2026-01-01", pnl: 400, risk: 2 },
+      { date: "2026-01-02", pnl: 400, risk: 2 },
+      { date: "2026-01-03", pnl: 400, risk: 2 },
+      { date: "2026-01-04", pnl: 400, risk: 2 },
+      { date: "2026-01-05", pnl: -550, risk: 2 },
+      { date: "2026-01-06", pnl: -550, risk: 2 },
+    ];
+    const v = propViability(t, { iters: 2000, seed: 7, budget: 4 });
+    // only orderings whose first 4 days are the winners pass (1/15 of
+    // shuffles), and every such pass happens at exactly day 4 — the old
+    // tradingDays-based value would have reported 6.
+    assert.ok(v.pPass !== null && v.pPass > 0 && v.pPass < 1, `pPass=${v.pPass}`);
+    assert.equal(v.medianDaysToPass, 4, `medianDaysToPass=${v.medianDaysToPass}`);
+  });
 });
 
 /* ---------------- renderers ---------------- */

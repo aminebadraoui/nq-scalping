@@ -400,9 +400,27 @@ export function propViability(
       // (simulateAccount replays in calendar order)
       const rows = shuffled.map((pnl, i) => ({ date: `d${String(i).padStart(4, "0")}`, pnl }));
       const sim = simulateAccount(rows, "eval", 0, rules);
-      if (sim.passDay && !sim.breachDay) {
+      // first-passage: the eval is over at the pass, so a pass followed by a
+      // later breach still counts as a pass. simulateAccount nulls passDay
+      // whenever breachDay is set, so a breached path must be re-checked on
+      // the prefix BEFORE the breach day to recover a pass that came first.
+      let passAt: number | null = null;
+      if (sim.passDay) {
+        const idx = sim.days.findIndex((d) => d.date === sim.passDay);
+        passAt = idx >= 0 ? idx + 1 : null;
+      } else if (sim.breachDay) {
+        const bi = sim.days.findIndex((d) => d.date === sim.breachDay);
+        if (bi > 0) {
+          const pre = simulateAccount(rows.slice(0, bi), "eval", 0, rules);
+          if (pre.passDay) {
+            const idx = pre.days.findIndex((d) => d.date === pre.passDay);
+            passAt = idx >= 0 ? idx + 1 : null;
+          }
+        }
+      }
+      if (passAt !== null) {
         passes++;
-        daysToPass.push(sim.tradingDays);
+        daysToPass.push(passAt);
       }
     }
     if (passes > 0) {
