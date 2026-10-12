@@ -44,6 +44,9 @@ import { noteOrderFill } from "./execLatency";
 import { signalWindowOpen } from "./marketHours";
 import { newsBlockedNow } from "./newsGate";
 import { noteRthExit } from "./rthExitLog";
+import { ctFills, ctOrders, ctPositions } from "./ctAccount";
+import { trackExecRegister, trackExecFail, trackExecFill, trackExecClose } from "./execTracker";
+import { getMemoryHistory } from "./signalHistory";
 
 export type Expectation = {
   key: string;
@@ -71,17 +74,12 @@ const CHECK_AFTER_MS = 90_000;
 const GIVE_UP_MS = 10 * 60_000;
 const RETRY_INTERVAL_MS = 90_000;
 const MAX_RESEND_ATTEMPTS = 3;
-/** 5s (was 60s): the pushed-fill immediate pass needs a fresh-ish fill
- *  list to match against; 5s keeps the REST load low while making the
- *  5s timer's confirm passes accurate. */
-const FILL_CACHE_MS = 5_000;
 const MATCH_WINDOW_MS = 5 * 60_000;
 const MNQ = "MNQ";
 
 let pending = new Map<string, Expectation>();
 let alerted = new Set<string>();
 let failedKeys = new Set<string>();
-let fillCache: { at: number; fills: Array<{ ts: number; action: string; qty: number; price: number }> } | null = null;
 
 /* ---- protection watchdog (2026-10-08 naked-position incident) --------- *
  * The executor (lib/crossTrade.ts) owns the GLOBAL safety invariants:
@@ -136,19 +134,8 @@ export function stopCoversPosition(orders: Array<Record<string, unknown>>, dir: 
 const REARM_VERIFY_DELAY_MS = 4000;
 
 async function readWorkingOrders(): Promise<{ ok: boolean; orders: Array<Record<string, unknown>> }> {
-  const key = process.env.CROSSTRADE_KEY ?? "";
-  const account = process.env.CROSSTRADE_ACCOUNT ?? "";
-  try {
-    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/orders`, {
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
-    if (!j.success) return { ok: false, orders: [] };
-    return { ok: true, orders: j.data ?? [] };
-  } catch {
-    return { ok: false, orders: [] };
-  }
+  // shared read layer (ctAccount) — always fresh, identical endpoint
+  return ctOrders();
 }
 
 /** the working-order check: is a stop actually covering this side? */
@@ -164,26 +151,9 @@ export async function findWorkingStop(dir: "long" | "short"): Promise<{ ok: bool
  *  a stale flat answer could stack a position) nor by the re-send
  *  verification (verifyAbsent stays fresh — a stale clean book could
  *  double a position). Load-sharing only where staleness is harmless. */
-let positionsCache: { at: number; rows: Array<Record<string, unknown>> | null } | null = null;
-const POSITIONS_TTL_MS = 2_000;
-
 async function fetchPositionsCached(): Promise<Array<Record<string, unknown>> | null> {
-  if (positionsCache && Date.now() - positionsCache.at < POSITIONS_TTL_MS) return positionsCache.rows;
-  const key = process.env.CROSSTRADE_KEY ?? "";
-  const account = process.env.CROSSTRADE_ACCOUNT ?? "";
-  let rows: Array<Record<string, unknown>> | null = null;
-  try {
-    const res = await fetch(`https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`, {
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    const j = (await res.json()) as { success?: boolean; data?: Array<Record<string, unknown>> };
-    rows = j.success ? j.data ?? [] : null;
-  } catch {
-    rows = null;
-  }
-  positionsCache = { at: Date.now(), rows };
-  return rows;
+  // shared read layer (ctAccount) — the same 2s TTL, same endpoint
+  return ctPositions();
 }
 
 /** signed MNQ position from the fill-reconciled read (null = flat or
@@ -292,22 +262,21 @@ export async function checkProtection(): Promise<void> {
   setNakedSince(Date.now() + REPAIR_COOLDOWN_MS);
 }
 
-/* ---- RTH winner-exit tracking (feeds the counter-signal gate) -------- *
+/* ---- open-exec tracking (feeds the execution ledger) ----------------- *
  * Bracket exits are exchange-side — the system never sees the exit fill
- * directly. This tracker learns exits from the broker: the open RTH
- * position is noted at fill confirmation, and a 30s poll detects the
- * flat transition; the opposite-side session fills since the entry are
- * the exit leg → win/loss → lib/rthExitLog. It can only ever SKIP a
- * later card via the feed's counter-gate — never place or change one. */
+ * directly. Every confirmed entry is noted here, and a 30s poll detects
+ * the flat transition; the opposite-side session fills since the entry
+ * are the exit leg → pts/$ result → lib/execTracker.ts (the live
+ * signal→Tradovate→P&L view). RTH labels additionally feed the
+ * counter-signal gate via lib/rthExitLog. It can only ever SKIP a later
+ * card via the feed's counter-gate — never place or change one. */
 
-type OpenRthPos = { dir: "long" | "short"; entryPrice: number; at: number };
+type OpenExec = { key: string; label: string; dir: "long" | "short"; entryPrice: number; at: number; intent: OrderIntent };
 
-const gp = globalThis as unknown as { __gcOpenRthPos?: OpenRthPos | null };
-function openRthPos(): OpenRthPos | null {
-  return gp.__gcOpenRthPos ?? null;
-}
-function setOpenRthPos(p: OpenRthPos | null): void {
-  gp.__gcOpenRthPos = p;
+const gp = globalThis as unknown as { __gcOpenExecs?: Map<string, OpenExec> | null };
+function openExecs(): Map<string, OpenExec> {
+  if (!gp.__gcOpenExecs) gp.__gcOpenExecs = new Map();
+  return gp.__gcOpenExecs;
 }
 
 async function readMnqHeld(): Promise<number> {
@@ -321,32 +290,50 @@ async function readMnqHeld(): Promise<number> {
 }
 
 async function pollRthExit(): Promise<void> {
-  const pos = openRthPos();
-  if (!pos) return;
+  const execs = openExecs();
+  if (execs.size === 0) return;
   const held = await readMnqHeld();
   if (held !== 0) return; // still open (or unreadable — retry next poll)
   // flat transition: the exit just happened — the opposite-side session
-  // fills since the entry ARE the exit leg
-  setOpenRthPos(null);
-  const fills = await fetchFills();
-  const want = pos.dir === "long" ? "Sell" : "Buy";
-  const exits = fills.filter((f) => f.action === want && f.ts > pos.at);
-  if (!exits.length) return;
-  const qty = exits.reduce((s, f) => s + f.qty, 0);
-  if (qty <= 0) return;
-  const exitAvg = exits.reduce((s, f) => s + f.price * f.qty, 0) / qty;
-  const pts = (exitAvg - pos.entryPrice) * (pos.dir === "long" ? 1 : -1);
-  if (pts > 0) {
-    noteRthExit(pos.dir, exitAvg, Date.now());
-    console.log(`[rth-exit] ${pos.dir.toUpperCase()} winner logged — exit ${exitAvg.toFixed(2)} (+${pts.toFixed(1)} pts from signal ${pos.entryPrice.toFixed(2)})`);
+  // fills since each entry ARE its exit leg
+  const full = await ctFills();
+  if (full === null) return;
+  const nowMs = Date.now();
+  for (const [key, pos] of [...execs]) {
+    const want = pos.dir === "long" ? "Sell" : "Buy";
+    const exits = full.filter((f) => f.action === want && f.ts > pos.at);
+    const qty = exits.reduce((s, f) => s + f.qty, 0);
+    if (qty <= 0) {
+      // flat but the exit fills aren't visible yet (fill-list lag or a
+      // session reset wiped them) — keep retrying, then drop after 4h
+      if (nowMs - pos.at > 4 * 60 * 60_000) execs.delete(key);
+      continue;
+    }
+    execs.delete(key);
+    const exitAvg = exits.reduce((s, f) => s + f.price * f.qty, 0) / qty;
+    const realFees = exits.reduce((s, f) => s + f.commission + f.fees, 0);
+    // the execution ledger: close the row with the $ result (display-only)
+    void trackExecClose(key, {
+      entry: pos.entryPrice,
+      dir: pos.dir,
+      contracts: pos.intent.contracts,
+      exitFills: exits.map((f) => ({ ts: f.ts, action: f.action, qty: f.qty, price: f.price })),
+      realFees,
+    });
+    const pts = (exitAvg - pos.entryPrice) * (pos.dir === "long" ? 1 : -1);
+    if (pts > 0 && pos.label.startsWith("rth ")) {
+      noteRthExit(pos.dir, exitAvg, Date.now());
+      console.log(`[rth-exit] ${pos.dir.toUpperCase()} winner logged — exit ${exitAvg.toFixed(2)} (+${pts.toFixed(1)} pts from signal ${pos.entryPrice.toFixed(2)})`);
+    }
   }
 }
 
 let exitPollStarted = false;
 
-/** 30s broker poll that turns flat transitions into RTH winner-exit
- *  records for the counter-signal gate, and runs the protection
- *  watchdog (working-stop verification + naked-position repair).
+/** 30s broker poll that turns flat transitions into execution-ledger
+ *  closes (exit fills → $ result; RTH labels also feed the
+ *  counter-signal gate), and runs the protection watchdog
+ *  (working-stop verification + naked-position repair).
  *  Started from instrumentation. */
 export function startRthExitPoll(intervalMs = 10_000): void {
   if (exitPollStarted || !enabled()) return;
@@ -404,29 +391,10 @@ async function alert(text: string) {
 }
 
 async function fetchFills(force = false): Promise<Array<{ ts: number; action: string; qty: number; price: number }>> {
-  if (!force && fillCache && Date.now() - fillCache.at < FILL_CACHE_MS) return fillCache.fills;
-  try {
-    const res = await fetch("https://app.crosstrade.io/v1/api/tv/fills", {
-      headers: {
-        Authorization: `Bearer ${process.env.CROSSTRADE_KEY ?? ""}`,
-        "Content-Type": "application/json",
-      },
-      signal: AbortSignal.timeout(15_000),
-    });
-    const j = (await res.json()) as { data?: Array<{ data?: Array<Record<string, unknown>> }> };
-    const fills: Array<{ ts: number; action: string; qty: number; price: number }> = [];
-    for (const env of j.data ?? []) {
-      for (const f of env.data ?? []) {
-        const ts = Date.parse(String(f.timestamp ?? ""));
-        if (!Number.isFinite(ts)) continue;
-        fills.push({ ts, action: String(f.action), qty: Number(f.qty ?? 0), price: Number(f.price ?? 0) });
-      }
-    }
-    fillCache = { at: Date.now(), fills };
-    return fills;
-  } catch {
-    return fillCache?.fills ?? [];
-  }
+  // shared read layer (ctAccount) — same 5s window, same fallback shape
+  const full = await ctFills({ force });
+  if (full === null) return [];
+  return full.map((f) => ({ ts: f.ts, action: f.action, qty: f.qty, price: f.price }));
 }
 
 /** fill match: the trade side printed >= 80% of the contracts within the window */
@@ -528,6 +496,44 @@ export function priceDistancePts(e: { intent: OrderIntent }): number | null {
   return Math.abs(ltp - e.intent.entry);
 }
 
+/** New York calendar date for an epoch ms timestamp. */
+function nyDay(ts: number): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date(ts));
+    const g: Record<string, string> = {};
+    for (const p of parts) g[p.type] = p.value;
+    return `${g.year}-${g.month}-${g.day}`;
+  } catch {
+    return new Date(ts).toISOString().slice(0, 10);
+  }
+}
+
+/** link the just-registered card to the signal record that produced it:
+ *  the in-process signal history holds the card (recorded right before
+ *  registerExpectation in the feed) — match on side + timeET + entry
+ *  price. "" when nothing matches (the ledger still tracks by card key). */
+function resolveSignalId(e: { ts: number; intent: OrderIntent }): string {
+  try {
+    const recent = getMemoryHistory(60).filter(
+      (s) =>
+        s.side === e.intent.dir &&
+        s.timeET === e.intent.timeET &&
+        Number.isFinite(s.price) &&
+        Math.abs(s.price - e.intent.entry) <= 1 &&
+        Math.abs(s.ts - e.ts) <= 5 * 60_000,
+    );
+    return recent[0]?.id ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** register a just-sent trade card (no-op when not live) */
 export function registerExpectation(e: Omit<Expectation, "sendFailed" | "attempts" | "lastAttemptAt">) {
   if (!enabled()) return;
@@ -535,6 +541,24 @@ export function registerExpectation(e: Omit<Expectation, "sendFailed" | "attempt
   // so the watcher has nothing to verify, re-send, or alarm about
   if (tradingHalted()) return;
   pending.set(e.key, { ...e, sendFailed: failedKeys.has(e.key), attempts: 0, lastAttemptAt: 0 });
+  // execution ledger (display-only telemetry — never affects placement).
+  // Scale-out legs are partial-exit children of the base entry card: the
+  // ledger tracks the base trade; the nightly reconcile books the splits.
+  if (!e.scaleOut) {
+    void trackExecRegister({
+      key: e.key,
+      ts: e.ts,
+      day: nyDay(e.ts),
+      label: e.label,
+      dir: e.intent.dir,
+      contracts: e.intent.contracts,
+      entry: e.intent.entry,
+      stop: e.intent.stop,
+      target: e.intent.target,
+      timeET: e.intent.timeET,
+      signalId: resolveSignalId(e),
+    });
+  }
 }
 
 /** attach the broker-facing order id to a pending limit card after its
@@ -582,6 +606,7 @@ export function registerSendFailure(key: string, label: string, reason: string) 
   if (reason.includes("trading halted")) return; // the owner's kill switch — intentional, not a failure to alarm about
   if (alerted.has(key)) return;
   failedKeys.add(key);
+  void trackExecFail(key, reason); // execution ledger: mark the card failed
   if (pending.has(key)) pending.get(key)!.sendFailed = true;
   const willRetry = autoRetry() && pending.has(key);
   alerted.add(key);
@@ -679,10 +704,20 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean }): Promise<vo
       // telemetry: close the submit→fill leg with the broker's own fill
       // timestamp (lib/execLatency.ts — "time for CrossTrade to execute")
       noteOrderFill(e.intent.dir, e.intent.contracts, matchedFill.ts);
-      // counter-gate tracking: an RTH entry just filled → note the open
-      // position so the exit poll can log its winning exit on flat
-      if (e.label.startsWith("rth ") && !e.scaleOut) {
-        setOpenRthPos({ dir: e.intent.dir, entryPrice: e.intent.entry, at: now });
+      // open-exec tracking: every confirmed entry is noted so the exit
+      // poll can close its execution-ledger row on the flat transition
+      // (RTH labels additionally feed the counter-signal gate)
+      if (!e.scaleOut) {
+        openExecs().set(key, { key, label: e.label, dir: e.intent.dir, entryPrice: e.intent.entry, at: now, intent: e.intent });
+      }
+      // execution ledger: attach the broker's entry fill + Tradovate
+      // order id (display-only telemetry — never affects the order)
+      if (typeof matchedFill.price === "number" && Number.isFinite(matchedFill.price)) {
+        void trackExecFill(
+          key,
+          { ts: matchedFill.ts, action: matchedFill.action, qty: matchedFill.qty, price: matchedFill.price },
+          await ctFills(),
+        );
       }
       if (e.limit) {
         // the resting limit filled — the position exists, brackets are
@@ -897,7 +932,7 @@ export function __resetExecWatchForTest() {
   pending = new Map();
   alerted = new Set();
   failedKeys = new Set();
-  fillCache = null;
+  openExecs().clear();
   setOpenProtection(null);
   setNakedAlerted(false);
   setNakedSince(null);

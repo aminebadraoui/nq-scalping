@@ -2,6 +2,7 @@ import Link from "next/link";
 import { StageLayout } from "@/components/stage/StageLayout";
 import ExecLogPanel from "@/components/ExecLogPanel";
 import ExecLatencyPanel from "@/components/ExecLatencyPanel";
+import ExecutionsPanel from "@/components/ExecutionsPanel";
 
 /** EXECUTION — Live: the executor's own records. Account controls
  *  (account switch, kill switch) live on the dashboard's status bar. */
@@ -24,6 +25,7 @@ export default function ExecutionPage() {
       }
     >
       <div className="space-y-4">
+        <ExecutionsPanel />
         <ExecLatencyPanel />
         <ExecLogPanel />
       </div>

@@ -60,7 +60,7 @@ export default function ExecStatusBar() {
             <span className="font-mono text-[10px] text-zinc-400">
               eq <span className="text-zinc-200">${Math.round(p.account.equity).toLocaleString("en-US")}</span>
               {" · "}day <span className={p.dayPnl >= 0 ? "text-long" : "text-short"}>{usd(p.dayPnl)}</span>
-              {margin !== null && <> {" · "}floor <span className="text-zinc-200">${Math.round(p.floor).toLocaleString("en-US")}</span> (+{Math.round(margin).toLocaleString("en-US")})</>}
+              {margin !== null && <> {" · "}floor <span className="text-zinc-200">${Math.round(p.floor).toLocaleString("en-US")}</span> (buffer +{Math.round(margin).toLocaleString("en-US")})</>}
             </span>
             <Chip on={!!p.profitArmed} label={`ARM +$${p.profitArm}`} tone={p.profitArmed ? "amber" : "zinc"} />
             <Chip on={!!p.dd.halved} label={`dd ${p.dd.halved ? "HALVED" : "full"}`} tone={p.dd.halved ? "short" : "zinc"} />

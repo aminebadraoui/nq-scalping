@@ -30,6 +30,8 @@ type DomContext = {
 };
 
 export type HistoryEntry = {
+  /** signals.key — the stable signal id (used to link execution rows) */
+  id?: string;
   ts: number;
   timeET: string;
   day: string;
@@ -66,6 +68,28 @@ type SignalResponse = {
   note: string | null;
   lastError: string | null;
   history: HistoryEntry[];
+};
+
+/** one executed-signal ledger row (lib/execTracker.ts, via /api/executions) */
+type ExecRow = {
+  key: string;
+  signalId: string;
+  ts: number;
+  day: string;
+  timeET: string;
+  label: string;
+  side: "long" | "short";
+  contracts: number;
+  sigEntry: number;
+  orderId: string;
+  status: "placed" | "filled" | "closed" | "failed";
+  fillEntry: number | null;
+  exitAvg: number | null;
+  pts: number | null;
+  grossUsd: number;
+  feesUsd: number;
+  netUsd: number;
+  result: "" | "win" | "loss" | "flat";
 };
 
 const SIDE_STYLE: Record<HistoryEntry["side"], string> = {
@@ -121,6 +145,7 @@ const featVal = (v: unknown): string => {
 
 export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEntry) => void }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
+  const [execs, setExecs] = useState<ExecRow[]>([]);
   const [live, setLive] = useState<boolean | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -140,6 +165,28 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
   const openCount = entries.filter((e) => e.outcome === "open").length;
   const timeCount = entries.filter((e) => e.outcome === "time").length;
 
+  /** the execution-row for a signal: by signalId first, then the fuzzy
+   *  day/time/side/entry fallback (exec rows link signals best-effort) */
+  const execFor = (e: HistoryEntry): ExecRow | null => {
+    if (!execs.length) return null;
+    if (e.id) {
+      const byId = execs.find((x) => x.signalId === e.id);
+      if (byId) return byId;
+    }
+    const entryNum = parseFloat(e.entry);
+    const entryRef = Number.isFinite(entryNum) ? entryNum : e.price;
+    return (
+      execs.find(
+        (x) =>
+          x.day === e.day &&
+          x.timeET === e.timeET &&
+          x.side === e.side &&
+          Math.abs(x.sigEntry - entryRef) <= 1 &&
+          Math.abs(x.ts - e.ts) <= 5 * 60_000,
+      ) ?? null
+    );
+  };
+
   useEffect(() => {
     let cancelled = false;
     const tick = () => {
@@ -151,6 +198,13 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
           setLive(j.live);
           setNote(j.lastError ?? j.note ?? null);
           setLoaded(true);
+        })
+        .catch(() => {});
+      fetch("/api/executions", { cache: "no-store" })
+        .then((r) => r.json())
+        .then((j: { ok: boolean; rows?: ExecRow[] }) => {
+          if (cancelled || !j.ok) return;
+          setExecs(j.rows ?? []);
         })
         .catch(() => {});
     };
@@ -208,6 +262,7 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
           const active = activeId === id;
           const groups = groupFeatures(flattenFeatures(e.features));
           const featOpen = featIds.has(id);
+          const exec = execFor(e);
           // the strategy family: featureRegistry.ts records it inside the
           // features vector; the feed may also pass it top-level
           const familyId =
@@ -247,6 +302,40 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
                   >
                     {familyName(familyId)}
                   </Link>
+                ) : null}
+                {exec ? (
+                  <span
+                    title={
+                      exec.status === "closed"
+                        ? `executed on Tradovate · order ${exec.orderId || "—"} · fill ${exec.fillEntry ?? "—"} → exit ${exec.exitAvg ?? "—"} · pts ${exec.pts ?? "—"} · gross ${exec.grossUsd < 0 ? "−" : "+"}$${Math.abs(exec.grossUsd).toFixed(2)} · fees −$${exec.feesUsd.toFixed(2)}`
+                        : exec.status === "filled"
+                          ? `executed on Tradovate · order ${exec.orderId || "—"} · filled @ ${exec.fillEntry}`
+                          : exec.status === "failed"
+                            ? "execution failed — see Execution log"
+                            : "order dispatched — awaiting fill"
+                    }
+                    className={`rounded border px-1 py-0.5 text-[9px] font-semibold ${
+                      exec.status === "closed"
+                        ? exec.result === "win"
+                          ? "border-long/40 bg-long/10 text-long"
+                          : exec.result === "loss"
+                            ? "border-short/40 bg-short/10 text-short"
+                            : "border-zinc-600 text-zinc-300"
+                        : exec.status === "filled"
+                          ? "border-info/40 bg-info/10 text-info"
+                          : exec.status === "failed"
+                            ? "border-short/40 bg-short/10 text-short"
+                            : "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                    }`}
+                  >
+                    {exec.status === "closed"
+                      ? `${exec.result === "win" ? "✓" : exec.result === "loss" ? "✗" : "="} ${exec.netUsd < 0 ? "−" : "+"}$${Math.abs(exec.netUsd).toFixed(2)}`
+                      : exec.status === "filled"
+                        ? "● filled"
+                        : exec.status === "failed"
+                          ? "✗ failed"
+                          : "◌ placed"}
+                  </span>
                 ) : null}
                 {e.outcome && OUTCOME_LABEL[e.outcome] ? (
                   <span title={outcomeTitle(e)} className={`rounded border px-1 py-0.5 text-[9px] font-semibold ${OUTCOME_STYLE[e.outcome] ?? "border-zinc-700 text-zinc-500"}`}>

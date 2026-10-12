@@ -24,24 +24,33 @@ import {
   tradingDayKey,
   type GuardDecision,
 } from "./accountGuard";
+import { accountRow, ctSnapshot, ctSnapshotDisplay, type CtSnapshot } from "./ctAccount";
 
 type Snapshot = { equity: number; realized: number };
 
-let cache: { at: number; snap: Snapshot | null } | null = null;
-const CACHE_MS = 30_000;
+/** map the shared ctAccount snapshot to the guard's two numbers —
+ *  equity = netLiq, realized = realizedPnl (unchanged contract) */
+function mapSnapshot(s: CtSnapshot | null): Snapshot | null {
+  if (!s || !s.accounts) return null;
+  const acct = accountRow(s, process.env.CROSSTRADE_ACCOUNT ?? "");
+  return acct && Number.isFinite(acct.netLiq) && Number.isFinite(acct.realizedPnl)
+    ? { equity: Number(acct.netLiq), realized: Number(acct.realizedPnl) }
+    : null;
+}
 
 /** DISPLAY-ONLY read of the last cached account snapshot (no fetch, no
  *  state mutation) — the dashboard's status bar mirrors what the gate
  *  saw. Never used by the gate or sizing. */
 export function crossGuardSnapshot(): Snapshot | null {
-  return cache?.snap ?? null;
+  return mapSnapshot(ctSnapshotDisplay());
 }
 
 /** DISPLAY-ONLY: the snapshot for the status bar — the cached read when
  *  one exists, otherwise a fresh fetch (the gate path itself is
  *  unaffected; it always fetches through crossGuardGate). */
 export async function crossGuardLiveSnapshot(): Promise<Snapshot | null> {
-  if (cache?.snap) return cache.snap;
+  const cached = mapSnapshot(ctSnapshotDisplay());
+  if (cached) return cached;
   return fetchSnapshot();
 }
 
@@ -49,34 +58,11 @@ function enabled(): boolean {
   return !!process.env.CROSSTRADE_URL && !!process.env.CROSSTRADE_KEY && !!process.env.CROSSTRADE_ACCOUNT;
 }
 
+/** the 30s-cached snapshot read (now via the shared ctAccount cache —
+ *  the same window the display paths use, so gate and status bar can
+ *  never disagree on the same read). */
 async function fetchSnapshot(): Promise<Snapshot | null> {
-  if (cache && Date.now() - cache.at < CACHE_MS) return cache.snap;
-  const key = process.env.CROSSTRADE_KEY ?? "";
-  try {
-    const res = await fetch("https://app.crosstrade.io/v1/api/tv/accounts/snapshot", {
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!res.ok) {
-      cache = { at: Date.now(), snap: null };
-      return null;
-    }
-    const j = (await res.json()) as {
-      accounts?: Array<{ name: string; netLiq?: number; realizedPnl?: number }>;
-    };
-    const acct = (j.accounts ?? []).find(
-      (a) => a.name?.toUpperCase() === (process.env.CROSSTRADE_ACCOUNT ?? "").toUpperCase(),
-    );
-    const snap: Snapshot | null =
-      acct && Number.isFinite(acct.netLiq) && Number.isFinite(acct.realizedPnl)
-        ? { equity: Number(acct.netLiq), realized: Number(acct.realizedPnl) }
-        : null;
-    cache = { at: Date.now(), snap };
-    return snap;
-  } catch {
-    cache = { at: Date.now(), snap: null };
-    return null;
-  }
+  return mapSnapshot(await ctSnapshot());
 }
 
 let bootstrapped = false;

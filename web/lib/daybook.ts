@@ -267,6 +267,35 @@ export type DaybookHeal = {
   reseeds: number;
 };
 
+/** execution-ledger record (lib/execTracker.ts) — one per state change
+ *  of an executed signal: placed → filled → closed (win/loss/flat) /
+ *  failed, with the Tradovate order/fill identity and the $ result. */
+export type DaybookExecTrade = {
+  t: "execTrade";
+  at: number;
+  key: string;
+  signalId: string;
+  day: string;
+  timeET: string;
+  label: string;
+  family: string;
+  side: string;
+  contracts: number;
+  sigEntry: number;
+  sigStop: number;
+  sigTarget: number;
+  orderId: string;
+  status: string;
+  fillEntry: number | null;
+  fillEntryAt: number | null;
+  exitAvg: number | null;
+  pts: number | null;
+  grossUsd: number;
+  feesUsd: number;
+  netUsd: number;
+  result: string;
+};
+
 export type DaybookEnd = {
   t: "dayend";
   at: number;
@@ -292,6 +321,7 @@ export type DaybookRecord =
   | DaybookBoot
   | DaybookSignal
   | DaybookExec
+  | DaybookExecTrade
   | DaybookGuard
   | DaybookHeal
   | DaybookLatency

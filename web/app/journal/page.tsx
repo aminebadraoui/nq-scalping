@@ -7,6 +7,7 @@ import { flattenFeatures, ledgerCsv, type LedgerRow as DeepTradeRow, type Ledger
 import { groupFeatures } from "@/lib/featureGroups";
 import PatternExplorer from "@/components/PatternExplorer";
 import ExecLogPanel from "@/components/ExecLogPanel";
+import { AccountLine, useAccount } from "@/components/AccountStrip";
 
 /* ------------------------------------------------------------------ *
  * Trade journal — the dedicated surface for the self-improving loop:
@@ -423,6 +424,7 @@ function EquityCurve({ points }: { points: EquityPoint[] }) {
 }
 
 export default function JournalPage() {
+  const liveAccount = useAccount();
   const [run, setRun] = useState<RunRow | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [trades, setTrades] = useState<TradeRow[]>([]);
@@ -579,7 +581,8 @@ export default function JournalPage() {
           {scoreRange === "all" ? "all time" : `rolling ${scoreRange} days`} · bot strategies only
         </span>
       </div>
-      {/* the FINAL number — the account itself */}
+      {/* the FINAL number — the account itself (latest reconcile snapshot;
+          the LIVE numbers every tab shares come from /api/account below) */}
       {account && (
         <div className="mb-5 rounded-md border border-zinc-800 bg-panel px-4 py-3">
           <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -602,6 +605,9 @@ export default function JournalPage() {
               snapshot {account.at.slice(0, 16).replace("T", " ")}Z
             </div>
           </div>
+          <p className="mt-2 border-t border-zinc-800/60 pt-2 font-mono text-[10px] text-zinc-500">
+            live (CrossTrade) — <AccountLine payload={liveAccount} />
+          </p>
         </div>
       )}
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">

@@ -30,6 +30,7 @@ export async function GET() {
     live: feed.liveOk,
     note: feed.lastNote,
     history: history.map((h) => ({
+      id: h.id,
       ts: h.ts,
       timeET: h.timeET,
       day: h.day,
