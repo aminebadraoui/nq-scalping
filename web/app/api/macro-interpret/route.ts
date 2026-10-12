@@ -48,7 +48,9 @@ export async function POST(req: Request) {
   }
 
   lastRefreshAt = Date.now();
-  inflight = generateInterpretation().catch((e) => ({ row: null, source: `error: ${String(e)}` }));
+  // `fresh` busts the macro feed caches first, so a manual refresh also
+  // heals the panels — the new row is built from current upstreams
+  inflight = generateInterpretation(true).catch((e) => ({ row: null, source: `error: ${String(e)}` }));
   try {
     const { row, source } = await inflight;
     return Response.json({ ok: !!row, interpretation: row, source });

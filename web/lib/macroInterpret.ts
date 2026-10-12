@@ -22,6 +22,8 @@ import { getMacroContext } from "./macroFeed";
 import { dbEnabled, getDb } from "./gcdb";
 import { etNow, impliedFfr, signed, dayLabel, shortDate, daysAway, nextUpcoming } from "./macroFmt";
 import { bpDiff, spread210, spread103m, real10y, breakeven10y } from "./bonds";
+import { readNqContext } from "./macroBriefing";
+import { sessionDayOf } from "./times";
 import {
   buildInterpretPayload,
   mergeInterpretContent,
@@ -33,10 +35,13 @@ import {
   type InterpretFamilyRead,
   type InterpretMetricRead,
   type InterpretMetricValue,
+  type InterpretNewsItem,
+  type InterpretNewsRead,
   type InterpretSnapshot,
+  type InterpretTape,
 } from "./interpretText";
 import type { MetricFamily } from "./macroGuide";
-import { METRIC_GUIDES } from "./macroGuide";
+import { METRIC_GUIDES, newsItemId } from "./macroGuide";
 
 /* ---------------------------------------------------------------- *
  * persistence
@@ -52,9 +57,11 @@ create table if not exists macro_interpretations (
   combined jsonb not null default '{}'::jsonb,
   families jsonb not null default '[]'::jsonb,
   metrics jsonb not null default '[]'::jsonb,
+  news jsonb not null default '[]'::jsonb,
   snapshot jsonb not null default '{}'::jsonb
 );
 create index if not exists macro_interpretations_idx on macro_interpretations (run_at desc);
+alter table macro_interpretations add column if not exists news jsonb not null default '[]'::jsonb;
 `;
 
 export type InterpretRow = {
@@ -66,6 +73,7 @@ export type InterpretRow = {
   combined: InterpretCombined;
   families: InterpretFamilyRead[];
   metrics: InterpretMetricRead[];
+  news: InterpretNewsRead[];
   snapshot: InterpretSnapshot;
 };
 
@@ -92,7 +100,17 @@ function rowOf(r: Record<string, unknown>): InterpretRow {
     combined: parseJson<InterpretCombined>(r.combined, { headline: "", stance: "mixed", read: [], caveats: [] }),
     families: parseJson<InterpretFamilyRead[]>(r.families, []),
     metrics: parseJson<InterpretMetricRead[]>(r.metrics, []),
-    snapshot: parseJson<InterpretSnapshot>(r.snapshot, { generatedAt: "", etDay: "", etClock: "", metrics: [], staleness: { bonds: false, news: false, earnings: false }, errors: [] }),
+    news: parseJson<InterpretNewsRead[]>(r.news, []),
+    snapshot: parseJson<InterpretSnapshot>(r.snapshot, {
+      generatedAt: "",
+      etDay: "",
+      etClock: "",
+      tape: { lastClose: null, prevSessionClose: null, changePct: null, sessionHigh: null, sessionLow: null, closePosPct: null, cumulativeDelta: null, realizedBandPct: null, bars: null },
+      metrics: [],
+      news: [],
+      staleness: { bonds: false, news: false, earnings: false },
+      errors: [],
+    }),
   };
 }
 
@@ -107,10 +125,10 @@ export async function persistInterpretation(
   await db.unsafe(SCHEMA_SQL);
   const rows = await db`
     insert into macro_interpretations
-      (generated_at, model, source, combined, families, metrics, snapshot)
+      (generated_at, model, source, combined, families, metrics, news, snapshot)
     values (now(), ${model}, ${source}, ${JSON.stringify(content.combined)},
             ${JSON.stringify(content.families)}, ${JSON.stringify(content.metrics)},
-            ${JSON.stringify(snapshot)})
+            ${JSON.stringify(content.news)}, ${JSON.stringify(snapshot)})
     returning *`;
   // Neon Free is 512 MB — keep a bounded history
   await db`delete from macro_interpretations where run_at < now() - interval '30 days'`;
@@ -287,11 +305,50 @@ export async function buildInterpretSnapshot(): Promise<InterpretSnapshot> {
   const byId = new Map(out.map((m) => [m.id, m]));
   const metrics = METRIC_GUIDES.map((g) => byId.get(g.id)).filter((m): m is InterpretMetricValue => !!m);
 
+  /* ---- the NQ tape (the retired briefing's territory) ---- */
+  const nq = await readNqContext(sessionDayOf(Date.now()));
+  const hasBars = (nq.bars ?? 0) > 0;
+  const tape: InterpretTape = {
+    lastClose: nq.lastClose ?? nq.prevSessionClose,
+    prevSessionClose: nq.prevSessionClose,
+    changePct: nq.changePct,
+    sessionHigh: hasBars ? nq.sessionHigh : nq.prevHigh,
+    sessionLow: hasBars ? nq.sessionLow : nq.prevLow,
+    closePosPct: hasBars ? nq.closePosPct : nq.prevClosePosPct,
+    cumulativeDelta: hasBars ? nq.cumulativeDelta : nq.prevCumulativeDelta,
+    realizedBandPct: nq.realizedBandPct,
+    bars: nq.bars,
+  };
+
+  /* ---- this week's US calendar (released-with-actual first) ---- */
+  const news: InterpretNewsItem[] = (ctx.news.data?.days ?? [])
+    .flatMap((d) => d.items)
+    .map((i) => ({
+      id: newsItemId(i),
+      title: i.title,
+      day: i.day,
+      timeET: i.timeET,
+      impact: i.impact,
+      forecast: i.forecast,
+      previous: i.previous,
+      actual: i.actual,
+      released: i.released,
+    }))
+    .sort((a, b) => {
+      if (a.released !== b.released) return a.released ? -1 : 1;
+      const ea = Date.parse(`${a.day}T${a.timeET || "00:00"}:00-05:00`);
+      const eb = Date.parse(`${b.day}T${b.timeET || "00:00"}:00-05:00`);
+      return ea - eb;
+    })
+    .slice(0, 14);
+
   return {
     generatedAt: new Date().toISOString(),
     etDay: now.day,
     etClock: etClockNow(),
+    tape,
     metrics,
+    news,
     staleness: { bonds: !ctx.bonds.ok, news: !ctx.news.ok, earnings: !ctx.earnings.ok },
     errors: w?.errors ?? [],
   };
@@ -336,8 +393,14 @@ export async function callDeepSeekInterpret(
 
 /** the full generation path, shared by the CLI and the refresh route.
  *  Never throws: LLM failure degrades to the deterministic renderer,
- *  DB failure returns null (the tab shows its own empty state). */
-export async function generateInterpretation(): Promise<{ row: InterpretRow | null; source: "llm" | "deterministic" }> {
+ *  DB failure returns null (the tab shows its own empty state).
+ *  `fresh` busts the macro feed caches first, so an on-demand refresh
+ *  always reads current upstreams (the same heal the panels use). */
+export async function generateInterpretation(fresh = false): Promise<{ row: InterpretRow | null; source: "llm" | "deterministic" }> {
+  if (fresh) {
+    const { invalidateMacroCaches } = await import("./macroFeed");
+    invalidateMacroCaches();
+  }
   const snapshot = await buildInterpretSnapshot();
   const det = renderDeterministicInterpret(snapshot);
   const url = process.env.ANALYSIS_LLM_URL;

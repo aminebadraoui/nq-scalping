@@ -30,6 +30,7 @@ import { getOptionsFeed } from "./optionsFeed";
 import type { GammaRead } from "./options";
 import { NEWS_EVENTS, etDayAndClock } from "./newsGate";
 import { htfStructure, type Structure } from "./htfStructure";
+import { biasChips, type BiasChips } from "./biasChips";
 
 export type WatchGroup = "risk" | "rates" | "fx-equities" | "commodities" | "crypto";
 
@@ -71,6 +72,9 @@ export type WatchData = {
   sparks: SparkMap;
   /** daily/weekly swing structure from the system's own archive */
   htf: { daily: Structure | null; weekly: Structure | null; at: string | null };
+  /** structure-layer bias chips (ALN/gap/prior-day/VIX gate) from the
+   *  framework's §2 — display-only, computed from the archive + VIX */
+  bias: BiasChips | null;
   fred: { hyOas: FredPoint | null; rrp: FredPoint | null; tga: FredPoint | null; walcl: FredPoint | null; at: string | null } | null;
   cot: { net: number | null; netPctOi: number | null; pct52w: number | null; asOf: string | null } | null;
   calendar: WatchCalendar | null;
@@ -351,6 +355,45 @@ export async function fetchHtf(): Promise<{ daily: Structure | null; weekly: Str
   return { daily: s.daily, weekly: s.weekly, at: dates[dates.length - 1] };
 }
 
+/* ---------------- bias chips (structure layer) --------------------- */
+
+type BiasRaw = {
+  minutes: { t: string; o: number; c: number; high: number; low: number }[];
+  priorRthClose: number | null;
+  priorRthHigh: number | null;
+  priorRthLow: number | null;
+  day: string | null;
+};
+
+const closeOfRaw = (m: { o: number; c: number; high: number; low: number }) => (m.c > 0 ? m.c : (m.high + m.low) / 2);
+
+/** the archive-side inputs for the bias chips: the current session's
+ *  ETH (overnight) minutes + the prior session's RTH extremes/close.
+ *  Null when the archive is too thin (e.g., pre-open on a fresh VPS). */
+async function fetchBiasRaw(): Promise<BiasRaw | null> {
+  const { listDatasets, extractFootprint } = await import("./gcdata");
+  const ds = await listDatasets();
+  const dates = (ds ?? [])
+    .map((x) => x.date)
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort();
+  if (dates.length < 2) return null;
+  const day = dates[dates.length - 1];
+  const prior = dates[dates.length - 2];
+
+  const eth = await extractFootprint(day, "ETH", undefined, undefined);
+  if (!eth || eth.minutes.length < 60) return null;
+  const rth = await extractFootprint(prior, "RTH", undefined, undefined);
+  if (!rth || rth.minutes.length < 300) return null;
+
+  const minutes = eth.minutes.map((m) => ({ t: m.t.slice(0, 5), o: m.o, c: m.c, high: m.high, low: m.low }));
+  const rthBars = rth.minutes;
+  const priorRthClose = closeOfRaw(rthBars[rthBars.length - 1]);
+  const priorRthHigh = Math.max(...rthBars.map((m) => m.high));
+  const priorRthLow = Math.min(...rthBars.map((m) => m.low));
+  return { minutes, priorRthClose, priorRthHigh, priorRthLow, day };
+}
+
 /* ---------------- COT parsing -------------------------------------- */
 
 type CotRow = {
@@ -408,14 +451,26 @@ async function fetchText(url: string, timeoutMs = 20_000): Promise<string> {
   return await res.text();
 }
 
-/* tiny TTL cache with in-flight dedup (the /api/gc pattern) */
-type Entry = { at: number; value: unknown };
+/* tiny TTL cache with in-flight dedup + failure cool-down (the
+ * /api/gc pattern, hardened): a failed upstream records `failedAt`
+ * and re-throws during RETRY_MS instead of re-hitting the upstream,
+ * so a 429 gets back-off instead of a hammer; the piece() wrapper
+ * serves the last good copy during the cool-down, and the next poll
+ * auto-retries once it expires (auto-heal). */
+type Entry = { at: number; value: unknown; failedAt?: number };
 const cache = new Map<string, Entry>();
 const inflight = new Map<string, Promise<unknown>>();
 
+/** min delay between retries of a failed upstream (auto-heal cadence) */
+const RETRY_MS = 3 * 60_000;
+
 async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
+  const now = Date.now();
+  if (hit && !hit.failedAt && now - hit.at < ttlMs) return hit.value as T;
+  if (hit?.failedAt && now - hit.failedAt < RETRY_MS) {
+    throw new Error(`upstream in retry cool-down (last attempt ${new Date(hit.failedAt).toISOString()})`);
+  }
   const pending = inflight.get(key);
   if (pending) return pending as Promise<T>;
   const p = fn().then(
@@ -425,12 +480,20 @@ async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Prom
       return value;
     },
     (err) => {
+      // keep the last good copy, mark the failure, retry after RETRY_MS
+      cache.set(key, { at: hit?.at ?? now, value: hit?.value ?? null, failedAt: Date.now() });
       inflight.delete(key);
       throw err;
     },
   );
   inflight.set(key, p);
   return p;
+}
+
+/** the frontend heal (via macroFeed.invalidateMacroCaches): drop every
+ *  cached value so the next read goes straight to the upstreams */
+export function invalidateMacroWatch(): void {
+  cache.clear();
 }
 
 type CoinbaseSpot = { data?: { amount?: string; base?: string; currency?: string } };
@@ -516,19 +579,23 @@ async function fetchCalendar(): Promise<WatchCalendar> {
   return { opex, auctions, fomcMinutes };
 }
 
-/** aggregate — never throws; every piece degrades to null + error note */
+/** aggregate — never throws; every piece degrades to the last good
+ *  copy (when one exists) or null + an error note. A failed piece is
+ *  retried automatically on the next poll once its cool-down expires,
+ *  so the panel heals itself when the upstream comes back. */
 export async function getMacroWatch(): Promise<WatchData> {
   const errors: string[] = [];
   const piece = async <T>(key: string, ttl: number, fn: () => Promise<T>, fallback: T): Promise<T> => {
+    const prior = cache.get(key);
     try {
       return await cached(key, ttl, fn);
     } catch (e) {
       errors.push(`${key}: ${e instanceof Error ? e.message : String(e)}`);
-      return fallback;
+      return prior && prior.value != null ? (prior.value as T) : fallback;
     }
   };
 
-  const [quotes, vix, fred, cot, calendar, sparks, htf] = await Promise.all([
+  const [quotes, vix, fred, cot, calendar, sparks, htf, biasRaw] = await Promise.all([
     piece<{ quotes: WatchQuote[]; at: string | null }>("mw-quotes", 60_000, fetchQuotes, { quotes: [], at: null }),
     piece("mw-vix", 6 * 3600_000, fetchVix, { level: null, pct1y: null, pctAll: null, rangePct: null, term9d: null, term3m: null, at: null }),
     piece("mw-fred", 6 * 3600_000, fetchFred, null),
@@ -536,7 +603,21 @@ export async function getMacroWatch(): Promise<WatchData> {
     piece("mw-calendar-v2", 24 * 3600_000, fetchCalendar, { opex: null, auctions: [], fomcMinutes: null }),
     piece("mw-sparks", 3600_000, fetchSparks, {} as SparkMap),
     piece("mw-htf", 6 * 3600_000, fetchHtf, { daily: null, weekly: null, at: null }),
+    piece("mw-bias", 60_000, fetchBiasRaw, null),
   ]);
+
+  const fomcDays = new Set(NEWS_EVENTS.filter((e) => e.kind === "fomc").map((e) => e.day));
+  const clock = etDayAndClock(Date.now());
+  const eventDay = fomcDays.has(clock.day) || fomcDays.has(addDays(clock.day, 1));
+  const htfDaily = htf.daily === "HH/HL" ? "bull" : htf.daily === "LH/LL" ? "bear" : htf.daily === "CHOP" ? "chop" : null;
+  const bias: BiasChips | null =
+    biasRaw && vix
+      ? biasChips(biasRaw.minutes, biasRaw.priorRthClose, biasRaw.priorRthHigh, biasRaw.priorRthLow, vix.level, vix.term3m, {
+          hourET: clock.hourET,
+          htfDaily,
+          eventDay,
+        })
+      : null;
 
   return {
     quotes: quotes.quotes,
@@ -545,6 +626,7 @@ export async function getMacroWatch(): Promise<WatchData> {
     gex: getOptionsFeed().snapshot(),
     sparks,
     htf,
+    bias,
     fred,
     cot,
     calendar,

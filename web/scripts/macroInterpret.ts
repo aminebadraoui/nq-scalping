@@ -52,8 +52,9 @@ async function main() {
   console.log(`[macro-interpret] stored id=${row.id} source=${source} model=${row.model || "—"}`);
   console.log(`[macro-interpret] combined: ${row.combined.stance.toUpperCase()} · ${row.combined.headline}`);
   for (const l of row.combined.read) console.log(`[macro-interpret]   ▸ ${l}`);
-  for (const f of row.families) console.log(`[macro-interpret]   ${f.id}: ${f.read}`);
-  const sample = row.metrics.slice(0, 3).map((m) => `[${m.id}] ${m.read}`).join("\n[macro-interpret]   ");
+  for (const f of row.families) console.log(`[macro-interpret]   ${f.id}: ${f.explain} — NQ: ${f.nqImpact}`);
+  for (const n of row.news.slice(0, 2)) console.log(`[macro-interpret]   news ${n.id}: ${n.explain} — NQ: ${n.nqImpact}`);
+  const sample = row.metrics.slice(0, 3).map((m) => `[${m.id}] ${m.explain}`).join("\n[macro-interpret]   ");
   console.log(`[macro-interpret]   ${sample}`);
   console.log(`[macro-interpret] done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   process.exit(0);

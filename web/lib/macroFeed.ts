@@ -21,7 +21,7 @@
 import { buildBondsData, parseCnbcQuotes, type BondsData, type IntradayCurve } from "./bonds";
 import { fetchNewsWeek, staticWeek, etNow, hasUpcoming, type NewsWeek } from "./newsCalendar";
 import { fetchNdxQuarter, type QuarterData } from "./earnings";
-import { getMacroWatch, type WatchData } from "./macroWatch";
+import { getMacroWatch, invalidateMacroWatch, type WatchData } from "./macroWatch";
 
 export type MacroSource = {
   ok: boolean;
@@ -42,15 +42,28 @@ export type MacroContext = {
 };
 
 /* ---------------------------------------------------------------- *
- * tiny TTL cache with in-flight dedup (the /api/gc pattern)
+ * tiny TTL cache with in-flight dedup + failure cool-down (the
+ * /api/gc pattern, hardened):
+ *   - a failed upstream records `failedAt`; while inside RETRY_MS the
+ *     cache re-throws instead of re-hitting the upstream, so a 429
+ *     gets back-off instead of a hammer
+ *   - callers serve their last-good copy during the cool-down, so
+ *     panels stay filled and the next poll auto-retries (auto-heal)
  * ---------------------------------------------------------------- */
-type Entry = { at: number; value: unknown };
+type Entry = { at: number; value: unknown; failedAt?: number };
 const cache = new Map<string, Entry>();
 const inflight = new Map<string, Promise<unknown>>();
 
+/** min delay between retries of a failed upstream (auto-heal cadence) */
+const RETRY_MS = 3 * 60_000;
+
 async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
+  const now = Date.now();
+  if (hit && !hit.failedAt && now - hit.at < ttlMs) return hit.value as T;
+  if (hit?.failedAt && now - hit.failedAt < RETRY_MS) {
+    throw new Error(`upstream in retry cool-down (last attempt ${new Date(hit.failedAt).toISOString()})`);
+  }
   const pending = inflight.get(key);
   if (pending) return pending as Promise<T>;
   const p = fn().then(
@@ -60,12 +73,21 @@ async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Prom
       return value;
     },
     (err) => {
+      // keep the last good copy, mark the failure, retry after RETRY_MS
+      cache.set(key, { at: hit?.at ?? now, value: hit?.value ?? null, failedAt: Date.now() });
       inflight.delete(key);
       throw err;
     },
   );
   inflight.set(key, p);
   return p;
+}
+
+/** the frontend heal: drop every cached value so the next read goes
+ *  straight to the upstreams (also clears the macro-watch sub-cache) */
+export function invalidateMacroCaches(): void {
+  cache.clear();
+  invalidateMacroWatch();
 }
 
 /* ---------------------------------------------------------------- *

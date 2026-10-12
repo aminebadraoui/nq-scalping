@@ -1,7 +1,7 @@
 /* ------------------------------------------------------------------ *
  * Interpretation text — PURE module for the Macro tab's AI
- * interpretation layer (per-metric reads, per-family combination reads,
- * the combined all-families read).
+ * interpretation layer (per-metric reads, per-family combination
+ * reads, per-news-event reads, the combined all-families read).
  *
  * Everything here is a pure function over plain data: the DeepSeek
  * prompt/payload builder, the JSON-mode response parser, the merge
@@ -9,17 +9,56 @@
  * renderer fills the rest), and the deterministic fallback itself.
  * No feeds, no DB, no side effects — offline-testable.
  *
+ * Each read has TWO parts, per the user's spec:
+ *   explain   — what the current value/state means
+ *   nqImpact  — what it means for READING NQ
+ *
  * The orchestration (snapshot assembly, persistence) lives in
- * lib/macroInterpret.ts, which imports this module. The static
- * up/down guides live in lib/macroGuide.ts.
+ * lib/macroInterpret.ts. The static up/down guides + the news-event
+ * catalog live in lib/macroGuide.ts.
  * DISPLAY-ONLY — the signal engine never imports either module.
  * ------------------------------------------------------------------ */
 
-import { FAMILIES, guideFor, type MetricFamily, type MetricGuide } from "./macroGuide";
+import {
+  FAMILIES,
+  guideFor,
+  newsGuideFor,
+  type MetricFamily,
+  type MetricGuide,
+} from "./macroGuide";
 
 export type InterpretDirection = "up" | "down" | "flat" | null;
 
 export type InterpretStance = "risk-on" | "risk-off" | "mixed";
+
+/** the NQ session tape — folded in from the retired briefing card so
+ *  the combined read covers the tape like the briefing used to */
+export type InterpretTape = {
+  lastClose: number | null;
+  prevSessionClose: number | null;
+  changePct: number | null;
+  sessionHigh: number | null;
+  sessionLow: number | null;
+  /** 0-100: where the last close sits inside the session range */
+  closePosPct: number | null;
+  cumulativeDelta: number | null;
+  /** realized daily 1σ % from the live 1-min tape */
+  realizedBandPct: number | null;
+  bars: number | null;
+};
+
+/** one calendar event, for the per-event explanation + result reads */
+export type InterpretNewsItem = {
+  id: string;
+  title: string;
+  day: string;
+  timeET: string;
+  impact: string;
+  forecast: string | null;
+  previous: string | null;
+  actual: string | null;
+  released: boolean;
+};
 
 /** one metric as the snapshot records it (value pre-formatted) */
 export type InterpretMetricValue = {
@@ -39,7 +78,11 @@ export type InterpretSnapshot = {
   generatedAt: string;
   etDay: string;
   etClock: string;
+  /** the NQ session tape (the retired briefing's territory) */
+  tape: InterpretTape;
   metrics: InterpretMetricValue[];
+  /** this week's US calendar events (up to 14, released first) */
+  news: InterpretNewsItem[];
   /** which upstream sources were stale/failed at build time */
   staleness: { bonds: boolean; news: boolean; earnings: boolean };
   errors: string[];
@@ -52,14 +95,17 @@ export type InterpretCombined = {
   caveats: string[];
 };
 
-export type InterpretFamilyRead = { id: MetricFamily; stance: InterpretStance; read: string };
+export type InterpretFamilyRead = { id: MetricFamily; stance: InterpretStance; explain: string; nqImpact: string };
 
-export type InterpretMetricRead = { id: string; read: string };
+export type InterpretMetricRead = { id: string; explain: string; nqImpact: string };
+
+export type InterpretNewsRead = { id: string; explain: string; nqImpact: string };
 
 export type InterpretContent = {
   combined: InterpretCombined;
   families: InterpretFamilyRead[];
   metrics: InterpretMetricRead[];
+  news: InterpretNewsRead[];
 };
 
 /* ---------------------------------------------------------------- *
@@ -89,13 +135,18 @@ export function applicableGuideLine(g: MetricGuide, dir: InterpretDirection): st
   return g.read ?? g.what;
 }
 
-/** deterministic one-line read for a metric: value + the applicable guide */
-export function metricReadOf(m: InterpretMetricValue): string {
+/** deterministic explain for a metric: value + the applicable guide */
+export function metricExplainOf(m: InterpretMetricValue): string {
   const g = guideFor(m.id);
   if (!g) return `${m.value} — no guide`;
   const line = applicableGuideLine(g, m.direction);
   const dir = m.direction ? `${DIR_ARROW[m.direction]} ` : "";
   return `${dir}${m.value} — ${line}`;
+}
+
+export function metricNqImpactOf(m: InterpretMetricValue): string {
+  const g = guideFor(m.id);
+  return g?.nqImpact ?? "no NQ read";
 }
 
 /** risk stance vote of one metric (null = abstains) */
@@ -116,20 +167,73 @@ export function familyStanceOf(metrics: InterpretMetricValue[]): InterpretStance
   return on > off ? "risk-on" : off > on ? "risk-off" : "mixed";
 }
 
+const STANCE_NQ_LABEL: Record<InterpretStance, string> = {
+  "risk-on": "supports NQ",
+  "risk-off": "pressures NQ",
+  mixed: "neutral for NQ",
+};
+
 /** deterministic combination read for one family: its top 2 signals */
-export function familyReadOf(metrics: InterpretMetricValue[], famId: MetricFamily): string {
+function familyReadParts(metrics: InterpretMetricValue[], famId: MetricFamily): InterpretMetricValue[] {
   const prio = FAMILY_PRIORITY[famId] ?? [];
   const rank = (id: string) => (prio.indexOf(id) === -1 ? 99 : prio.indexOf(id));
   const picks = [...metrics]
     .filter((m) => m.direction === "up" || m.direction === "down")
     .sort((a, b) => rank(a.id) - rank(b.id))
     .slice(0, 2);
-  const source = picks.length > 0 ? picks : [...metrics].sort((a, b) => rank(a.id) - rank(b.id)).slice(0, 2);
-  return source.map((m) => metricReadOf(m)).join(" · ");
+  return picks.length > 0 ? picks : [...metrics].sort((a, b) => rank(a.id) - rank(b.id)).slice(0, 2);
+}
+
+/* ---------------------------------------------------------------- *
+ * deterministic news reads
+ * ---------------------------------------------------------------- */
+
+/** "0.2%", "195K", "-3.1" → number (unit-agnostic; same-format pairs) */
+function newsNum(v: string | null): number | null {
+  if (v == null || v === "" || v === "—") return null;
+  const m = /-?[\d.,]+/.exec(v);
+  if (!m) return null;
+  const n = Number(m[0].replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+export function newsExplainOf(it: InterpretNewsItem): string {
+  return newsGuideFor(it.title).what;
+}
+
+/** when the event has released WITH an actual, judge it against the
+ *  forecast using the catalog's direction; otherwise give the
+ *  conditional pre-release read */
+export function newsNqImpactOf(it: InterpretNewsItem): string {
+  const g = newsGuideFor(it.title);
+  if (it.released && it.actual) {
+    const a = newsNum(it.actual);
+    const f = newsNum(it.forecast);
+    const p = it.previous ? ` (prev ${it.previous})` : "";
+    if (a != null && f != null && g.goodWhen) {
+      const diff = Math.round((a - f) * 100) / 100;
+      const eps = 0.05;
+      const good = g.goodWhen === "lower" ? diff <= -eps : diff >= eps;
+      const bad = g.goodWhen === "lower" ? diff >= eps : diff <= -eps;
+      if (good) return `actual ${it.actual} vs ${it.forecast} f${p} — ${g.goodForNq}`;
+      if (bad) return `actual ${it.actual} vs ${it.forecast} f${p} — ${g.badForNq}`;
+    }
+    return `actual ${it.actual} vs ${it.forecast} f${p} — in line, no repricing pressure`;
+  }
+  return `before release — good: ${g.goodForNq} · bad: ${g.badForNq}`;
 }
 
 export function renderDeterministicInterpret(s: InterpretSnapshot): InterpretContent {
-  const metrics: InterpretMetricRead[] = s.metrics.map((m) => ({ id: m.id, read: metricReadOf(m) }));
+  const metrics: InterpretMetricRead[] = s.metrics.map((m) => ({
+    id: m.id,
+    explain: metricExplainOf(m),
+    nqImpact: metricNqImpactOf(m),
+  }));
+  const news: InterpretNewsRead[] = s.news.map((it) => ({
+    id: it.id,
+    explain: newsExplainOf(it),
+    nqImpact: newsNqImpactOf(it),
+  }));
   const byFamily = new Map<MetricFamily, InterpretMetricValue[]>();
   for (const m of s.metrics) {
     const arr = byFamily.get(m.family) ?? [];
@@ -138,10 +242,16 @@ export function renderDeterministicInterpret(s: InterpretSnapshot): InterpretCon
   }
   const families: InterpretFamilyRead[] = FAMILIES.map((f) => {
     const fam = byFamily.get(f.id) ?? [];
-    return { id: f.id, stance: familyStanceOf(fam), read: familyReadOf(fam, f.id) };
+    const top = familyReadParts(fam, f.id);
+    return {
+      id: f.id,
+      stance: familyStanceOf(fam),
+      explain: top.map((m) => metricExplainOf(m)).join(" · "),
+      nqImpact: `${STANCE_NQ_LABEL[familyStanceOf(fam)]} · ${top.map((m) => `${m.label} ${m.value}`).join(" · ")}`,
+    };
   });
 
-  /* ---- combined: majority of the family stances ---- */
+  /* ---- combined: majority of the family stances, tape first ---- */
   let on = 0;
   let off = 0;
   for (const f of families) {
@@ -150,7 +260,6 @@ export function renderDeterministicInterpret(s: InterpretSnapshot): InterpretCon
   }
   const stance: InterpretStance = on > off ? "risk-on" : off > on ? "risk-off" : "mixed";
 
-  /* headline: stance + the two strongest directional signals overall */
   const prio = (id: string, fam: MetricFamily) => {
     const p = FAMILY_PRIORITY[fam] ?? [];
     const i = p.indexOf(id);
@@ -165,16 +274,25 @@ export function renderDeterministicInterpret(s: InterpretSnapshot): InterpretCon
     })
     .slice(0, 2);
   const sig = strong.map((m) => `${m.label} ${m.value}`).join(" · ");
-  const headline = `${stance.toUpperCase()}${sig ? ` · ${sig}` : ""}`;
 
-  const read = families
-    .filter((f) => f.stance !== "mixed")
-    .slice(0, 4)
-    .map((f) => {
-      const def = FAMILIES.find((x) => x.id === f.id);
-      return `${def?.label ?? f.id}: ${f.read}`;
-    });
-  if (read.length === 0) read.push("no family carries a directional vote — the tape decides");
+  /* ---- the tape line (the retired briefing's bottom line) ---- */
+  const t = s.tape;
+  const tapeParts: string[] = [];
+  if (t.changePct != null) tapeParts.push(`NQ ${t.changePct >= 0 ? "+" : ""}${t.changePct.toFixed(2)}%`);
+  if (t.closePosPct != null) tapeParts.push(`close ${t.closePosPct.toFixed(0)}% of range`);
+  if (t.cumulativeDelta != null) tapeParts.push(`Δ ${t.cumulativeDelta >= 0 ? "+" : ""}${(t.cumulativeDelta / 1000).toFixed(1)}k`);
+  if (t.realizedBandPct != null) tapeParts.push(`1σ ±${t.realizedBandPct.toFixed(2)}%`);
+  const tapeLine = tapeParts.length > 0 ? `tape: ${tapeParts.join(" · ")}` : null;
+
+  const headline = `${stance.toUpperCase()}${tapeParts.length > 0 ? ` · NQ ${t.changePct != null ? `${t.changePct >= 0 ? "+" : ""}${t.changePct.toFixed(2)}%` : ""}` : ""}${sig ? ` · ${sig}` : ""}`.replace(/\s+/g, " ").trim();
+
+  const read: string[] = [];
+  if (tapeLine) read.push(tapeLine);
+  for (const f of families.filter((x) => x.stance !== "mixed").slice(0, 3)) {
+    const def = FAMILIES.find((x) => x.id === f.id);
+    read.push(`${def?.label ?? f.id}: ${f.explain}`);
+  }
+  if (read.length <= 1) read.push("no family carries a directional vote — the tape decides");
 
   const caveats: string[] = [];
   if (s.staleness.bonds) caveats.push("treasury curve stale");
@@ -183,7 +301,7 @@ export function renderDeterministicInterpret(s: InterpretSnapshot): InterpretCon
   if (s.errors.length > 0) caveats.push(`watch errors: ${s.errors.length}`);
   if (caveats.length === 0) caveats.push("all sources fresh");
 
-  return { combined: { headline, stance, read, caveats }, families, metrics };
+  return { combined: { headline, stance, read, caveats }, families, metrics, news };
 }
 
 /* ---------------------------------------------------------------- *
@@ -194,33 +312,45 @@ export const INTERPRET_SCHEMA_EXAMPLE = {
   combined: {
     headline: "EXAMPLE — one line: the cross-family stance + the main driver",
     stance: "mixed",
-    read: ["EXAMPLE — one bullet per dominant theme, ≤20 words, numbers from the snapshot"],
+    read: ["EXAMPLE — tape first, then one bullet per dominant theme, ≤20 words, numbers from the snapshot"],
     caveats: ["EXAMPLE — 'CNBC quotes ~20 min delayed'"],
   },
-  families: [{ id: "risk", read: "EXAMPLE — what this family's metrics say TOGETHER, one line" }],
-  metrics: [{ id: "vix.level", read: "EXAMPLE — what TODAY's value + direction implies, one line" }],
+  families: [{ id: "risk", explain: "EXAMPLE — what this family's metrics say TOGETHER, one line", nqImpact: "EXAMPLE — the implication for reading NQ, one line" }],
+  metrics: [{ id: "vix.level", explain: "EXAMPLE — what TODAY's value + direction implies, one line", nqImpact: "EXAMPLE — what that means for the NQ tape, one line" }],
+  news: [{ id: "2026-10-14|08:30|Core CPI m/m", explain: "EXAMPLE — what the release measures", nqImpact: "EXAMPLE — what the result (or the setup ahead of it) means for NQ" }],
 };
 
 const SYSTEM_PROMPT = [
   "You are the macro interpreter for a personal NQ (Nasdaq-100 futures) scalping dashboard.",
   "A scalper reads your output BETWEEN TICKS: maximum density, minimum words.",
   "",
-  "You receive ONE JSON snapshot: every macro metric the dashboard tracks, grouped into 8",
+  "You receive ONE JSON snapshot: (1) the current NQ session TAPE (change, position in range,",
+  "cumulative delta, realized 1σ), (2) every macro metric the dashboard tracks, grouped into 8",
   "families (risk & vol, rates, fx & equities, commodities, crypto, liquidity & positioning,",
-  "calendar & events, structure). Each metric carries its current value, a computed direction",
-  "(up/down/flat; null = non-directional), and the dashboard's plain-language guide of what",
-  "up and down MEAN for that metric.",
+  "calendar & events, structure), each with its value, a computed direction and the dashboard's",
+  "plain-language up/down guide, and (3) this week's US economic calendar with forecast/previous/",
+  "actual where available.",
   "",
-  "You produce THREE layers:",
-  "1. metrics[] — one entry per metric id in the snapshot: what TODAY's value + direction",
-  "implies for the NQ session, one line, ≤16 words. For non-directional metrics (calendar,",
-  "regime), interpret the proximity/state. Say 'unavailable' if the value is null/—.",
-  "2. families[] — one entry per family id: the COMBINATION of that family's metrics — how",
-  "they reinforce or contradict each other, one line, ≤22 words.",
-  "3. combined — the complete read across ALL families: stance risk-on | risk-off | mixed,",
-  "a headline ≤15 words, ≤3 read bullets (each ≤22 words) naming the dominant cross-family",
-  "themes (e.g. risk-on equities + calm VIX + steepening curve), and ≤2 caveats (data",
-  "vintages only: delayed/stale/unavailable).",
+  "Every read you write has TWO parts:",
+  "  explain  — what the current value/state MEANS (one line, ≤16 words)",
+  "  nqImpact — the IMPACT ON READING NQ: what it implies for the NQ tape and how to trade it",
+  "             today (one line, ≤18 words). This is mandatory for every metric, family, news",
+  "             item and the combined read.",
+  "",
+  "You produce FOUR layers:",
+  "1. metrics[] — one entry per metric id in the snapshot: explain + nqImpact. For",
+  "non-directional metrics (calendar, regime), interpret the proximity/state. Say 'unavailable'",
+  "if the value is null/—.",
+  "2. families[] — one entry per family id: the COMBINATION of that family's metrics — how they",
+  "reinforce or contradict each other (explain, ≤22 words) and the resulting NQ impact (≤18 words).",
+  "3. news[] — one entry per calendar event: explain what the release measures (from the",
+  "catalog's what field, condensed). For nqImpact: if released WITH an actual, judge the result",
+  "against forecast/previous and say what it means for NQ; if upcoming, say what result NQ needs",
+  "to see (beat/miss implication).",
+  "4. combined — the complete read: the TAPE FIRST (change, range position, delta, 1σ — like the",
+  "old pre-open briefing: up/down/chop bias from the tape, then the macro), then stance",
+  "risk-on | risk-off | mixed, a headline ≤15 words, ≤4 read bullets (≤22 words each), and ≤2",
+  "caveats (data vintages only: delayed/stale/unavailable).",
   "",
   "Rules:",
   "1. Every number must come from the snapshot; null means unavailable — say so, never invent.",
@@ -233,7 +363,7 @@ const SYSTEM_PROMPT = [
   "5. JSON GRAMMAR (strict): every string must be a SINGLE line — never a literal newline",
   "inside a string value. Emit ONLY the JSON object, nothing else.",
   "6. The example shows SHAPE ONLY — its words are placeholders. Never reuse an example",
-  "sentence, and never invent metric ids: copy them from the snapshot.",
+  "sentence, and never invent metric/news ids: copy them from the snapshot.",
 ].join("\n");
 
 export function buildInterpretPayload(
@@ -260,6 +390,16 @@ export function buildInterpretPayload(
       upMeans: g?.up ?? null,
       downMeans: g?.down ?? null,
       readHint: g?.read ?? null,
+      nqImpactHint: g?.nqImpact ?? null,
+    };
+  });
+  const news = snapshot.news.map((it) => {
+    const g = newsGuideFor(it.title);
+    return {
+      ...it,
+      whatHint: g.what,
+      goodForNq: g.goodForNq,
+      badForNq: g.badForNq,
     };
   });
   return {
@@ -269,23 +409,25 @@ export function buildInterpretPayload(
       {
         role: "user",
         content: JSON.stringify({
-          task: "Produce the daily macro interpretation: per-metric reads, per-family combination reads, and the combined cross-family read.",
+          task: "Produce the daily macro interpretation: per-metric, per-family, per-news-event and the combined cross-family read — each with an explain and an NQ impact.",
           exampleJsonOutput: INTERPRET_SCHEMA_EXAMPLE,
           families: FAMILIES.map((f) => ({ id: f.id, label: f.label, blurb: f.blurb })),
           snapshot: {
             generatedAt: snapshot.generatedAt,
             etDay: snapshot.etDay,
             etClock: snapshot.etClock,
+            tape: snapshot.tape,
             staleness: snapshot.staleness,
             errors: snapshot.errors,
             metrics,
+            news,
           },
         }),
       },
     ],
     response_format: { type: "json_object" },
     thinking: { type: "disabled" },
-    max_tokens: 6000,
+    max_tokens: 8000,
   };
 }
 
@@ -341,10 +483,19 @@ function repairJson(raw: string): string {
   return out;
 }
 
+/** two-part read: explain + nqImpact, tolerant of a legacy `read` */
+function twoPart(o: Record<string, unknown>, fallback: { explain: string; nqImpact: string }): { explain: string; nqImpact: string } {
+  return {
+    explain: str(o.explain, str(o.read, fallback.explain)),
+    nqImpact: str(o.nqImpact, fallback.nqImpact),
+  };
+}
+
 export type ParsedInterpret = {
   combined: Partial<InterpretCombined> | null;
-  families: Array<{ id: MetricFamily; read: string }>;
-  metrics: Array<{ id: string; read: string }>;
+  families: Array<{ id: MetricFamily; explain: string; nqImpact: string }>;
+  metrics: Array<{ id: string; explain: string; nqImpact: string }>;
+  news: Array<{ id: string; explain: string; nqImpact: string }>;
 };
 
 /** tolerant parser — returns null when the response is unusable, and
@@ -385,41 +536,46 @@ export function parseInterpretContent(raw: string | null | undefined): ParsedInt
   if (Array.isArray(j.families)) {
     for (const f of j.families) {
       if (!isObj(f) || typeof f.id !== "string" || !knownFamilies.has(f.id as MetricFamily)) continue;
-      const read = str(f.read, "");
-      if (read) families.push({ id: f.id as MetricFamily, read });
+      const read = twoPart(f, { explain: "", nqImpact: "" });
+      if (read.explain || read.nqImpact) families.push({ id: f.id as MetricFamily, ...read });
     }
   }
 
-  const metrics: ParsedInterpret["metrics"] = [];
-  if (Array.isArray(j.metrics)) {
-    for (const m of j.metrics) {
-      if (!isObj(m) || typeof m.id !== "string") continue;
-      const read = str(m.read, "");
-      if (read) metrics.push({ id: m.id, read });
+  const pick = (arr: unknown): ParsedInterpret["metrics"] => {
+    const out: ParsedInterpret["metrics"] = [];
+    if (Array.isArray(arr)) {
+      for (const m of arr) {
+        if (!isObj(m) || typeof m.id !== "string") continue;
+        const read = twoPart(m, { explain: "", nqImpact: "" });
+        if (read.explain || read.nqImpact) out.push({ id: m.id, ...read });
+      }
     }
-  }
+    return out;
+  };
+  const metrics = pick(j.metrics);
+  const news = pick(j.news);
 
   /* nothing usable → null (caller falls back to deterministic) */
-  if (!combined && families.length === 0 && metrics.length === 0) return null;
-  return { combined, families, metrics };
+  if (!combined && families.length === 0 && metrics.length === 0 && news.length === 0) return null;
+  return { combined, families, metrics, news };
 }
 
 /** LLM wins wherever it produced a valid entry for a KNOWN id; the
- *  deterministic renderer fills everything else, so the card is never
+ *  deterministic renderer fills everything else, so the tab is never
  *  half-blank. Unknown ids are dropped. */
 export function mergeInterpretContent(parsed: ParsedInterpret | null, det: InterpretContent, snapshot: InterpretSnapshot): InterpretContent {
-  const detCombined = det.combined;
   const detFamilies = new Map(det.families.map((f) => [f.id, f]));
   const detMetrics = new Map(det.metrics.map((m) => [m.id, m]));
+  const detNews = new Map(det.news.map((n) => [n.id, n]));
 
-  let combined = detCombined;
+  let combined = det.combined;
   if (parsed?.combined) {
     const p = parsed.combined;
     combined = {
-      headline: str(p.headline, detCombined.headline),
-      stance: isStance(p.stance) ? p.stance : detCombined.stance,
-      read: p.read && p.read.length > 0 ? p.read : detCombined.read,
-      caveats: p.caveats && p.caveats.length > 0 ? p.caveats : detCombined.caveats,
+      headline: str(p.headline, det.combined.headline),
+      stance: isStance(p.stance) ? p.stance : det.combined.stance,
+      read: p.read && p.read.length > 0 ? p.read : det.combined.read,
+      caveats: p.caveats && p.caveats.length > 0 ? p.caveats : det.combined.caveats,
     };
   }
 
@@ -429,15 +585,30 @@ export function mergeInterpretContent(parsed: ParsedInterpret | null, det: Inter
     return {
       id: f.id,
       stance: detF?.stance ?? "mixed",
-      read: parsedF?.read || detF?.read || "no read",
+      explain: parsedF?.explain || detF?.explain || "no read",
+      nqImpact: parsedF?.nqImpact || detF?.nqImpact || "no read",
     };
   });
 
   const metrics: InterpretMetricRead[] = snapshot.metrics.map((m) => {
     const detM = detMetrics.get(m.id);
     const parsedM = parsed?.metrics.find((x) => x.id === m.id);
-    return { id: m.id, read: parsedM?.read || detM?.read || "no read" };
+    return {
+      id: m.id,
+      explain: parsedM?.explain || detM?.explain || "no read",
+      nqImpact: parsedM?.nqImpact || detM?.nqImpact || "no read",
+    };
   });
 
-  return { combined, families, metrics };
+  const news: InterpretNewsRead[] = snapshot.news.map((n) => {
+    const detN = detNews.get(n.id);
+    const parsedN = parsed?.news.find((x) => x.id === n.id);
+    return {
+      id: n.id,
+      explain: parsedN?.explain || detN?.explain || "no read",
+      nqImpact: parsedN?.nqImpact || detN?.nqImpact || "no read",
+    };
+  });
+
+  return { combined, families, metrics, news };
 }

@@ -1,26 +1,49 @@
 "use client";
 
 /* MACRO TAB — every macro box that used to live on the Overview:
- * the AI briefing, the interpretation layer (combined all-families
- * read on top, then per-family combination reads + per-metric guides
- * and AI reads), the market-context band (macro pulse / cross-asset /
- * treasuries), the detail band (earnings / week ahead) and the
- * freshness footer. The data panels poll /api/macro every 60s; the
- * interpretation layer regenerates daily (09:20 ET cron + nightly
- * post-close) with its own manual refresh button. */
+ * the interpretation layer (complete combined all-families read on
+ * top — the NQ tape folded in — then per-family combination reads +
+ * per-metric guides and AI reads, every read with its NQ impact),
+ * the market-context band (macro pulse / cross-asset / treasuries),
+ * the detail band (earnings / week ahead with per-event guides +
+ * AI reads) and the freshness footer. The data panels poll /api/macro
+ * every 60s (failed feeds serve last-good and auto-retry); the
+ * interpretation regenerates daily (09:20 ET cron + nightly
+ * post-close) with its own refresh button; the header's heal button
+ * re-reads every upstream feed on demand. */
 
+import { useState } from "react";
 import MacroPulseCard from "@/components/MacroPulseCard";
 import CrossAssetCard from "@/components/CrossAssetCard";
 import TreasuriesCard from "@/components/TreasuriesCard";
 import NewsCalendarPanel from "@/components/NewsCalendarPanel";
 import EarningsPanel from "@/components/EarningsPanel";
 import MacroFooter from "@/components/MacroFooter";
-import AiBriefingCard from "@/components/AiBriefingCard";
 import MacroInterpretation from "@/components/MacroInterpretation";
 import { useMacro } from "@/lib/useMacro";
+import { useMacroInterpret } from "@/lib/useMacroInterpret";
 
 export default function MacroPage() {
   const macro = useMacro();
+  const interpret = useMacroInterpret();
+  const [healing, setHealing] = useState(false);
+  const [healNote, setHealNote] = useState<string | null>(null);
+
+  const row = interpret.load.row;
+  const newsReads = row
+    ? Object.fromEntries(row.news.map((n) => [n.id, { explain: n.explain, nqImpact: n.nqImpact }]))
+    : undefined;
+
+  const onHeal = async () => {
+    if (healing) return;
+    setHealing(true);
+    setHealNote(null);
+    const res = await macro.heal();
+    setHealing(false);
+    if (res.ok) setHealNote("feeds re-read ✓");
+    else if (res.cooldownRemainingMs > 0) setHealNote(`cool ${Math.ceil(res.cooldownRemainingMs / 60_000)}m`);
+    else setHealNote("heal failed — see footer");
+  };
 
   return (
     <main className="mx-auto min-h-screen max-w-[1600px] px-4 py-6 text-zinc-100">
@@ -32,19 +55,27 @@ export default function MacroPage() {
             Cross-asset · rates · calendar — every metric read and interpreted
           </h1>
         </div>
-        <span className="font-mono text-[10px] text-zinc-500">data polls 60s · interpretations refreshed daily</span>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] text-zinc-500">data polls 60s · interpretations refreshed daily</span>
+          <button
+            onClick={onHeal}
+            disabled={healing}
+            className={`rounded border px-2 py-0.5 font-mono text-[10px] ${
+              healing ? "border-zinc-700 text-zinc-500" : "border-warn/40 bg-warn/10 text-warn hover:border-warn/70"
+            }`}
+            title="drop the cached feeds and re-read every upstream now (2 min cooldown)"
+          >
+            {healing ? "healing…" : "heal feeds ⚕"}
+          </button>
+          {healNote && <span className="font-mono text-[10px] text-info">{healNote}</span>}
+        </div>
       </div>
 
-      {/* the interpretation layer: combined all-families read ON TOP,
-          then per-family combination reads + per-metric guides/AI reads.
-          Regenerated daily (09:20 ET cron + nightly) — refresh button
-          inside the combined card. */}
-      <MacroInterpretation />
-
-      {/* the daily NQ situation briefing (moved from the Overview) */}
-      <div className="my-4">
-        <AiBriefingCard />
-      </div>
+      {/* the interpretation layer: combined all-families read ON TOP
+          (tape included), then per-family combination reads + per-metric
+          guides/AI reads. Regenerated daily (09:20 ET cron + nightly) —
+          refresh button inside the combined card. */}
+      <MacroInterpretation load={interpret.load} refresh={interpret.refresh} refreshing={interpret.refreshing} />
 
       {/* market context band: macro pulse / cross-asset / rates */}
       <div className="mt-4">
@@ -73,13 +104,19 @@ export default function MacroPage() {
         </div>
       </div>
 
-      {/* detail layer: earnings 8 / week ahead 4 */}
+      {/* detail layer: earnings 8 / week ahead 4 (with per-event
+          guides + AI explain/NQ reads) */}
       <div className="mt-4 grid grid-cols-12 gap-4">
         <div className="col-span-12 xl:col-span-8">
           <EarningsPanel data={macro.ctx?.earnings.data ?? null} stale={macro.ctx ? !macro.ctx.earnings.ok : false} error={macro.ctx?.earnings.error} />
         </div>
         <div className="col-span-12 xl:col-span-4">
-          <NewsCalendarPanel week={macro.ctx?.news.data ?? null} stale={macro.ctx ? !macro.ctx.news.ok : false} error={macro.ctx?.news.error} />
+          <NewsCalendarPanel
+            week={macro.ctx?.news.data ?? null}
+            stale={macro.ctx ? !macro.ctx.news.ok : false}
+            error={macro.ctx?.news.error}
+            reads={newsReads}
+          />
         </div>
       </div>
 

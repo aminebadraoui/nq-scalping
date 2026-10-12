@@ -169,19 +169,12 @@ DECAY_RC=0
 DECAY_RC=${PIPESTATUS[0]}
 log "decayWatch exit=$DECAY_RC"
 
-log "--- AI macro briefing (post-close) ---"
-# DeepSeek situation analysis over the macro context + the day's tape →
-# one `macro_briefings` row for the dashboard card. Reads the live-written
-# candles_1m (bulk ingest is off). Best-effort: the card also has the
-# 09:15 ET pre-open row and its own refresh button.
-"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/macroBriefing.ts post-close 2>&1
-BRIEFING_RC=$?
-log "macroBriefing exit=$BRIEFING_RC"
-
 log "--- AI macro interpretation (post-close) ---"
-# DeepSeek per-metric / per-family / combined reads over the macro context
-# → one `macro_interpretations` row for the Macro tab. Best-effort: the
-# tab also has the 09:20 ET pre-open row and its own refresh button.
+# DeepSeek per-metric / per-family / per-news / combined reads over the
+# macro context + the day's tape → one `macro_interpretations` row for
+# the Macro tab (the combined read absorbed the retired AI briefing).
+# Best-effort: the tab also has the 09:20 ET pre-open row and its own
+# refresh button.
 "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/macroInterpret.ts 2>&1
 INTERPRET_RC=$?
 log "macroInterpret exit=$INTERPRET_RC"
@@ -260,11 +253,10 @@ if [ "$RECONCILE_RC" -ne 0 ]; then FINAL_RC=$RECONCILE_RC; fi
 if [ "$SCORESIG_RC" -ne 0 ]; then FINAL_RC=$SCORESIG_RC; fi
 if [ "$ANALYSIS_RC" -ne 0 ]; then FINAL_RC=$ANALYSIS_RC; fi
 if [ "$INSIGHTS_RC" -ne 0 ]; then FINAL_RC=$INSIGHTS_RC; fi
-if [ "${BRIEFING_RC:-0}" -ne 0 ]; then FINAL_RC=$BRIEFING_RC; fi
 if [ "${INTERPRET_RC:-0}" -ne 0 ]; then FINAL_RC=$INTERPRET_RC; fi
 if [ "$RISKSTACK_RC" -ne 0 ]; then FINAL_RC=$RISKSTACK_RC; fi
 if [ "${DECAY_RC:-0}" -ne 0 ]; then FINAL_RC=$DECAY_RC; fi
 if [ "${BREADTH_RC:-0}" -ne 0 ]; then FINAL_RC=$BREADTH_RC; fi
 if [ "${FDR_RC:-0}" -ne 0 ]; then FINAL_RC=$FDR_RC; fi
-log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC divstore=$DIVSTORE_RC reconcile=$RECONCILE_RC scoresig=$SCORESIG_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC briefing=${BRIEFING_RC:-0} interpret=${INTERPRET_RC:-0} riskstack=$RISKSTACK_RC decay=${DECAY_RC:-0} breadth=${BREADTH_RC:-0} fdr=${FDR_RC:-0}) ==="
+log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC divstore=$DIVSTORE_RC reconcile=$RECONCILE_RC scoresig=$SCORESIG_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC interpret=${INTERPRET_RC:-0} riskstack=$RISKSTACK_RC decay=${DECAY_RC:-0} breadth=${BREADTH_RC:-0} fdr=${FDR_RC:-0}) ==="
 exit $FINAL_RC

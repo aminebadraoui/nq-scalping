@@ -2,11 +2,15 @@
 
 /* WEEK AHEAD — the next ~8 US events as a chronological list (warn
  * tint on the big four), with "view all" expanding into the full
- * day-card grid. Display-only context. */
+ * day-card grid. Every event carries its static guide (what it
+ * measures, what a market-friendly vs hostile result means) from
+ * lib/macroGuide.ts plus the AI explain + NQ-impact reads from the
+ * daily interpretation row. Display-only context. */
 
 import { useEffect, useMemo, useState } from "react";
 import type { NewsWeek, NewsItem } from "@/lib/newsCalendar";
 import { dayLabel, countdownLabel, etNow, eventEpoch } from "@/lib/macroFmt";
+import { newsGuideFor, newsItemId } from "@/lib/macroGuide";
 import { BentoCard } from "./BentoCard";
 
 const SOURCE_LABEL: Record<NewsWeek["source"], string> = {
@@ -15,6 +19,8 @@ const SOURCE_LABEL: Record<NewsWeek["source"], string> = {
 };
 
 const BIG_FOUR = /CPI|FOMC|NFP|PPI|PCE|Employment Situation|Nonfarm/i;
+
+type EventReads = Record<string, { explain?: string; nqImpact?: string }>;
 
 function ImpactBars({ impact }: { impact: NewsItem["impact"] }) {
   const filled = impact === "High" ? 3 : impact === "Medium" ? 2 : 1;
@@ -32,17 +38,18 @@ export default function NewsCalendarPanel({
   week,
   stale,
   error,
+  reads,
 }: {
   week: NewsWeek | null;
   stale: boolean;
   error?: string;
+  reads?: EventReads;
 }) {
   const [highOnly, setHighOnly] = useState(false);
   const [showAll, setShowAll] = useState(true); // day grid fills the card by default
-  const [nowSec, setNowSec] = useState(0);
+  const [nowSec, setNowSec] = useState(() => etNow().sec);
   const reduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   useEffect(() => {
-    setNowSec(etNow().sec);
     if (reduced) return;
     const id = setInterval(() => setNowSec(etNow().sec), 30_000);
     return () => clearInterval(id);
@@ -106,6 +113,7 @@ export default function NewsCalendarPanel({
             {list.map((it, i) => {
               const cd = countdownLabel(it, nowSec);
               const big = BIG_FOUR.test(it.title);
+              const read = reads?.[newsItemId(it)];
               return (
                 <div key={`${it.day}-${it.title}-${i}`} className="flex items-center gap-2 py-1.5 first:pt-0 last:pb-0">
                   <span className="w-[86px] shrink-0 font-mono text-[9px] leading-tight whitespace-nowrap">
@@ -115,8 +123,14 @@ export default function NewsCalendarPanel({
                   <span className="shrink-0">
                     <ImpactBars impact={it.impact} />
                   </span>
-                  <span className={`min-w-0 flex-1 truncate font-mono text-[11px] leading-snug ${big && !it.released ? "text-warn" : it.released ? "text-zinc-500" : "text-zinc-200"}`} title={it.title}>
-                    {it.title}
+                  <span className="min-w-0 flex-1 font-mono text-[11px] leading-snug">
+                    <span
+                      className={`block truncate ${big && !it.released ? "text-warn" : it.released ? "text-zinc-500" : "text-zinc-200"}`}
+                      title={newsGuideFor(it.title).what}
+                    >
+                      {it.title}
+                    </span>
+                    {read?.nqImpact && <span className="block truncate text-[9px] text-info">{read.nqImpact}</span>}
                   </span>
                   <span className="shrink-0 text-right font-mono text-[9px] leading-snug whitespace-nowrap tabular-nums">
                     <span className={it.actual ? "font-semibold text-zinc-50" : "text-zinc-500"}>{it.actual ?? "—"}</span>
@@ -141,7 +155,7 @@ export default function NewsCalendarPanel({
           {showAll && (
             <div className="grid gap-1.5 lg:grid-cols-2">
               {days.map((d) => (
-                <DayCard key={d.day} day={d.day} isToday={d.day === today} items={d.items} nowSec={nowSec} />
+                <DayCard key={d.day} day={d.day} isToday={d.day === today} items={d.items} nowSec={nowSec} reads={reads} />
               ))}
             </div>
           )}
@@ -150,14 +164,14 @@ export default function NewsCalendarPanel({
 
       {week?.source === "forexfactory" && (
         <p className="mt-2 font-mono text-[9px] leading-snug text-zinc-600">
-          mirror carries forecast/previous only — actual-carrying calendars are paid-tier (verified Oct 2026)
+          mirror is forecast/previous-first; the AI judges released results when the actual arrives, else the pre-release beat/miss read applies
         </p>
       )}
     </BentoCard>
   );
 }
 
-function DayCard({ day, isToday, items, nowSec }: { day: string; isToday: boolean; items: NewsItem[]; nowSec: number }) {
+function DayCard({ day, isToday, items, nowSec, reads }: { day: string; isToday: boolean; items: NewsItem[]; nowSec: number; reads?: EventReads }) {
   return (
     <div className={`rounded-md border bg-zinc-900/30 ${isToday ? "border-info/40" : "border-zinc-800/60"}`}>
       <p className={`px-2 pt-1 font-mono text-[9px] font-semibold uppercase tracking-wider ${isToday ? "text-info" : "text-zinc-500"}`}>
@@ -167,23 +181,54 @@ function DayCard({ day, isToday, items, nowSec }: { day: string; isToday: boolea
       <div className="divide-y divide-zinc-800/40">
         {items.map((it, i) => {
           const cd = countdownLabel(it, nowSec);
+          const guide = newsGuideFor(it.title);
+          const read = reads?.[newsItemId(it)];
           return (
-            <div key={i} className={`flex items-start gap-1.5 px-2 py-1 ${it.released ? "opacity-45" : ""}`}>
-              <span className="mt-[3px] w-[38px] shrink-0 text-right font-mono text-[9px] leading-tight whitespace-nowrap">
-                <span className="text-zinc-300">{it.timeET || "all-day"}</span>
-                {cd && <span className="block text-[8px] text-zinc-500">{cd}</span>}
-              </span>
-              <span className="mt-[4px] shrink-0">
-                <ImpactBars impact={it.impact} />
-              </span>
-              <span className="min-w-0 flex-1 font-mono text-[10px] leading-snug text-zinc-300">{it.title}</span>
-              <span className="shrink-0 text-right font-mono text-[9px] leading-snug whitespace-nowrap tabular-nums">
-                <span className={it.actual ? "font-semibold text-zinc-50" : "text-zinc-500"}>{it.actual ?? "—"}</span>
-                <span className="text-zinc-600"> / </span>
-                <span className="text-zinc-400">{it.forecast ?? "—"}</span>
-                <span className="text-zinc-600"> / </span>
-                <span className="text-zinc-500">{it.previous ?? "—"}</span>
-              </span>
+            <div key={i} className={`px-2 py-1 ${it.released ? "opacity-60" : ""}`}>
+              <div className="flex items-start gap-1.5">
+                <span className="mt-[3px] w-[38px] shrink-0 text-right font-mono text-[9px] leading-tight whitespace-nowrap">
+                  <span className="text-zinc-300">{it.timeET || "all-day"}</span>
+                  {cd && <span className="block text-[8px] text-zinc-500">{cd}</span>}
+                </span>
+                <span className="mt-[4px] shrink-0">
+                  <ImpactBars impact={it.impact} />
+                </span>
+                <span className="min-w-0 flex-1 font-mono text-[10px] leading-snug text-zinc-300">{it.title}</span>
+                <span className="shrink-0 text-right font-mono text-[9px] leading-snug whitespace-nowrap tabular-nums">
+                  <span className={it.actual ? "font-semibold text-zinc-50" : "text-zinc-500"}>{it.actual ?? "—"}</span>
+                  <span className="text-zinc-600"> / </span>
+                  <span className="text-zinc-400">{it.forecast ?? "—"}</span>
+                  <span className="text-zinc-600"> / </span>
+                  <span className="text-zinc-500">{it.previous ?? "—"}</span>
+                </span>
+              </div>
+              <div className="mt-1 space-y-0.5 pl-[42px]">
+                <p className="font-mono text-[9px] leading-snug text-zinc-500">{guide.what}</p>
+                <p className="font-mono text-[9px] leading-snug text-zinc-400">
+                  <span className="text-info">NQ — </span>
+                  {guide.nqImpact}
+                </p>
+                <p className="font-mono text-[9px] leading-snug text-zinc-500">
+                  <span className="text-long">good </span>
+                  {guide.goodForNq}
+                </p>
+                <p className="font-mono text-[9px] leading-snug text-zinc-500">
+                  <span className="text-short">bad </span>
+                  {guide.badForNq}
+                </p>
+                {read?.explain && (
+                  <p className="font-mono text-[9px] leading-snug text-info">
+                    <span className="text-zinc-500">AI explain — </span>
+                    {read.explain}
+                  </p>
+                )}
+                {read?.nqImpact && (
+                  <p className="font-mono text-[9px] leading-snug text-info">
+                    <span className="text-zinc-500">AI NQ — </span>
+                    {read.nqImpact}
+                  </p>
+                )}
+              </div>
             </div>
           );
         })}
