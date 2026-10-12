@@ -50,6 +50,9 @@ export type CycleRecord = {
   totalMs: number;
   stages: Partial<Record<CycleStage, number>>;
   detail: {
+    /** what triggered this tick: "boot" | "poll" | "event" — the cadence
+     *  forensics field (poll ticks while events are healthy = a bug) */
+    source?: string;
     detectLagMs?: number;
     /** bar close → this tick, every cycle: the continuous detection-lag
      *  metric (0 = the tick ran the instant the bar completed; the 15s
@@ -86,7 +89,7 @@ export type LatencyRecord = CycleRecord | FillRecord;
 
 export type LatencySnapshot = {
   /** the cycle currently running (stages fill in as it goes) */
-  current: { id: string; startedAt: number; stages: Partial<Record<CycleStage, number>>; checks: Array<{ name: string; ms: number }> } | null;
+  current: { id: string; startedAt: number; source: string; stages: Partial<Record<CycleStage, number>>; checks: Array<{ name: string; ms: number }> } | null;
   latest: CycleRecord | null;
   lastFills: FillRecord[];
   window: CycleRecord[];
@@ -105,6 +108,7 @@ const g = globalThis as unknown as {
     active: {
       id: string;
       startedAt: number;
+      source: string;
       stages: Partial<Record<CycleStage, number>>;
       checks: Array<{ name: string; ms: number }>;
       detectLagMs?: number;
@@ -116,7 +120,7 @@ const g = globalThis as unknown as {
     pendingFills: Array<{ id: string; rowId: number | null; at: number; label: string; dir: string; qty: number }>;
     /** the just-finished cycle, still accepting late marks (fire-and-forget
      *  dispatch promises resolve after finishCycle) for GRACE_MS */
-    grace: { obj: { id: string; startedAt: number; stages: Partial<Record<CycleStage, number>>; checks: Array<{ name: string; ms: number }>; detectLagMs?: number; barAgeMs?: number }; until: number } | null;
+    grace: { obj: { id: string; startedAt: number; source: string; stages: Partial<Record<CycleStage, number>>; checks: Array<{ name: string; ms: number }>; detectLagMs?: number; barAgeMs?: number }; until: number } | null;
     ready: boolean;
     lastPruneAt: number;
   };
@@ -159,7 +163,7 @@ function activeFor(): {
 export function latencySnapshot(): LatencySnapshot {
   const s = state();
   return {
-    current: s.active ? { id: s.active.id, startedAt: s.active.startedAt, stages: { ...s.active.stages }, checks: [...s.active.checks] } : null,
+    current: s.active ? { id: s.active.id, startedAt: s.active.startedAt, source: s.active.source, stages: { ...s.active.stages }, checks: [...s.active.checks] } : null,
     latest: s.latest,
     lastFills: [...s.lastFills],
     window: [...s.window],
@@ -168,11 +172,12 @@ export function latencySnapshot(): LatencySnapshot {
 
 /* ---- cycle lifecycle ------------------------------------------------- */
 
-/** open a new cycle (idempotent — an unfinished cycle is discarded) */
-export function startCycle(): string {
+/** open a new cycle (idempotent — an unfinished cycle is discarded).
+ *  source = what triggered the tick: "boot" | "poll" | "event" */
+export function startCycle(source = "tick"): string {
   const s = state();
   const id = `cyc|${Date.now().toString(36)}|${Math.random().toString(36).slice(2, 6)}`;
-  s.active = { id, startedAt: Date.now(), stages: {}, checks: [] };
+  s.active = { id, startedAt: Date.now(), source, stages: {}, checks: [] };
   return id;
 }
 
@@ -232,6 +237,7 @@ export function finishCycle(note?: string): void {
     // reference the live object so grace-window marks still show here
     stages: a.stages,
     detail: {
+      source: a.source,
       ...(a.detectLagMs !== undefined ? { detectLagMs: Math.round(a.detectLagMs) } : {}),
       ...(a.barAgeMs !== undefined ? { barAgeMs: Math.round(a.barAgeMs) } : {}),
       ...(note ? { note } : {}),

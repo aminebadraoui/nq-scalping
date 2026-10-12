@@ -106,7 +106,7 @@ function symbol(): string {
  *  null when unparseable. The tail's du/t basis makes plain key compare
  *  unreliable (the vendor frame re-replaces the tail with a lagging
  *  candle, oscillating the tail between two stamps), so both cadence
- *  rules compare CLOSE EPOCHS monotonically instead. */
+ *  rules compare CLOSE EPOCHS against a monotonic max instead. */
 export function barCloseMs(bar: { t: string; du?: string } | undefined): number | null {
   if (!bar || !/^\d{2}:\d{2}$/.test(bar.t) || !bar.du) return null;
   const [y, mo, d] = bar.du.split("-").map(Number);
@@ -115,30 +115,33 @@ export function barCloseMs(bar: { t: string; du?: string } | undefined): number 
   return Number.isFinite(ms) ? ms : null;
 }
 
-/** pure event-tick decision: fire only when the tail bar's close epoch
- *  ADVANCED (a new completed bar appeared) or the same-close bar flipped
- *  from tick-built to candle-confirmed. Backward oscillations (the vendor
- *  frame re-replacing the tail with its lagging candle) and repeat frames
- *  are skipped — comparing the global candle-refresh clock stamped a tick
- *  per frame (measured 16/min instead of the intended ~2/bar). */
+/** pure event-tick decision, monotonic over the MAX close ever seen:
+ *  · close > max → a new bar appeared → fire
+ *  · close == max → remember the source at max; fire only on the
+ *    tick→candle confirmation flip (once)
+ *  · close < max → a backward tail oscillation → ignore
+ *  Repeat frames and oscillation re-advances can never fire twice. */
 export function eventTickDecision(
-  prev: { closeMs: number; barSrc: string },
+  prev: { maxCloseMs: number; srcAtMax: string },
   next: { closeMs: number; barSrc: string },
-): "fire" | "skip" {
-  if (next.closeMs > prev.closeMs) return "fire";
-  if (next.closeMs === prev.closeMs && next.barSrc === "candle" && prev.barSrc !== "candle") return "fire";
-  return "skip";
+): { fire: boolean; maxCloseMs: number; srcAtMax: string } {
+  if (next.closeMs > prev.maxCloseMs) return { fire: true, maxCloseMs: next.closeMs, srcAtMax: next.barSrc };
+  if (next.closeMs === prev.maxCloseMs) {
+    const flip = prev.srcAtMax === "tick" && next.barSrc === "candle";
+    return { fire: flip, maxCloseMs: prev.maxCloseMs, srcAtMax: flip ? "candle" : prev.srcAtMax };
+  }
+  return { fire: false, maxCloseMs: prev.maxCloseMs, srcAtMax: prev.srcAtMax };
 }
 
 /** pure poll-backstop decision: the interval tick is the safety net only.
- *  Skip while the tail's close epoch is not newer than the last event's
- *  — the events already saw this bar (or an older one), so a poll adds
- *  nothing. The poll fires the moment the buffer rolls a bar the emits
- *  missed (tail advances) or the tail is unparseable (never guess). */
-export function pollBackstopSkip(lastBar: { t: string; du?: string } | undefined, lastEventCloseMs: number): boolean {
+ *  Skip while the tail's close epoch is not NEWER than the max the events
+ *  have seen — a poll adds nothing there. It fires the moment the buffer
+ *  rolls a bar the emits missed (tail advances past the max) or the tail
+ *  is unparseable (never guess). */
+export function pollBackstopSkip(lastBar: { t: string; du?: string } | undefined, maxCloseMs: number): boolean {
   const close = barCloseMs(lastBar);
   if (close === null) return false;
-  return close <= lastEventCloseMs;
+  return close <= maxCloseMs;
 }
 
 /** env feature flags: FEED_* — "1/true/yes/on" enables, "0/false/no/off" disables. */
@@ -444,14 +447,15 @@ function fmtPx(n: number, dp = 2): string {
 class SignalFeed {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
-  /** event-driven tick state (SIGNAL_EVENT_TICK=1): the last completed
-   *  bar's CLOSE EPOCH + confirmation source the subscription saw, so a
-   *  live-state emit only triggers a tick when the tail advances (a new
-   *  bar) or flips tick→candle at the same close — backward oscillations
+  /** event-driven tick state (SIGNAL_EVENT_TICK=1): the MAX completed-bar
+   *  close epoch the subscription has seen + the confirmation source of
+   *  that bar, so a live-state emit only triggers a tick when the tail
+   *  advances past the max or confirms at the max — backward oscillations
    *  and repeat footprint frames are skipped */
-  private eventTickCloseMs = 0;
-  private eventTickBarSrc = "";
+  private eventTickMaxClose = 0;
+  private eventTickSrcAtMax = "";
   private eventTickLast = 0;
+  private pollSkipLoggedAt = 0;
   private ctxCache: { date: string; ctx: CollectedContext } | null = null;
   private lastCtxLoad = 0;
   private sent = new Set<string>();
@@ -2287,10 +2291,10 @@ class SignalFeed {
     void this.push(text);
   }
 
-  async tick(): Promise<void> {
+  async tick(source: "boot" | "poll" | "event" | "tick" = "tick"): Promise<void> {
     if (this.ticking) return;
     this.ticking = true;
-    startCycle();
+    startCycle(source);
     let err: string | null = null;
     try {
       // ---- signal window (owner rule): Sunday 18:00 ET → Friday 16:00 ET
@@ -2410,44 +2414,53 @@ class SignalFeed {
     getOptionsFeed();
     // re-attach to any runners left open by a previous process
     void runnerTracker.load();
-    this.tick();
-    // the interval is the BACKSTOP: it sleeps while the last bar is
-    // candle-confirmed and fresh (the event ticks own those moments) and
-    // resumes when the bar ages or stays unconfirmed — a missed emit can
-    // never stall the loop for more than one interval
+    this.tick("boot");
+    // the interval is the BACKSTOP: it sleeps while the tail's close is
+    // not newer than the max the events have seen, and fires the moment
+    // the buffer rolls a bar the emits missed (or the tail is unparseable)
     this.timer = setInterval(() => {
       const now = Date.now();
       if (!signalWindowOpen(now)) return;
-      if (pollBackstopSkip(getLive().state.minutes.at(-1), this.eventTickCloseMs)) return;
-      void this.tick();
+      const skip = pollBackstopSkip(getLive().state.minutes.at(-1), this.eventTickMaxClose);
+      if (skip) {
+        if (now - this.pollSkipLoggedAt > 60_000) {
+          this.pollSkipLoggedAt = now;
+          console.log(`[signal-feed] poll backstop sleeping — tail close <= event max (${this.eventTickMaxClose})`);
+        }
+        return;
+      }
+      console.log(`[signal-feed] poll backstop firing — tail newer than event max (${this.eventTickMaxClose})`);
+      void this.tick("poll");
     }, refreshSeconds() * 1000);
     this.startEventTick();
   }
 
   /** SIGNAL_EVENT_TICK=1 — zero-latency detection: instead of waiting for
    *  the next poll, run the tick the moment the live state shows a NEW
-   *  completed bar (tail close advanced) or the tail flipping to
-   *  candle-confirmed (the tape gate still holds cards until confirmation,
-   *  so this fires exactly when the first tradeable moment arrives).
-   *  Backward tail oscillations and frames that merge nothing are skipped
-   *  (eventTickDecision). The interval stays as the safety net — it fires
-   *  the moment the buffer rolls a bar the emits missed. OFF by default —
-   *  enablement is an execution-knob change and needs the owner's env
-   *  approval first (web/EXEC_CHANGE_POLICY.md rule 4). */
+   *  completed bar (tail close past the max) or the max-close bar
+   *  flipping to candle-confirmed (the tape gate still holds cards until
+   *  confirmation, so this fires exactly when the first tradeable moment
+   *  arrives). Backward tail oscillations and frames that merge nothing
+   *  are ignored (eventTickDecision). The interval stays as the safety
+   *  net — it fires the moment the buffer rolls a bar the emits missed.
+   *  OFF by default — enablement is an execution-knob change and needs
+   *  the owner's env approval first (web/EXEC_CHANGE_POLICY.md rule 4). */
   private startEventTick(): void {
     if (!feedFlag("SIGNAL_EVENT_TICK", false)) return;
+    console.log("[signal-feed] event tick ENABLED (SIGNAL_EVENT_TICK=1) — bar-advance/confirm triggers");
     getLive().subscribe((st) => {
       const last = st.minutes[st.minutes.length - 1];
       const closeMs = barCloseMs(last) ?? 0;
       const barSrc = last?.source ?? "";
-      if (eventTickDecision({ closeMs: this.eventTickCloseMs, barSrc: this.eventTickBarSrc }, { closeMs, barSrc }) === "skip") return;
-      this.eventTickCloseMs = closeMs;
-      this.eventTickBarSrc = barSrc;
+      const d = eventTickDecision({ maxCloseMs: this.eventTickMaxClose, srcAtMax: this.eventTickSrcAtMax }, { closeMs, barSrc });
+      this.eventTickMaxClose = d.maxCloseMs;
+      this.eventTickSrcAtMax = d.srcAtMax;
+      if (!d.fire) return;
       const now = Date.now();
       if (now - this.eventTickLast < 250) return; // stampede throttle
       if (!signalWindowOpen(now)) return;
       this.eventTickLast = now;
-      void this.tick();
+      void this.tick("event");
     });
   }
 }

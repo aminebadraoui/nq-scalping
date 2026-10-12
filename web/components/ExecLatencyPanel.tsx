@@ -289,6 +289,7 @@ export default function ExecLatencyPanel() {
               <thead className="sticky top-0 z-10 bg-panel">
                 <tr className="text-left text-zinc-500">
                   <th className="border-b border-zinc-800 px-2 py-1 font-normal">time (NY)</th>
+                  <th className="border-b border-zinc-800 px-2 py-1 font-normal">src</th>
                   <th className="border-b border-zinc-800 px-2 py-1 font-normal text-right">total</th>
                   <th className="border-b border-zinc-800 px-2 py-1 font-normal text-right">get data</th>
                   <th className="border-b border-zinc-800 px-2 py-1 font-normal text-right">feed check</th>
@@ -302,6 +303,9 @@ export default function ExecLatencyPanel() {
                 {historyCycles.map((c, i) => (
                   <tr key={`${c.ts}|${i}`} className="text-zinc-400">
                     <td className="px-2 py-0.5 whitespace-nowrap text-zinc-500">{fmtTime(c.ts)}</td>
+                    <td className={`px-2 py-0.5 whitespace-nowrap ${c.detail?.source === "event" ? "text-long" : c.detail?.source === "poll" ? "text-amber-400" : "text-zinc-500"}`}>
+                      {typeof c.detail?.source === "string" ? c.detail.source : "—"}
+                    </td>
                     <td className="px-2 py-0.5 text-right whitespace-nowrap text-zinc-200">{fmtMs(c.total_ms)}</td>
                     <td className="px-2 py-0.5 text-right whitespace-nowrap">{fmtMs(c.stages?.getData)}</td>
                     <td className="px-2 py-0.5 text-right whitespace-nowrap">{fmtMs(c.stages?.feedCheck)}</td>
