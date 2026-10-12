@@ -494,7 +494,11 @@ class LiveFeed {
             this.state.barsRevision++;
             this.emit();
           }
-          const confirmed = this.state.minutes.some((m) => m.du === bar.du && m.t === bar.t && (m.source ?? "tick") === "candle");
+          // the raced bar is the buffer tail for the whole 12s window (bars
+          // are 60s apart); match on SOURCE like the tape gate does — the
+          // vendor candle's day stamp uses the feed clock, not UTC, so a
+          // du/t key match would miss the confirmation
+          const confirmed = (this.state.minutes.at(-1)?.source ?? "tick") === "candle";
           if (confirmed && this.raceRestMs === 0) {
             this.raceRestMs = Date.now();
             this.finishConfirmRace(key);
@@ -517,8 +521,8 @@ class LiveFeed {
   /** record a frame-side confirmation for the active race (socket path) */
   private noteRaceFrameConfirm(): void {
     if (!this.raceActive || this.raceFrameMs > 0) return;
-    const [du, t] = this.raceBarKey.split("|");
-    const confirmed = this.state.minutes.some((m) => m.du === du && m.t === t && (m.source ?? "tick") === "candle");
+    // same source-based match as the REST path (see above)
+    const confirmed = (this.state.minutes.at(-1)?.source ?? "tick") === "candle";
     if (!confirmed) return;
     this.raceFrameMs = Date.now();
     this.finishConfirmRace(this.raceBarKey);
