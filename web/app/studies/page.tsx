@@ -11,6 +11,10 @@ export const metadata: Metadata = {
     "Every backtest study with its full content inline — question, method, results, honest bounds, and the standard quality report (T1/T2/T4 + verdict).",
 };
 
+/** the LIVE block under every card reads the daily-updated daybook
+ *  archive — never bake a build-time snapshot into the page */
+export const dynamic = "force-dynamic";
+
 export default function StudiesPage() {
   return (
     <div className="mx-auto w-full max-w-6xl px-4 pb-20 pt-8">
@@ -22,7 +26,11 @@ export default function StudiesPage() {
         <p className="mt-3 max-w-3xl text-base leading-relaxed text-zinc-400">
           All {studies.length} studies with their complete content — question, method, result tables, what was
           falsified, honest bounds — rendered right here from the committed archive{" "}
-          <code className="text-zinc-300">lib/studyContent.json</code>. Expand any card; search filters instantly.
+          <code className="text-zinc-300">lib/studyContent.json</code>. Every card is split in two: the{" "}
+          <b className="text-zinc-200">BACKTEST</b> record above, and a{" "}
+          <b className="text-sky-300">LIVE</b> block below showing each linked strategy&apos;s real fills — updated{" "}
+          <b className="text-zinc-200">daily</b> by the nightly consolidation (17:45 ET Mon–Fri). Expand any card;
+          search filters instantly.
         </p>
         <p className="mt-3 font-mono text-[11px] text-zinc-500">
           working surface →{" "}
@@ -109,11 +117,17 @@ export default function StudiesPage() {
       })}
 
       <p className="mt-10 border-t border-zinc-800 pt-6 text-[11px] leading-relaxed text-zinc-600">
-        Content is embedded from the committed study archive (docs/research at build time). Every trade-level script was
-        migrated to the consolidated engine on 2026-10-10: scorers swapped only where semantics were provably identical,
-        hand-rolled stats replaced by <code className="text-zinc-500">coreStats</code>/
-        <code className="text-zinc-500">wilson95</code>, and the standard block appended. Educational research only — not
-        financial advice.
+        Backtest content is embedded from the committed study archive (docs/research at build time). The LIVE block
+        under every card is the other half: the daybook&apos;s consolidated day summaries (nightly, 17:45 ET Mon–Fri,
+        CrossTrade fills → R2 archive) read through{" "}
+        <code className="text-zinc-500">lib/liveArchive.ts</code> — same data as the{" "}
+        <Link href="/backtest" className="text-long hover:underline">
+          backtest page&apos;s live panel
+        </Link>
+        . Every trade-level script was migrated to the consolidated engine on 2026-10-10: scorers swapped only where
+        semantics were provably identical, hand-rolled stats replaced by <code className="text-zinc-500">coreStats</code>/
+        <code className="text-zinc-500">wilson95</code>, and the standard block appended. Educational research only —
+        not financial advice.
       </p>
     </div>
   );

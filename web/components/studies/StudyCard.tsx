@@ -2,11 +2,13 @@
  * Used by /studies (the full archive) and the stage tabs' Studies panes.
  * Server component: safe to render inside server pages. */
 
+import { Suspense } from "react";
 import Link from "next/link";
 import { studies, CATEGORIES, bestConfigs, type StudyCategory } from "@/lib/studies";
 import studyContent from "@/lib/studyContent.json";
 import { strategiesForStudy } from "@/lib/strategies/registry";
 import Markdown from "@/components/studies/Markdown";
+import { LiveStudyPanel } from "@/components/studies/LiveStudyPanel";
 
 export const CATEGORY_TONE: Record<StudyCategory, string> = {
   momentum: "text-emerald-300 border-emerald-900/60 bg-emerald-950/30",
@@ -67,6 +69,7 @@ export function StudyCard({ study }: { study: (typeof studies)[number] }) {
           )}
         </summary>
         <div className="border-t border-zinc-800/60 px-4 pb-4 pt-3">
+          <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-zinc-500">backtest</p>
           {content ? (
             <Markdown md={content} />
           ) : (
@@ -101,6 +104,16 @@ export function StudyCard({ study }: { study: (typeof studies)[number] }) {
             </details>
           )}
         </div>
+        {/* the LIVE half streams in without blocking the backtest content */}
+        <Suspense
+          fallback={
+            <div className="border-t border-zinc-800/60 bg-zinc-950/25 px-4 pb-4 pt-3">
+              <p className="font-mono text-[10px] uppercase tracking-wider text-sky-300/70">live · loading…</p>
+            </div>
+          }
+        >
+          <LiveStudyPanel studyId={study.id} strategies={linked} />
+        </Suspense>
       </details>
     </article>
   );

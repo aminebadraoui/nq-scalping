@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import LiveDailyPanel from "@/components/backtest/LiveDailyPanel";
 
 type Stats = {
   trades: number;
@@ -253,12 +254,16 @@ export default function BacktestView() {
             </div>
 
             <p className="text-[10px] text-zinc-600 mt-4 leading-relaxed">
-              Caveats: (1) the location profile is the session's own full-day aggregate, so it sees levels formed later in the
+              Caveats: (1) the location profile is the whole session&apos;s own full-day aggregate, so it sees levels formed later in the
               day — absolute P&L is optimistic; (2) the config is selected on TRAIN only, so the <b>test column is the honest
               number</b> — green generalizes, red overfit. The per-year row shows whether the winner is stable across regimes.
             </p>
           </>
         )}
+
+        {/* the LIVE half: every family's real fills vs its backtest
+            baseline, consolidated daily by the nightly pipeline */}
+        <LiveDailyPanel />
 
         <section className="mt-12 border-t border-zinc-800 pt-6">
           <h2 className="text-lg font-bold text-zinc-50">Overfitting audit · DSR / PBO / CPCV</h2>
