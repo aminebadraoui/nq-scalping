@@ -34,7 +34,7 @@ type Fill = {
   ts: number;
   kind: "fill";
   totalMs: number;
-  detail: { label: string; dir: string; qty: number; submitMs: number; ackMs: number | null; fillMs: number | null; seenMs: number | null };
+  detail: { label: string; dir: string; qty: number; host?: string; guardMs?: number; flatMs?: number; postMs?: number; submitMs: number; ackMs: number | null; fillMs: number | null; seenMs: number | null };
 };
 
 type Live = {
@@ -226,6 +226,9 @@ export default function ExecLatencyPanel() {
                   {lastFill.detail.dir} {lastFill.detail.qty}
                 </span>
               </div>
+              <div className="flex items-center justify-between"><span className="text-zinc-500">guard check (crossGuardGate)</span><span className="text-zinc-200">{fmtMs(lastFill.detail.guardMs)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-zinc-500">flat gate (restFlatGate)</span><span className="text-zinc-200">{fmtMs(lastFill.detail.flatMs)}</span></div>
+              <div className="flex items-center justify-between"><span className="text-zinc-500">REST placement round trip</span><span className="text-zinc-200">{fmtMs(lastFill.detail.postMs)}</span></div>
               <div className="flex items-center justify-between"><span className="text-zinc-500">submit → placement ack</span><span className="text-zinc-200">{fmtMs(lastFill.detail.submitMs)}</span></div>
               <div className="flex items-center justify-between"><span className="text-zinc-500">ack → broker fill</span><span className="text-zinc-200">{fmtMs(lastFill.detail.fillMs)}</span></div>
               <div className="flex items-center justify-between"><span className="text-zinc-500">fill → watcher saw it</span><span className="text-zinc-200">{fmtMs(lastFill.detail.seenMs)}</span></div>
@@ -305,6 +308,7 @@ export default function ExecLatencyPanel() {
                     <td className="px-2 py-0.5 whitespace-nowrap text-zinc-500">{fmtTime(c.ts)}</td>
                     <td className={`px-2 py-0.5 whitespace-nowrap ${c.detail?.source === "event" ? "text-long" : c.detail?.source === "poll" ? "text-amber-400" : "text-zinc-500"}`}>
                       {typeof c.detail?.source === "string" ? c.detail.source : "—"}
+                      {typeof c.detail?.host === "string" && c.detail.host !== "" ? `·${c.detail.host}` : ""}
                     </td>
                     <td className="px-2 py-0.5 text-right whitespace-nowrap text-zinc-200">{fmtMs(c.total_ms)}</td>
                     <td className="px-2 py-0.5 text-right whitespace-nowrap">{fmtMs(c.stages?.getData)}</td>

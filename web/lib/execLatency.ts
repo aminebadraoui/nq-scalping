@@ -53,6 +53,10 @@ export type CycleRecord = {
     /** what triggered this tick: "boot" | "poll" | "event" — the cadence
      *  forensics field (poll ticks while events are healthy = a bug) */
     source?: string;
+    /** which host wrote this: the VPS build sha (BUILD_SHA) or "dev" —
+     *  local dev feeds share the production Neon and are tagged so the
+     *  history can always tell them apart */
+    host?: string;
     detectLagMs?: number;
     /** bar close → this tick, every cycle: the continuous detection-lag
      *  metric (0 = the tick ran the instant the bar completed; the 15s
@@ -75,6 +79,14 @@ export type FillRecord = {
     label: string;
     dir: string;
     qty: number;
+    /** which host wrote this: the VPS build sha or "dev" */
+    host?: string;
+    /** the dispatch sub-phases (the "send to CrossTrade" internals):
+     *  guard = crossGuardGate · flat = restFlatGate · post = REST round
+     *  trip — together they explain where dispatch time goes */
+    guardMs?: number;
+    flatMs?: number;
+    postMs?: number;
     /** POST placement round-trip (submit → ack) */
     submitMs: number;
     ackMs: number | null;
@@ -96,6 +108,12 @@ export type LatencySnapshot = {
 };
 
 const MAX_WINDOW = 120;
+/** which host writes these rows: the VPS build sha, or "dev" for a local
+ *  dev server. Dev feeds share the production Neon — their cycles stay in
+ *  the in-memory ring (so the local panel works) but are NOT persisted,
+ *  keeping the production history clean. */
+export const LATENCY_HOST = (process.env.BUILD_SHA || "dev").slice(0, 7);
+const PERSIST_ENABLED = LATENCY_HOST !== "dev";
 const MAX_FILLS = 20;
 const FILL_MATCH_WINDOW_MS = 10 * 60_000;
 const PRUNE_AFTER_MS = 14 * 24 * 3600_000;
@@ -238,6 +256,7 @@ export function finishCycle(note?: string): void {
     stages: a.stages,
     detail: {
       source: a.source,
+      host: LATENCY_HOST,
       ...(a.detectLagMs !== undefined ? { detectLagMs: Math.round(a.detectLagMs) } : {}),
       ...(a.barAgeMs !== undefined ? { barAgeMs: Math.round(a.barAgeMs) } : {}),
       ...(note ? { note } : {}),
@@ -253,8 +272,9 @@ export function finishCycle(note?: string): void {
 /* ---- CrossTrade submit→fill ------------------------------------------ */
 
 /** register a REST placement about to be POSTed (returns the entry id).
- *  Live placements only — dry-runs never produce fills. */
-export function noteOrderSubmit(label: string, dir: "long" | "short", qty: number): string | null {
+ *  Live placements only — dry-runs never produce fills. extra.guardMs is
+ *  the crossGuardGate phase, timed before the fill id existed. */
+export function noteOrderSubmit(label: string, dir: "long" | "short", qty: number, extra?: { guardMs?: number }): string | null {
   const s = state();
   const id = `fill|${Date.now().toString(36)}|${Math.random().toString(36).slice(2, 6)}`;
   const at = Date.now();
@@ -266,7 +286,17 @@ export function noteOrderSubmit(label: string, dir: "long" | "short", qty: numbe
     kind: "fill",
     totalMs: 0,
     stages: {},
-    detail: { label, dir, qty, submitMs: 0, ackMs: null, fillMs: null, seenMs: null },
+    detail: {
+      label,
+      dir,
+      qty,
+      host: LATENCY_HOST,
+      ...(extra?.guardMs !== undefined ? { guardMs: Math.round(extra.guardMs) } : {}),
+      submitMs: 0,
+      ackMs: null,
+      fillMs: null,
+      seenMs: null,
+    },
   };
   s.lastFills.unshift(record);
   if (s.lastFills.length > MAX_FILLS) s.lastFills.length = MAX_FILLS;
@@ -275,6 +305,15 @@ export function noteOrderSubmit(label: string, dir: "long" | "short", qty: numbe
     if (p) p.rowId = rowId;
   });
   return id;
+}
+
+/** stamp a dispatch sub-phase on a pending fill (flat gate / REST post) */
+export function markOrderPhase(id: string | null, phase: "flat" | "post", ms: number): void {
+  const s = state();
+  const rec = id ? s.lastFills.find((f) => f.id === id) : s.lastFills[0];
+  if (!rec) return;
+  rec.detail[phase === "flat" ? "flatMs" : "postMs"] = Math.round(ms);
+  void updateRow(rec);
 }
 
 /** the placement POST returned — stamp the round-trip duration */
@@ -343,6 +382,7 @@ export async function ensureLatencyTable(): Promise<boolean> {
 }
 
 async function persist(record: LatencyRecord, onRow?: (rowId: number) => void): Promise<void> {
+  if (!PERSIST_ENABLED) return; // dev feed: in-memory only, never pollute prod Neon
   try {
     const ok = await ensureTable();
     if (!ok) return;

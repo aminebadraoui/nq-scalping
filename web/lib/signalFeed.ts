@@ -67,6 +67,7 @@ import { stopCrossedAtDispatch, limitCrossedAtDispatch } from "./crossTrade";
 import { tradingHalted } from "./tradingHalt";
 import { counterGateDecision, counterGateParams } from "./rthExitLog";
 import { startCycle, markStage, markCheck, markBarAge, finishCycle } from "./execLatency";
+import { cachedFootprint, detectMomentumMemo, detectExpansionScalpMemo, detectSoftMomentumMemo, detectOpenDriveMemo } from "./detectorCache";
 import { momentumProfile, rthProfile, applyProfile, timeExitAt, type FamilyProfile } from "./profile";
 import { registerTimeExit, checkTimeExits } from "./timeExit";
 import { logExec } from "./execLog";
@@ -644,7 +645,7 @@ class SignalFeed {
       return null;
     }
 
-    const minutes = liveMinutesToFootprint(liveMins);
+    const minutes = cachedFootprint(live.minutes, live.barsRevision, live.cur ? live.cur : null);
     if (!minutes.length) return null;
     this.liveOk = true;
     this.lastNote = "live";
@@ -843,7 +844,7 @@ class SignalFeed {
     }
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 3) return;
-    const fp = liveMinutesToFootprint(live.minutes);
+    const fp = cachedFootprint(live.minutes, live.barsRevision);
     const setup = detectOneSidedReclaim(fp);
     if (!setup) return;
     const key = `${setup.day}|${setup.dir}|${setup.t}`;
@@ -943,7 +944,7 @@ class SignalFeed {
   private async checkMomentum(): Promise<void> {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
-    const fp = liveMinutesToFootprint(live.minutes);
+    const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (this.tapeGateHolds(fp, "momentum")) return;
     // cross-asset context for the measured ES chips (null while the twin
     // buffer is too young — chips simply don't print)
@@ -951,13 +952,14 @@ class SignalFeed {
     const nqMid = fp.map((m) => (m.high + m.low) / 2);
     // price-gap inventory for the journal-only gap chips (Naso hypotheses)
     const gaps = gapInventory(fp);
+    // Asia/London ranges are too thin — chips simply don't print)
     // ladder management for open scale-out runners (CrossTrade backend only,
     // no new polling — reuses this tick's completed minutes)
     if (crossTradeEnabled()) void runnerTracker.evaluate(fp).catch(() => {});
     if (!FEED_MOMENTUM) return;
     const nb = newsBlockedNow(Date.now());
-    const momSigs = detectMomentum(fp, MOM_PROD);
-    const expSigs = detectExpansionScalp(fp, EXP_PROD);
+    const momSigs = detectMomentumMemo(fp, MOM_PROD, live.barsRevision);
+    const expSigs = detectExpansionScalpMemo(fp, EXP_PROD, live.barsRevision);
     // A+ = both triggers fire on the same bar (78.9% win / PF 3.23 — the
     // highest-conviction Globex signal). The momentum signal wins the dedupe.
     const expKeys = new Set(expSigs.map((x) => `${x.d}|${x.dir}|${x.t}`));
@@ -1346,7 +1348,7 @@ class SignalFeed {
     if (!p) return;
     const live = getLive().state;
     if (!live.connected || !live.minutes.length) return;
-    const fp = liveMinutesToFootprint(live.minutes);
+    const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (fp.length <= p.armedIdx + 1) return;
 
     // session rolled under the pending retrace — void it (recorded so the
@@ -1581,14 +1583,14 @@ class SignalFeed {
     const nb = newsBlockedNow(Date.now());
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
-    const fp = liveMinutesToFootprint(live.minutes);
+    const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (this.tapeGateHolds(fp, "rth")) return;
     const esCtx = this.esContext(fp);
     const nqMid = fp.map((m) => (m.high + m.low) / 2);
     // price-gap inventory for the journal-only gap chips (Naso hypotheses)
     const gaps = gapInventory(fp);
     if (nb) console.log(`[news] ${nb} blackout — skipping RTH cards (candidates recorded)`);
-    for (const s of detectSoftMomentum(fp, SOFT_PROD)) {
+    for (const s of detectSoftMomentumMemo(fp, SOFT_PROD, live.barsRevision)) {
       if (s.breakIdx !== fp.length - 1) continue;
       if (nb) {
         const es = esCardChips(esCtx, nqMid, s, false);
@@ -1906,7 +1908,7 @@ class SignalFeed {
     const nb = newsBlockedNow(Date.now());
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 60) return;
-    const fp = liveMinutesToFootprint(live.minutes);
+    const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (this.tapeGateHolds(fp, "open")) return;
     // price-gap inventory for the journal-only gap chips (Naso hypotheses)
     const gaps = gapInventory(fp);
@@ -1943,9 +1945,9 @@ class SignalFeed {
       }
     }
     const jobs = [
-      { key: "open", title: STATS.openDrive.name, sigs: FEED_OPEN_DRIVE ? detectOpenDrive(fp, OPEN_PROD) : [], plan: "fixed TP/SL plan", resting: false, stat: STATS.openDrive.stat },
-      { key: "pullback", title: STATS.openPullback.name, sigs: FEED_OPEN_PULLBACK ? detectOpenDrive(fp, PULLBACK_PROD) : [], plan: "1R plan", resting: false, stat: STATS.openPullback.stat },
-      { key: "sniper", title: STATS.openSniper.name, sigs: FEED_OPEN_SNIPER ? detectOpenDrive(fp, SNIPER_PROD) : [], plan: "resting limit · flush-high target", resting: true, stat: STATS.openSniper.stat },
+      { key: "open", title: STATS.openDrive.name, sigs: FEED_OPEN_DRIVE ? detectOpenDriveMemo(fp, OPEN_PROD, live.barsRevision) : [], plan: "fixed TP/SL plan", resting: false, stat: STATS.openDrive.stat },
+      { key: "pullback", title: STATS.openPullback.name, sigs: FEED_OPEN_PULLBACK ? detectOpenDriveMemo(fp, PULLBACK_PROD, live.barsRevision) : [], plan: "1R plan", resting: false, stat: STATS.openPullback.stat },
+      { key: "sniper", title: STATS.openSniper.name, sigs: FEED_OPEN_SNIPER ? detectOpenDriveMemo(fp, SNIPER_PROD, live.barsRevision) : [], plan: "resting limit · flush-high target", resting: true, stat: STATS.openSniper.stat },
     ];
     if (nb) console.log(`[news] ${nb} blackout — skipping open cards (candidates recorded)`);
     for (const job of jobs) {

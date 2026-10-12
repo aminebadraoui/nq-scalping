@@ -55,7 +55,7 @@ import { sendTelegram } from "./notify";
 import { getLive } from "./live";
 import { logExec } from "./execLog";
 import { tradingHalted } from "./tradingHalt";
-import { noteOrderSubmit, noteOrderAck } from "./execLatency";
+import { noteOrderSubmit, noteOrderAck, markOrderPhase } from "./execLatency";
 
 export type CrossTradeConfig = {
   url: string;
@@ -558,7 +558,9 @@ export async function placeCrossTradeOrderREST(
   stopChildId?: string | number;
   targetChildId?: string | number;
 }> {
+  const g0 = performance.now();
   const guard = await crossGuardGate();
+  const guardMs = performance.now() - g0;
   if (guard.verdict !== "ok") return { ok: false, reason: `guard: ${guard.reason}` };
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
@@ -605,7 +607,12 @@ export async function placeCrossTradeOrderREST(
   // (signalFeed.retraceUseLimit; CROSSTRADE_LIMIT_ENTRIES=0 opts out) —
   // and the watcher's fill verification instead of a pre-trade quote check.
 
+  // telemetry: open the submit→fill leg BEFORE the remaining gates so the
+  // flat-gate phase can attach (lib/execLatency.ts)
+  const fillId = noteOrderSubmit(opts.label ?? describeIntent(intent), intent.dir, intent.contracts, { guardMs });
+  const flatT0 = performance.now();
   const flat = await restFlatGate(cfg);
+  markOrderPhase(fillId, "flat", performance.now() - flatT0);
   if (!flat.ok) return { ok: false, reason: flat.reason };
 
   let payload: RESTPlacePayload;
@@ -619,11 +626,9 @@ export async function placeCrossTradeOrderREST(
     `[crossTrade] LIVE(REST) ${payload.orderType === "limit" ? "LIMIT" : ""} ${intent.dir.toUpperCase()} ${payload.qty} ${payload.instrument} ` +
       `entry ${intent.entry.toFixed(2)} · stop ${intent.stop.toFixed(2)} · target ${intent.target.toFixed(2)} · ${intent.timeET} NY`,
   );
-  // telemetry: open the submit→fill leg (lib/execLatency.ts — the
-  // "time for CrossTrade to execute the trade" stage)
-  const fillId = noteOrderSubmit(opts.label ?? describeIntent(intent), intent.dir, intent.contracts);
   const submitT0 = performance.now();
   const leg = await postRESTLeg(payload, cfg);
+  markOrderPhase(fillId, "post", performance.now() - submitT0);
   noteOrderAck(fillId, performance.now() - submitT0, performance.now() - submitT0);
   if (leg.kind === "auth") {
     // plan/auth rejections happen BEFORE dispatch — safe to fall back to

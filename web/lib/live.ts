@@ -64,6 +64,11 @@ export type LiveState = {
   /** last successful candle refresh (ms; 0 = never) — the health endpoint
    *  reports it alongside the bar-source mix so a stalled refresh is visible */
   lastCandleRefreshAt: number;
+  /** monotonic bar-buffer revision — bumped every time a candle merge
+   *  REPLACES or ADDS a bar. The detector/ footprint caches key on this:
+   *  a vendor revision of any mid-array bar invalidates them (the tick
+   *  feed undercounts volume, so a replaced bar changes prefix math). */
+  barsRevision: number;
   snapshot: Snapshot | null;
   ticks: Tick[];
   minutes: LiveMinute[];
@@ -405,6 +410,7 @@ class LiveFeed {
         }
         const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|");
         const r = mergeCandleMinutes(this.state.minutes, candles, nowKey);
+        if (r.replaced || r.added) this.state.barsRevision++;
         this.state.lastCandleRefreshAt = Date.now();
         const newest = candles.map((c) => c.t).sort().at(-1) ?? "";
         console.log(
@@ -430,6 +436,7 @@ class LiveFeed {
     ticks: [],
     minutes: [],
     cur: null,
+    barsRevision: 0,
     es: { lastTradeMs: 0, minutes: [], cur: null },
     heal: seedTapeHeal(),
   };
@@ -785,7 +792,10 @@ class LiveFeed {
                   const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|");
                   const merged = mergeCandleMinutes(this.state.minutes, r.candles, nowKey);
                   this.state.lastCandleRefreshAt = Date.now();
-                  if (merged.replaced || merged.added) this.emit();
+                  if (merged.replaced || merged.added) {
+                    this.state.barsRevision++;
+                    this.emit();
+                  }
                   // one diagnostic line per minute max — the frame path is
                   // the real-time confirmation channel; its silence (or a
                   // growing tail) is the tape-gap signature
