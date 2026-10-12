@@ -30,7 +30,13 @@
  *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
  *     scripts/sizeDownStudy.ts [--offline] [--max N] [--iters 2000] \
  *     [--split 2026-01-01] [--budget 50] [--cap 5] [--target 200] \
- *     [--dump out.json]
+ *     [--dump out.json] [--sweep] [--cell-iters 500]
+ *
+ * --sweep runs the risk-layer grid instead of the single-config report:
+ * budget {25,40,50,60,75,100,125,150,200,250} × cap {2..30} × daily arm
+ * {off,200,300,400} = 400 cells; each cell gets the same §4.1 bootstrap
+ * (--cell-iters reshuffles, default 500) and the frontier printer lists
+ * every cell with zero breaches and green-band drawdown, fastest first.
  * ------------------------------------------------------------------ */
 
 import { promises as fs } from "node:fs";
@@ -69,13 +75,15 @@ const COMM_PER_SIDE = 0.95; // $0.95/side — reported as a haircut note, not in
 /* ---------------- CLI ---------------- */
 
 function parseArgs(argv: string[]) {
-  const o: { offline: boolean; max?: number; iters: number; split: string; budget: number; cap: number; target: number; dump?: string } = {
+  const o: { offline: boolean; max?: number; iters: number; split: string; budget: number; cap: number; target: number; dump?: string; sweep: boolean; cellIters: number } = {
     offline: false,
     iters: 2000,
     split: "2026-01-01",
     budget: 50,
     cap: 5,
     target: 200,
+    sweep: false,
+    cellIters: 500,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -87,6 +95,8 @@ function parseArgs(argv: string[]) {
     else if (a === "--cap") o.cap = Number(argv[++i]);
     else if (a === "--target") o.target = Number(argv[++i]);
     else if (a === "--dump") o.dump = argv[++i];
+    else if (a === "--sweep") o.sweep = true;
+    else if (a === "--cell-iters") o.cellIters = Number(argv[++i]);
   }
   return o;
 }
@@ -263,6 +273,137 @@ function dailySeries(dollars: DollarizedTrade[]): number[] {
 
 const mean = (a: number[]): number => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 
+/* ---------------- risk-layer grid sweep (--sweep) ---------------- */
+
+type SweepCell = {
+  budget: number;
+  cap: number;
+  target: number;
+  n: number;
+  meanDay: number;
+  worstDay: number;
+  bestDay: number;
+  daySd: number;
+  maxDdUsd: number;
+  mllRatio: number;
+  haltedDays: number;
+  skipped: number;
+  pEvalPass: number; // 0..1
+  pEvalBreach: number;
+  medPass: number | null;
+  p10Pass: number | null;
+  p90Pass: number | null;
+  pFundBreach: number;
+  pPayout: number;
+  medPayout: number | null;
+};
+
+const SWEEP_BUDGETS = [25, 40, 50, 60, 75, 100, 125, 150, 200, 250];
+const SWEEP_CAPS = [2, 3, 4, 5, 6, 8, 10, 15, 20, 30];
+const SWEEP_TARGETS = [0, 200, 300, 400]; // 0 = no daily arm
+
+function maxDdUsd(trades: DollarizedTrade[]): number {
+  let eq = 0;
+  let peak = 0;
+  let dd = 0;
+  for (const t of [...trades].sort((a, b) => a.date.localeCompare(b.date))) {
+    eq += t.pnl;
+    if (eq > peak) peak = eq;
+    const d = peak - eq;
+    if (d > dd) dd = d;
+  }
+  return dd;
+}
+
+async function runSweep(prod: EngineTrade[], o: { cellIters: number; dump?: string }): Promise<void> {
+  console.log(`sweep: ${SWEEP_BUDGETS.length} budgets × ${SWEEP_CAPS.length} caps × ${SWEEP_TARGETS.length} targets = ${SWEEP_BUDGETS.length * SWEEP_CAPS.length * SWEEP_TARGETS.length} cells · ${o.cellIters} iters/cell`);
+  const t0 = Date.now();
+  const cells: SweepCell[] = [];
+  for (const budget of SWEEP_BUDGETS) {
+    // the hard dollar ceiling: skip stops that would risk > budget at 1 contract
+    const tradeable = prod.filter((t) => t.risk <= budget / POINT_VALUE);
+    for (const cap of SWEEP_CAPS) {
+      const sized = dollarize(
+        tradeable.map((t) => ({ date: t.date, pnlPts: t.pnl, riskPts: t.risk })),
+        budget,
+        { maxMicro: cap, pointValue: POINT_VALUE },
+      );
+      for (const target of SWEEP_TARGETS) {
+        const arm = target > 0 ? applyDailyTarget(sized, target) : { kept: sized, haltedDays: 0, skipped: 0 };
+        const daily = dailySeries(arm.kept);
+        const b = bootstrap(daily, RAPID_EOD_50K, o.cellIters, 0x5eed);
+        const dd = maxDdUsd(arm.kept);
+        const meanDay = mean(daily);
+        cells.push({
+          budget,
+          cap,
+          target,
+          n: arm.kept.length,
+          meanDay: Math.round(meanDay),
+          worstDay: Math.round(Math.min(...daily)),
+          bestDay: Math.round(Math.max(...daily)),
+          daySd: Math.round(Math.sqrt(mean(daily.map((x) => (x - meanDay) ** 2)))),
+          maxDdUsd: dd,
+          mllRatio: dd / RAPID_EOD_50K.maxLoss,
+          haltedDays: arm.haltedDays,
+          skipped: arm.skipped,
+          pEvalPass: b.evalPass / b.iters,
+          pEvalBreach: b.evalBreach / b.iters,
+          medPass: pctl(b.daysToPass, 0.5),
+          p10Pass: pctl(b.daysToPass, 0.1),
+          p90Pass: pctl(b.daysToPass, 0.9),
+          pFundBreach: b.fundBreach / b.iters,
+          pPayout: b.fundPayout / b.iters,
+          medPayout: pctl(b.daysToPayout, 0.5),
+        });
+      }
+    }
+  }
+  console.log(`${((Date.now() - t0) / 1000).toFixed(0)}s · ${cells.length} cells swept\n`);
+
+  const fmt = (c: SweepCell): string =>
+    `b$${String(c.budget).padStart(3)} cap${String(c.cap).padStart(2)} t${c.target === 0 ? "off" : String(c.target).padStart(3)} | n ${String(c.n).padStart(4)} | day $${String(c.meanDay).padStart(4)} | worst $${String(c.worstDay).padStart(4)} | dd ${(c.mllRatio * 100).toFixed(0).padStart(3)}% | P(eB) ${(c.pEvalBreach * 100).toFixed(1).padStart(5)}% | pass ${String(c.medPass ?? "—").padStart(3)}d [${c.p10Pass ?? "—"}–${c.p90Pass ?? "—"}] | P(fB) ${(c.pFundBreach * 100).toFixed(1).padStart(5)}% | payout ${String(c.medPayout ?? "—").padStart(3)}d | halts ${c.haltedDays}`;
+
+  const safe = (c: SweepCell): boolean => c.pEvalBreach === 0 && c.pFundBreach === 0 && c.mllRatio <= 0.4;
+  const byPass = (a: SweepCell, b: SweepCell): number => (a.medPass ?? 1e9) - (b.medPass ?? 1e9) || a.mllRatio - b.mllRatio;
+
+  const safeCells = cells.filter(safe).sort(byPass);
+  console.log(`SAFE FRONTIER — 0 breaches (both stages) AND maxDD ≤ 40% MLL — ${safeCells.length} cells, fastest first:`);
+  for (const c of safeCells.slice(0, 40)) console.log("  " + fmt(c));
+  if (safeCells.length > 40) console.log(`  … ${safeCells.length - 40} more`);
+  if (!safeCells.length) console.log("  (none — loosen the band or the data says no cell is safe)");
+
+  const anyCells = [...cells].sort(byPass).slice(0, 8);
+  console.log("\nfastest overall (regardless of breach — the risky extreme, for contrast):");
+  for (const c of anyCells) console.log("  " + fmt(c));
+
+  /* ---- verification: top safe cell + the cap5/$50/$200 proposal, 10k iters ---- */
+  const top = safeCells[0];
+  const proposalCell = cells.find((c) => c.budget === 50 && c.cap === 5 && c.target === 200);
+  for (const [label, c] of [["top safe cell", top], ["cap5/$50/$200 (prior study)", proposalCell]] as Array<[string, SweepCell | undefined]>) {
+    if (!c) continue;
+    const sized = dollarize(
+      prod.filter((t) => t.risk <= c.budget / POINT_VALUE).map((t) => ({ date: t.date, pnlPts: t.pnl, riskPts: t.risk })),
+      c.budget,
+      { maxMicro: c.cap, pointValue: POINT_VALUE },
+    );
+    const arm = c.target > 0 ? applyDailyTarget(sized, c.target) : null;
+    const daily = dailySeries(arm ? arm.kept : sized);
+    const b = bootstrap(daily, RAPID_EOD_50K, 10000, 0xbadc0de);
+    console.log(
+      `\nverify ${label}: b$${c.budget} cap${c.cap} t${c.target === 0 ? "off" : c.target} · 10,000 iters · ` +
+        `P(eval pass)=${((b.evalPass / b.iters) * 100).toFixed(2)}% · P(eval breach)=${((b.evalBreach / b.iters) * 100).toFixed(2)}% · ` +
+        `P(fund breach)=${((b.fundBreach / b.iters) * 100).toFixed(2)}% · P(1st payout)=${((b.fundPayout / b.iters) * 100).toFixed(2)}% · ` +
+        `days→pass med ${pctl(b.daysToPass, 0.5)} [p10 ${pctl(b.daysToPass, 0.1)}–p90 ${pctl(b.daysToPass, 0.9)}] · days→payout med ${pctl(b.daysToPayout, 0.5)}`,
+    );
+  }
+
+  if (o.dump) {
+    await fs.writeFile(o.dump, JSON.stringify({ generated: new Date().toISOString(), cellIters: o.cellIters, cells }, null, 1));
+    console.log(`\ndumped → ${o.dump}`);
+  }
+}
+
 /* ---------------- main ---------------- */
 
 async function main() {
@@ -304,37 +445,46 @@ async function main() {
   const prod = stream.map((t) => ({ date: t.date, pnl: t.pnl, risk: t.risk }));
   const tradeable = prod.filter((t) => t.risk <= o.budget / POINT_VALUE);
 
-  /* ---- the three configs, dollarized ---- */
+  /* ---- sweep mode: the risk-layer grid ---- */
+  if (o.sweep) {
+    await runSweep(prod, { cellIters: o.cellIters, dump: o.dump });
+    return;
+  }
+
+  /* ---- the configs, dollarized ---- */
   const c1 = dollarize(prod.map((t) => ({ date: t.date, pnlPts: t.pnl, riskPts: t.risk })), PROD_BUDGET, { maxMicro: PROD_MAX_MICRO, pointValue: POINT_VALUE });
   const c2 = dollarize(tradeable.map((t) => ({ date: t.date, pnlPts: t.pnl, riskPts: t.risk })), o.budget, { maxMicro: o.cap, pointValue: POINT_VALUE });
-  const halt = applyDailyTarget(c2, o.target);
-  const c3 = halt.kept;
+  const arm = o.target > 0 ? applyDailyTarget(c2, o.target) : { kept: c2, haltedDays: 0, skipped: 0 };
+  const c3 = arm.kept;
   const haltedPts = c3.map((t) => ({ date: t.date, pnl: t.pnlPts, risk: t.riskPts }));
 
-  console.log(`config streams: prod n=${prod.length} · tradeable(≤${o.budget / POINT_VALUE}pt) n=${tradeable.length} · +$${o.target}/day halt kept n=${haltedPts.length} (${halt.skipped} trades skipped, ${halt.haltedDays} days halted)`);
+  console.log(
+    `config streams: prod n=${prod.length} · tradeable(≤${o.budget / POINT_VALUE}pt) n=${tradeable.length}` +
+      (o.target > 0 ? ` · +$${o.target}/day halt kept n=${haltedPts.length} (${arm.skipped} trades skipped, ${arm.haltedDays} days halted)` : " · no daily arm"),
+  );
   const skippedWide = prod.length - tradeable.length;
   if (skippedWide) console.log(`  skipped ${skippedWide} trades with stop > ${o.budget / POINT_VALUE} pts (would risk > $${o.budget} at 1 contract)`);
 
   /* ---- T1 core quality (points; the edge itself does not change with sizing) ---- */
   console.log("\n=== T1 — core quality (points, sizing-independent; halt row drops the skipped trades) ===");
-  console.log(
-    renderT1([
-      { label: "prod stream all", stats: coreStats(prod) },
-      { label: "train", stats: coreStats(prod.filter((t) => t.date < o.split)) },
-      { label: "test", stats: coreStats(prod.filter((t) => t.date >= o.split)) },
-      { label: `tradeable ≤${o.budget / POINT_VALUE}pt`, stats: coreStats(tradeable) },
-      { label: `halted (+$${o.target}/day)`, stats: coreStats(haltedPts) },
-    ]),
-  );
+  const t1Rows = [
+    { label: "prod stream all", stats: coreStats(prod) },
+    { label: "train", stats: coreStats(prod.filter((t) => t.date < o.split)) },
+    { label: "test", stats: coreStats(prod.filter((t) => t.date >= o.split)) },
+    { label: `tradeable ≤${o.budget / POINT_VALUE}pt`, stats: coreStats(tradeable) },
+  ];
+  if (o.target > 0) t1Rows.push({ label: `halted (+$${o.target}/day)`, stats: coreStats(haltedPts) });
+  console.log(renderT1(t1Rows));
 
   console.log("\n=== T2 — point-stream cohorts (the cost of each rule in trades/pts) ===");
+  const t2Cohorts = [
+    { label: "prod stream", trades: prod },
+    { label: `tradeable ≤${o.budget / POINT_VALUE}pt`, trades: tradeable },
+  ];
+  if (o.target > 0) t2Cohorts.push({ label: `halted (+$${o.target}/day)`, trades: haltedPts });
   console.log(
     renderT2(
-      [
-        { label: "prod stream", trades: prod },
-        { label: `tradeable ≤${o.budget / POINT_VALUE}pt`, trades: tradeable },
-        { label: `halted (+$${o.target}/day)`, trades: haltedPts },
-      ].map((r) => {
+      t2Cohorts.map((r) => {
         const s = coreStats(r.trades);
         const tr = coreStats(r.trades.filter((t) => t.date < o.split));
         const te = coreStats(r.trades.filter((t) => t.date >= o.split));
@@ -359,8 +509,8 @@ async function main() {
   const configs = [
     { name: `prod $${PROD_BUDGET}/${PROD_MAX_MICRO}µ (baseline)`, trades: prod, budget: PROD_BUDGET, rules: RAPID_EOD_50K, dollars: c1 },
     { name: `cap ${o.cap} · $${o.budget} risk`, trades: tradeable, budget: o.budget, rules: rules5, dollars: c2 },
-    { name: `cap ${o.cap} · $${o.budget} · +$${o.target}/day`, trades: haltedPts, budget: o.budget, rules: rules5, dollars: c3 },
   ];
+  if (o.target > 0) configs.push({ name: `cap ${o.cap} · $${o.budget} · +$${o.target}/day`, trades: haltedPts, budget: o.budget, rules: rules5, dollars: c3 });
 
   console.log("\n=== T4 — prop-account viability (one block per config) ===");
   const matrix: Record<string, unknown> = {};
@@ -427,8 +577,8 @@ async function main() {
       payoutsMed: pctl(b.payoutsNoBreach, 0.5),
       chronoEval: v.evalSim,
       chronoFunded: v.fundedSim,
-      haltedDays: c.name.includes("+$") ? halt.haltedDays : 0,
-      skippedTrades: c.name.includes("+$") ? halt.skipped : 0,
+      haltedDays: c.name.includes("+$") ? arm.haltedDays : 0,
+      skippedTrades: c.name.includes("+$") ? arm.skipped : 0,
     };
   }
 
@@ -447,7 +597,7 @@ async function main() {
   /* ---- verification bootstrap: the 0%-breach claim at a different seed
    *      and 10k iterations (the tail is thin; prove it is not a seed) ---- */
   {
-    const c = configs[2];
+    const c = configs[configs.length - 1];
     const daily = dailySeries(c.dollars);
     const b = bootstrap(daily, c.rules, 10000, 0xbadc0de);
     console.log(
@@ -459,7 +609,7 @@ async function main() {
   }
 
   /* ---- verdict for the proposed config ---- */
-  const proposal = configs[2];
+  const proposal = configs[configs.length - 1];
   const pv = propViability(proposal.trades, { splitDate: o.split, rules: proposal.rules, iters: o.iters, budget: proposal.budget });
   const testStats = coreStats(prod.filter((t) => t.date >= o.split));
   const trainStats = coreStats(prod.filter((t) => t.date < o.split));
