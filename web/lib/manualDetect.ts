@@ -32,7 +32,7 @@
 
 import { dbEnabled, getDb } from "./gcdb";
 import { appendDaybook } from "./daybook";
-import { ctFills, ctOrders, ctPositions, type CtFill } from "./ctAccount";
+import { ctFills, ctOrders, ctOrdersHistory, ctPositions, type CtFill, type CtOrderHist } from "./ctAccount";
 import { execTradesMemory } from "./execTracker";
 import { placedLimitOrderIds } from "./execWatch";
 import { sendTelegram } from "./notify";
@@ -138,10 +138,12 @@ export function pairManualGroup(fills: Pick<CtFill, "ts" | "action" | "qty" | "p
   const exitQty = exits.reduce((s, f) => s + f.qty, 0);
   const entryAvg = entries.reduce((s, f) => s + f.price * f.qty, 0) / Math.max(entryQty, 1);
   const realFees = sorted.reduce((s, f) => s + f.commission + f.fees, 0);
-  if (exitQty <= 0) {
+  // open until the exits COVER the entry — a partial exit is still an
+  // open position, never a closed round trip
+  if (exitQty < entryQty) {
     return { side, qty: entryQty, entryPrice: entryAvg, exitPrice: null, pnlUsd: null, closed: false, realFees };
   }
-  const exitAvg = exits.reduce((s, f) => s + f.price * f.qty, 0) / exitQty;
+  const exitAvg = exits.reduce((s, f) => s + f.price * f.qty, 0) / Math.max(exitQty, 1);
   const dir = side === "long" ? 1 : -1;
   const qty = Math.min(entryQty, exitQty);
   const pts = (exitAvg - entryAvg) * dir * qty;
@@ -157,6 +159,54 @@ export function pairManualGroup(fills: Pick<CtFill, "ts" | "action" | "qty" | "p
     closed: true,
     realFees,
   };
+}
+
+/** group manual fills into round trips. With the session order list
+ *  (parentage): every fill folds into its TOP-LEVEL order — a child
+ *  exit leg (stop/target) belongs to the parent entry, so one manual
+ *  trade = one group even though each leg carries its own orderId.
+ *  Without orders (session reset): chronological fallback — same-side
+ *  fills accumulate, the opposite side closes the trip once the
+ *  quantity is covered. */
+export function groupManualFills(
+  manual: Pick<CtFill, "ts" | "action" | "qty" | "price" | "orderId" | "commission" | "fees">[],
+  orders: CtOrderHist[] | null,
+): Map<string, typeof manual> {
+  const groups = new Map<string, typeof manual>();
+  const push = (key: string, f: (typeof manual)[number]) => {
+    const arr = groups.get(key) ?? [];
+    arr.push(f);
+    groups.set(key, arr);
+  };
+  if (orders && orders.length) {
+    const byId = new Map(orders.map((o) => [o.id, o]));
+    for (const f of manual) {
+      const own = f.orderId ? byId.get(f.orderId) : undefined;
+      const root = own?.parentId ? byId.get(own.parentId)?.id ?? f.orderId : f.orderId;
+      push(root || `nf|${f.ts}`, f);
+    }
+    return groups;
+  }
+  // chronological fallback (bounded, side-alternating — never invents
+  // trades, and a partial exit keeps the trip open until covered)
+  const sorted = [...manual].sort((a, b) => a.ts - b.ts);
+  let open: { side: string; key: string; qty: number } | null = null;
+  for (const f of sorted) {
+    if (!open) {
+      open = { side: f.action, key: `fill|${f.ts}|${f.action}|${f.qty}`, qty: f.qty };
+      push(open.key, f);
+      continue;
+    }
+    if (f.action === open.side) {
+      open.qty += f.qty;
+      push(open.key, f);
+      continue;
+    }
+    push(open.key, f);
+    open.qty -= f.qty;
+    if (open.qty <= 0) open = null;
+  }
+  return groups;
 }
 
 /** NEW YORK day + "HH:mm" for an epoch ms (mirrors execWatch.nyDay). */
@@ -323,13 +373,8 @@ export async function checkManualActions(): Promise<void> {
     const tracked = trackedTrades();
     if (fills) {
       const { manual } = classifyManualFills(fills, tracked);
-      const groups = new Map<string, typeof manual>();
-      for (const f of manual) {
-        const oid = f.orderId || `notime|${f.ts}`;
-        const arr = groups.get(oid) ?? [];
-        arr.push(f);
-        groups.set(oid, arr);
-      }
+      // parentage-aware grouping (orders history), chronological fallback
+      const groups = groupManualFills(manual, await ctOrdersHistory());
       for (const [oid, fs] of groups) {
         const pair = pairManualGroup(fs);
         const key = `fill|${oid}`;

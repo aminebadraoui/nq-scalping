@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import {
   classifyManualFills,
+  groupManualFills,
   isBotFill,
   pairManualGroup,
   nyDay,
@@ -102,4 +103,51 @@ test("nyDay maps an epoch ms to the New York date", () => {
   assert.equal(nyDay(Date.parse("2026-10-12T18:30:00Z")), "2026-10-12");
   // 2026-10-13 01:00 UTC = 2026-10-12 21:00 EDT (still the 12th in NY)
   assert.equal(nyDay(Date.parse("2026-10-13T01:00:00Z")), "2026-10-12");
+});
+
+test("groupManualFills folds child exit legs into the parent entry (parentage)", () => {
+  const manual = [
+    f(3000, "Buy", 5, 31110, "entry-9"),
+    f(4000, "Sell", 5, 31112, "stop-10"),
+    f(4100, "Sell", 1, 31111, "unrelated-leg"),
+  ];
+  const orders = [
+    { id: "entry-9", parentId: null, action: "Buy", ts: 3000 },
+    { id: "stop-10", parentId: "entry-9", action: "Sell", ts: 4000 },
+  ];
+  const groups = groupManualFills(manual, orders);
+  assert.equal(groups.size, 2); // one round trip + the unrelated leg
+  assert.equal(groups.get("entry-9")?.length, 2);
+  const pair = pairManualGroup(groups.get("entry-9") ?? []);
+  assert.equal(pair.closed, true);
+  // +2 pts × 5 × $2 = $20 − (10 fills × 0.95) = $10.50
+  assert.equal(pair.pnlUsd, 10.5);
+});
+
+test("groupManualFills: chronological fallback pairs alternating sides", () => {
+  const manual = [
+    f(3000, "Sell", 3, 31100, "a"),
+    f(3010, "Sell", 2, 31100, "b"), // same side accumulates
+    f(4000, "Buy", 5, 31098, "c"), // opposite side closes the trip
+    f(5000, "Buy", 4, 31090, "d"), // next trip starts
+  ];
+  const groups = groupManualFills(manual, null);
+  assert.equal(groups.size, 2);
+  const keys = [...groups.keys()];
+  assert.equal(groups.get(keys[0])?.length, 3);
+  assert.equal(groups.get(keys[1])?.length, 1);
+  const pair = pairManualGroup(groups.get(keys[0]) ?? []);
+  assert.equal(pair.side, "short");
+  assert.equal(pair.closed, true);
+});
+
+test("groupManualFills: partial exit keeps the trip open for the rest", () => {
+  const manual = [
+    f(3000, "Buy", 5, 31100, "a"),
+    f(4000, "Sell", 2, 31101, "b"), // partial — qty not covered
+  ];
+  const groups = groupManualFills(manual, null);
+  assert.equal(groups.size, 1);
+  const pair = pairManualGroup(groups.values().next().value ?? []);
+  assert.equal(pair.closed, false); // still open — not a closed round trip
 });

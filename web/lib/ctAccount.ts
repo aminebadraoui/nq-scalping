@@ -203,9 +203,54 @@ export function ctConfigured(env: Record<string, string | undefined> = process.e
   return enabled(env);
 }
 
+/* ---- orders history (30s — parentage for manual pairing) ------------- */
+
+export type CtOrderHist = { id: string; parentId: string | null; action: string; ts: number };
+
+let ordersHistCache: { at: number; rows: CtOrderHist[] | null } | null = null;
+const ORDERS_HIST_TTL_MS = 30_000;
+
+async function fetchOrdersHistRaw(fetchFn: typeof fetch): Promise<CtOrderHist[]> {
+  const res = await fetchFn("https://app.crosstrade.io/v1/api/tv/orders?activeOnly=false", {
+    headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`orders ${res.status}`);
+  const j = (await res.json()) as { data?: Array<{ data?: Array<Record<string, unknown>> }> };
+  const out: CtOrderHist[] = [];
+  for (const env of j.data ?? []) {
+    for (const o of env.data ?? []) {
+      const ts = Date.parse(String(o.timestamp ?? ""));
+      if (!Number.isFinite(ts)) continue;
+      out.push({
+        id: String(o.id),
+        parentId: o.parentId !== null && o.parentId !== undefined ? String(o.parentId) : null,
+        action: String(o.action ?? "") === "Buy" ? "Buy" : "Sell",
+        ts,
+      });
+    }
+  }
+  return out;
+}
+
+/** the session order list with parentage (child exit legs → parent entry
+ *  order) — the same source scripts/reconcileTrades.ts uses. 30s cache;
+ *  null on failure (callers fall back to chronological pairing). */
+export async function ctOrdersHistory(opts?: { fetchFn?: typeof fetch }): Promise<CtOrderHist[] | null> {
+  if (ordersHistCache && Date.now() - ordersHistCache.at < ORDERS_HIST_TTL_MS) return ordersHistCache.rows;
+  try {
+    const rows = await fetchOrdersHistRaw(opts?.fetchFn ?? fetch);
+    ordersHistCache = { at: Date.now(), rows };
+    return rows;
+  } catch {
+    return ordersHistCache?.rows ?? null;
+  }
+}
+
 /** TEST ONLY: reset the module caches. */
 export function __resetCtAccountForTest() {
   snapCache = null;
   fillsCache = null;
   positionsCache = null;
+  ordersHistCache = null;
 }
