@@ -224,6 +224,28 @@ function globexOpen(now = new Date()): boolean {
   return marketOpenAt(now.getTime());
 }
 
+/** close epoch (ms) of a completed LiveMinute from its UTC du+t stamps
+ *  (the same convention signalFeed.barCloseMs uses; 0 when unparseable) */
+function liveMinuteCloseMs(m: { t: string; du?: string }): number {
+  if (!/^\d{2}:\d{2}$/.test(m.t) || !m.du) return 0;
+  const [y, mo, d] = m.du.split("-").map(Number);
+  const [hh, mm] = m.t.split(":").map(Number);
+  const ms = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/** pure: format a confirmation-race outcome line (unit-tested).
+ *  restMs/frameMs = first-confirmed epoch per channel (0 = not confirmed). */
+export function formatConfirmRace(key: string, closeMs: number, restMs: number, frameMs: number, now: number): string {
+  if (restMs === 0 && frameMs === 0) {
+    return `[confirm-race] bar ${key} — NEITHER confirmed within 12s (vendor lag; ${((now - closeMs) / 1000).toFixed(1)}s since close)`;
+  }
+  const winner = restMs > 0 && (frameMs === 0 || restMs <= frameMs) ? "REST" : "frame";
+  const rest = restMs > 0 ? `REST+${((restMs - closeMs) / 1000).toFixed(1)}s` : "REST —";
+  const frame = frameMs > 0 ? `frame+${((frameMs - closeMs) / 1000).toFixed(1)}s` : "frame —";
+  return `[confirm-race] bar ${key} ${rest} · ${frame} → ${winner} wins`;
+}
+
 /**
  * One-shot fetch of the in-progress Globex session from FOOTPRINT/V2, over its
  * own socket so it can never disturb the live trade channel. Returns the raw
@@ -361,6 +383,13 @@ class LiveFeed {
    *  SUCCESS clock separately via state.lastCandleRefreshAt) */
   private candleRefreshAttemptAt = 0;
   private candleRefreshing = false;
+  /** CONFIRM_RACE_PROBE bookkeeping — one bounded race at a time */
+  private raceActive = false;
+  private raceBarKey = "";
+  private raceCloseMs = 0;
+  private raceRestMs = 0;
+  private raceFrameMs = 0;
+  private raceFetchFailedLogged = false;
   /** per-minute throttle for the FOOTPRINT/V2 frame-path diagnostic line */
   private candleFrameLoggedAt = 0;
   /** last healed-episode timestamp already logged (dedup for the heal log) */
@@ -424,6 +453,81 @@ class LiveFeed {
       .finally(() => {
         this.candleRefreshing = false;
       });
+  }
+
+  /** CONFIRM_RACE_PROBE=1 — measure whether the vendor's REST endpoint
+   *  publishes a just-closed candle faster than their own FOOTPRINT/V2
+   *  frames (~7.5s observed). After each bar completes, while the tail is
+   *  tick-source, poll the REST fetch every 1.5s for ≤12s (reusing the
+   *  cached token — no new Cognito auths) and merge through the same
+   *  idempotent mergeCandleMinutes path the frames use. Read-only probe:
+   *  the card gate still requires a candle-source bar — this only
+   *  measures, and when REST wins it confirms through the SAME vendor
+   *  data the gate demands. One [confirm-race] log line per bar. */
+  private startConfirmRace(bar: LiveMinute): void {
+    if (process.env.CONFIRM_RACE_PROBE !== "1") return;
+    if (this.raceActive) return;
+    if ((bar.source ?? "tick") === "candle") return; // already confirmed
+    if (!this.token) return; // no cached token — the 60s refresh owns recovery
+    const closeMs = liveMinuteCloseMs(bar);
+    if (!closeMs) return;
+    const key = `${bar.du}|${bar.t}`;
+    this.raceActive = true;
+    this.raceBarKey = key;
+    this.raceCloseMs = closeMs;
+    this.raceRestMs = 0;
+    this.raceFrameMs = 0;
+    this.raceFetchFailedLogged = false;
+    const step = (): void => {
+      if (!this.raceActive || this.raceBarKey !== key) return;
+      const now = Date.now();
+      if (this.raceRestMs > 0 || this.raceFrameMs > 0 || now >= closeMs + 12_000 || !marketOpenAt(now)) {
+        this.finishConfirmRace(key);
+        return;
+      }
+      void fetchFootprintBars([nyDate(0), nyDate(1)], this.env, this.token ?? undefined)
+        .then((candles) => {
+          if (!this.raceActive || this.raceBarKey !== key) return;
+          if (!candles.length) return;
+          const r = mergeCandleMinutes(this.state.minutes, candles, new Date().toISOString().slice(0, 16).replace("T", "|"));
+          if (r.replaced || r.added) {
+            this.state.barsRevision++;
+            this.emit();
+          }
+          const confirmed = this.state.minutes.some((m) => m.du === bar.du && m.t === bar.t && (m.source ?? "tick") === "candle");
+          if (confirmed && this.raceRestMs === 0) {
+            this.raceRestMs = Date.now();
+            this.finishConfirmRace(key);
+          }
+        })
+        .catch((e) => {
+          // probe — silent by default; one line per race when the fetch
+          // itself fails (distinguishes "REST has no candle yet" from
+          // "REST unreachable" in the race log)
+          if (!this.raceFetchFailedLogged) {
+            this.raceFetchFailedLogged = true;
+            console.log(`[confirm-race] bar ${key} REST fetch failed: ${(e as Error)?.message ?? e}`);
+          }
+        });
+      setTimeout(step, 1500);
+    };
+    setTimeout(step, 1500);
+  }
+
+  /** record a frame-side confirmation for the active race (socket path) */
+  private noteRaceFrameConfirm(): void {
+    if (!this.raceActive || this.raceFrameMs > 0) return;
+    const [du, t] = this.raceBarKey.split("|");
+    const confirmed = this.state.minutes.some((m) => m.du === du && m.t === t && (m.source ?? "tick") === "candle");
+    if (!confirmed) return;
+    this.raceFrameMs = Date.now();
+    this.finishConfirmRace(this.raceBarKey);
+  }
+
+  private finishConfirmRace(key: string): void {
+    if (!this.raceActive || this.raceBarKey !== key) return;
+    console.log(formatConfirmRace(key, this.raceCloseMs, this.raceRestMs, this.raceFrameMs, Date.now()));
+    this.raceActive = false;
   }
 
   state: LiveState = {
@@ -635,7 +739,10 @@ class LiveFeed {
       // the minute just closed — persist it to Neon so live data survives a
       // restart instead of living only in this RAM buffer (best-effort)
       const prev = this.state.minutes[this.state.minutes.length - 1];
-      if (prev && /^\d{2}:\d{2}$/.test(prev.t)) void persistLiveMinute(prev).catch(() => {});
+      if (prev && /^\d{2}:\d{2}$/.test(prev.t)) {
+        void persistLiveMinute(prev).catch(() => {});
+        this.startConfirmRace(prev);
+      }
     }
     this.state.ticks.push(t);
     if (this.state.ticks.length > 2000) this.state.ticks = this.state.ticks.slice(-2000);
@@ -796,6 +903,7 @@ class LiveFeed {
                     this.state.barsRevision++;
                     this.emit();
                   }
+                  this.noteRaceFrameConfirm();
                   // one diagnostic line per minute max — the frame path is
                   // the real-time confirmation channel; its silence (or a
                   // growing tail) is the tape-gap signature
