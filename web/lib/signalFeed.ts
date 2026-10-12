@@ -102,6 +102,35 @@ function symbol(): string {
   return process.env.GOCHARTING_SYMBOL || "NQZ26";
 }
 
+/** pure event-tick decision: fire only when a NEW completed bar appeared
+ *  or the last bar flipped from tick-built to candle-confirmed. Frames
+ *  that re-merge without changing either are skipped — GoCharting streams
+ *  footprint frames every few seconds and each advances the global
+ *  candle-refresh clock, so comparing that clock stamps a tick per frame
+ *  (measured 16/min instead of the intended ~2/bar). */
+export function eventTickDecision(
+  prev: { barKey: string; barSrc: string },
+  next: { barKey: string; barSrc: string },
+): "fire" | "skip" {
+  if (next.barKey !== prev.barKey) return "fire";
+  if (next.barSrc === "candle" && prev.barSrc !== "candle") return "fire";
+  return "skip";
+}
+
+/** pure poll-backstop decision: the interval tick is the safety net only.
+ *  Skip while the last completed bar is candle-confirmed and fresh — the
+ *  event ticks own those moments; the poll resumes the moment the bar
+ *  ages (emits died) or stays unconfirmed (the tape-gate/heal path). */
+export function pollBackstopSkip(lastBar: { t: string; du?: string; source?: string } | undefined, now: number): boolean {
+  if (!lastBar || lastBar.source !== "candle") return false;
+  if (!/^\d{2}:\d{2}$/.test(lastBar.t) || !lastBar.du) return false;
+  const [y, mo, d] = lastBar.du.split("-").map(Number);
+  const [hh, mm] = lastBar.t.split(":").map(Number);
+  const closeMs = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
+  if (!Number.isFinite(closeMs)) return false;
+  return now - closeMs < 45_000;
+}
+
 /** env feature flags: FEED_* — "1/true/yes/on" enables, "0/false/no/off" disables. */
 function feedFlag(name: string, def: boolean): boolean {
   const v = process.env[name];
@@ -406,11 +435,11 @@ class SignalFeed {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   /** event-driven tick state (SIGNAL_EVENT_TICK=1): the last completed
-   *  bar key + candle-confirm clock the subscription saw, so a live-state
-   *  emit only triggers a tick when a NEW bar completed or a vendor
-   *  footprint frame landed — never on every trade print */
+   *  bar key + confirmation source the subscription saw, so a live-state
+   *  emit only triggers a tick when a NEW bar completed or the last bar
+   *  flipped tick→candle — never on every footprint frame or trade print */
   private eventTickBarKey = "";
-  private eventTickCandleAt = 0;
+  private eventTickBarSrc = "";
   private eventTickLast = 0;
   private ctxCache: { date: string; ctx: CollectedContext } | null = null;
   private lastCtxLoad = 0;
@@ -2377,27 +2406,37 @@ class SignalFeed {
     // re-attach to any runners left open by a previous process
     void runnerTracker.load();
     this.tick();
-    this.timer = setInterval(() => this.tick(), refreshSeconds() * 1000);
+    // the interval is the BACKSTOP: it sleeps while the last bar is
+    // candle-confirmed and fresh (the event ticks own those moments) and
+    // resumes when the bar ages or stays unconfirmed — a missed emit can
+    // never stall the loop for more than one interval
+    this.timer = setInterval(() => {
+      const now = Date.now();
+      if (!signalWindowOpen(now)) return;
+      if (pollBackstopSkip(getLive().state.minutes.at(-1), now)) return;
+      void this.tick();
+    }, refreshSeconds() * 1000);
     this.startEventTick();
   }
 
   /** SIGNAL_EVENT_TICK=1 — zero-latency detection: instead of waiting for
-   *  the next 15s poll, run the tick the moment the live state shows a new
-   *  completed bar or a vendor footprint frame confirming one (the tape
-   *  gate still holds cards until the bar is candle-confirmed, so this
-   *  fires exactly when the first tradeable moment arrives). The 15s
-   *  interval stays as the safety net. OFF by default — enablement is an
-   *  execution-knob change and needs the owner's env approval first
+   *  the next poll, run the tick the moment the live state shows a new
+   *  completed bar or the last bar flipping to candle-confirmed (the tape
+   *  gate still holds cards until confirmation, so this fires exactly when
+   *  the first tradeable moment arrives). Footprint frames that merge
+   *  nothing no longer trigger (eventTickDecision). The interval stays as
+   *  the safety net. OFF by default — enablement is an execution-knob
+   *  change and needs the owner's env approval first
    *  (web/EXEC_CHANGE_POLICY.md rule 4). */
   private startEventTick(): void {
     if (!feedFlag("SIGNAL_EVENT_TICK", false)) return;
     getLive().subscribe((st) => {
       const last = st.minutes[st.minutes.length - 1];
       const barKey = last ? `${last.du ?? ""}|${last.t}` : "";
-      const candleAt = st.lastCandleRefreshAt ?? 0;
-      if (barKey === this.eventTickBarKey && candleAt === this.eventTickCandleAt) return;
+      const barSrc = last?.source ?? "";
+      if (eventTickDecision({ barKey: this.eventTickBarKey, barSrc: this.eventTickBarSrc }, { barKey, barSrc }) === "skip") return;
       this.eventTickBarKey = barKey;
-      this.eventTickCandleAt = candleAt;
+      this.eventTickBarSrc = barSrc;
       const now = Date.now();
       if (now - this.eventTickLast < 250) return; // stampede throttle
       if (!signalWindowOpen(now)) return;
