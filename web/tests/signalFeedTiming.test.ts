@@ -17,22 +17,38 @@ const M = (min: number) => Date.UTC(2026, 9, 11, 2, min, 0);
 
 test("eventTickDecision: tail past the max (a new bar) fires and raises the max", () => {
   const d = eventTickDecision({ maxCloseMs: M(21), srcAtMax: "candle" }, { closeMs: M(22), barSrc: "tick" });
-  assert.deepEqual(d, { fire: true, maxCloseMs: M(22), srcAtMax: "tick" });
-  const d2 = eventTickDecision({ maxCloseMs: M(21), srcAtMax: "candle" }, { closeMs: M(22), barSrc: "candle" });
-  assert.deepEqual(d2, { fire: true, maxCloseMs: M(22), srcAtMax: "candle" });
+  assert.deepEqual(d, { fire: true, maxCloseMs: M(22), srcAtMax: "tick", revAtMax: 0 });
+  const d2 = eventTickDecision({ maxCloseMs: M(21), srcAtMax: "candle" }, { closeMs: M(22), barSrc: "candle", revision: 7 });
+  assert.deepEqual(d2, { fire: true, maxCloseMs: M(22), srcAtMax: "candle", revAtMax: 7 });
 });
 
 test("eventTickDecision: tick→candle flip AT the max fires once, then never again", () => {
-  const flip = eventTickDecision({ maxCloseMs: M(22), srcAtMax: "tick" }, { closeMs: M(22), barSrc: "candle" });
-  assert.deepEqual(flip, { fire: true, maxCloseMs: M(22), srcAtMax: "candle" });
-  const again = eventTickDecision({ maxCloseMs: M(22), srcAtMax: "candle" }, { closeMs: M(22), barSrc: "candle" });
+  const flip = eventTickDecision({ maxCloseMs: M(22), srcAtMax: "tick" }, { closeMs: M(22), barSrc: "candle", revision: 5 });
+  assert.deepEqual(flip, { fire: true, maxCloseMs: M(22), srcAtMax: "candle", revAtMax: 5 });
+  const again = eventTickDecision({ maxCloseMs: M(22), srcAtMax: "candle", revAtMax: 5 }, { closeMs: M(22), barSrc: "candle", revision: 5 });
   assert.equal(again.fire, false);
+});
+
+test("eventTickDecision: vendor REVISION of the confirmed tail re-fires (same close, new revision)", () => {
+  // the vendor replaced the tail with a revised candle — the tape gate or
+  // a detector may change, so the event path must re-evaluate (the poll
+  // path always did)
+  const rev = eventTickDecision({ maxCloseMs: M(22), srcAtMax: "candle", revAtMax: 5 }, { closeMs: M(22), barSrc: "candle", revision: 6 });
+  assert.deepEqual(rev, { fire: true, maxCloseMs: M(22), srcAtMax: "candle", revAtMax: 6 });
+  // same revision again → no fire
+  const repeat = eventTickDecision({ maxCloseMs: M(22), srcAtMax: "candle", revAtMax: 6 }, { closeMs: M(22), barSrc: "candle", revision: 6 });
+  assert.equal(repeat.fire, false);
+});
+
+test("eventTickDecision: a tick-source tail at the max is NOT re-fired by revisions (tape gate holds anyway)", () => {
+  const d = eventTickDecision({ maxCloseMs: M(22), srcAtMax: "tick", revAtMax: 2 }, { closeMs: M(22), barSrc: "tick", revision: 3 });
+  assert.equal(d.fire, false);
 });
 
 test("eventTickDecision: backward oscillation and its re-advance are ignored", () => {
   // tail dips to the vendor's lagging candle…
   const dip = eventTickDecision({ maxCloseMs: M(22), srcAtMax: "candle" }, { closeMs: M(21), barSrc: "candle" });
-  assert.deepEqual(dip, { fire: false, maxCloseMs: M(22), srcAtMax: "candle" });
+  assert.deepEqual(dip, { fire: false, maxCloseMs: M(22), srcAtMax: "candle", revAtMax: 0 });
   // …and re-advances to the already-confirmed max: still no fire
   const reAdvance = eventTickDecision({ maxCloseMs: M(22), srcAtMax: "candle" }, { closeMs: M(22), barSrc: "tick" });
   assert.equal(reAdvance.fire, false);
