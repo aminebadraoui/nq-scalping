@@ -55,6 +55,7 @@ import { sendTelegram } from "./notify";
 import { getLive } from "./live";
 import { logExec } from "./execLog";
 import { tradingHalted } from "./tradingHalt";
+import { noteOrderSubmit, noteOrderAck } from "./execLatency";
 
 export type CrossTradeConfig = {
   url: string;
@@ -618,7 +619,12 @@ export async function placeCrossTradeOrderREST(
     `[crossTrade] LIVE(REST) ${payload.orderType === "limit" ? "LIMIT" : ""} ${intent.dir.toUpperCase()} ${payload.qty} ${payload.instrument} ` +
       `entry ${intent.entry.toFixed(2)} · stop ${intent.stop.toFixed(2)} · target ${intent.target.toFixed(2)} · ${intent.timeET} NY`,
   );
+  // telemetry: open the submit→fill leg (lib/execLatency.ts — the
+  // "time for CrossTrade to execute the trade" stage)
+  const fillId = noteOrderSubmit(opts.label ?? describeIntent(intent), intent.dir, intent.contracts);
+  const submitT0 = performance.now();
   const leg = await postRESTLeg(payload, cfg);
+  noteOrderAck(fillId, performance.now() - submitT0, performance.now() - submitT0);
   if (leg.kind === "auth") {
     // plan/auth rejections happen BEFORE dispatch — safe to fall back to
     // the webhook path exactly once (nothing was placed)

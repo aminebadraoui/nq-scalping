@@ -16,6 +16,7 @@
  * ------------------------------------------------------------------ */
 
 import { cancelCrossTradeOrderREST, crossTradeEnabled, placeCrossTradeOrder, placeCrossTradeOrderREST, placeCrossTradeScaleOut, placeCrossTradeScaleOutREST } from "./crossTrade";
+import { markDispatch } from "./execLatency";
 
 export type OrderIntent = {
   symbol: string;
@@ -54,12 +55,20 @@ export async function placeOrder(
   stopChildId?: string | number;
   targetChildId?: string | number;
 }> {
-  if (crossTradeEnabled()) {
-    return process.env.CROSSTRADE_REST === "0"
-      ? placeCrossTradeOrder(intent)
-      : placeCrossTradeOrderREST(intent, opts);
+  const t0 = performance.now();
+  try {
+    if (crossTradeEnabled()) {
+      return process.env.CROSSTRADE_REST === "0"
+        ? placeCrossTradeOrder(intent)
+        : placeCrossTradeOrderREST(intent, opts);
+    }
+    return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
+  } finally {
+    // telemetry: the dispatch stage = send to CrossTrade + placement ack.
+    // detectLagMs = how far into the current minute this ran, i.e. the lag
+    // since the trigger bar closed (0 = fired the moment the bar completed).
+    markDispatch(performance.now() - t0, Date.now() % 60_000);
   }
-  return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
 }
 
 /** Cancel a resting order by our user-assigned orderId (the limit-entry
@@ -77,10 +86,15 @@ export async function cancelOrder(orderId: string): Promise<{ ok: boolean; reaso
 export async function placeScaleOut(
   intent: OrderIntent,
 ): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
-  if (!crossTradeEnabled()) {
-    return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
+  const t0 = performance.now();
+  try {
+    if (!crossTradeEnabled()) {
+      return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
+    }
+    return process.env.CROSSTRADE_REST === "0" || process.env.CROSSTRADE_SCALEOUT_REST === "0"
+      ? placeCrossTradeScaleOut(intent)
+      : placeCrossTradeScaleOutREST(intent);
+  } finally {
+    markDispatch(performance.now() - t0, Date.now() % 60_000);
   }
-  return process.env.CROSSTRADE_REST === "0" || process.env.CROSSTRADE_SCALEOUT_REST === "0"
-    ? placeCrossTradeScaleOut(intent)
-    : placeCrossTradeScaleOutREST(intent);
 }

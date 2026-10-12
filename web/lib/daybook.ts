@@ -273,12 +273,28 @@ export type DaybookEnd = {
   summary: Record<string, unknown>;
 };
 
+/** execution-latency telemetry (lib/execLatency.ts) — fill legs only;
+ *  per-cycle rows are too high-frequency for the journal */
+export type DaybookLatency = {
+  t: "latency";
+  at: number;
+  label: string;
+  kind: "fill";
+  dir: string;
+  qty: number;
+  submitMs: number;
+  ackMs: number | null;
+  fillMs: number | null;
+  seenMs: number | null;
+};
+
 export type DaybookRecord =
   | DaybookBoot
   | DaybookSignal
   | DaybookExec
   | DaybookGuard
   | DaybookHeal
+  | DaybookLatency
   | DaybookEnd;
 
 /* ---- consolidated summary shapes (written by the nightly consolidation,

@@ -66,6 +66,7 @@ import { registerExpectation, registerSendFailure, checkExpectations, attachLimi
 import { stopCrossedAtDispatch, limitCrossedAtDispatch } from "./crossTrade";
 import { tradingHalted } from "./tradingHalt";
 import { counterGateDecision, counterGateParams } from "./rthExitLog";
+import { startCycle, markStage, markCheck, markBarAge, finishCycle } from "./execLatency";
 import { momentumProfile, rthProfile, applyProfile, timeExitAt, type FamilyProfile } from "./profile";
 import { registerTimeExit, checkTimeExits } from "./timeExit";
 import { logExec } from "./execLog";
@@ -76,7 +77,9 @@ import { hourBucketOf } from "./tradeStats";
 function refreshSeconds(): number {
   // 15s default (was 30): the momentum/RTH triggers fire only on the
   // just-completed minute bar, so a slower loop skips bars when a tick
-  // runs long — 15s halves the miss window.
+  // runs long — 15s halves the miss window. SIGNAL_EVENT_TICK=1 (owner
+  // approval) adds an event-driven tick on top so detection latency
+  // drops from ~15s to the feed's own emit latency.
   const n = Number(process.env.SIGNAL_REFRESH_SECONDS);
   return Number.isFinite(n) && n >= 10 ? n : 15;
 }
@@ -402,6 +405,13 @@ function fmtPx(n: number, dp = 2): string {
 class SignalFeed {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** event-driven tick state (SIGNAL_EVENT_TICK=1): the last completed
+   *  bar key + candle-confirm clock the subscription saw, so a live-state
+   *  emit only triggers a tick when a NEW bar completed or a vendor
+   *  footprint frame landed — never on every trade print */
+  private eventTickBarKey = "";
+  private eventTickCandleAt = 0;
+  private eventTickLast = 0;
   private ctxCache: { date: string; ctx: CollectedContext } | null = null;
   private lastCtxLoad = 0;
   private sent = new Set<string>();
@@ -463,7 +473,7 @@ class SignalFeed {
    *  bar is tick-source, and page the operator when the tail of
    *  unconfirmed bars grows past TAPE_GATE_TAIL_ALERT (see
    *  tapeGateDecision). */
-  private tapeGateHolds(fp: FootprintMinute[], scan: string): boolean {
+  private tapeGateHoldsCore(fp: FootprintMinute[], scan: string): boolean {
     const tail = tapeTailCount(fp);
     const now = Date.now();
     const d = tapeGateDecision(tail, fp.length, now, this.tapeGateAlertedAt);
@@ -508,6 +518,17 @@ class SignalFeed {
       }
     }
     return true;
+  }
+
+  /** timed wrapper for the tape gate (telemetry only — see
+   *  lib/execLatency.ts; the feedCheck stage is this duration) */
+  private tapeGateHolds(fp: FootprintMinute[], scan: string): boolean {
+    const t0 = performance.now();
+    try {
+      return this.tapeGateHoldsCore(fp, scan);
+    } finally {
+      markStage("feedCheck", performance.now() - t0);
+    }
   }
 
   lastSnapshot: SignalSnapshot | null = null;
@@ -2229,6 +2250,8 @@ class SignalFeed {
   async tick(): Promise<void> {
     if (this.ticking) return;
     this.ticking = true;
+    startCycle();
+    let err: string | null = null;
     try {
       // ---- signal window (owner rule): Sunday 18:00 ET → Friday 16:00 ET
       //      with a daily 16:00–18:00 ET halt Mon–Thu (MyFundedFutures
@@ -2248,22 +2271,48 @@ class SignalFeed {
           this.expRetracePending = null;
         }
         this.pullbackWatch = null;
+        finishCycle("signal window closed");
         return;
       }
+      // ---- telemetry stage 1: getData = assemble the live signal context
+      let t0 = performance.now();
       const snap = await this.buildSnapshot();
+      markStage("getData", performance.now() - t0);
+      // ---- telemetry: bar age = last completed bar close → now (the
+      //      continuous detection-lag metric the event tick attacks)
+      {
+        const mins = getLive().state.minutes;
+        const lastMin = mins[mins.length - 1];
+        if (lastMin && /^\d{2}:\d{2}$/.test(lastMin.t) && lastMin.du) {
+          const [y, mo, d] = lastMin.du.split("-").map(Number);
+          const [hh, mm] = lastMin.t.split(":").map(Number);
+          const closeMs = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
+          if (Number.isFinite(closeMs)) markBarAge(Math.max(0, Date.now() - closeMs));
+        }
+      }
       this.lastRun = Date.now();
       if (snap) {
         this.lastSnapshot = snap;
         this.lastError = null;
         await this.maybeSend(snap);
       }
-      await this.checkReclaimSetup();
-      await this.checkUnusualVolume();
-      await this.checkPullbackWatch();
-      await this.checkExpRetrace();
-      await this.checkMomentum();
-      await this.checkOpen();
-      await this.checkRth();
+      // ---- telemetry stage 3: compute = each detector/gate check
+      //      (feedCheck rides along inside tapeGateHolds; dispatch is
+      //      stamped at the executor choke point, lib/executor.ts)
+      const checks: Array<[string, () => Promise<void>]> = [
+        ["reclaim", () => this.checkReclaimSetup()],
+        ["unusualVolume", () => this.checkUnusualVolume()],
+        ["pullbackWatch", () => this.checkPullbackWatch()],
+        ["expRetrace", () => this.checkExpRetrace()],
+        ["momentum", () => this.checkMomentum()],
+        ["openDrive", () => this.checkOpen()],
+        ["rth", () => this.checkRth()],
+      ];
+      for (const [name, fn] of checks) {
+        t0 = performance.now();
+        await fn();
+        markCheck(name, performance.now() - t0);
+      }
       this.feedGapCheck();
       // post-fire outcome tracking: re-score today's still-open signals from
       // the live bars and write win/loss into the signals table as the day
@@ -2275,7 +2324,9 @@ class SignalFeed {
       void checkTimeExits().catch(() => {});
     } catch (e) {
       this.lastError = String(e);
+      err = this.lastError;
     } finally {
+      finishCycle(err ?? undefined);
       this.ticking = false;
     }
   }
@@ -2327,6 +2378,32 @@ class SignalFeed {
     void runnerTracker.load();
     this.tick();
     this.timer = setInterval(() => this.tick(), refreshSeconds() * 1000);
+    this.startEventTick();
+  }
+
+  /** SIGNAL_EVENT_TICK=1 — zero-latency detection: instead of waiting for
+   *  the next 15s poll, run the tick the moment the live state shows a new
+   *  completed bar or a vendor footprint frame confirming one (the tape
+   *  gate still holds cards until the bar is candle-confirmed, so this
+   *  fires exactly when the first tradeable moment arrives). The 15s
+   *  interval stays as the safety net. OFF by default — enablement is an
+   *  execution-knob change and needs the owner's env approval first
+   *  (web/EXEC_CHANGE_POLICY.md rule 4). */
+  private startEventTick(): void {
+    if (!feedFlag("SIGNAL_EVENT_TICK", false)) return;
+    getLive().subscribe((st) => {
+      const last = st.minutes[st.minutes.length - 1];
+      const barKey = last ? `${last.du ?? ""}|${last.t}` : "";
+      const candleAt = st.lastCandleRefreshAt ?? 0;
+      if (barKey === this.eventTickBarKey && candleAt === this.eventTickCandleAt) return;
+      this.eventTickBarKey = barKey;
+      this.eventTickCandleAt = candleAt;
+      const now = Date.now();
+      if (now - this.eventTickLast < 250) return; // stampede throttle
+      if (!signalWindowOpen(now)) return;
+      this.eventTickLast = now;
+      void this.tick();
+    });
   }
 }
 

@@ -33,6 +33,7 @@ import { momentumProfile, timeExitAt } from "./profile";
 import { registerTimeExit } from "./timeExit";
 import { getLive } from "./live";
 import { logExec } from "./execLog";
+import { noteOrderFill } from "./execLatency";
 import { signalWindowOpen } from "./marketHours";
 import { newsBlockedNow } from "./newsGate";
 import { noteRthExit } from "./rthExitLog";
@@ -596,8 +597,12 @@ export async function checkExpectations(): Promise<void> {
       continue;
     }
     fills = fills ?? (await fetchFills());
-    if (fillMatches(e, fills, now)) {
+    const matchedFill = fills ? findMatchingFill(e, fills, now) : null;
+    if (matchedFill) {
       pending.delete(key);
+      // telemetry: close the submit→fill leg with the broker's own fill
+      // timestamp (lib/execLatency.ts — "time for CrossTrade to execute")
+      noteOrderFill(e.intent.dir, e.intent.contracts, matchedFill.ts);
       // counter-gate tracking: an RTH entry just filled → note the open
       // position so the exit poll can log its winning exit on flat
       if (e.label.startsWith("rth ") && !e.scaleOut) {
