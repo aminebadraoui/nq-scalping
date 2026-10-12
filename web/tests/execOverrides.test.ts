@@ -21,6 +21,7 @@ import {
   resetGuardForAccountSwitch,
   resolveEffectiveAccount,
   resolveEffectiveCredentials,
+  stageChangeAdvice,
   verifyAdminPassword,
   writeExecOverride,
 } from "../lib/execOverrides";
@@ -294,4 +295,12 @@ test("detectGuardResetFor: realized moving between reads → keep (fills in flig
   })) as unknown as typeof fetch;
   const r = await detectGuardResetFor("RENAMED", ENV, moving);
   assert.equal(r.action, "keep");
+});
+
+test("stageChangeAdvice: an SF↔EV account change forces a reset; same stage does not", () => {
+  assert.equal(stageChangeAdvice("MFFUEVREOD706880007", "MFFUEVREOD706880006"), null, "eval→eval keeps");
+  assert.equal(stageChangeAdvice("MFFUSFREOD706880008", "MFFUSFREOD706880009"), null, "funded→funded keeps");
+  assert.equal(stageChangeAdvice("MFFUEVREOD706880007", "MFFUSFREOD706880008")?.action, "reset", "eval→funded resets");
+  assert.equal(stageChangeAdvice("MFFUSFREOD706880008", "MFFUEVREOD706880009")?.action, "reset", "funded→eval resets");
+  assert.match(stageChangeAdvice("MFFUEVREOD706880007", "MFFUSFREOD706880008")!.reason, /eval → funded/);
 });

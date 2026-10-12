@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert";
-import { EVAL_RULES, FUNDED_RULES, rulesForStage } from "../lib/risk/challengeRules";
+import { EVAL_RULES, FUNDED_RULES, rulesForStage, stageForAccountName } from "../lib/risk/challengeRules";
 import { guardConfigFromEnv, eodFloorTrail } from "../lib/risk/guardCore";
 import { RAPID_EOD_50K } from "../lib/propRules";
 
@@ -51,4 +51,17 @@ test("eodFloorTrail implements the per-stage lock from the rule table", () => {
 test("rulesForStage picks the right table", () => {
   assert.equal(rulesForStage("eval"), EVAL_RULES);
   assert.equal(rulesForStage("funded"), FUNDED_RULES);
+});
+
+test("stageForAccountName: MFFU Sim Funded (SF) names derive funded; everything else is eval", () => {
+  assert.equal(stageForAccountName("MFFUSFREOD706880008"), "funded");
+  assert.equal(stageForAccountName("mffusfreod706880008"), "funded");
+  assert.equal(stageForAccountName("  MFFUSFREOD706880008  "), "funded");
+  assert.equal(stageForAccountName("MFFU.SF.706880008"), "funded");
+  assert.equal(stageForAccountName("MFFUEVREOD706880007"), "eval");
+  assert.equal(stageForAccountName("MFFUEVREOD706880006"), "eval");
+  assert.equal(stageForAccountName(""), "eval");
+  assert.equal(stageForAccountName(null), "eval");
+  assert.equal(stageForAccountName(undefined), "eval");
+  assert.equal(stageForAccountName("APEX-12345"), "eval", "unknown firm → conservative eval default");
 });

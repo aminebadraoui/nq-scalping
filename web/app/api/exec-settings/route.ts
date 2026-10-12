@@ -36,6 +36,7 @@ import {
   maskAccount,
   maskSecret,
   resetGuardForAccountSwitch,
+  stageChangeAdvice,
   verifyAdminPassword,
   writeExecOverride,
   type GuardResetAdvice,
@@ -170,9 +171,13 @@ export async function POST(req: NextRequest) {
   // NAME changes — a key/URL swap on the same linked account must keep
   // the day's protections (the guard tracks the Tradovate account, not
   // the CrossTrade login). `resetGuard === true` forces the reset.
+  // A derived STAGE change (MFFU SF=funded vs EV=eval naming) always
+  // resets — different account rules must never inherit the old stage's
+  // floor/high-water (the 2026-10-11 funded-switch incident).
   let advice: GuardResetAdvice = { action: "keep", reason: "account name unchanged — protections kept" };
   if (account && account.toUpperCase() !== before.account.toUpperCase()) {
     advice = await detectGuardResetFor(account);
+    advice = stageChangeAdvice(before.account, account) ?? advice;
   }
   const forceReset = body.resetGuard === true;
   const doReset = forceReset || advice.action === "reset";

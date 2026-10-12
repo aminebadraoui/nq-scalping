@@ -31,6 +31,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { guardState, guardStateFile, persistGuardToDb, __resetGuardForTest } from "./accountGuard";
+import { stageForAccountName } from "./risk/challengeRules";
 import { dbEnabled, getDb } from "./gcdb";
 
 /** the ONLY env keys the override file may set — anything else is
@@ -208,6 +209,21 @@ export type GuardResetAdvice = {
   action: "reset" | "keep" | "unverified";
   reason: string;
 };
+
+/** Stage-adaptation check (2026-10-11): the MFFU account name encodes the
+ *  product — `MFFUSFREOD…` = Sim Funded, `MFFUEVREOD…` = Eval — so an
+ *  account switch that changes the derived stage is ALWAYS a different
+ *  rule set and must reset the guard, even when the realized-P&L
+ *  detection stays ambiguous. Returns null when the stage is unchanged. */
+export function stageChangeAdvice(beforeAccount: string, typedAccount: string): GuardResetAdvice | null {
+  const before = stageForAccountName(beforeAccount);
+  const after = stageForAccountName(typedAccount);
+  if (before === after) return null;
+  return {
+    action: "reset",
+    reason: `account stage ${before} → ${after} (MFFU SF vs EV naming) — resetting for the new rules`,
+  };
+}
 
 const CT_SNAPSHOT_URL = "https://app.crosstrade.io/v1/api/tv/accounts/snapshot";
 const SAME_ACCOUNT_TOL = 25; // $ — realized is fill-based; a flat account doesn't drift

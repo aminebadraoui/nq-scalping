@@ -6,7 +6,7 @@
  * reading cannot reveal the day's P&L. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { guardCheck, __resetGuardForTest, guardState , tradingDayKey } from "../lib/accountGuard";
+import { guardCheck, __resetGuardForTest, guardState, tradingDayKey, guardStage, hydrateFieldsFrom } from "../lib/accountGuard";
 
 function setStage(stage: "eval" | "funded") {
   process.env.MFF_STAGE = stage;
@@ -317,4 +317,86 @@ test("dd halving is inert when DD_HALF_AT=0", () => {
   assert.equal(guardState().ddHalved, false);
   delete process.env.DD_HALF_AT;
   __resetGuardForTest();
+});
+
+test("guardStage: MFF_STAGE env overrides; absent → derived from the account name", () => {
+  process.env.MFF_STAGE = "funded";
+  process.env.CROSSTRADE_ACCOUNT = "MFFUEVREOD706880007"; // eval name
+  assert.equal(guardStage(), "funded", "env override wins over the name");
+  delete process.env.MFF_STAGE;
+  assert.equal(guardStage(), "eval", "EV name without env → eval");
+  process.env.CROSSTRADE_ACCOUNT = "MFFUSFREOD706880008";
+  assert.equal(guardStage(), "funded", "SF name without env → funded");
+  delete process.env.CROSSTRADE_ACCOUNT;
+  assert.equal(guardStage(), "eval", "missing name → conservative eval");
+  __resetGuardForTest();
+});
+
+test("seed: a funded account name without MFF_STAGE seeds funded rules", () => {
+  process.env.CROSSTRADE_ACCOUNT = "MFFUSFREOD706880008";
+  delete process.env.MFF_STAGE;
+  __resetGuardForTest();
+  const s = guardState();
+  assert.equal(s.stage, "funded");
+  assert.equal(s.account, "MFFUSFREOD706880008");
+  assert.equal(s.startBalance, 0);
+  assert.equal(s.floor, -2000);
+  assert.equal(s.lockAt, 100);
+  delete process.env.CROSSTRADE_ACCOUNT;
+  __resetGuardForTest();
+});
+
+test("hydrateFieldsFrom: another account's row is ignored wholesale", () => {
+  assert.equal(
+    hydrateFieldsFrom({ account: "MFFUEVREOD706880007", floor: 51009.2, highWater: 53009.2, stage: "eval" }, "MFFUSFREOD706880008"),
+    null,
+    "the old eval account's trailing state must never leak into the new account",
+  );
+});
+
+test("hydrateFieldsFrom: same-account rows restore trailing/day state; derived rule fields never come from the DB", () => {
+  const h = hydrateFieldsFrom(
+    {
+      account: "MFFUEVREOD706880007",
+      stage: "funded", // a stale derived field — must NOT be restored
+      startBalance: 123, // ditto
+      maxLoss: 999,
+      profitTarget: 9999,
+      consistencyCap: 888,
+      lockAt: 7,
+      floor: 51009.2,
+      highWater: 53009.2,
+      locked: true,
+      lastCommitDay: "2026-10-10",
+      dayKey: "2026-10-11",
+      dayStartRealized: -899,
+      bestDayPnl: 899.4,
+      dayPeak: 300,
+      profitArmed: true,
+      lastDayPnl: 250,
+      ddHalved: true,
+    },
+    "MFFUEVREOD706880007",
+  );
+  assert.ok(h);
+  assert.equal(h.floor, 51009.2);
+  assert.equal(h.highWater, 53009.2);
+  assert.equal(h.locked, true);
+  assert.equal(h.lastCommitDay, "2026-10-10");
+  assert.equal(h.dayKey, "2026-10-11");
+  assert.equal(h.dayStartRealized, -899);
+  assert.equal(h.bestDayPnl, 899.4);
+  assert.equal(h.dayPeak, 300);
+  assert.equal(h.profitArmed, true);
+  assert.equal(h.lastDayPnl, 250);
+  assert.equal(h.ddHalved, true);
+  for (const derived of ["stage", "startBalance", "maxLoss", "profitTarget", "consistencyCap", "lockAt"]) {
+    assert.equal(derived in h, false, `${derived} must never be restored from the DB row`);
+  }
+});
+
+test("hydrateFieldsFrom: legacy rows without an account field still restore", () => {
+  const h = hydrateFieldsFrom({ floor: 48000, highWater: 50000 }, "MFFUEVREOD706880007");
+  assert.ok(h, "pre-account rows keep restoring (backward compatible)");
+  assert.equal(h.floor, 48000);
 });

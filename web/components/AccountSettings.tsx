@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { stageForAccountName } from "@/lib/risk/challengeRules";
 
 /* ------------------------------------------------------------------ *
  * AccountSettings — the password-gated execution switch on the
@@ -133,6 +134,19 @@ export default function AccountSettings() {
               spellCheck={false}
               className={inputCls}
             />
+            {(() => {
+              const typed = account.trim();
+              if (!typed) return null;
+              const stage = stageForAccountName(typed);
+              const matched = /^MFFU[\s._-]*(SF|EV)/i.test(typed);
+              if (!matched) return null;
+              return (
+                <p className={`mt-1 font-mono text-[10px] ${stage === "funded" ? "text-long" : "text-zinc-400"}`}>
+                  detected: {stage === "funded" ? "FUNDED (MFFU Sim Funded — SFREOD)" : "EVAL (MFFU Eval — EVREOD)"}
+                  {stage === "funded" ? " — the guard will reset to funded rules on apply" : ""}
+                </p>
+              );
+            })()}
 
             <label className="mb-1 mt-3 block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
               CrossTrade secret key <span className="normal-case text-zinc-600">(CROSSTRADE_KEY — leave blank to keep)</span>

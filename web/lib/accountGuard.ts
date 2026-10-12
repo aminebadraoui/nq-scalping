@@ -39,7 +39,7 @@ import {
   givebackStep,
   ddHalfStep,
 } from "./risk/guardCore";
-import { rulesForStage } from "./risk/challengeRules";
+import { rulesForStage, stageForAccountName } from "./risk/challengeRules";
 
 export type GuardStage = "eval" | "funded";
 
@@ -57,6 +57,8 @@ export type GuardDecision =
 
 export type GuardState = {
   stage: GuardStage;
+  /** the linked account name this state belongs to ("" = legacy file) */
+  account: string;
   startBalance: number;
   maxLoss: number;
   profitTarget: number;
@@ -103,7 +105,19 @@ function num(env: string | undefined, fallback: number): number {
 }
 
 export function guardStage(): GuardStage {
-  return process.env.MFF_STAGE === "funded" ? "funded" : "eval";
+  const env = process.env.MFF_STAGE;
+  if (env === "funded" || env === "eval") return env; // explicit operator override
+  // no override: derive from the linked account name — MFFU encodes the
+  // product in the id (MFFUSFREOD… = Sim Funded · MFFUEVREOD… = Eval),
+  // so a dashboard account switch adapts the rules automatically.
+  return stageForAccountName(process.env.CROSSTRADE_ACCOUNT);
+}
+
+/** the linked account this guard state belongs to (the override file or
+ *  the Coolify base env) — persisted with the state so a stale row/file
+ *  from a previous account is recognized and ignored on hydrate. */
+function currentAccountName(): string {
+  return (process.env.CROSSTRADE_ACCOUNT ?? "").trim();
 }
 
 /** New York close hour (default 17 = the Globex/maintenance close) */
@@ -141,6 +155,7 @@ function seed(): GuardState {
   const applyLock = stage === "funded";
   return {
     stage,
+    account: currentAccountName(),
     startBalance,
     maxLoss,
     profitTarget,
@@ -174,7 +189,12 @@ function load() {
   try {
     const p = STATE_FILE();
     if (existsSync(p)) {
-      const j = JSON.parse(readFileSync(p, "utf8"));
+      const j = JSON.parse(readFileSync(p, "utf8")) as Partial<GuardState>;
+      // a file from a DIFFERENT account (e.g. an account switch whose
+      // reset's file delete failed) is stale — ignore it and start from
+      // the fresh seed so the new account never inherits the old one's
+      // floor/high-water/day reference.
+      if (j.account && j.account !== currentAccountName()) return;
       const s = seed();
       g.__gcGuard = { ...s, ...j };
       restoredFromFile = true;
@@ -246,13 +266,43 @@ export async function persistGuardToDb(state: GuardState): Promise<void> {
   }
 }
 
+/** Pick the restorable fields from a persisted row. Returns NULL when the
+ *  row belongs to a DIFFERENT account than the one currently configured —
+ *  a stale row (a switch whose reset's DB delete failed, or a redeploy
+ *  after a dashboard account change) must never leak the old account's
+ *  floor, high-water, stage or day reference into the new guard.
+ *  Only TRAILING/day state is restorable: the derived rule fields
+ *  (stage, startBalance, maxLoss, profitTarget, consistencyCap, lockAt)
+ *  always come from the current env + account at seed time. */
+export function hydrateFieldsFrom(db: Partial<GuardState>, currentAccount: string): Partial<GuardState> | null {
+  if (db.account && db.account !== currentAccount) return null;
+  const num = (v: unknown, fallback: number): number =>
+    typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  const out: Partial<GuardState> = {};
+  if (db.highWater !== undefined) out.highWater = num(db.highWater, 0);
+  if (db.floor !== undefined) out.floor = num(db.floor, 0);
+  if (db.locked !== undefined) out.locked = db.locked === true;
+  if (db.lastCommitDay) out.lastCommitDay = String(db.lastCommitDay);
+  if (db.dayKey) {
+    out.dayKey = String(db.dayKey);
+    out.dayStartRealized = num(db.dayStartRealized, 0);
+  }
+  if (db.bestDayPnl !== undefined) out.bestDayPnl = num(db.bestDayPnl, 0);
+  if (db.dayPeak !== undefined) out.dayPeak = num(db.dayPeak, 0);
+  if (db.profitArmed !== undefined) out.profitArmed = db.profitArmed === true;
+  if (db.lastDayPnl !== undefined && db.lastDayPnl !== null) out.lastDayPnl = num(db.lastDayPnl, 0);
+  if (db.ddHalved !== undefined) out.ddHalved = db.ddHalved === true;
+  return out;
+}
+
 /** restore the persisted state after a restart (called by crossGuard
  *  before the first gate check). Floor/high-water take the MAX of the
  *  persisted and the freshly bootstrapped values; the day reference is
  *  restored only when it still matches (preserves the $900 counter).
- *  Returns TRUE when the DB round-trip succeeded (row applied, or a
- *  fresh account with no row yet) and FALSE when the DB was configured
- *  but unreachable — the caller treats a FALSE mid-day (realized ≠ 0)
+ *  Returns TRUE when the DB round-trip succeeded (row applied, a fresh
+ *  account with no row yet, or a stale row for another account that was
+ *  correctly ignored) and FALSE when the DB was configured but
+ *  unreachable — the caller treats a FALSE mid-day (realized ≠ 0)
  *  as a fail-closed halt instead of silently re-baselining the day. */
 export async function hydrateGuardFromDb(): Promise<boolean> {
   if (!dbEnabled()) return true;
@@ -268,25 +318,25 @@ export async function hydrateGuardFromDb(): Promise<boolean> {
     const raw = rows[0].state;
     const db = (typeof raw === "string" ? JSON.parse(raw) : raw) as Partial<GuardState>;
     const s = mem();
-    if (db.stage) s.stage = db.stage;
-    if (db.startBalance) s.startBalance = db.startBalance;
-    if (db.maxLoss) s.maxLoss = db.maxLoss;
-    if (db.profitTarget) s.profitTarget = db.profitTarget;
-    if (db.consistencyCap) s.consistencyCap = db.consistencyCap;
-    if (db.lockAt) s.lockAt = db.lockAt;
-    s.highWater = Math.max(Number(db.highWater ?? 0), s.highWater);
-    s.floor = Math.max(Number(db.floor ?? 0), s.floor);
-    if (db.locked !== undefined) s.locked = db.locked;
-    if (db.lastCommitDay) s.lastCommitDay = db.lastCommitDay;
-    if (db.dayKey) {
-      s.dayKey = db.dayKey;
-      s.dayStartRealized = Number(db.dayStartRealized ?? 0);
+    const h = hydrateFieldsFrom(db, currentAccountName());
+    if (h === null) {
+      // another account's row — ignore it wholesale (see hydrateFieldsFrom)
+      mem().dayBaselineOk = true;
+      return true;
     }
-    s.bestDayPnl = Math.max(Number(db.bestDayPnl ?? 0), s.bestDayPnl);
-    s.dayPeak = Math.max(Number(db.dayPeak ?? 0), s.dayPeak);
-    if (db.profitArmed !== undefined) s.profitArmed = db.profitArmed;
-    if (db.lastDayPnl !== undefined && db.lastDayPnl !== null) s.lastDayPnl = Number(db.lastDayPnl);
-    if (db.ddHalved !== undefined) s.ddHalved = db.ddHalved;
+    s.highWater = Math.max(Number(h.highWater ?? 0), s.highWater);
+    s.floor = Math.max(Number(h.floor ?? 0), s.floor);
+    if (h.locked !== undefined) s.locked = h.locked;
+    if (h.lastCommitDay) s.lastCommitDay = h.lastCommitDay;
+    if (h.dayKey) {
+      s.dayKey = h.dayKey;
+      s.dayStartRealized = Number(h.dayStartRealized ?? 0);
+    }
+    s.bestDayPnl = Math.max(Number(h.bestDayPnl ?? 0), s.bestDayPnl);
+    s.dayPeak = Math.max(Number(h.dayPeak ?? 0), s.dayPeak);
+    if (h.profitArmed !== undefined) s.profitArmed = h.profitArmed;
+    if (h.lastDayPnl !== undefined && h.lastDayPnl !== null) s.lastDayPnl = Number(h.lastDayPnl);
+    if (h.ddHalved !== undefined) s.ddHalved = h.ddHalved;
     s.dayPnl = 0; // recomputed by guardCheck from dayStartRealized
     s.dayBaselineOk = true;
     return true;

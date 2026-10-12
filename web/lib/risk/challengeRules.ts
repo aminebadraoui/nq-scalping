@@ -92,3 +92,14 @@ export const FUNDED_RULES: ChallengeRules = {
 
 export const rulesForStage = (stage: GuardStage): ChallengeRules =>
   stage === "funded" ? FUNDED_RULES : EVAL_RULES;
+
+/** Derive the guard stage from the linked Tradovate account name.
+ *  MyFundedFutures encodes the product in the account id:
+ *  `MFFUSFREOD…` = Sim Funded (SF) · `MFFUEVREOD…` = Eval (EV).
+ *  Unknown patterns (other firms, custom CrossTrade labels) fall back to
+ *  eval — `MFF_STAGE` env remains the explicit override in guardStage().
+ *  Pure + client-safe (the account-switch UI reads it too). */
+export function stageForAccountName(account: string | null | undefined): GuardStage {
+  const a = (account ?? "").trim().toUpperCase();
+  return /^MFFU[\s._-]*SF/.test(a) ? "funded" : "eval";
+}
