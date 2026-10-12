@@ -161,6 +161,26 @@ $400 is the maximum tolerable if a stop-rule is wanted for discipline
 proposal.** "Aim for $200/day" is a sizing statement (the $100/cap-8
 profile averages $286/day), not a stop rule.
 
+### §4.1d — the three caps, and the live $900 consistency cap
+
+Three different "caps" exist and §4.1b/§4.1c cover two of them; the third
+is the live consistency halt:
+
+| cap | live value | role |
+|---|---|---|
+| contract cap (per trade) | 30µ plan · 8µ recommended at $100 | per-trade size (§4.1b) |
+| profit arm (`PROFIT_ARM`) | +$400, one-more-trade | voluntary early stop (§4.1c target dimension) |
+| consistency cap (`MFF_CONSISTENCY_CAP`) | **+$900**, hard day halt | protects the eval 30% rule (best day ≤ 30% of total; $900 = 30% × $3,000) |
+
+The $900 cap was missing from the target sweep. Run separately at
+$100/cap-8: it skips only 37 trades in 641 days, caps the best day at
+$982, and passes in **11 days [8–15]** — *faster* than the no-halt cell
+(12d), because it stops monster days ($1,280+) from raising the
+consistency bar above $3,000. Same 29% maxDD/MLL, 0 breaches at 10k
+orderings. With the +$400 arm active the $900 cap is redundant (days stop
+at ~$400 first). Fastest live-faithful stack: **$100 · cap 8 · no profit
+arm · $900 consistency cap = 11 days.**
+
 `VERDICT: edge real · significance — · stability stable (train/test 76.5/77.8) · holdout n/a (validation pipeline) · viability PASS (P=1.00 · med 10d)`
 
 ## What this falsifies and what it confirms
