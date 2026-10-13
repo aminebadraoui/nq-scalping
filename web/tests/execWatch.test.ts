@@ -4,7 +4,7 @@
  * naked-position repair from the 2026-10-08 incident. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { stopCoversPosition, classifyExitFill, pickExitFill, EXIT_SLIP_WINDOW_MS, findMatchingFill } from "../lib/execWatch";
+import { stopCoversPosition, classifyExitFill, pickExitFill, EXIT_SLIP_WINDOW_MS, findMatchingFill, bracketExitFills } from "../lib/execWatch";
 import { rearmStopPrice } from "../lib/crossTrade";
 
 test("rearmStopPrice: long anchors the stop just BELOW the tape (Tradovate-valid)", () => {
@@ -323,3 +323,42 @@ test("attachLimitOrderId before registerExpectation: the parked id lands on the 
   }
 });
 
+
+/* ---- orphan-sweep exit-leg picking (2026-10-13 misattribution fix) ---- */
+
+test("bracketExitFills: qty-bounded first opposite fills — the 10:16 stop leg", () => {
+  const out = bracketExitFills(
+    [
+      { ts: 1000, action: "Buy", qty: 7 }, // the bracket's stop fill
+      { ts: 2000, action: "Buy", qty: 5 }, // a later manual buy — never reached
+    ],
+    900,
+    "Buy",
+    7,
+    300_000,
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0].ts, 1000);
+});
+
+test("bracketExitFills: interleaved manual fills are included only until the size is reached, then the leg stops", () => {
+  const out = bracketExitFills(
+    [
+      { ts: 950, action: "Sell", qty: 9 }, // wrong side — skipped
+      { ts: 2000, action: "Buy", qty: 2 }, // manual, interleaved first
+      { ts: 2100, action: "Buy", qty: 7 }, // the bracket's fill completes the size
+      { ts: 2200, action: "Buy", qty: 4 }, // beyond the size — never reached
+    ],
+    1000,
+    "Buy",
+    7,
+    300_000,
+  );
+  assert.equal(out.length, 2);
+  assert.equal(out.reduce((s, f) => s + f.qty, 0), 9);
+});
+
+test("bracketExitFills: fills beyond the horizon never count (ambiguous — reconcile's job)", () => {
+  const out = bracketExitFills([{ ts: 1000 + 400_000, action: "Buy", qty: 7 }], 1000, "Buy", 7, 300_000);
+  assert.equal(out.length, 0);
+});

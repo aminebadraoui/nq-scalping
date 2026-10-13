@@ -52,11 +52,20 @@ trigger", 10:26:56).
 2. The placement-resolved order id parks in `pendingLimitIds` and
    attaches whenever the card registers — order-independent.
 3. `sweepOrphanLedger` (30s-throttled, display-only): unresolved
-   `placed`/`filled` rows from today/yesterday get re-attached to the
-   broker fill list (entry fill + order id) and closed from the
-   opposite-side fills when the account is flat. Never touches orders,
+   `placed` rows from today/yesterday get re-attached to the broker
+   fill list (entry fill + order id) and closed from the bracket's own
+   exit leg — the FIRST opposite-side fills after the entry summing to
+   the entry size within a 5-minute horizon (reconcile's qty-bounded
+   semantics, tightened so the account's manual trading can never
+   masquerade as the exit leg; the first deployment summed ALL later
+   opposite-side fills and misattributed the 10:16 row as +$867.89 and
+   the 19:10 momentum row as −$669.91 — both rows corrected and the
+   attribution fixed in the follow-up commit). Never touches orders,
    never registers `openExecs`, never feeds the protection watchdog or
-   the counter-signal gate.
+   the counter-signal gate. Rows the live process already marked
+   `filled` (entry known, exit lost) are left for the nightly
+   reconcile — their exit attribution is ambiguous under manual
+   trading.
 
 ## Honest bounds
 

@@ -370,6 +370,35 @@ const ORPHAN_SWEEP_INTERVAL_MS = 30_000;
 const ORPHAN_MIN_AGE_MS = 90_000;
 const ORPHAN_MATCH_WINDOW_MS = 15 * 60_000;
 const ORPHAN_ENTRY_PRICE_TOLERANCE_PTS = 6;
+/** a confident close needs the bracket's own exit fills — the FIRST
+ *  opposite-side fills after the entry summing to the entry size, within
+ *  minutes of it. Beyond that horizon manual trading interleaves and the
+ *  attribution is ambiguous (the nightly reconcile stays the authority). */
+const ORPHAN_CLOSE_HORIZON_MS = 5 * 60_000;
+
+/** pure exit-leg picker for the orphan sweep: opposite-side fills after
+ *  the entry fill, in time order, until the cumulative qty reaches the
+ *  entry size (reconcile's qty-bounded semantics) or the horizon ends.
+ *  Generic so the caller keeps the full fill row (price/fees). */
+export function bracketExitFills<T extends { ts: number; action: string; qty: number }>(
+  fills: T[],
+  entryTs: number,
+  exitAction: "Buy" | "Sell",
+  contracts: number,
+  horizonMs: number,
+): T[] {
+  const out: T[] = [];
+  let qty = 0;
+  for (const f of [...fills].sort((a, b) => a.ts - b.ts)) {
+    if (f.ts <= entryTs) continue;
+    if (f.ts > entryTs + horizonMs) break;
+    if (f.action !== exitAction) continue;
+    out.push(f);
+    qty += f.qty;
+    if (qty >= contracts) break;
+  }
+  return out;
+}
 
 export async function sweepOrphanLedger(opts?: { nowMs?: number }): Promise<void> {
   if (!enabled()) return;
@@ -379,10 +408,15 @@ export async function sweepOrphanLedger(opts?: { nowMs?: number }): Promise<void
   const today = nyDay(now);
   const yesterday = nyDay(now - 24 * 60 * 60_000);
   const rows = await getExecTrades(120);
+  // "placed"-only: rows the live process ALREADY marked "filled" have a
+  // known entry but an exit it failed to track — with manual trading on
+  // the account that attribution is ambiguous, so they wait for the
+  // nightly reconcile. The sweep targets the full-invisibility case
+  // (2026-10-13 10:16: fill AND stop happened with no watcher attached).
   const candidates = rows.filter(
     (r) =>
       (r.day === today || r.day === yesterday) &&
-      (r.status === "placed" || r.status === "filled") &&
+      r.status === "placed" &&
       now - r.ts > ORPHAN_MIN_AGE_MS &&
       !pending.has(r.key) &&
       !openExecs().has(r.key),
@@ -392,10 +426,11 @@ export async function sweepOrphanLedger(opts?: { nowMs?: number }): Promise<void
   if (fills === null || fills.length === 0) return;
   const held = await readMnqHeld();
   if (held === -1) return; // positions unreadable — never guess
+  const sorted = [...fills].sort((a, b) => a.ts - b.ts);
   for (const row of candidates) {
     const want = row.side === "long" ? "Buy" : "Sell";
     const need = Math.max(1, Math.floor(row.contracts * 0.8));
-    const entries = fills.filter(
+    const entries = sorted.filter(
       (f) =>
         f.action === want &&
         f.qty >= need &&
@@ -405,39 +440,33 @@ export async function sweepOrphanLedger(opts?: { nowMs?: number }): Promise<void
         Math.abs(f.price - row.sigEntry) <= ORPHAN_ENTRY_PRICE_TOLERANCE_PTS,
     );
     if (entries.length === 0) continue;
-    entries.sort((a, b) => a.ts - b.ts);
     const ef = entries[entries.length - 1];
-    if (row.status === "placed" || row.fillEntry === null) {
-      void trackExecFill(row.key, { ts: ef.ts, action: ef.action, qty: ef.qty, price: ef.price }, fills);
-      void logExec({
-        key: row.key,
-        label: row.label,
-        attempt: "watch",
-        outcome: "fill_reconciled",
-        reason: `orphan sweep matched a late entry fill at ${ef.price.toFixed(2)}`,
-      });
-    }
-    if (held === 0) {
-      const wantExit = row.side === "long" ? "Sell" : "Buy";
-      const exits = fills.filter((f) => f.action === wantExit && f.ts > ef.ts);
-      const exitQty = exits.reduce((s, f) => s + f.qty, 0);
-      if (exitQty > 0) {
-        void trackExecClose(row.key, {
-          entry: row.sigEntry,
-          dir: row.side,
-          contracts: row.contracts,
-          exitFills: exits.map((f) => ({ ts: f.ts, action: f.action, qty: f.qty, price: f.price })),
-          realFees: exits.reduce((s, f) => s + f.commission + f.fees, 0),
-        });
-        void logExec({
-          key: row.key,
-          label: row.label,
-          attempt: "watch",
-          outcome: "close_reconciled",
-          reason: `orphan sweep closed the row from ${exitQty} exit fills`,
-        });
-      }
-    }
+    void trackExecFill(row.key, { ts: ef.ts, action: ef.action, qty: ef.qty, price: ef.price }, sorted);
+    void logExec({
+      key: row.key,
+      label: row.label,
+      attempt: "watch",
+      outcome: "fill_reconciled",
+      reason: `orphan sweep matched a late entry fill at ${ef.price.toFixed(2)}`,
+    });
+    if (held !== 0) continue; // position still open — the entry stands, the close waits
+    const exits = bracketExitFills(sorted, ef.ts, row.side === "long" ? "Sell" : "Buy", row.contracts, ORPHAN_CLOSE_HORIZON_MS);
+    const exitQty = exits.reduce((s, f) => s + f.qty, 0);
+    if (exitQty < need) continue; // no confident exit leg — leave for reconcile
+    void trackExecClose(row.key, {
+      entry: row.sigEntry,
+      dir: row.side,
+      contracts: row.contracts,
+      exitFills: exits.map((f) => ({ ts: f.ts, action: f.action, qty: f.qty, price: f.price })),
+      realFees: exits.reduce((s, f) => s + f.commission + f.fees, 0),
+    });
+    void logExec({
+      key: row.key,
+      label: row.label,
+      attempt: "watch",
+      outcome: "close_reconciled",
+      reason: `orphan sweep closed the row from ${exits.length} exit fill(s) within ${Math.round((exits[exits.length - 1].ts - ef.ts) / 1000)}s of the entry`,
+    });
   }
 }
 
