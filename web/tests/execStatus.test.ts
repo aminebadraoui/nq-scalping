@@ -64,6 +64,13 @@ test("halted: eval consistency cap", () => {
   assert.ok(s.halts.some((x) => x.startsWith("consistency:")));
 });
 
+test("halted: the consistency cap applies on funded too (same rules every stage)", () => {
+  const funded = { stage: "funded" as const, startBalance: 0, profitTarget: 3000, floor: -2000, highWater: 0 };
+  const s = deriveExecStatus(P({ ...funded, dayPnl: 900 }), { equity: 900, realized: 900 }, OPTS);
+  assert.equal(s.state, "halted");
+  assert.ok(s.halts.some((x) => x.startsWith("consistency:")));
+});
+
 test("halted: day-plan −$250 daily floor (default)", () => {
   const s = deriveExecStatus(P({ dayPnl: -260 }), SNAP, OPTS);
   assert.equal(s.state, "halted");

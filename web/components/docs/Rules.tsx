@@ -7,7 +7,7 @@ const ACCOUNT = [
   ["No-data halt", "the account snapshot is unreadable — the gate fails closed and no order can be placed", "always"],
   ["Floor halt", "equity ≤ floor + $500 margin. Eval floor = $50,000 − $2,000 = $48,000 (trails UP at the 17:00 ET close to equity − $2,000); funded trails up and locks at $100", "always"],
   ["Profit target", "eval: equity ≥ $53,000 ($50k + $3k target) → passed, stop. Funded: target measured from $0", "always"],
-  ["Consistency cap", "day realized P&L ≥ $900 (30% of the target) → stop for the day", "eval only"],
+  ["Consistency cap", "day realized P&L ≥ $900 (30% of the target) → stop for the day", "every stage"],
   ["Daily loss floor", "day P&L ≤ −$250 (DAILY_LOSS_FLOOR) → no new entries for the rest of the day", "always"],
   ["Profit arm", "once day P&L ≥ +$400 (PROFIT_ARM): one trade at a time — the FIRST losing close after arming ends the day", "always"],
   ["Give-back protection", "day P&L gives back more than max($250, 50% × dayPeak) from the day's peak → stop for the day (only after the peak exceeds $250)", "always"],

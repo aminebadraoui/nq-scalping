@@ -42,7 +42,8 @@ export type ChallengeRules = {
   profitTarget: number;
   /** EOD-trailing max-loss distance */
   maxLoss: number;
-  /** eval-only daily profit cap (30% of target); null = no cap */
+  /** daily profit cap (30% of target) — the same cap runs on BOTH stages
+   *  (2026-10-11 owner decision); null = no cap */
   consistencyCap: number | null;
   /** minimum trading days for the eval pass */
   minDays: number;

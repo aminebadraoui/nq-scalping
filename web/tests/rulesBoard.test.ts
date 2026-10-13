@@ -82,14 +82,14 @@ test("profit arm arms and then trips on the first loss after arming", () => {
   assert.equal(row(tripped, "profit-arm").state, "tripped");
 });
 
-test("consistency cap is off on funded and tripped when reached on eval", () => {
+test("consistency cap trips on funded too — the same cap runs every stage", () => {
   const funded = deriveRulesView(
     { ...P, stage: "funded", dayPnl: 1_200 },
     { equity: 52_000, realized: 1_200 },
     OPTS,
     EXTRAS,
   );
-  assert.equal(row(funded, "consistency").state, "off");
+  assert.equal(row(funded, "consistency").state, "tripped");
   const evalTripped = deriveRulesView({ ...P, dayPnl: 950 }, { equity: 50_950, realized: 950 }, OPTS, EXTRAS);
   assert.equal(row(evalTripped, "consistency").state, "tripped");
 });

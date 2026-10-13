@@ -65,8 +65,10 @@ export function deriveExecStatus(
   if (snap.equity >= targetPx) {
     halts.push(`target: equity $${snap.equity.toFixed(0)} ≥ $${targetPx.toFixed(0)} — eval passed, stop`);
   }
-  // eval consistency cap ($900/day)
-  if (p.stage === "eval" && p.dayPnl >= p.consistencyCap) {
+  // consistency cap ($900/day): the same rule runs on eval AND funded
+  // (2026-10-11 owner decision — guardCheck applies consistencyHalts on
+  // every stage; this display must mirror the real gate)
+  if (p.consistencyCap > 0 && p.dayPnl >= p.consistencyCap) {
     halts.push(`consistency: day +$${p.dayPnl.toFixed(0)} ≥ cap $${p.consistencyCap}`);
   }
   // day-plan daily loss floor (default −$250)
@@ -187,11 +189,11 @@ export function deriveRulesView(
     id: "consistency",
     group: "account",
     name: "Consistency cap",
-    description: "one day's realized profit must stay under 30% of the target or the eval fails",
-    scope: "eval only",
+    description: "one day's realized profit must stay under the cap — the same +$900/day rule runs on eval AND funded (2026-10-11 owner decision)",
+    scope: "every stage",
     threshold: usd(p.consistencyCap),
     current: usd(p.dayPnl),
-    state: p.stage !== "eval" ? "off" : p.dayPnl >= p.consistencyCap ? "tripped" : p.dayPnl >= p.consistencyCap - 200 ? "warn" : "ok",
+    state: p.consistencyCap <= 0 ? "off" : p.dayPnl >= p.consistencyCap ? "tripped" : p.dayPnl >= p.consistencyCap - 200 ? "warn" : "ok",
   });
 
   rows.push({

@@ -41,7 +41,8 @@ export type GuardConfig = {
   givebackPct: number;
   /** give-back floor: below this dayPeak the protection is dormant */
   givebackFloor: number;
-  /** eval consistency cap: 30% of the profit target */
+  /** consistency cap: 30% of the profit target — applies on EVERY stage
+   *  (2026-10-11 owner decision: eval and funded trade under the same rules) */
   consistencyCap: number;
   /** halt new entries once equity is within guardMargin of the floor */
   guardMargin: number;
