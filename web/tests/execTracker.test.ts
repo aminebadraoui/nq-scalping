@@ -114,7 +114,7 @@ test("register → fill → close state machine over the memory ring", async () 
   assert.equal(rows[0].status, "placed");
   assert.equal(rows[0].family, "sweep_reclaim");
 
-  trackExecFill(
+  await trackExecFill(
     "reclaim|2026-10-12|long|09:41",
     { ts: 1_700_000_001_000, action: "Buy", qty: 5, price: 31100.25 },
     [{ ts: 1_700_000_001_000, action: "Buy", qty: 5, price: 31100.25, orderId: "tradovate-ord-77" }],
@@ -124,7 +124,7 @@ test("register → fill → close state machine over the memory ring", async () 
   assert.equal(rows[0].fillEntry, 31100.25);
   assert.equal(rows[0].orderId, "tradovate-ord-77");
 
-  trackExecClose("reclaim|2026-10-12|long|09:41", {
+  await trackExecClose("reclaim|2026-10-12|long|09:41", {
     entry: 31100,
     dir: "long",
     contracts: 5,

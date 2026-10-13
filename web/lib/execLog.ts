@@ -62,6 +62,8 @@ export type ExecLogEntry = {
     | "stop_slipped"
     | "flatten_fired"
     | "flatten_dry"
+    | "fill_reconciled"
+    | "close_reconciled"
     | "not_flat_retry";
   reason: string;
   meta?: Record<string, unknown>;

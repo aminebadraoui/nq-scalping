@@ -45,7 +45,7 @@ import { signalWindowOpen } from "./marketHours";
 import { newsBlockedNow } from "./newsGate";
 import { noteRthExit } from "./rthExitLog";
 import { ctFetch, ctFills, ctOrders, ctPositions } from "./ctAccount";
-import { trackExecRegister, trackExecFail, trackExecFill, trackExecClose } from "./execTracker";
+import { trackExecRegister, trackExecFail, trackExecFill, trackExecClose, getExecTrades } from "./execTracker";
 import { getMemoryHistory } from "./signalHistory";
 
 export type Expectation = {
@@ -78,6 +78,9 @@ const MATCH_WINDOW_MS = 5 * 60_000;
 const MNQ = "MNQ";
 
 let pending = new Map<string, Expectation>();
+/** limit order ids attached BEFORE the card registered (the placement
+ *  resolve / registerExpectation race) — applied on registration. */
+const pendingLimitIds = new Map<string, string>();
 let alerted = new Set<string>();
 let failedKeys = new Set<string>();
 
@@ -351,10 +354,98 @@ async function pollRthExit(): Promise<void> {
 
 let exitPollStarted = false;
 
+/* ---- orphan ledger reconciliation (2026-10-13 10:16 incident) ------- *
+ * A resting limit can fill AFTER the entry-match window closes or after
+ * a redeploy wiped the in-memory pending/openExec registries — the fill
+ * and stop then happen with no watcher attached and exec_trades stays
+ * "placed" until the nightly reconcile. This sweep re-attaches such rows
+ * to the broker's fill list: entry fill → "filled" (+ order id), and
+ * when the account is flat, the opposite-side fills since the entry →
+ * "closed" with the $ result. DISPLAY-ONLY: it never touches orders,
+ * never registers openExecs, and never feeds the protection watchdog or
+ * the counter-signal gate (those stay in-process only). Throttled; rows
+ * younger than ORPHAN_MIN_AGE_MS wait for the live paths to act first. */
+let lastOrphanSweepAt = 0;
+const ORPHAN_SWEEP_INTERVAL_MS = 30_000;
+const ORPHAN_MIN_AGE_MS = 90_000;
+const ORPHAN_MATCH_WINDOW_MS = 15 * 60_000;
+const ORPHAN_ENTRY_PRICE_TOLERANCE_PTS = 6;
+
+export async function sweepOrphanLedger(opts?: { nowMs?: number }): Promise<void> {
+  if (!enabled()) return;
+  const now = opts?.nowMs ?? Date.now();
+  if (now - lastOrphanSweepAt < ORPHAN_SWEEP_INTERVAL_MS) return;
+  lastOrphanSweepAt = now;
+  const today = nyDay(now);
+  const yesterday = nyDay(now - 24 * 60 * 60_000);
+  const rows = await getExecTrades(120);
+  const candidates = rows.filter(
+    (r) =>
+      (r.day === today || r.day === yesterday) &&
+      (r.status === "placed" || r.status === "filled") &&
+      now - r.ts > ORPHAN_MIN_AGE_MS &&
+      !pending.has(r.key) &&
+      !openExecs().has(r.key),
+  );
+  if (candidates.length === 0) return;
+  const fills = await ctFills();
+  if (fills === null || fills.length === 0) return;
+  const held = await readMnqHeld();
+  if (held === -1) return; // positions unreadable — never guess
+  for (const row of candidates) {
+    const want = row.side === "long" ? "Buy" : "Sell";
+    const need = Math.max(1, Math.floor(row.contracts * 0.8));
+    const entries = fills.filter(
+      (f) =>
+        f.action === want &&
+        f.qty >= need &&
+        f.ts >= row.ts - 10_000 &&
+        f.ts <= row.ts + ORPHAN_MATCH_WINDOW_MS &&
+        Number.isFinite(f.price) &&
+        Math.abs(f.price - row.sigEntry) <= ORPHAN_ENTRY_PRICE_TOLERANCE_PTS,
+    );
+    if (entries.length === 0) continue;
+    entries.sort((a, b) => a.ts - b.ts);
+    const ef = entries[entries.length - 1];
+    if (row.status === "placed" || row.fillEntry === null) {
+      void trackExecFill(row.key, { ts: ef.ts, action: ef.action, qty: ef.qty, price: ef.price }, fills);
+      void logExec({
+        key: row.key,
+        label: row.label,
+        attempt: "watch",
+        outcome: "fill_reconciled",
+        reason: `orphan sweep matched a late entry fill at ${ef.price.toFixed(2)}`,
+      });
+    }
+    if (held === 0) {
+      const wantExit = row.side === "long" ? "Sell" : "Buy";
+      const exits = fills.filter((f) => f.action === wantExit && f.ts > ef.ts);
+      const exitQty = exits.reduce((s, f) => s + f.qty, 0);
+      if (exitQty > 0) {
+        void trackExecClose(row.key, {
+          entry: row.sigEntry,
+          dir: row.side,
+          contracts: row.contracts,
+          exitFills: exits.map((f) => ({ ts: f.ts, action: f.action, qty: f.qty, price: f.price })),
+          realFees: exits.reduce((s, f) => s + f.commission + f.fees, 0),
+        });
+        void logExec({
+          key: row.key,
+          label: row.label,
+          attempt: "watch",
+          outcome: "close_reconciled",
+          reason: `orphan sweep closed the row from ${exitQty} exit fills`,
+        });
+      }
+    }
+  }
+}
+
 /** 30s broker poll that turns flat transitions into execution-ledger
  *  closes (exit fills → $ result; RTH labels also feed the
- *  counter-signal gate), and runs the protection watchdog
- *  (working-stop verification + naked-position repair).
+ *  counter-signal gate), runs the protection watchdog
+ *  (working-stop verification + naked-position repair), and reconciles
+ *  orphan ledger rows (late limit fills / redeploy survivors).
  *  Started from instrumentation. */
 export function startRthExitPoll(intervalMs = 10_000): void {
   if (exitPollStarted || !enabled()) return;
@@ -362,6 +453,7 @@ export function startRthExitPoll(intervalMs = 10_000): void {
   setInterval(() => {
     void pollRthExit().catch(() => {});
     void checkProtection().catch(() => {});
+    void sweepOrphanLedger().catch(() => {});
   }, intervalMs);
   // boot evidence (2026-10-12): the verified-resend machinery has never
   // produced a resend row in exec_log — this line proves on the VPS that
@@ -434,20 +526,40 @@ export function fillMatches(
   return findMatchingFill(e, fills, now) !== null;
 }
 
+/** a resting-limit fill may print farther from the limit than this and
+ *  still be ours (the live RTH fills drifted +1.62/+3.62/+2.75 pts past
+ *  the limit price on the better side); beyond it the fill is far more
+ *  likely someone else's order on the account (manual trading) — the
+ *  price check is what makes the extended limit window safe. */
+const LIMIT_FILL_TOLERANCE_PTS = 5;
+
 /** the matched entry fill (with its price) — null when no fill matches.
  *  The fill PRICE is the execution-quality input for the re-anchor and
- *  slippage checks: it is where the trade actually got in, not the signal. */
+ *  slippage checks: it is where the trade actually got in, not the signal.
+ *  `opts` extends the match for resting-limit cards (2026-10-13 10:16
+ *  incident): a limit is DESIGNED to wait — the default 5-minute window
+ *  expires before the limit's own TTL, so a fill between window-end and
+ *  expiry was invisible (no ledger fill, no open-exec, the expiry cancel
+ *  then failed against an already-filled order). For limit cards the
+ *  window runs to the limit's expiry (bounded by the give-up clock) and
+ *  the fill must sit within LIMIT_FILL_TOLERANCE_PTS of the limit price. */
 export function findMatchingFill(
   e: { ts: number; intent: { dir: "long" | "short"; contracts: number } },
   fills: Array<{ ts: number; action: string; qty: number; price?: number }>,
   now: number,
+  opts?: { upperBoundMs?: number; limitPrice?: number },
 ): { ts: number; action: string; qty: number; price?: number } | null {
   const want = e.intent.dir === "long" ? "Buy" : "Sell";
   const need = Math.max(1, Math.floor(e.intent.contracts * 0.8));
-  // the match contract is side/size/window only (unchanged); price rides
-  // along when the caller's fill rows carry it (the watcher's always do)
+  const upper = opts?.upperBoundMs ?? e.ts + MATCH_WINDOW_MS;
   const matches = fills.filter(
-    (f) => f.action === want && f.qty >= need && f.ts >= e.ts - 10_000 && f.ts <= e.ts + MATCH_WINDOW_MS,
+    (f) =>
+      f.action === want &&
+      f.qty >= need &&
+      f.ts >= e.ts - 10_000 &&
+      f.ts <= upper &&
+      (opts?.limitPrice === undefined ||
+        (typeof f.price === "number" && Number.isFinite(f.price) && Math.abs(f.price - opts.limitPrice) <= LIMIT_FILL_TOLERANCE_PTS)),
   );
   if (!matches.length) return null;
   matches.sort((a, b) => a.ts - b.ts);
@@ -576,6 +688,14 @@ export function registerExpectation(e: Omit<Expectation, "sendFailed" | "attempt
   // so the watcher has nothing to verify, re-send, or alarm about
   if (tradingHalted()) return;
   pending.set(e.key, { ...e, sendFailed: failedKeys.has(e.key), attempts: 0, lastAttemptAt: 0 });
+  // an order id attached BEFORE this card registered (the placement
+  // promise resolved first) lands now — the expiry cancel must be able
+  // to address the resting limit it placed
+  const parkedId = pendingLimitIds.get(e.key);
+  if (parkedId && e.limit) {
+    e.limit.orderId = parkedId;
+    pendingLimitIds.delete(e.key);
+  }
   // execution ledger (display-only telemetry — never affects placement).
   // Scale-out legs are partial-exit children of the base entry card: the
   // ledger tracks the base trade; the nightly reconcile books the splits.
@@ -598,11 +718,20 @@ export function registerExpectation(e: Omit<Expectation, "sendFailed" | "attempt
 
 /** attach the broker-facing order id to a pending limit card after its
  *  placement returns (the id is ours by construction, so this is how the
- *  expiry cancel addresses the order). No-op when not live. */
+ *  expiry cancel addresses the order). No-op when not live.
+ *
+ *  RACE (2026-10-13 10:16 incident): the placement promise can resolve
+ *  BEFORE the feed's registerExpectation (which awaits the Telegram push
+ *  + signal record first) — the id then had no pending entry to land on
+ *  and was silently dropped. The card expired with "no order id — cannot
+ *  cancel" and the resting limit outlived its card. The id now parks in
+ *  pendingLimitIds and registerExpectation applies it whenever the card
+ *  registers — order-independent. */
 export function attachLimitOrderId(key: string, orderId: string) {
   if (!enabled()) return;
   const e = pending.get(key);
   if (e?.limit) e.limit.orderId = orderId;
+  else pendingLimitIds.set(key, orderId);
 }
 
 /** the broker-facing order ids WE placed (resting-limit entries) — the
@@ -760,7 +889,14 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
       continue;
     }
     fills = immediate ? await fetchFills(true) : (fills ?? (await fetchFills()));
-    const matchedFill = fills ? findMatchingFill(e, fills, now) : null;
+    const matchedFill = fills
+      ? findMatchingFill(
+          e,
+          fills,
+          now,
+          e.limit ? { upperBoundMs: Math.min(e.limit.expireAtMs, e.ts + GIVE_UP_MS), limitPrice: e.limit.price } : undefined,
+        )
+      : null;
     if (matchedFill) {
       pending.delete(key);
       // telemetry: close the submit→fill leg with the broker's own fill
@@ -998,6 +1134,7 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
 /** TEST ONLY: reset the watcher state. */
 export function __resetExecWatchForTest() {
   pending = new Map();
+  pendingLimitIds.clear();
   alerted = new Set();
   failedKeys = new Set();
   openExecs().clear();

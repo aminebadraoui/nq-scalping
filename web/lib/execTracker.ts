@@ -303,33 +303,34 @@ export function trackExecFail(key: string, _reason: string): void {
 
 /** entry fill confirmed — attach the broker fill + Tradovate order id.
  *  `fills` is the shared ctAccount fill list (5s cache); the matched
- *  fill's orderId is the Tradovate entry order. */
-export function trackExecFill(
+ *  fill's orderId is the Tradovate entry order. Resolves rows that are
+ *  NOT in this process's memory too (orphan sweep after a redeploy). */
+export async function trackExecFill(
   key: string,
   fill: { ts: number; action: string; qty: number; price: number },
   allFills?: Array<{ ts: number; action: string; qty: number; price: number; orderId: string }> | null,
-): void {
-  const mem = getMemory();
-  const i = mem.findIndex((r) => r.key === key);
-  if (i < 0) return;
+): Promise<void> {
+  const row = await readRow(key);
+  if (!row) return;
   const matched =
     allFills?.find((f) => f.ts === fill.ts && f.action === fill.action && f.qty === fill.qty && f.price === fill.price) ??
     null;
-  const row: ExecTradeRow = {
-    ...mem[i],
+  const next: ExecTradeRow = {
+    ...row,
     status: "filled",
     fillEntry: fill.price,
     fillEntryAt: fill.ts,
-    orderId: matched?.orderId ?? mem[i].orderId,
+    orderId: matched?.orderId ?? row.orderId,
     updatedAt: Date.now(),
   };
-  upsertMemory(row);
-  void persist(row);
+  upsertMemory(next);
+  void persist(next);
 }
 
 /** the account went flat — exit fills are the opposite-side session
- *  fills since the entry. Computes and stores the money result. */
-export function trackExecClose(
+ *  fills since the entry. Computes and stores the money result. Resolves
+ *  rows that are NOT in this process's memory too (orphan sweep). */
+export async function trackExecClose(
   key: string,
   opts: {
     entry: number;
@@ -338,11 +339,9 @@ export function trackExecClose(
     exitFills: ExecFill[];
     realFees: number;
   },
-): void {
-  const mem = getMemory();
-  const i = mem.findIndex((r) => r.key === key);
-  if (i < 0) return;
-  const row = mem[i];
+): Promise<void> {
+  const row = await readRow(key);
+  if (!row) return;
   const exitQty = opts.exitFills.reduce((s, f) => s + f.qty, 0);
   if (exitQty <= 0) return; // no exit fills visible yet — keep the row open
   const exitAvg = opts.exitFills.reduce((s, f) => s + f.price * f.qty, 0) / exitQty;
@@ -441,6 +440,26 @@ function mapDbRow(r: DbRow): ExecTradeRow {
     result: (["win", "loss", "flat"].includes(r.result) ? r.result : "") as ExecTradeRow["result"],
     updatedAt: 0,
   };
+}
+
+/** one row by key — memory first (newest, recorded this process), then
+ *  the DB. Lets the orphan sweep re-attach rows a previous process left
+ *  unresolved (a redeploy wipes the in-memory ring, not the table). */
+async function readRow(key: string): Promise<ExecTradeRow | null> {
+  const mem = getMemory();
+  const i = mem.findIndex((r) => r.key === key);
+  if (i >= 0) return mem[i];
+  if (!(await ensureTable())) return null;
+  try {
+    const rows = (await getDb()`
+      select key, signal_id, ts, day, time_et, label, family, side, contracts,
+             sig_entry, sig_stop, sig_target, order_id, status, fill_entry, fill_entry_at,
+             exit_avg, exit_fills, pts, gross_usd, fees_usd, net_usd, result
+      from exec_trades where key = ${key} limit 1`) as unknown as DbRow[];
+    return rows.length ? mapDbRow(rows[0]) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** memory first (newest, recorded this process), then older DB rows

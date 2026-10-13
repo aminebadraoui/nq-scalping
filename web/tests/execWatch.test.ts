@@ -4,7 +4,7 @@
  * naked-position repair from the 2026-10-08 incident. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { stopCoversPosition, classifyExitFill, pickExitFill, EXIT_SLIP_WINDOW_MS } from "../lib/execWatch";
+import { stopCoversPosition, classifyExitFill, pickExitFill, EXIT_SLIP_WINDOW_MS, findMatchingFill } from "../lib/execWatch";
 import { rearmStopPrice } from "../lib/crossTrade";
 
 test("rearmStopPrice: long anchors the stop just BELOW the tape (Tradovate-valid)", () => {
@@ -251,3 +251,75 @@ test("checkExpectations: an unfilled card reaches broker verification and logs i
     delete process.env.CROSSTRADE_ACCOUNT;
   }
 });
+
+/* ---- limit-fill matching (2026-10-13 10:16 missed-fill incident) ---- */
+
+test("findMatchingFill: a limit fill past the 5-minute window but inside the limit expiry still matches", () => {
+  // the 10:16 card's true shape: card ts 14:17:43Z, limit 30786.13,
+  // fill printed +6m51s at 30787.75 — 111s past MATCH_WINDOW_MS.
+  const cardTs = Date.parse("2026-10-13T14:17:43.176Z");
+  const e: { ts: number; intent: { dir: "long" | "short"; contracts: number } } = {
+    ts: cardTs,
+    intent: { dir: "short", contracts: 7 },
+  };
+  const fills = [{ ts: cardTs + 6 * 60_000 + 51_000, action: "Sell", qty: 7, price: 30787.75 }];
+  // the default window misses it (the shipped bug) …
+  assert.equal(findMatchingFill(e, fills, 0), null);
+  // … the limit-lifecycle window catches it
+  const hit = findMatchingFill(e, fills, 0, { upperBoundMs: cardTs + 9 * 60_000, limitPrice: 30786.13 });
+  assert.ok(hit, "expected the late limit fill to match inside the limit's expiry");
+  assert.equal(hit?.price, 30787.75);
+});
+
+test("findMatchingFill: limit matching rejects fills beyond the price tolerance (manual-fill guard)", () => {
+  const e: { ts: number; intent: { dir: "long" | "short"; contracts: number } } = {
+    ts: 0,
+    intent: { dir: "long", contracts: 10 },
+  };
+  const far = [{ ts: 60_000, action: "Buy", qty: 10, price: 31000 }]; // 200 pts off the limit
+  assert.equal(findMatchingFill(e, far, 0, { upperBoundMs: 600_000, limitPrice: 30800 }), null);
+  const near = [{ ts: 60_000, action: "Buy", qty: 10, price: 30804 }]; // 4 pts off — ours
+  assert.ok(findMatchingFill(e, near, 0, { upperBoundMs: 600_000, limitPrice: 30800 }));
+});
+
+test("attachLimitOrderId before registerExpectation: the parked id lands on the card (the placement race)", async () => {
+  const os = await import("node:os");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { attachLimitOrderId, registerExpectation, placedLimitOrderIds, __resetExecWatchForTest } = await import("../lib/execWatch");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ct-watch-"));
+  process.env.GC_DATA_DIR = tmp;
+  delete process.env.DATABASE_URL; // never touch Neon from a unit test
+  process.env.EXECUTE_LIVE = "1";
+  process.env.CROSSTRADE_KEY = "test-key";
+  process.env.CROSSTRADE_ACCOUNT = "MFFUEVREOD1234";
+  process.env.TELEGRAM_BOT_TOKEN = "1:fake";
+  process.env.TELEGRAM_CHAT_ID = "1";
+  try {
+    __resetExecWatchForTest();
+    const key = "rth|2026-10-13|short|10:16";
+    // the shipped race: the placement promise resolved (id attached)
+    // BEFORE the feed's registerExpectation ran
+    attachLimitOrderId(key, "mv6rmkmm-z9e7p7-lmt");
+    registerExpectation({
+      key,
+      ts: Date.parse("2026-10-13T14:17:43.176Z"),
+      label: "rth short",
+      intent: { symbol: "NQ", dir: "short", contracts: 7, entry: 30786.13, stop: 30792.44, target: 30770.34, timeET: "10:16" },
+      limit: { price: 30786.13, expireAtMs: Date.parse("2026-10-13T14:17:43.176Z") + 9 * 60_000 },
+      scaleOut: false,
+    });
+    // the expiry cancel must be able to address the order it placed
+    assert.deepEqual(placedLimitOrderIds(), ["mv6rmkmm-z9e7p7-lmt"]);
+  } finally {
+    __resetExecWatchForTest();
+    fs.rmSync(tmp, { recursive: true, force: true });
+    delete process.env.EXECUTE_LIVE;
+    delete process.env.GC_DATA_DIR;
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.TELEGRAM_CHAT_ID;
+    delete process.env.CROSSTRADE_KEY;
+    delete process.env.CROSSTRADE_ACCOUNT;
+  }
+});
+
