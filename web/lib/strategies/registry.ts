@@ -145,7 +145,7 @@ export const STRATEGIES: StrategyDeclaration[] = [
       "by a ≥75% one-sided breakout through the reference high (range ≥ 1.0 × ATR14). THE core live edge — validated " +
       "1,828 trades / 76.1% WR / PF 2.76 (structural 1R).",
     fields: MOM_FIELDS,
-    studies: ["momentum-study", "quality-filter-sweep", "winner-loser-atlas", "hour-expectancy-study", "es-features-study", "entry-quality-study", "side-filter-study", "context-veto-stoprun", "htf-short-pullback", "counter-bias-veto", "full-gates-replay"],
+    studies: ["momentum-study", "quality-filter-sweep", "winner-loser-atlas", "hour-expectancy-study", "es-features-study", "entry-quality-study", "side-filter-study", "context-veto-stoprun", "htf-short-pullback", "counter-bias-veto", "full-gates-replay", "live-stack-exact"],
     liveKnobs: "FEED_MOMENTUM · EXP_RETRACE (limit mode on expansion) · WALL_STOP · KELLY_MODE (label only) · strategy_overrides",
   },
   {
@@ -164,7 +164,7 @@ export const STRATEGIES: StrategyDeclaration[] = [
       "The huge-bar expansion: range ≥ 1.6 × ATR14, |delta| ÷ volume ≥ 0.5, direction-matching cluster stack (≥3 rows, " +
       "≥3 lots, ≥2:1), volume gate max(15, min(0.5 × med60, 250)). Validated 4,152 sequential trades / 78.4% WR / PF 3.14.",
     fields: EXP_FIELDS,
-    studies: ["expansion-study", "all-strategies-study", "retrace-slippage", "entry-quality-study", "winner-loser-atlas"],
+    studies: ["expansion-study", "all-strategies-study", "retrace-slippage", "entry-quality-study", "winner-loser-atlas", "live-stack-exact"],
     liveKnobs: "FEED_MOMENTUM · EXP_RETRACE (default ON) · EXP_RETRACE_PTS/BARS (signalFeed.ts) · strategy_overrides",
   },
   {
@@ -178,14 +178,15 @@ export const STRATEGIES: StrategyDeclaration[] = [
     plan:
       "Entry at the close · stop under the bar (1-pt pad) · research optimum 0.75R target · live bracket (RTH_LIMIT_ENTRIES=1, " +
       "env): resting limit at the signal price (9-min TTL), 0.5× structural stop, 2.5R target — measured 37.7% WR / PF 1.49 " +
-      "live-style. ≥5-bar gap · daily card cap (RTH_MAX_CARDS_PER_DAY) · counter-signal gate (RTH_COUNTER_GATE_*).",
+      "live-style. ≥5-bar gap · daily card cap (RTH_MAX_CARDS_PER_DAY) · counter-signal gate (RTH_COUNTER_GATE_*) · " +
+      "crossed-stop/crossed-limit dispatch gates + approach gate (RTH_LIMIT_APPROACH_GATE_PTS=2, live 2026-10-13).",
     doc:
       "RTH soft-continuation (9:30–16:00 ET): buy-frac ≥ 0.60, ≥3 dominant cluster rows, range ≥ 1.0 × ATR14, " +
       "volume ≥ 0.5 × 60-bar median. Validated 10,325 trades / 82.2% WR / PF 3.47 at 0.75R; account sim never breaches. " +
       "The A+ tier (≥65% one-sided) prints a label, not a separate gate.",
     fields: RTH_FIELDS,
-    studies: ["rth-optimizer", "rth-limit-redesign", "rth-counter-gate", "walk-forward", "gap-only-validation"],
-    liveKnobs: "FEED_RTH · RTH_LIMIT_ENTRIES · RTH_MAX_CARDS_PER_DAY · RTH_COUNTER_GATE_MIN/_PTS · RTH_PROFILE · RTH_RISK_CAP",
+    studies: ["rth-optimizer", "rth-limit-redesign", "rth-counter-gate", "walk-forward", "gap-only-validation", "live-stack-exact"],
+    liveKnobs: "FEED_RTH · RTH_LIMIT_ENTRIES · RTH_LIMIT_APPROACH_GATE_PTS · RTH_MAX_CARDS_PER_DAY · RTH_COUNTER_GATE_MIN/_PTS · RTH_PROFILE · RTH_RISK_CAP",
   },
   {
     id: "open_drive",
@@ -203,7 +204,7 @@ export const STRATEGIES: StrategyDeclaration[] = [
       "The open drive scan: first new opening extreme backed by cumulative delta. Validation: 493 trades (87% of days), " +
       "96% hit at TP10/SL30, 93% at TP15/SL35, +8.3/+11.6 pts gross.",
     fields: OPEN_FIELDS,
-    studies: ["gap-only-validation", "all-strategies-study", "ap-full-pool"],
+    studies: ["gap-only-validation", "all-strategies-study", "ap-full-pool", "live-stack-exact"],
     liveKnobs: "FEED_OPEN · FEED_OPEN_DRIVE · OPEN_RISK_CAP",
   },
   {

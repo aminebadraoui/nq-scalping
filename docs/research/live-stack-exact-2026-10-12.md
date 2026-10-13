@@ -1,5 +1,10 @@
 # Exact live stack — all four families at $100/cap-8 with the live guards (2026-10-12)
 
+> **Superseded by `docs/research/live-stack-exact-2026-10-13.md`** — that
+> run adds the live RTH limit-entry mechanics (resting limit + counter-gate
+> 15/5 + cap 3 + dispatch gates, 2026-10-13 batch) to the combined stack.
+> This file is kept as the pre-RTH-change baseline.
+
 > Question: *"Does the live configuration correspond to the backtests?"*
 > CLI: `MAX_MICRO_CONTRACTS=8 node --env-file=.env.local --import
 > ../scripts/ts-loader.mjs scripts/riskStackStudy.ts --offline`.

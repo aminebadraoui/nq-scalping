@@ -166,6 +166,18 @@ export const studies: Study[] = [
     engine: true,
   },
   {
+    id: "live-stack-exact",
+    title: "Exact live stack v2 — the RTH limit-entry mechanics in the combined backtest",
+    date: "2026-10-13",
+    question:
+      "After the 2026-10-13 RTH changes (resting-limit entries, approach gate 2 pts, counter-gate 15/5, ≤3 cards/day), does the EXACT live config still pass — all four families and all live gates combined?",
+    category: "gates",
+    script: "scripts/riskStackStudy.ts",
+    cli: ["cd web", "MAX_MICRO_CONTRACTS=8 node --env-file=.env.local --import ../scripts/ts-loader.mjs scripts/riskStackStudy.ts --offline"],
+    doc: "docs/research/live-stack-exact-2026-10-13.md",
+    engine: true,
+  },
+  {
     id: "counter-bias-veto",
     title: "Counter-bias veto",
     date: "2026-10-05",
