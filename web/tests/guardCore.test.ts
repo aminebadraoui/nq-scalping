@@ -7,6 +7,7 @@ import assert from "node:assert";
 import {
   guardConfigFromEnv,
   targetReached,
+  raisedEvalTarget,
   floorMarginHalts,
   consistencyHalts,
   dailyFloorHalts,
@@ -91,4 +92,11 @@ test("guardConfigFromEnv reads every knob with the live fallbacks", () => {
   assert.equal(cfg.maxLoss, 2000);
   assert.equal(cfg.lockAt, 100);
   assert.equal(cfg.eodHour, 17);
+});
+
+test("raisedEvalTarget: the SOFT 30% bar raises only above the share", () => {
+  assert.equal(raisedEvalTarget(3000, 900, 900), 3000, "best day at exactly 30% keeps the flat target");
+  assert.equal(raisedEvalTarget(3000, 600, 900), 3000, "best day below 30% keeps the flat target");
+  assert.ok(Math.abs(raisedEvalTarget(3000, 985, 900) - 3283.33) < 0.01, "985 ÷ 0.3 raises the bar");
+  assert.equal(raisedEvalTarget(3000, 985, 0), 3000, "consistency off → flat target");
 });

@@ -24,6 +24,7 @@ import type { DollarizedTrade } from "./propAccount";
 import {
   guardConfigFromEnv,
   targetReached,
+  raisedEvalTarget,
   floorMarginHalts,
   consistencyHalts,
   dailyFloorHalts,
@@ -91,6 +92,7 @@ export function guardReplay(
   let redDays = 0;
   let peakEquity = 0;
   let targetHit = false;
+  let bestDay = 0; // eval consistency reference (the SOFT 30% bar)
 
   for (const date of dates) {
     let dayPnl = 0;
@@ -115,7 +117,11 @@ export function guardReplay(
 
       // ---- the entry gate, in replay order (rules: guardCore.ts) ----
       let halt: keyof GuardStats["halts"] | null = null;
-      if (targetHit || targetReached(equity, cfg.target)) {
+      // the eval target halt respects the SOFT consistency bar: a best day
+      // above 30% raises the effective target (bestDay ÷ share) — halting at
+      // the flat $3,000 would strand the eval below the raised bar (OOS find).
+      const effTarget = stage === "eval" ? raisedEvalTarget(cfg.target, bestDay, cfg.consistencyCap) : cfg.target;
+      if (targetHit || targetReached(equity, effTarget)) {
         targetHit = true;
         halt = "target";
       } else if (floorMarginHalts(equity, floor, cfg.guardMargin)) {
@@ -171,6 +177,7 @@ export function guardReplay(
     peakEquity = Math.max(peakEquity, equity);
     stats.maxDdUsd = Math.max(stats.maxDdUsd, peakEquity - equity);
     stats.worstDayUsd = Math.min(stats.worstDayUsd, dayPnl);
+    bestDay = Math.max(bestDay, dayPnl);
     if (dayPnl < 0) {
       redDays++;
       stats.longestRedDays = Math.max(stats.longestRedDays, redDays);

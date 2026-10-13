@@ -97,6 +97,20 @@ export function targetReached(pnlFromStart: number, target: number): boolean {
   return pnlFromStart >= target;
 }
 
+/** eval target with the SOFT 30% consistency bar (2026-10-12 OOS find):
+ *  a best day above the consistency share never FAILS the eval — it
+ *  raises the effective target to bestDay ÷ share. The live target halt
+ *  must respect the raised bar, otherwise the account freezes below it
+ *  (OOS replay: +$3,022 with a $985 best day → bar $3,283 → flat target
+ *  halt would strand the eval at "no-pass" forever). Funded has no
+ *  consistency gate — callers apply this eval-only. */
+export function raisedEvalTarget(profitTarget: number, bestDayPnl: number, consistencyCap: number): number {
+  if (!(profitTarget > 0) || !(consistencyCap > 0)) return profitTarget;
+  const share = consistencyCap / profitTarget;
+  if (!(share > 0) || !(share < 1)) return profitTarget;
+  return Math.max(profitTarget, bestDayPnl / share);
+}
+
 /** EOD floor margin: never let a new trade risk crossing the floor */
 export function floorMarginHalts(equity: number, floor: number, margin: number): boolean {
   return equity <= floor + margin;

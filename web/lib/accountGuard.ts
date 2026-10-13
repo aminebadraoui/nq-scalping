@@ -33,6 +33,7 @@ import { appendDaybook } from "./daybook";
 import {
   guardConfigFromEnv,
   targetReached,
+  raisedEvalTarget,
   floorMarginHalts,
   consistencyHalts,
   dailyFloorHalts,
@@ -525,13 +526,21 @@ export function guardCheck(
   s.dayPnl = realized - s.dayStartRealized;
   maybeCommitEod(s, equity, now);
 
-  // profit target: reached = pass — stop (eval: start+target; funded: target from 0)
-  const targetPx = s.stage === "funded" ? s.profitTarget : s.startBalance + s.profitTarget;
-  const targetHit = s.stage === "funded" ? targetReached(equity, s.profitTarget) : targetReached(equity - s.startBalance, s.profitTarget);
+  // profit target: reached = pass — stop (eval: start+target; funded: target from 0).
+  // EVAL: the 30% consistency bar is SOFT — a best day above 30% raises the
+  // effective target (bestDay ÷ share), and the halt must respect the RAISED
+  // bar or the account freezes below it (OOS 2026-10-12: $3,022 with a $985
+  // day → bar $3,283).
+  const raisedT = s.stage === "eval" ? raisedEvalTarget(s.profitTarget, s.bestDayPnl, s.consistencyCap) : s.profitTarget;
+  const targetPx = s.stage === "funded" ? s.profitTarget : s.startBalance + raisedT;
+  const targetHit = s.stage === "funded" ? targetReached(equity, s.profitTarget) : targetReached(equity - s.startBalance, raisedT);
   if (targetHit) {
     return {
       verdict: "halt-target",
-      reason: `equity $${equity.toFixed(0)} ≥ target $${targetPx.toFixed(0)} — target reached, stop`,
+      reason:
+        raisedT > s.profitTarget
+          ? `equity $${equity.toFixed(0)} ≥ raised target $${targetPx.toFixed(0)} (30% bar raised by best day $${s.bestDayPnl.toFixed(0)}) — target reached, stop`
+          : `equity $${equity.toFixed(0)} ≥ target $${targetPx.toFixed(0)} — target reached, stop`,
     };
   }
 

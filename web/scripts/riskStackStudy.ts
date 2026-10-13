@@ -281,6 +281,18 @@ async function main() {
     console.log(`  eval   : ${accountLine(evalSim)}`);
     console.log(`  funded : ${accountLine(fundedSim)}`);
     console.log(`  guard  : ${JSON.stringify(gEval.stats)}`);
+
+    // OUT-OF-SAMPLE: the same guarded replay on the test window only
+    // (≥ 2026-01-01, fresh state — the account starts unseen).
+    const oosRows = liveRows.filter((t) => t.date >= "2026-01-01");
+    const oosEval = guardReplay(oosRows, "eval");
+    const oosFunded = guardReplay(oosRows, "funded");
+    const oosEvalSim = simulateAccount(oosEval.rows.map((r) => ({ date: r.date, pnl: r.pnl })), "eval");
+    const oosFundedSim = simulateAccount(oosFunded.rows.map((r) => ({ date: r.date, pnl: r.pnl })), "funded");
+    console.log("\n=== LIVE STACK · OUT-OF-SAMPLE (test window ≥ 2026-01-01, fresh state) ===");
+    console.log(`  eval   : ${accountLine(oosEvalSim)}`);
+    console.log(`  funded : ${accountLine(oosFundedSim)}`);
+    console.log(`  guard  : ${JSON.stringify(oosEval.stats)}`);
   }
 
   /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----

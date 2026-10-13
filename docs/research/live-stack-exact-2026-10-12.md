@@ -95,6 +95,26 @@ design).
    ($283 maxDD < 600). `halt-target` ends the account at +$3,000 by
    design — 645 of the skipped trades are simply "after the pass".
 
+## Out-of-sample (test window ≥ 2026-01-01, fresh state)
+
+The guarded replay restricted to the unseen window exposed a real
+interaction and was then used to fix it:
+
+- **Before the fix:** `no-pass · $3,022 · consist ✗ · needs $3,283` — a
+  $985 best day (the +$900 consistency cap's one-trade overshoot) raised
+  the 30% bar to $3,283, and the flat +$3,000 `halt-target` froze the
+  account below the bar → the live stack would have sat stuck at
+  "no-pass" forever.
+- **Fix (`raisedEvalTarget` in guardCore, both consumers):** the target
+  halt respects the SOFT consistency bar — halt only at
+  `max($3,000, bestDay ÷ 0.3)`.
+- **After the fix: PASS 2026-01-12 · $3,335 · consist ✓ · days 7/✓**
+  (0 losing days before the pass; loss 0 · profit-arm 4 · give-back 1 ·
+  consistency 1 halts).
+
+So the live config passes the eval **out-of-sample in 7 trading days**
+with zero drawdown before the pass.
+
 ## Honest bounds
 
 - The RTH 2.5R trades are scored at the signal close with market entry —

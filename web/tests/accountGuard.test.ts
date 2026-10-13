@@ -473,3 +473,18 @@ test("a snapshot without asOf is never stale (replay/tests unchanged)", () => {
   assert.equal(d.verdict, "ok");
   assert.equal(guardState().dayKey, tradingDayKey(now));
 });
+
+test("halt-target respects the raised 30% consistency bar (OOS 2026-10-12 find)", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
+  guardState().bestDayPnl = 985; // a $985 day raises the bar to $3,283.33
+  // $3,000 profit: the flat target would halt — the raised bar must NOT
+  const d1 = guardCheck(snap(53_000), new Date("2026-10-05T17:10:00Z"));
+  assert.notEqual(d1.verdict, "halt-target");
+  // $3,284 profit: above the raised bar → halt-target with the raised reason
+  const d2 = guardCheck(snap(53_284), new Date("2026-10-05T17:11:00Z"));
+  assert.equal(d2.verdict, "halt-target");
+  assert.match(d2.reason, /raised target/);
+  __resetGuardForTest();
+});
