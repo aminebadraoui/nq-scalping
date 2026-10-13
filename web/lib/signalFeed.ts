@@ -65,7 +65,7 @@ import { getOverrides, decideSignal } from "./strategyOverrides";
 import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, attachLimitOrderId } from "./execWatch";
-import { stopCrossedAtDispatch, limitCrossedAtDispatch } from "./crossTrade";
+import { stopCrossedAtDispatch, limitCrossedAtDispatch, approachGateBlocked } from "./crossTrade";
 import { tradingHalted } from "./tradingHalt";
 import { counterGateDecision, counterGateParams } from "./rthExitLog";
 import { startCycle, markStage, markCheck, markBarAge, finishCycle } from "./execLatency";
@@ -1949,19 +1949,32 @@ class SignalFeed {
       // the market and the signal-anchored stop compresses (the 12:16
       // 0.8-pt stop → 134-tick slippage). Skip quietly — the study models
       // both gates (rthDriftOptimizer gate / gate-limit cells).
-      const gateLtp = live.snapshot?.ltp ?? live.minutes.at(-1)?.c ?? null;
+      // Approach gate (2026-10-13 rthLimitFillDriftStudy): the tape
+      // within RTH_LIMIT_APPROACH_GATE_PTS of the limit on the approach
+      // side is the "about-to-fill" cohort — skip those too (validated:
+      // OOS WR 40.8% → 51.6%, expR +0.34 → +0.71, P(pass)=1.00; 0 = off).
+      // Freshest-tape read: the event-tick snapshot only while the WS is
+      // fresh, else the minute close — the 10:59 card leaked past the
+      // crossed-limit gate on a stale ltp (live lost −$43.20).
+      const snapLtp = live.snapshot?.ltp;
+      const wsFresh = Number.isFinite(live.lastMessage) && Date.now() - live.lastMessage < 30_000;
+      const gateLtp = wsFresh && Number.isFinite(snapLtp) ? snapLtp : (live.minutes.at(-1)?.c ?? snapLtp ?? null);
+      const approachPts = Number(process.env.RTH_LIMIT_APPROACH_GATE_PTS) || 0;
       const crossedStop = useLimitEntry && stopCrossedAtDispatch(s.dir, stop, gateLtp) === true;
       const crossedLimit = useLimitEntry && limitCrossedAtDispatch(s.dir, s.entry, gateLtp) === true;
-      if (crossedStop || crossedLimit) {
+      const approachBlocked = useLimitEntry && approachGateBlocked(s.dir, s.entry, gateLtp, approachPts) === true;
+      if (crossedStop || crossedLimit || approachBlocked) {
         const es = esCardChips(esCtx, nqMid, s, false);
         const rn = roundNumberChips(s);
         const gch = gapChips(fp, s, gaps);
         const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
-        console.log(
-          crossedStop
-            ? `[rth] crossed-stop gate: skipping ${key} — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (stop would be rejected → naked fill)`
-            : `[rth] crossed-limit gate: skipping ${key} — tape ${Number(gateLtp).toFixed(2)} through limit ${s.entry.toFixed(2)} at dispatch (fill would drift and compress the stop)`,
-        );
+        const gateName = crossedStop ? "crossed-stop" : crossedLimit ? "crossed-limit" : `approach (${approachPts} pts)`;
+        const gateWhy = crossedStop
+          ? `tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (stop would be rejected → naked fill)`
+          : crossedLimit
+            ? `tape ${Number(gateLtp).toFixed(2)} through limit ${s.entry.toFixed(2)} at dispatch (fill would drift and compress the stop)`
+            : `tape ${Number(gateLtp).toFixed(2)} within ${approachPts} pts of the limit ${s.entry.toFixed(2)} on the approach side (about-to-fill cohort)`;
+        console.log(`[rth] ${gateName} gate: skipping ${key} — ${gateWhy}`);
         await this.recordSkip({
           timeET: cdtToET(s.t),
           day: s.d,
@@ -1972,12 +1985,16 @@ class SignalFeed {
           target,
           verdict: "rth soft-continuation (experimental)",
           headline: `NQ RTH ${s.dir}`,
-          reason: crossedStop
-            ? `crossed-stop gate — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (OSO stop would be rejected)`
-            : `crossed-limit gate — tape ${Number(gateLtp).toFixed(2)} through limit ${s.entry.toFixed(2)} at dispatch (fill drift would compress the stop)`,
+          reason: `${gateName} gate — ${gateWhy}`,
           features: signalFeatures(s as unknown as Record<string, unknown>, {
             family: "rth",
-            rejectedBy: [crossedStop ? "crossed-stop dispatch gate" : "crossed-limit dispatch gate"],
+            rejectedBy: [
+              crossedStop
+                ? "crossed-stop dispatch gate"
+                : crossedLimit
+                  ? "crossed-limit dispatch gate"
+                  : `approach gate pts=${approachPts}`,
+            ],
             ...es.features,
             ...rn.features,
             ...gch.features,

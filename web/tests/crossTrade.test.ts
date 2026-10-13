@@ -13,6 +13,7 @@ import {
   classifyResponse,
   stopCrossedAtDispatch,
   limitCrossedAtDispatch,
+  approachGateBlocked,
   reanchorBracketForFill,
   buildReArmBracketPayload,
   flattenViaWebhook,
@@ -304,6 +305,33 @@ test("limitCrossedAtDispatch: sub-tick crossings pass (the clean 10:10/11:31 fil
 test("limitCrossedAtDispatch: unknown tape → null (fail open)", () => {
   assert.equal(limitCrossedAtDispatch("short", 31187.375, null), null);
   assert.equal(limitCrossedAtDispatch("long", 31245.125, Number.NaN), null);
+});
+
+/* ---- crossed-limit approach gate (rthLimitFillDriftStudy 2026-10-13) ---- */
+
+test("approachGateBlocked: short — tape just below the sell limit is the about-to-fill cohort", () => {
+  assert.equal(approachGateBlocked("short", 30786.13, 30785.0, 2), true); // 1.13 pts away
+  assert.equal(approachGateBlocked("short", 30786.13, 30784.13, 2), true); // exactly at the edge
+  assert.equal(approachGateBlocked("short", 30786.13, 30783.0, 2), false); // 3.13 pts away
+});
+
+test("approachGateBlocked: long — tape just above the buy limit is the about-to-fill cohort", () => {
+  assert.equal(approachGateBlocked("long", 30704.75, 30706.0, 2), true); // 1.25 pts away
+  assert.equal(approachGateBlocked("long", 30704.75, 30708.0, 2), false); // 3.25 pts away
+});
+
+test("approachGateBlocked: tape at or through the limit belongs to the crossed gate, not the approach gate", () => {
+  assert.equal(approachGateBlocked("short", 30786.13, 30786.13, 2), false); // exactly at the limit
+  assert.equal(approachGateBlocked("short", 30786.13, 30789.0, 2), false); // through (crossed-limit territory)
+  assert.equal(approachGateBlocked("long", 30704.75, 30704.75, 2), false);
+  assert.equal(approachGateBlocked("long", 30704.75, 30702.0, 2), false);
+});
+
+test("approachGateBlocked: unknown tape or non-positive threshold → never gate", () => {
+  assert.equal(approachGateBlocked("short", 30786.13, null, 2), null);
+  assert.equal(approachGateBlocked("short", 30786.13, Number.NaN, 2), null);
+  assert.equal(approachGateBlocked("short", 30786.13, 30785.0, 0), false);
+  assert.equal(approachGateBlocked("short", 30786.13, 30785.0, Number.NaN), false);
 });
 
 test("reanchorBracketForFill: drifted fill compresses the stop → re-anchor to the fill (the 12:16 shape)", () => {

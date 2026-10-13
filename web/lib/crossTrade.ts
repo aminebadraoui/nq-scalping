@@ -601,6 +601,24 @@ export function limitCrossedAtDispatch(
   return dir === "long" ? ltp < limit - thr : ltp > limit + thr;
 }
 
+/** crossed-limit APPROACH gate (rthLimitFillDriftStudy 2026-10-13):
+ *  the tape sitting within `pts` of a resting limit on the APPROACH side
+ *  (short: just below the sell limit; long: just above the buy limit) is
+ *  the "about-to-fill" cohort — the limit fills on the counter-move,
+ *  drifts, and the OSO stop dies same-bar. The validated RTH dispatch
+ *  skips those cards (RTH_LIMIT_APPROACH_GATE_PTS; 0 = off). null =
+ *  unknown tape — never gate on unknown. Pure + unit-tested. */
+export function approachGateBlocked(
+  dir: "long" | "short",
+  limit: number,
+  ltp: number | null | undefined,
+  pts: number,
+): boolean | null {
+  if (ltp === null || ltp === undefined || !Number.isFinite(ltp) || !Number.isFinite(limit)) return null;
+  if (!Number.isFinite(pts) || pts <= 0) return false;
+  return dir === "long" ? ltp > limit && ltp <= limit + pts : ltp < limit && ltp >= limit - pts;
+}
+
 /** re-anchor a bracket to the actual FILL when the fill drifted past the
  *  signal and compressed the stop distance (the planned risk must be the
  *  risk you get). Returns the fill-anchored stop/target, or null when
