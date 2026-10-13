@@ -68,8 +68,11 @@ export async function register(): Promise<void> {
   }
   try {
     // CrossTrade WebSocket order-event stream: pushed Rejected/Cancelled
-    // events reach the protection layer in <1s, no polling
-    const { startCtOrderStream } = await import("./lib/ctStream");
+    // events reach the protection layer in <1s, no polling. The pushed
+    // pnlUpdate frames feed the flatten arm's sub-second trigger.
+    const { startCtOrderStream, setPnlFrameHandler } = await import("./lib/ctStream");
+    const { handlePushedPnlFrame } = await import("./lib/crossGuard");
+    setPnlFrameHandler((a) => handlePushedPnlFrame(a));
     startCtOrderStream();
   } catch {
     /* ignore */

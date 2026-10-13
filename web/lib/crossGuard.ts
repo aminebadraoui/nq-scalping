@@ -135,6 +135,22 @@ export async function actOnGuardDecision(d: GuardDecision): Promise<void> {
   }
 }
 
+/** pushed P&L frame from the CrossTrade stream (lib/ctStream.ts): the
+ *  flatten arm's SUB-SECOND trigger — re-evaluate the guard with the
+ *  pushed open P&L and act on a flatten verdict. Best-effort; the 25s
+ *  poll remains the backstop. */
+export function handlePushedPnlFrame(a: { name: string; realized: number; openPnl: number; equity: number }): void {
+  try {
+    if (!enabled()) return;
+    if (a.name !== process.env.CROSSTRADE_ACCOUNT) return;
+    const d = guardCheck({ equity: a.equity, realized: a.realized, openPnl: a.openPnl });
+    if (d.verdict !== "ok" && d.verdict !== "flatten") console.log(`[guard] pnl-push: ${d.verdict} — ${d.reason}`);
+    void actOnGuardDecision(d);
+  } catch {
+    /* best-effort — never crash the stream on a guard hiccup */
+  }
+}
+
 /** today's realized P&L per the guard's day reference (0 before the
  *  first gate check of the day). Used by the feed's tiered sizing. */
 export async function crossGuardDayPnl(): Promise<number> {
