@@ -92,6 +92,23 @@ Replayed on Neon `candles_1m` (session 2026-10-14 ETH, 1,290 bars). Convention: 
 
 `VERDICT: edge real · significance weak (DSR 0.04) · stability stable (train/test 55.1/61.4) · holdout n/a (70/30 OOS) · viability PASS (P=0.98, train-gate caution)`
 
+## Follow-up (same evening): the freshness-gated hybrid is falsified — flushLimit is the optimum of this grid
+
+After the main study, the owner asked whether a **freshness-gated fast path** could reclaim more of the perfect arm: chase the tape when the bar confirmed fast enough (dispatch tape within X pts of the entry), else rest the limit. Arms `hybX1/2/3/5` (threshold 1/2/3/5 pts, the freshness threshold's replay proxy — in the archive every bar is equally "fresh", so the confirmation lag manifests as the tape-through distance at dispatch):
+
+| arm | n (all) | WR (test) | PF (train) | PF (test) | exp (pts, all) | exp (pts, test) |
+|---|---|---|---|---|---|---|
+| perfect (reference) | 1,583 | — | — | — | +2.08 | — |
+| **flushLimit** | 1,325 | 61.4% | **1.11** | **1.55** | **+0.55** | **+1.25** |
+| hybX1 | 1,314 | 60.9% | 1.06 | 1.55 | +0.49 | +1.26 |
+| hybX2 | 1,331 | 60.9% | 0.94 | 1.47 | +0.27 | +1.08 |
+| hybX3 | 1,372 | 63.8% | 0.86 | 1.38 | +0.09 | +0.86 |
+| hybX5 | 1,462 | 62.3% | 0.73 | 1.24 | −0.15 | +0.50 |
+
+Every re-introduction of the chase degrades the result **monotonically** with the threshold (train PF 1.11 → 0.73, all-window exp +0.55 → −0.15). The mechanism is now measurable: `perfect_d1` (the ideal fill shifted 1 pt adverse) drops PF **2.50 → 1.66** and exp +2.08 → +1.08 — the flush edge decays ~40% per point of fill drift. A dispatch-time chase always carries ≥1 pt of tape drift, so even the "fresh" subset trades away more edge than the limit's free no-trades cost. `hybX2_d1` (chased leg +1 pt adverse): PF 0.71 — the chased legs are toxic.
+
+**Conclusion: the perfect arm (PF 2.50) is structurally unreachable at dispatch time** — it requires filling at the bar close, and the close is 32–57 s in the past by the time the vendor confirms the candle. Nothing in our stack can change the vendor's confirmation cadence. flushLimit (already deployed live) is the optimum of this grid; the hybrid is rejected.
+
 ## What this falsifies and what it confirms
 
 1. **The chase fill is the disease, not the detector.** Identical signals: `perfect` fill (entry-bar close) PF **2.50**, WR 74.4%, exp +2.08 pts; the marketable chase (bar+1 tape) PF **0.64**, WR 49.4%, exp −0.66, eval breach, P(pass)=0.00. The failed-flush detector has a real one-bar edge and the marketable entry destroys it — the live instant-exit losses are the symptom, the chase is the disease.

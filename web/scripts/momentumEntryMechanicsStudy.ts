@@ -56,6 +56,7 @@ type Arm = {
   selectable: boolean; // in the DSR/PBO selection grid
   perfect?: boolean; // reference: fill at the entry-bar close (canonical momentumStudy model)
   limit?: boolean; // resting limit at the signal level from bar+1 (the retrace-family entry for flush cards)
+  hybX?: number; // freshness-gate hybrid: chase when the dispatch tape is still within X pts of the entry, else rest the limit
   ttl?: number;
 };
 type Trade = { date: string; pnl: number; risk: number };
@@ -66,6 +67,14 @@ const ARMS: Arm[] = [
   { id: "perfect", gateX: 0, anchor: false, drift: 0, selectable: false, perfect: true },
   { id: "live", gateX: 0, anchor: false, drift: 0, selectable: true },
   { id: "flushLimit", gateX: 0, anchor: false, drift: 0, selectable: true, limit: true, ttl: 9 },
+  // ---- freshness-gate hybrid (2026-10-14 follow-up): the dispatch tape
+  //      within X pts of the entry = the bar confirmed fast enough to
+  //      chase (near-perfect fill); further = the confirmation lag let
+  //      the tape run — rest the limit instead (the flushLimit leg) ----
+  { id: "hybX1", gateX: 0, anchor: false, drift: 0, selectable: true, hybX: 1, ttl: 9 },
+  { id: "hybX2", gateX: 0, anchor: false, drift: 0, selectable: true, hybX: 2, ttl: 9 },
+  { id: "hybX3", gateX: 0, anchor: false, drift: 0, selectable: true, hybX: 3, ttl: 9 },
+  { id: "hybX5", gateX: 0, anchor: false, drift: 0, selectable: true, hybX: 5, ttl: 9 },
   { id: "gateX1", gateX: 1, anchor: false, drift: 0, selectable: true },
   { id: "gateX2", gateX: 2, anchor: false, drift: 0, selectable: true },
   { id: "gateX3", gateX: 3, anchor: false, drift: 0, selectable: true },
@@ -77,6 +86,8 @@ const ARMS: Arm[] = [
   { id: "live_d2.5", gateX: 0, anchor: false, drift: 2.5, selectable: false },
   { id: "anchor_d1", gateX: 0, anchor: true, drift: 1, selectable: false },
   { id: "anchor_d2.5", gateX: 0, anchor: true, drift: 2.5, selectable: false },
+  { id: "perfect_d1", gateX: 0, anchor: false, drift: 1, selectable: false, perfect: true },
+  { id: "hybX2_d1", gateX: 0, anchor: false, drift: 1, selectable: false, hybX: 2, ttl: 9 },
 ];
 
 /** dispatch tape = next-bar mid (the marketable fill's tape proxy — the
@@ -135,7 +146,7 @@ function scoreArm(minutes: MomMinute[], sigs: MomentumSignal[], date: string, ar
     if (arm.perfect) {
       // reference: fill at the entry bar's close (the canonical momentumStudy
       // fill model — no chase), signal-anchored brackets, scan from bar+1
-      const fill = closeOf(minutes[s.entryIdx]);
+      const fill = closeOf(minutes[s.entryIdx]) + dir * arm.drift;
       const pnl = scoreFromFill(minutes, s, dir, fill, s.entryIdx + 1, s.stop, s.target);
       out.push({ date, pnl, risk: s.risk });
       openUntil = s.entryIdx + HORIZON;
@@ -143,7 +154,12 @@ function scoreArm(minutes: MomMinute[], sigs: MomentumSignal[], date: string, ar
     }
     const tape = dispatchTape(minutes, s);
     if (tape === null) continue;
-    if (arm.limit) {
+    const through = dir > 0 ? tape - s.entry : s.entry - tape; // pts the tape already ran past the entry
+    // freshness-gate hybrid: when the dispatch tape has moved >= hybX pts
+    // through the entry (the confirmation lag let the breakout run), the
+    // chase is stale — rest the limit instead of chasing
+    const stale = arm.hybX !== undefined && through >= arm.hybX;
+    if (arm.limit || stale) {
       // resting limit AT the signal level from bar+1 (limit-or-better at the
       // bar open) — the chase replaced by a retrace-style entry
       const endTtl = Math.min(minutes.length - 1, s.entryIdx + (arm.ttl ?? 9));
@@ -205,7 +221,9 @@ export function exhibitReplay(
   const idx = bars.findIndex((b) => b.t === card.t);
   if (idx < 0 || idx + 1 >= bars.length) return { fill: 0, fillBar: -1, exit: 0, hit: "expired", pnl: 0 };
   const tape = (bars[idx + 1].high + bars[idx + 1].low) / 2;
-  if (arm.limit) {
+  const through = dir > 0 ? tape - card.entry : card.entry - tape;
+  const stale = arm.hybX !== undefined && through >= arm.hybX;
+  if (arm.limit || stale) {
     const endTtl = Math.min(bars.length - 1, idx + (arm.ttl ?? 9));
     let fillBar = -1;
     let fill = 0;
@@ -412,7 +430,7 @@ async function main() {
 
   /* ---- reference + fill-drift sensitivity ---- */
   console.log("\n=== REFERENCE + FILL-DRIFT SENSITIVITY (perfect fill = entry-bar close · adverse drift 0 → 2.5 pts) ===");
-  for (const id of ["perfect", "live", "flushLimit", "live_d1", "live_d2.5", "anchor", "anchor_d1", "anchor_d2.5", "gateX2", "both"]) {
+  for (const id of ["perfect", "perfect_d1", "live", "flushLimit", "hybX1", "hybX2", "hybX3", "hybX5", "hybX2_d1", "live_d1", "live_d2.5", "anchor", "anchor_d2.5", "gateX2", "both"]) {
     const all = eng(tradesOf(id));
     const cs = coreStats(all);
     console.log(
@@ -444,7 +462,7 @@ async function main() {
     }
     return {
       id: arm.id,
-      params: { s: 1, t: 1, entry: arm.limit ? "limit@signal" : "marketable", chaseGatePts: arm.gateX, anchor: arm.anchor, drift: arm.drift, ttl: arm.limit ? arm.ttl : 0, tgtR: 1, x: HORIZON },
+      params: { s: 1, t: 1, entry: arm.limit ? "limit@signal" : "marketable", chaseGatePts: arm.gateX, hybX: arm.hybX ?? 0, anchor: arm.anchor, drift: arm.drift, ttl: arm.limit || arm.hybX ? arm.ttl : 0, tgtR: 1, x: HORIZON },
       perSession,
       totals: { n, wins, wr: n ? wins / n : 0, netPts, netUsd: netPts * POINT_VALUE, riskPts, riskUsd: riskPts * POINT_VALUE },
     };
@@ -483,7 +501,7 @@ async function main() {
       { t: "19:00", dir: "short" as const, entry: 30807.875, stop: 30812.25, target: 30803.5, risk: 4.375 },
       { t: "01:45", dir: "short" as const, entry: 30784.75, stop: 30791.25, target: 30778.25, risk: 6.5 },
     ];
-    const armIds = ["live", "flushLimit", "gateX1", "gateX2", "gateX3", "gateX5", "anchor", "both"];
+    const armIds = ["live", "flushLimit", "hybX2", "gateX2", "anchor", "both"];
     console.log(
       "(replay convention: the marketable fill is the bar+1 mid — the live pipeline adds ~32-57 s of bar→dispatch staleness, so the real fills drift past bar+1; the OBSERVED row is the truth for the live arm)",
     );
