@@ -295,7 +295,7 @@ export async function checkProtection(): Promise<void> {
  * counter-signal gate via lib/rthExitLog. It can only ever SKIP a later
  * card via the feed's counter-gate — never place or change one. */
 
-type OpenExec = { key: string; label: string; dir: "long" | "short"; entryPrice: number; at: number; intent: OrderIntent };
+type OpenExec = { key: string; label: string; dir: "long" | "short"; entryPrice: number; at: number; orderId: string; intent: OrderIntent };
 
 const gp = globalThis as unknown as { __gcOpenExecs?: Map<string, OpenExec> | null };
 function openExecs(): Map<string, OpenExec> {
@@ -313,31 +313,82 @@ async function readMnqHeld(): Promise<number> {
   return held;
 }
 
+/** pure exit-leg picker for the flat-transition poll (2026-10-13
+ *  momentum fast-OCO scramble): the bracket's exit fills, by priority —
+ *    1. opposite-side fills on the card's OWN entry orderId (the fast
+ *       OCO round trip — CrossTrade prints the flatten fill on the entry
+ *       order), then
+ *    2. the FIRST opposite-side fills after the entry FILL, in time
+ *       order, until the cumulative qty reaches the entry size.
+ *  A fill whose single qty EXCEEDS the entry size cannot be this card's
+ *  exit leg (bracket exits are exact-size — a 25-lot fill on an 8-lot
+ *  card is someone else's round trip), and a fill on ANOTHER card's
+ *  entry orderId belongs to that card. Returns the original fill rows
+ *  (fees ride along); [] = nothing qualifies, the caller keeps the row
+ *  open. Generic so tests pass bare rows. */
+export function pollExitFills<T extends { ts: number; action: string; qty: number; price?: number; orderId?: string }>(
+  fills: T[],
+  at: number,
+  want: "Buy" | "Sell",
+  contracts: number,
+  ownOrderId: string,
+  otherEntryOrderIds: Set<string>,
+): T[] {
+  const chrono = [...fills].sort((a, b) => a.ts - b.ts);
+  const walk = (src: T[]): { out: T[]; qty: number } => {
+    const out: T[] = [];
+    let qty = 0;
+    for (const f of src) {
+      if (f.ts <= at) continue;
+      if (f.action !== want) continue;
+      if (f.qty > contracts) continue; // cannot be this card's exit leg
+      if (f.orderId && otherEntryOrderIds.has(f.orderId)) continue; // another card's entry
+      out.push(f);
+      qty += f.qty;
+      if (qty >= contracts) break;
+    }
+    return { out, qty };
+  };
+  if (ownOrderId) {
+    const own = walk(chrono.filter((f) => f.orderId === ownOrderId));
+    if (own.qty >= contracts) return own.out;
+  }
+  return walk(chrono).out;
+}
+
 async function pollRthExit(): Promise<void> {
   const execs = openExecs();
   if (execs.size === 0) return;
   const held = await readMnqHeld();
   if (held !== 0) return; // still open (or unreadable — retry next poll)
-  // flat transition: the exit just happened — the opposite-side session
-  // fills since each entry ARE its exit leg
+  // flat transition: attribute each card's exit leg from its OWN entry
+  // fill forward — qty-bounded, never another card's exit or a manual
+  // leg (the 2026-10-13 momentum scramble: an 8-lot same-second OCO exit
+  // was attributed to the 7-lot card before it, and a 25-lot manual fill
+  // to the 8-lot card after it).
   const full = await ctFills();
   if (full === null) return;
   const nowMs = Date.now();
-  for (const [key, pos] of [...execs]) {
+  const entries = [...execs.values()].sort((a, b) => a.at - b.at);
+  const entryOrderIds = new Set(entries.map((p) => p.orderId).filter(Boolean));
+  for (const pos of entries) {
     const want = pos.dir === "long" ? "Sell" : "Buy";
-    const exits = full.filter((f) => f.action === want && f.ts > pos.at);
+    const others = new Set(entryOrderIds);
+    others.delete(pos.orderId);
+    const exits = pollExitFills(full, pos.at, want, pos.intent.contracts, pos.orderId, others);
     const qty = exits.reduce((s, f) => s + f.qty, 0);
     if (qty <= 0) {
-      // flat but the exit fills aren't visible yet (fill-list lag or a
-      // session reset wiped them) — keep retrying, then drop after 4h
-      if (nowMs - pos.at > 4 * 60 * 60_000) execs.delete(key);
+      // flat but no qualifying exit fills (fill-list lag, a session
+      // reset, or the exit was a manual/other leg) — keep retrying,
+      // then drop after 4h (the nightly reconcile stays the authority)
+      if (nowMs - pos.at > 4 * 60 * 60_000) execs.delete(pos.key);
       continue;
     }
-    execs.delete(key);
-    const exitAvg = exits.reduce((s, f) => s + f.price * f.qty, 0) / qty;
+    execs.delete(pos.key);
+    const exitAvg = exits.reduce((s, f) => s + f.price! * f.qty, 0) / qty;
     const realFees = exits.reduce((s, f) => s + f.commission + f.fees, 0);
     // the execution ledger: close the row with the $ result (display-only)
-    void trackExecClose(key, {
+    void trackExecClose(pos.key, {
       entry: pos.entryPrice,
       dir: pos.dir,
       contracts: pos.intent.contracts,
@@ -393,6 +444,7 @@ export function bracketExitFills<T extends { ts: number; action: string; qty: nu
     if (f.ts <= entryTs) continue;
     if (f.ts > entryTs + horizonMs) break;
     if (f.action !== exitAction) continue;
+    if (f.qty > contracts) continue; // a single fill larger than the entry is not this card's exit leg (2026-10-13: a 25-lot manual fill vs an 8-lot card)
     out.push(f);
     qty += f.qty;
     if (qty >= contracts) break;
@@ -539,11 +591,13 @@ async function alert(text: string) {
   await sendTelegram(text, { parseMode: "HTML" }).catch(() => {});
 }
 
-async function fetchFills(force = false): Promise<Array<{ ts: number; action: string; qty: number; price: number }>> {
+async function fetchFills(force = false): Promise<Array<{ ts: number; action: string; qty: number; price: number; orderId: string }>> {
   // shared read layer (ctAccount) — same 5s window, same fallback shape
+  // (orderId rides along: the exit poll + openExec registration need it
+  // to separate one card's fills from another's — 2026-10-13 scramble)
   const full = await ctFills({ force });
   if (full === null) return [];
-  return full.map((f) => ({ ts: f.ts, action: f.action, qty: f.qty, price: f.price }));
+  return full.map((f) => ({ ts: f.ts, action: f.action, qty: f.qty, price: f.price, orderId: f.orderId }));
 }
 
 /** fill match: the trade side printed >= 80% of the contracts within the window */
@@ -574,10 +628,10 @@ const LIMIT_FILL_TOLERANCE_PTS = 5;
  *  the fill must sit within LIMIT_FILL_TOLERANCE_PTS of the limit price. */
 export function findMatchingFill(
   e: { ts: number; intent: { dir: "long" | "short"; contracts: number } },
-  fills: Array<{ ts: number; action: string; qty: number; price?: number }>,
+  fills: Array<{ ts: number; action: string; qty: number; price?: number; orderId?: string }>,
   now: number,
   opts?: { upperBoundMs?: number; limitPrice?: number },
-): { ts: number; action: string; qty: number; price?: number } | null {
+): { ts: number; action: string; qty: number; price?: number; orderId?: string } | null {
   const want = e.intent.dir === "long" ? "Buy" : "Sell";
   const need = Math.max(1, Math.floor(e.intent.contracts * 0.8));
   const upper = opts?.upperBoundMs ?? e.ts + MATCH_WINDOW_MS;
@@ -933,9 +987,22 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
       noteOrderFill(e.intent.dir, e.intent.contracts, matchedFill.ts);
       // open-exec tracking: every confirmed entry is noted so the exit
       // poll can close its execution-ledger row on the flat transition
-      // (RTH labels additionally feed the counter-signal gate)
+      // (RTH labels additionally feed the counter-signal gate).
+      // `at` is the FILL time, not the confirmation time: a fast OCO can
+      // exit the position BEFORE this confirmation lands (2026-10-13
+      // 18:20: fill 18:21:11, protection flatten 18:22:44, confirmation
+      // 18:23:33) — anchoring at the confirmation time hid the real exit
+      // and the poll later attributed a LATER card's fill instead.
       if (!e.scaleOut) {
-        openExecs().set(key, { key, label: e.label, dir: e.intent.dir, entryPrice: e.intent.entry, at: now, intent: e.intent });
+        openExecs().set(key, {
+          key,
+          label: e.label,
+          dir: e.intent.dir,
+          entryPrice: e.intent.entry,
+          at: matchedFill.ts,
+          orderId: matchedFill.orderId ?? "",
+          intent: e.intent,
+        });
       }
       // execution ledger: attach the broker's entry fill + Tradovate
       // order id (display-only telemetry — never affects the order)

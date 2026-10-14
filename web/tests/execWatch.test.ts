@@ -4,7 +4,7 @@
  * naked-position repair from the 2026-10-08 incident. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { stopCoversPosition, classifyExitFill, pickExitFill, EXIT_SLIP_WINDOW_MS, findMatchingFill, bracketExitFills } from "../lib/execWatch";
+import { stopCoversPosition, classifyExitFill, pickExitFill, EXIT_SLIP_WINDOW_MS, findMatchingFill, bracketExitFills, pollExitFills } from "../lib/execWatch";
 import { rearmStopPrice } from "../lib/crossTrade";
 
 test("rearmStopPrice: long anchors the stop just BELOW the tape (Tradovate-valid)", () => {
@@ -361,4 +361,96 @@ test("bracketExitFills: interleaved manual fills are included only until the siz
 test("bracketExitFills: fills beyond the horizon never count (ambiguous — reconcile's job)", () => {
   const out = bracketExitFills([{ ts: 1000 + 400_000, action: "Buy", qty: 7 }], 1000, "Buy", 7, 300_000);
   assert.equal(out.length, 0);
+});
+
+/* ---- flat-poll exit-leg picking (2026-10-13 momentum fast-OCO
+ * scramble: the 18:20/18:36 momentum longs both closed at −0.5 pts via
+ * fast OCO flattens, but the ledger recorded +244.75 "win" and −243.20
+ * "stop" — the poll attributed the 18:36 card's same-second exit to the
+ * 18:20 card and the 19:00 card's entry fill to the 18:36 card). ---- */
+
+test("pollExitFills: the 18:20 scramble — the card's own-order flatten fill wins over a later card's exit", () => {
+  const out = pollExitFills(
+    [
+      { ts: 1791930118255, action: "Buy", qty: 7, price: 30791.25, orderId: "695596592549" }, // own entry
+      { ts: 1791930164000, action: "Sell", qty: 7, price: 30790.75, orderId: "695596592549" }, // the protection flatten — own order
+      { ts: 1791931078620, action: "Sell", qty: 8, price: 30809.75, orderId: "695596592581" }, // the NEXT card's same-second exit
+    ],
+    1791930118255,
+    "Sell",
+    7,
+    "695596592549",
+    new Set(["695596592581"]),
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0].price, 30790.75);
+  assert.equal(out[0].qty, 7);
+});
+
+test("pollExitFills: the 18:36 scramble — first opposite-side fill after the entry fill, qty-bounded at the card size", () => {
+  const out = pollExitFills(
+    [
+      { ts: 1791931078533, action: "Buy", qty: 8, price: 30810.25, orderId: "695596592581" }, // own entry
+      { ts: 1791931078620, action: "Sell", qty: 8, price: 30809.75, orderId: "695596592588" }, // same-second OCO exit
+      { ts: 1791932518615, action: "Sell", qty: 8, price: 30796, orderId: "695596592649" }, // the 19:00 card's entry — other order
+    ],
+    1791931078533,
+    "Sell",
+    8,
+    "695596592581",
+    new Set(["695596592649"]),
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0].price, 30809.75);
+});
+
+test("pollExitFills: a single fill larger than the card is never the exit leg (25-lot manual vs 8-lot card)", () => {
+  const out = pollExitFills(
+    [{ ts: 1791932660356, action: "Buy", qty: 25, price: 30788.25, orderId: "695596592768" }],
+    1791932518615,
+    "Buy",
+    8,
+    "695596592649",
+    new Set(),
+  );
+  assert.equal(out.length, 0);
+});
+
+test("pollExitFills: a fill on another card's entry orderId belongs to that card, not this one", () => {
+  const out = pollExitFills(
+    [{ ts: 1791932518615, action: "Sell", qty: 8, price: 30796, orderId: "695596592649" }],
+    1791931078533,
+    "Sell",
+    8,
+    "695596592581",
+    new Set(["695596592649"]),
+  );
+  assert.equal(out.length, 0);
+});
+
+test("pollExitFills: nothing qualifying → [] (the caller keeps the row open for the reconcile)", () => {
+  const out = pollExitFills(
+    [{ ts: 1791931078620, action: "Buy", qty: 8, price: 30809.75 }],
+    1791931078533,
+    "Sell",
+    8,
+    "",
+    new Set(),
+  );
+  assert.equal(out.length, 0);
+});
+
+test("bracketExitFills: a single fill larger than the entry size is skipped, the exact-size leg still completes", () => {
+  const out = bracketExitFills(
+    [
+      { ts: 2000, action: "Buy", qty: 25 }, // manual leg — cannot be this card's exit
+      { ts: 2100, action: "Buy", qty: 8 }, // the bracket's own exit
+    ],
+    1000,
+    "Buy",
+    8,
+    300_000,
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0].qty, 8);
 });
