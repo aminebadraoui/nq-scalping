@@ -262,6 +262,23 @@ test("daily loss floor defaults to −$250 (the day plan); DAILY_LOSS_FLOOR=0 di
   __resetGuardForTest();
 });
 
+test("daily floor halt is NOT latched — it clears automatically once day P&L recovers (manual recovery trade)", () => {
+  __resetGuardForTest();
+  setStage("eval");
+  // day baseline established at the open
+  assert.equal(guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z")).verdict, "ok");
+  // day bleeds to −$300 → the −$250 floor trips
+  assert.equal(guardCheck(snap(49_700), new Date("2026-10-05T17:30:00Z")).verdict, "halt-daily-floor");
+  // the owner's manual trade closes +$150 → day P&L −$150, above the floor:
+  // the gate re-evaluates from the live snapshot on the next check and unhalts
+  const recovered = guardCheck(snap(49_850), new Date("2026-10-05T17:45:00Z"));
+  assert.equal(guardState().dayPnl, -150);
+  assert.equal(recovered.verdict, "ok");
+  // and a later loss re-trips it — the halt is state-derived, never a latch
+  assert.equal(guardCheck(snap(49_600), new Date("2026-10-05T18:00:00Z")).verdict, "halt-daily-floor");
+  __resetGuardForTest();
+});
+
 test("flatten arm (FLATTEN_AT_LOSS): live P&L crossing fires once per day", () => {
   __resetGuardForTest();
   setStage("eval");
