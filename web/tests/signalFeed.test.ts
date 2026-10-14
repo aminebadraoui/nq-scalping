@@ -2,7 +2,7 @@
  * the pure fill/expire/wait decision + the feed-clock gap helper. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { resolveRetrace, feedMinutesGap, retraceUseLimit } from "../lib/signalFeed";
+import { resolveRetrace, feedMinutesGap, retraceUseLimit, momentumLimitParams } from "../lib/signalFeed";
 
 const bar = (o: number, high: number, low: number) => ({ o, high, low });
 
@@ -63,4 +63,14 @@ test("retraceUseLimit: scale-out pairs keep the market path (no limit leg)", () 
     if (saved === undefined) delete process.env.CROSSTRADE_LIMIT_ENTRIES;
     else process.env.CROSSTRADE_LIMIT_ENTRIES = saved;
   }
+});
+
+test("momentumLimitParams: flush rests AT the signal close for 9 min (the flushLimit arm)", () => {
+  assert.deepEqual(momentumLimitParams("flush", 30780.375, "long"), { level: 30780.375, ttlMin: 9 });
+  assert.deepEqual(momentumLimitParams("flush", 30784.75, "short"), { level: 30784.75, ttlMin: 9 });
+});
+
+test("momentumLimitParams: expansion retrace rests 1 pt behind the close for 5 min (unchanged)", () => {
+  assert.deepEqual(momentumLimitParams("expansion", 31261.375, "long"), { level: 31260.375, ttlMin: 5 });
+  assert.deepEqual(momentumLimitParams("expansion", 30908.75, "short"), { level: 30909.75, ttlMin: 5 });
 });

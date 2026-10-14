@@ -325,6 +325,14 @@ export function tapePageDecision(
  * ------------------------------------------------------------------ */
 const EXP_RETRACE_PTS = 1.0;
 const EXP_RETRACE_BARS = 5;
+/** failed-flush breakout resting-limit entry (2026-10-14 momentum
+ *  entry-mechanics study): the flush card rests a limit AT the signal
+ *  close for up to FLUSH_LIMIT_BARS minutes instead of chasing the tape
+ *  with a marketable order — the chase-over instant-exit fix (the live
+ *  chase filled 6–12 pts past the signal and the signal-anchored target
+ *  fired instantly at ±0.5 pts; the study's flushLimit arm: test WR
+ *  61.4% · PF 1.55 · +1.25 pts vs the live chase PF 0.64 · −0.66 pts). */
+const FLUSH_LIMIT_BARS = 9;
 const expRetraceEnabled = (): boolean => feedFlag("EXP_RETRACE", true);
 
 /**
@@ -339,6 +347,21 @@ const expRetraceEnabled = (): boolean => feedFlag("EXP_RETRACE", true);
  */
 export function retraceUseLimit(scaleOut: boolean): boolean {
   return process.env.CROSSTRADE_LIMIT_ENTRIES !== "0" && !scaleOut;
+}
+
+/** resting-limit entry params per momentum card kind (pure, unit-tested):
+ *  the expansion retrace rests EXP_RETRACE_PTS behind the signal close
+ *  for EXP_RETRACE_BARS minutes (retraceSlippageStudy); the failed-flush
+ *  breakout rests AT the signal close for FLUSH_LIMIT_BARS minutes — the
+ *  momentumEntryMechanicsStudy flushLimit arm (2026-10-14). */
+export function momentumLimitParams(
+  kind: "flush" | "expansion",
+  entry: number,
+  dir: "long" | "short",
+): { level: number; ttlMin: number } {
+  const dirSign = dir === "long" ? 1 : -1;
+  if (kind === "flush") return { level: entry, ttlMin: FLUSH_LIMIT_BARS };
+  return { level: entry - dirSign * EXP_RETRACE_PTS, ttlMin: EXP_RETRACE_BARS };
 }
 
 /** RTH limit-entry redesign (validated by scripts/rthLimitValidation.ts,
@@ -1280,63 +1303,75 @@ class SignalFeed {
       this.cardedDays.add(s.d);
       if (this.cardedDays.size > 20) this.cardedDays = new Set([...this.cardedDays].slice(-10));
 
-      // ---- expansion retrace: arm the resting limit instead of chasing ----
+      // ---- resting-limit entries instead of chasing ----
+      // expansion retrace (1 pt behind the close, 5 min — retraceSlippage
+      // study) and failed-flush breakout (AT the signal close, 9 min — the
+      // momentumEntryMechanicsStudy flushLimit arm, 2026-10-14): the live
+      // marketable chase fills 6–12 pts past the signal in fast tape and
+      // the signal-anchored target fires instantly at ±0.5 pts (the
+      // −20/−23/−6 series). A resting limit can only fill AT or better.
+      const limitEntry =
+        crossTradeEnabled() &&
+        retraceUseLimit(scaleOut) &&
+        ((s.kind === "expansion" && expRetraceEnabled()) || s.kind === "flush");
+      if (limitEntry) {
+        const dirSign = s.dir === "long" ? 1 : -1;
+        const flush = s.kind === "flush";
+        const lp = momentumLimitParams(s.kind, s.entry, s.dir);
+        const level = lp.level;
+        // BROKER-ARMED path: rest the limit at the broker THE MOMENT THE
+        // CARD FIRES (2026-10-12 for retrace · 2026-10-14 for flush).
+        // The executor's crossed gates refuse a broken bracket; the
+        // watcher's limit lifecycle cancels at expiry, window close, or
+        // kill switch. Brackets are pre-built from the LIMIT
+        // (fill-anchored by construction — a resting limit can only fill
+        // at or better).
+        const risk = s.risk;
+        const intent: OrderIntent = {
+          symbol: symbol(),
+          dir: s.dir,
+          contracts: size.contracts,
+          entry: level,
+          stop: level - dirSign * risk,
+          target: level + dirSign * risk,
+          timeET: et,
+        };
+        const expireAtMs = Date.now() + lp.ttlMin * 60_000;
+        registerExpectation({
+          key: `mom|${key}`,
+          ts: Date.now(),
+          label: `momentum ${s.dir} ${et} (${flush ? "flush" : "retrace"} limit)`,
+          intent,
+          scaleOut,
+          limit: { price: level, expireAtMs },
+        });
+        const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+        const armText = [
+          flush
+            ? `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · failed-flush breakout — broker limit resting · ${et} NY</b>`
+            : `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace — broker limit resting · ${et} NY</b>`,
+          ``,
+          flush
+            ? `<code>LIMIT   ${fmtPx(level)}   (signal close — no chase)</code>`
+            : `<code>LIMIT   ${fmtPx(level)}   (signal close ${fmtPx(s.entry)} ∓ ${EXP_RETRACE_PTS.toFixed(1)} pt)</code>`,
+          `<code>STOP    fill ∓ ${risk.toFixed(2)} pts · TARGET fill ± ${risk.toFixed(2)} pts (1R)</code>`,
+          `<code>SIZE    ${sizeStrArm}</code>`,
+          ``,
+          `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}limit rests at the broker for up to ${lp.ttlMin} min, cancelled if untraded`,
+          `<i>${flush ? "no market order — the chase fills past the signal and the target fires instantly (momentum entry-mechanics study 2026-10-14)" : STATS.momentum.expRetrace}</i>`,
+        ].join("\n");
+        const res = await this.push(armText);
+        if (!res.sent) this.lastError = res.reason;
+        void this.placeMomentumOrder(key, intent, scaleOut, et, flush ? " (flush limit)" : " (retrace)", level).then((res) => {
+          if (res.ok && res.orderId) attachLimitOrderId(`mom|${key}`, res.orderId);
+        });
+        console.log(`[${flush ? "flushLimit" : "expRetrace"}] broker limit placed ${s.dir} @ ${fmtPx(level)} · ${et} NY · expires after ${lp.ttlMin} min`);
+        continue;
+      }
       if (s.kind === "expansion" && expRetraceEnabled()) {
         const dirSign = s.dir === "long" ? 1 : -1;
         const level = s.entry - dirSign * EXP_RETRACE_PTS;
         const armedIdx = fp.length - 1;
-        // BROKER-ARMED path (2026-10-12): when CrossTrade is live and the
-        // limit mode holds (single-leg), rest the limit at the broker THE
-        // MOMENT THE CARD FIRES — the faithful execution of
-        // retraceSlippageStudy's 0.0-pt cell (the model rests the limit
-        // from the signal and counts a touch as a fill). Placing only
-        // AFTER the touch bar closed meant the tape had already traded
-        // through the level — live under-filled vs the model
-        // (limit_expired). The executor's crossed gates refuse a broken
-        // bracket; the watcher's limit lifecycle cancels at expiry,
-        // window close, or kill switch. Brackets are pre-built from the
-        // LIMIT (fill-anchored by construction — a resting limit can only
-        // fill at or better).
-        const brokerLimit = crossTradeEnabled() && retraceUseLimit(scaleOut);
-        if (brokerLimit) {
-          const risk = s.risk;
-          const intent: OrderIntent = {
-            symbol: symbol(),
-            dir: s.dir,
-            contracts: size.contracts,
-            entry: level,
-            stop: level - dirSign * risk,
-            target: level + dirSign * risk,
-            timeET: et,
-          };
-          const expireAtMs = Date.now() + EXP_RETRACE_BARS * 60_000;
-          registerExpectation({
-            key: `mom|${key}`,
-            ts: Date.now(),
-            label: `momentum ${s.dir} ${et} (retrace limit)`,
-            intent,
-            scaleOut,
-            limit: { price: level, expireAtMs },
-          });
-          const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
-          const armText = [
-            `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace — broker limit resting · ${et} NY</b>`,
-            ``,
-            `<code>LIMIT   ${fmtPx(level)}   (signal close ${fmtPx(s.entry)} ∓ ${EXP_RETRACE_PTS.toFixed(1)} pt)</code>`,
-            `<code>STOP    fill ∓ ${risk.toFixed(2)} pts · TARGET fill ± ${risk.toFixed(2)} pts (1R)</code>`,
-            `<code>SIZE    ${sizeStrArm}</code>`,
-            ``,
-            `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}limit rests at the broker for up to ${EXP_RETRACE_BARS} min, cancelled if untraded`,
-            `<i>${STATS.momentum.expRetrace}</i>`,
-          ].join("\n");
-          const res = await this.push(armText);
-          if (!res.sent) this.lastError = res.reason;
-          void this.placeMomentumOrder(key, intent, scaleOut, et, " (retrace)", level).then((res) => {
-            if (res.ok && res.orderId) attachLimitOrderId(`mom|${key}`, res.orderId);
-          });
-          console.log(`[expRetrace] broker limit placed ${s.dir} @ ${fmtPx(level)} · ${et} NY · expires after ${EXP_RETRACE_BARS} bars`);
-          continue;
-        }
         this.expRetracePending = {
           key,
           day: s.d,
