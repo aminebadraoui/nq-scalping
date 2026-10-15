@@ -3,7 +3,7 @@
  * formatter are what the logs, health, and operator read. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { formatConfirmRace, fastDispatchEnabled, confirmRaceEnabled } from "../lib/live";
+import { formatConfirmRace, fastDispatchEnabled, confirmRaceEnabled, loadEnv } from "../lib/live";
 
 test("formatConfirmRace: REST wins when it confirms first", () => {
   const close = Date.UTC(2026, 9, 11, 2, 23, 0);
@@ -46,4 +46,23 @@ test("confirmRaceEnabled: probe OR production arms the race", () => {
   assert.strictEqual(confirmRaceEnabled({ CONFIRM_RACE_PROBE: "1" }), true);
   assert.strictEqual(confirmRaceEnabled({ FAST_DISPATCH: "1" }), true);
   assert.strictEqual(confirmRaceEnabled({ FAST_DISPATCH: "1", CONFIRM_RACE_PROBE: "0" }), true);
+});
+
+test("loadEnv: the race knobs flow from process.env (the Coolify env plumbing)", () => {
+  const prevFast = process.env.FAST_DISPATCH;
+  const prevProbe = process.env.CONFIRM_RACE_PROBE;
+  try {
+    process.env.FAST_DISPATCH = "1";
+    process.env.CONFIRM_RACE_PROBE = "1";
+    const env = loadEnv();
+    assert.strictEqual(env.FAST_DISPATCH, "1");
+    assert.strictEqual(env.CONFIRM_RACE_PROBE, "1");
+    assert.strictEqual(fastDispatchEnabled(env), true);
+    assert.strictEqual(confirmRaceEnabled(env), true);
+  } finally {
+    if (prevFast === undefined) delete process.env.FAST_DISPATCH;
+    else process.env.FAST_DISPATCH = prevFast;
+    if (prevProbe === undefined) delete process.env.CONFIRM_RACE_PROBE;
+    else process.env.CONFIRM_RACE_PROBE = prevProbe;
+  }
 });

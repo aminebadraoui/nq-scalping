@@ -369,7 +369,7 @@ function fetchFootprintBars(dates: string[], env: Record<string, string>, tokenO
   });
 }
 
-function loadEnv(): Record<string, string> {
+export function loadEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   const envPath = path.join(process.cwd(), "..", "gcdata", ".env");
   try {
@@ -383,7 +383,7 @@ function loadEnv(): Record<string, string> {
   } catch {
     /* no env file */
   }
-  for (const k of ["GOCHARTING_EMAIL", "GOCHARTING_PASSWORD", "GOCHARTING_COGNITO_CLIENT", "GOCHARTING_DC", "GOCHARTING_SYMBOL", "GOCHARTING_EXCHANGE", "GOCHARTING_SEGMENT"]) {
+  for (const k of ["GOCHARTING_EMAIL", "GOCHARTING_PASSWORD", "GOCHARTING_COGNITO_CLIENT", "GOCHARTING_DC", "GOCHARTING_SYMBOL", "GOCHARTING_EXCHANGE", "GOCHARTING_SEGMENT", "FAST_DISPATCH", "CONFIRM_RACE_PROBE"]) {
     if (process.env[k]) out[k] = process.env[k]!;
   }
   return out;
