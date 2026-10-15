@@ -221,6 +221,19 @@ export async function GET(req: NextRequest) {
                   // the lossy tick aggregate. Cards only fire on candle bars.
                   barSource: { candle: candleBars, tick: tickBars },
                   lastCandleRefreshAt: st.lastCandleRefreshAt ?? 0,
+                  // confirm-race / fast-dispatch state (lib/live.ts): the
+                  // REST-vs-frame confirmation race for the just-closed bar
+                  confirmRace: st.race
+                    ? {
+                        fastDispatch: st.race.fastDispatch,
+                        active: st.race.active,
+                        races: st.race.races,
+                        restWins: st.race.restWins,
+                        frameWins: st.race.frameWins,
+                        lastRestConfirmMs: st.race.lastRestConfirmMs,
+                        lastFrameConfirmMs: st.race.lastFrameConfirmMs,
+                      }
+                    : null,
                   // tape-gap self-heal ladder (lib/live.ts): episode clock,
                   // current step, and the recovery actions taken so far
                   heal: st.heal ?? null,

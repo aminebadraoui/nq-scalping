@@ -65,6 +65,18 @@ export type LiveState = {
   /** last successful candle refresh (ms; 0 = never) — the health endpoint
    *  reports it alongside the bar-source mix so a stalled refresh is visible */
   lastCandleRefreshAt: number;
+  /** confirm-race bookkeeping (CONFIRM_RACE_PROBE measurement /
+   *  FAST_DISPATCH production fast-confirm) — exposed via /health so the
+   *  fast-confirm latency is a monitored number, not a hope. */
+  race: {
+    fastDispatch: boolean;
+    active: boolean;
+    races: number;
+    restWins: number;
+    frameWins: number;
+    lastRestConfirmMs: number;
+    lastFrameConfirmMs: number;
+  };
   /** monotonic bar-buffer revision — bumped every time a candle merge
    *  REPLACES or ADDS a bar. The detector/ footprint caches key on this:
    *  a vendor revision of any mid-array bar invalidates them (the tick
@@ -253,6 +265,23 @@ export function tapeTailStale(minutes: Array<{ t: string; du?: string }>, now: n
   if (!last) return false; // empty buffer — seed in flight, never stale
   const close = liveMinuteCloseMs(last);
   return close > 0 && now - close > thresholdMs;
+}
+
+/** FAST_DISPATCH=1 — production fast-confirm (fill-lag fix, 2026-10-15):
+ *  after each minute closes, race the vendor REST endpoint for the
+ *  just-closed candle (~7.5 s observed by CONFIRM_RACE_PROBE) instead of
+ *  waiting for the 32–57 s frame confirmation, so the limit-entry cards
+ *  dispatch ~25–50 s earlier. Default 0 = today's behavior. The card
+ *  gate still requires a candle-source bar, so a failed race can only
+ *  hold cards, never fire them on thin data. */
+export function fastDispatchEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.FAST_DISPATCH === "1";
+}
+
+/** the confirm race runs in production (FAST_DISPATCH=1) or as the
+ *  measurement probe (CONFIRM_RACE_PROBE=1 — timing logs only). */
+export function confirmRaceEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return fastDispatchEnabled(env) || env.CONFIRM_RACE_PROBE === "1";
 }
 
 /** pure: format a confirmation-race outcome line (unit-tested).
@@ -493,7 +522,7 @@ class LiveFeed {
    *  measures, and when REST wins it confirms through the SAME vendor
    *  data the gate demands. One [confirm-race] log line per bar. */
   private startConfirmRace(bar: LiveMinute): void {
-    if (process.env.CONFIRM_RACE_PROBE !== "1") return;
+    if (!confirmRaceEnabled(this.env)) return;
     if (this.raceActive) return;
     if ((bar.source ?? "tick") === "candle") return; // already confirmed
     if (!this.token) return; // no cached token — the 60s refresh owns recovery
@@ -506,6 +535,8 @@ class LiveFeed {
     this.raceRestMs = 0;
     this.raceFrameMs = 0;
     this.raceFetchFailedLogged = false;
+    this.state.race.active = true;
+    this.state.race.races++;
     const step = (): void => {
       if (!this.raceActive || this.raceBarKey !== key) return;
       const now = Date.now();
@@ -529,6 +560,11 @@ class LiveFeed {
           const confirmed = (this.state.minutes.at(-1)?.source ?? "tick") === "candle";
           if (confirmed && this.raceRestMs === 0) {
             this.raceRestMs = Date.now();
+            this.state.race.restWins++;
+            this.state.race.lastRestConfirmMs = this.raceRestMs;
+            if (fastDispatchEnabled(this.env)) {
+              console.log(`[fast-dispatch] bar ${key} candle confirmed via REST +${((this.raceRestMs - closeMs) / 1000).toFixed(1)}s — cards eligible`);
+            }
             this.finishConfirmRace(key);
           }
         })
@@ -553,13 +589,18 @@ class LiveFeed {
     const confirmed = (this.state.minutes.at(-1)?.source ?? "tick") === "candle";
     if (!confirmed) return;
     this.raceFrameMs = Date.now();
+    this.state.race.frameWins++;
+    this.state.race.lastFrameConfirmMs = this.raceFrameMs;
     this.finishConfirmRace(this.raceBarKey);
   }
 
   private finishConfirmRace(key: string): void {
     if (!this.raceActive || this.raceBarKey !== key) return;
-    console.log(formatConfirmRace(key, this.raceCloseMs, this.raceRestMs, this.raceFrameMs, Date.now()));
+    if (process.env.CONFIRM_RACE_PROBE === "1") {
+      console.log(formatConfirmRace(key, this.raceCloseMs, this.raceRestMs, this.raceFrameMs, Date.now()));
+    }
     this.raceActive = false;
+    this.state.race.active = false;
   }
 
   state: LiveState = {
@@ -568,6 +609,7 @@ class LiveFeed {
     lastTradeMs: 0,
     lastVolChangeMs: 0,
     lastCandleRefreshAt: 0,
+    race: { fastDispatch: false, active: false, races: 0, restWins: 0, frameWins: 0, lastRestConfirmMs: 0, lastFrameConfirmMs: 0 },
     snapshot: null,
     ticks: [],
     minutes: [],
@@ -579,6 +621,7 @@ class LiveFeed {
 
   constructor() {
     this.env = loadEnv();
+    this.state.race.fastDispatch = fastDispatchEnabled(this.env);
   }
 
   subscribe(fn: (s: LiveState) => void) {

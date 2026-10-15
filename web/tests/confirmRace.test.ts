@@ -1,9 +1,9 @@
-/* Unit tests for the confirmation-race probe's pure outcome formatter
- * (lib/live.ts formatConfirmRace) — the race itself is a live-only
- * measurement; the formatter is what the logs and operator read. */
+/* Unit tests for the confirmation-race pure helpers (lib/live.ts) — the
+ * race itself is a live-only mechanism; the env gating and the outcome
+ * formatter are what the logs, health, and operator read. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { formatConfirmRace } from "../lib/live";
+import { formatConfirmRace, fastDispatchEnabled, confirmRaceEnabled } from "../lib/live";
 
 test("formatConfirmRace: REST wins when it confirms first", () => {
   const close = Date.UTC(2026, 9, 11, 2, 23, 0);
@@ -31,4 +31,19 @@ test("formatConfirmRace: neither channel confirmed inside the window", () => {
   const line = formatConfirmRace("2026-10-11|02:22", close, 0, 0, close + 12_000);
   assert.match(line, /NEITHER confirmed/);
   assert.match(line, /12\.0s since close/);
+});
+
+test("fastDispatchEnabled: off by default, on only with FAST_DISPATCH=1", () => {
+  assert.strictEqual(fastDispatchEnabled({}), false);
+  assert.strictEqual(fastDispatchEnabled({ FAST_DISPATCH: "0" }), false);
+  assert.strictEqual(fastDispatchEnabled({ FAST_DISPATCH: "1" }), true);
+  // production mode never triggers on a garbage value
+  assert.strictEqual(fastDispatchEnabled({ FAST_DISPATCH: "yes" }), false);
+});
+
+test("confirmRaceEnabled: probe OR production arms the race", () => {
+  assert.strictEqual(confirmRaceEnabled({}), false);
+  assert.strictEqual(confirmRaceEnabled({ CONFIRM_RACE_PROBE: "1" }), true);
+  assert.strictEqual(confirmRaceEnabled({ FAST_DISPATCH: "1" }), true);
+  assert.strictEqual(confirmRaceEnabled({ FAST_DISPATCH: "1", CONFIRM_RACE_PROBE: "0" }), true);
 });
