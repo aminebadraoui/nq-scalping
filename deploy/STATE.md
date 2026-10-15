@@ -1,4 +1,4 @@
-# Deploy state (last verified 2026-10-12)
+# Deploy state (last verified 2026-10-15)
 
 ## Live resources
 
@@ -437,6 +437,20 @@ wider stop grid and the user's approval. Scratch studies
   promoted to `admin`; instance `allowed_ips` untouched (original 6-IP
   list); the temporary agent API token used for the change was deleted
   afterwards.
+- **Fast dispatch (applied 2026-10-15, owner-approved)** — Coolify app env
+  `FAST_DISPATCH=1` (was unset = 0). Races the vendor REST endpoint for
+  the just-closed candle every 1.5 s for ≤12 s after each bar close so
+  the limit-entry cards dispatch ~25–50 s earlier than the 32–57 s frame
+  confirmation. Fail-closed: the card gate still requires a candle-source
+  bar; a losing race degrades to the old cadence. Evidence:
+  `docs/research/fast-dispatch-2026-10-15.md` +
+  `docs/research/fill-lag-fix-plan-2026-10-15.md`; code `[backtested:
+  scripts/fastDispatchStudy.ts --offline]` commit `e1becf9` + env-plumbing
+  fix `67fc890`. **Coolify lesson re-confirmed: env changes need a
+  REDEPLOY, not a restart, to re-bake into the container.** Monitored via
+  `/api/gc?action=health` → `liveFeed.confirmRace` {fastDispatch, races,
+  restWins, frameWins, lastRestConfirmMs}. Kill-switch: set back to `0`,
+  one Coolify edit.
 - **Time exits (2026-10-05, `lib/timeExit.ts`)** — profile orders register
   a bar-based exit on the feed tick: past exitAt with a position still
   open → bracketless REST market exit (OCO brackets cancel on the
