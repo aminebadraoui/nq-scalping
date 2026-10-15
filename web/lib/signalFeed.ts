@@ -820,7 +820,7 @@ class SignalFeed {
       // a card fired since the last page — re-arm for the next stretch
       this.quietSessionKey = "";
     }
-    if (this.quietSessionKey === day && now - this.quietPageAt < 60 * 60_000) return; // one page per hour per session
+    if (this.quietSessionKey === day) return; // one page per SESSION — informational, not an hourly alarm
     this.quietSessionKey = day;
     this.quietPageAt = now;
     void this.push(

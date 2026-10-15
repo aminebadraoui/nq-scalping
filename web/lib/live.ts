@@ -418,6 +418,10 @@ class LiveFeed {
   /** bars-frozen watchdog (2026-10-15): log + operator page throttles */
   private frozenLoggedAt = 0;
   private frozenPageAt = 0;
+  /** boot-grace gate: the last tail close seen + when it last advanced —
+   *  the frozen page requires a tail that advanced and then stalled */
+  private lastTailClose = 0;
+  private tailAdvancedAt = 0;
 
   private tickTail(): number {
     let n = 0;
@@ -1042,8 +1046,16 @@ class LiveFeed {
         // trades means the vendor data pipeline stopped completing bars
         // (candles stale + tick frames replaying old stamps) — the ladder's
         // tail-count trigger can't see it, so feed it a synthetic stall and
-        // page the operator.
-        const frozen = tapeTailStale(this.state.minutes, now);
+        // page the operator. BOOT-GRACE GATE (2026-10-15 false alarm): the
+        // page requires the tail to have ADVANCED at least once since boot
+        // and then stalled — a freshly reseeded buffer with an old tail is
+        // a deploy artifact, not a vendor freeze.
+        const tailCloseNow = liveMinuteCloseMs(this.state.minutes[this.state.minutes.length - 1] as { t: string; du?: string });
+        if (tailCloseNow > this.lastTailClose) {
+          this.lastTailClose = tailCloseNow;
+          this.tailAdvancedAt = now;
+        }
+        const frozen = tapeTailStale(this.state.minutes, now) && this.tailAdvancedAt > 0 && now - this.tailAdvancedAt > STALE_BARS_RECOVERY_MS;
         if (frozen) {
           if (now - this.frozenLoggedAt >= 60_000) {
             this.frozenLoggedAt = now;
