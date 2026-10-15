@@ -403,6 +403,20 @@ export function tapeGateDiagnostics(
   return { totalBars: fp.length, tail, tailAgeMs, hold: d.hold, veto: d.veto, lastBarClose: close };
 }
 
+/** the detectors' view of the live buffer (2026-10-15, the SESSION QUIET
+ *  pages were un-actionable): run the THREE production detectors on the
+ *  buffer exactly as the checkers do and report the candidate counts —
+ *  "the market has no setups" becomes a measured statement, not a hope. */
+export function detectorScanDiagnostics(minutes: LiveMinute[]): { bars: number; momentumFlush: number; momentumExpansion: number; rth: number } {
+  const fp = liveMinutesToFootprint(minutes);
+  return {
+    bars: fp.length,
+    momentumFlush: detectMomentum(fp, MOM_PROD).filter((s) => s.kind === "flush").length,
+    momentumExpansion: detectExpansionScalp(fp, EXP_PROD).length,
+    rth: detectSoftMomentum(fp, SOFT_PROD).length,
+  };
+}
+
 /** How long the self-heal ladder may work an episode before the operator
  *  page fires (2026-10-07: 8 stalls, 8 auto-heals, 8 noisy pages — most
  *  episodes closed within ~1 min via the first forced fetch). */
@@ -813,7 +827,11 @@ class SignalFeed {
       [
         `🔇 <b>SESSION QUIET</b> — ${lastCardAtMs === null ? "no card attempt ALL session" : `no card attempt for ${Math.round((now - lastCardAtMs) / 60_000)} min`} with a healthy feed`,
         `<code>${symbol()} · ${new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" })} ET · day ${day}</code>`,
-        `Feed connected, candles fresh, gate open (veto false, tail ${tg.tail} bar(s), ${tg.tailAgeMs === null ? "?" : Math.round(tg.tailAgeMs / 1000)}s). Either the market genuinely has no setup — or a detector is silently blocked. Check /api/gc?action=health and the runbook (INCIDENT-RUNBOOK.md §1).`,
+        `Feed connected, candles fresh, gate open (veto false, tail ${tg.tail} bar(s), ${tg.tailAgeMs === null ? "?" : Math.round(tg.tailAgeMs / 1000)}s).`,
+        `Detector scan on the live buffer: ${(() => {
+          const d = detectorScanDiagnostics(st.minutes);
+          return "flush " + d.momentumFlush + " · expansion " + d.momentumExpansion + " · rth " + d.rth + " over " + d.bars + " bars";
+        })()} — zero candidates on a healthy feed means the market has no setup for the validated configs, not a silent block.`,
       ].join("\n"),
     );
     console.log(`[quiet] session quiet page — no card attempt for the RTH window (feed healthy)`);

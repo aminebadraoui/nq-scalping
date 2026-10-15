@@ -229,6 +229,9 @@ export async function GET(req: NextRequest) {
                   // healthy feed must show veto:false (the post-deploy smoke
                   // script asserts exactly this)
                   tapeGate: (await import("@/lib/signalFeed")).tapeGateDiagnostics(st.minutes, now),
+                  // the detectors' candidate counts on the live buffer —
+                  // "the market has no setups" is a measured number
+                  detectors: (await import("@/lib/signalFeed")).detectorScanDiagnostics(st.minutes),
                 };
               } catch (e) {
                 console.error("[health] liveFeed error:", e);
