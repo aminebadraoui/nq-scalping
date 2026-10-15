@@ -38,65 +38,75 @@ signal detection.
 
 ## 2. The fix — three layers, each gated by its own evidence
 
-### Layer 1 — the fastDispatch backtest (the go/no-go gate)
+### Layer 1 — the fastDispatch backtest (the go/no-go gate) — DONE, PASSED
 
-Replay the three affected families with the fill model a tick-native
-dispatch would actually produce: **entry at the true close + ε pts of
-adverse drift**, ε ∈ {0, 0.5, 1, 2, 3}, cost 0.5 pt inside P&L, versus
-the live limit arms (flushLimit / RTH limit) on the same cards.
+> **Design correction vs the original plan:** with resting-limit entries,
+> the honest lag model is *placement* lag (which bar the limit exists
+> from), not a uniform ε-pt price drift on a marketable fill. Shipped
+> study: `web/scripts/fastDispatchStudy.ts` —
+> `docs/research/fast-dispatch-2026-10-15.md`.
 
-- Families: RTH (SOFT_PROD), flush (MOM_PROD), D (first big-bar), and
-  the cumD-gated RTH subset.
-- Rows: WR, PF, exp pts, per-year, T4 account sim per ε.
-- Decision rule: adopt Layer 2/3 only if the ε=1..2 arms clear the
-  train gate and beat the live limit arm by a margin that survives the
-  per-year table. The flush family's perfect_d1 cell (PF 2.50 → 1.66)
-  says the margin exists at ε=1; this study pins ε=1..3 for the other
-  families and, critically, the ε distribution itself (Layer 3 supplies
-  it).
+The placement-lag ladder over the full archive (656 sessions, train/test,
+live limit brackets frozen, TTL 9):
 
-CLI (scratch, to be written): `web/scripts/fastDispatchStudy.ts`.
+| family | lag0 (fast-confirm target) | lag1 (live proxy, ~40 s late) | recovered |
+|---|---|---|---|
+| flush (MOM_PROD) | 1,327 t · PF 1.22 · +0.50 pts | 1,280 t · PF 1.15 · +0.35 pts | **+210.9 net pts** |
+| rth (SOFT_PROD, ungated bracket) | 2,657 t · PF 1.07 · +0.23 | 2,563 t · PF 1.03 · +0.10 | **+335.2 net pts** |
+| d100 (first big-bar) | 96 t · PF 1.38 · +4.26 | 91 t · PF 1.29 · +3.36 | **+103.1 net pts** |
 
-### Layer 2 — tick-native bar assembly (the structural fix)
+Decision: **adopt** — every family gains, the decay is monotonic with
+lag on the flush family, and the fix is fail-closed by construction (the
+card gate still requires a candle-source bar). The study also falsifies
+the hope that fast dispatch unlocks the idealized close-fill edge: the
+lag0 arm IS the validated limit arm — the harvest is recovered
+placement-lag bleed, nothing more.
 
-Stop waiting for the vendor's confirmed candle as the detection clock.
-Assemble each minute bar locally from the realtime stream:
+### Layer 2 — the confirm race: vendor REST for the just-closed candle (SHIPPED 2026-10-15)
 
-1. **Aggregate the tick/DOM trade stream per minute** (the vendor's
-   realtime footprint stream already updates the forming bar
-   continuously; the schema exists — Neon `footprint_ticks`
-   (ts, price_cents, buy, sell, buy_trades, sell_trades) — currently
-   EMPTY, so this is also the missing `LIVE_WRITE` piece).
-2. **Close the bar locally at T+ε** (ε = stream lag, ~1–3 s) — no
-   vendor close event needed.
-3. **Run the frozen detectors on the tick-assembled bar** at T+ε — same
-   code path as the archive replay (`detectMomentum` / `detectSoft-
-   Momentum` / `detectExpansionScalp` consume `MomMinute`; the assembler
-   emits that shape).
-4. **Vendor candle = verification, not clock.** Reconcile tick-assembled
-   vs vendor-confirmed bars each minute; alarm on drift (the tape-gate
-   ladder stays as the fail-closed safety net; vendor stall episodes
-   like the 10-14→15 overnight are already handled by heal + paging).
+> **Design correction vs the original plan:** "tick-native bar assembly"
+> was rejected during implementation — the repo's own F1 history shows the
+> tick stream carries only ~7–50% of true volume, so a locally tick-closed
+> bar feeds the frozen detectors a thinner tape than the backtest (the
+> exact disease F1 cured). The correct mechanism closes the SAME vendor
+> candle earlier instead of assembling a different one: race the vendor's
+> **REST** endpoint for the just-closed minute, which publishes the
+> confirmed candle in **~7.5 s** (measured by `CONFIRM_RACE_PROBE`)
+> versus 32–57 s on the frame channel.
+
+Shipped in `e1becf9` (`web/lib/live.ts`):
+
+1. After each completed minute (tail is tick-source), poll
+   `fetchFootprintBars` (the same vendor REST the 60 s refresh uses)
+   every **1.5 s for ≤12 s**, reusing the cached token — no fresh
+   Cognito auths (the lockout risk), no new data semantics: the merged
+   bar is byte-compatible with the archive the backtests were computed
+   on.
+2. The first poll that returns the confirmed candle merges it through
+   the idempotent `mergeCandleMinutes` path and the card gate releases
+   on it — **the gate still requires a candle-source bar, so a failed
+   race holds cards exactly like today; it can never fail open.**
+3. `FAST_DISPATCH=0` (default) = today's behavior, zero change;
+   `CONFIRM_RACE_PROBE=1` = measurement mode (timing logs only).
+4. `/health` → `confirmRace` {fastDispatch, active, races, restWins,
+   frameWins, lastRestConfirmMs, lastFrameConfirmMs} — the real per-bar
+   latency is a monitored number before any sizing claim.
 
 ### Layer 3 — instant limit-at-close dispatch + shadow mode
 
-With the detector running at T+ε:
+With the candle confirmed at ~T+7.5 s, the existing card flow dispatches
+the resting limit **at the signal close** ~25–50 s earlier — the bracket
+machinery is unchanged (flushLimit / RTH limit rest at the close today);
+only the placement time moves. No new entry mechanics.
 
-1. **Place the resting limit at the just-computed close at T+ε** (the
-   tape is still at the level → the limit fills at close or better, or
-   expires — same bracket machinery as today, just placed 30–55 s
-   earlier).
-2. **Shadow mode first:** run tick-native detection alongside the
-   vendor-candle path for N sessions, journal card-level agreement
-   (signal equality, entry/exit deltas, the ε distribution) — this is
-   the only honest way to check that our tick aggregation reproduces
-   the vendor's buy/sell classification semantics before any live
-   switch (classification divergence is the #1 risk; a detector fed
-   different buy/sell numbers is a different strategy than the
-   backtested one).
-3. **Env-gated rollout:** `FAST_DISPATCH=1` per family (RTH / momentum /
-   D-forward-log), kill-switchable in one Coolify edit, per
-   `web/EXEC_CHANGE_POLICY.md` — backtest tag, tests+types, owner
+1. **Shadow mode first:** `CONFIRM_RACE_PROBE=1` journals the REST-vs-
+   frame race per bar (`confirmRace` counters) without changing any
+   dispatch — the honest check that the observed REST latency matches
+   the ~7.5 s assumption before flipping.
+2. **Env-gated rollout:** `FAST_DISPATCH=1` arms the production race;
+   kill-switch = set it back to `0`, one Coolify edit, per
+   `web/EXEC_CHANGE_POLICY.md` — backtest tag (`[backtested:
+   scripts/fastDispatchStudy.ts --offline]`), tests+types, owner
    approval, one behavior change per deploy.
 
 ## 3. Why this can work — the evidence already in the repo
