@@ -454,6 +454,10 @@ const EXP_RETRACE_BARS = 5;
  *  61.4% · PF 1.55 · +1.25 pts vs the live chase PF 0.64 · −0.66 pts). */
 const FLUSH_LIMIT_BARS = 9;
 const expRetraceEnabled = (): boolean => feedFlag("EXP_RETRACE", true);
+/** CrossTrade snapshot auto-retry window (2026-10-15): the card re-attempts
+ *  placement for this long while the signal bar is fresh — inside the
+ *  staleness veto, so a retried card is never a stale card. */
+const GUARD_RETRY_WINDOW_MS = 90_000;
 
 /**
  * Broker leg of a filled expansion retrace: a RESTING LIMIT at the tape
@@ -1561,9 +1565,7 @@ class SignalFeed {
         ].join("\n");
         const res = await this.push(armText);
         if (!res.sent) this.lastError = res.reason;
-        void this.placeMomentumOrder(key, intent, scaleOut, et, flush ? " (flush limit)" : " (retrace)", level).then((res) => {
-          if (res.ok && res.orderId) attachLimitOrderId(`mom|${key}`, res.orderId);
-        });
+        this.placeWithGuardRetry(key, intent, scaleOut, et, flush ? " (flush limit)" : " (retrace)", level);
         console.log(`[${flush ? "flushLimit" : "expRetrace"}] broker limit placed ${s.dir} @ ${fmtPx(level)} · ${et} NY · expires after ${lp.ttlMin} min`);
         continue;
       }
@@ -1613,7 +1615,7 @@ class SignalFeed {
 
       // emit the order intent to the executor (dry-run by default) — the
       // same fire-and-forget mechanics as before, factored into one helper
-      void this.placeMomentumOrder(key, intent, scaleOut, et).then((res) => {
+      this.placeWithGuardRetry(key, intent, scaleOut, et, "", undefined, (res) => {
         if (scaleOut && res.runnerOrderId) {
           runnerTracker.register({
             id: res.runnerOrderId.replace(/-run$/, ""),
@@ -1694,6 +1696,58 @@ class SignalFeed {
   /** Place a momentum/expansion entry through the executor (scale-out pair
    *  or single bracketed order), fire-and-forget with exec-log + re-send
    *  registration. Shared by the immediate path and the retrace fill. */
+  /** CrossTrade snapshot auto-retry (2026-10-15, owner-approved robustness
+   *  program): a card that passed every gate but died on "account snapshot
+   *  unreadable" is re-attempted for up to GUARD_RETRY_WINDOW_MS while the
+   *  signal bar is fresh — the vendor READ error is the failure, not the
+   *  card. Bounded: 90s window (inside the staleness veto), 3 attempts. */
+  private guardRetryQueue = new Map<string, { key: string; intent: OrderIntent; scaleOut: boolean; et: string; suffix: string; limitPrice?: number; onOk?: (res: { ok: boolean; reason: string; orderId?: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }) => void; until: number; attempts: number }>();
+  private retryTimer: ReturnType<typeof setInterval> | null = null;
+
+  private placeWithGuardRetry(
+    key: string,
+    intent: OrderIntent,
+    scaleOut: boolean,
+    et: string,
+    suffix: string,
+    limitPrice?: number,
+    onOk?: (res: { ok: boolean; reason: string; orderId?: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }) => void,
+  ): void {
+    const k = `mom|${key}`;
+    void this.placeMomentumOrder(key, intent, scaleOut, et, suffix, limitPrice).then((res) => {
+      if (res.ok) {
+        if (res.orderId) attachLimitOrderId(k, res.orderId);
+        if (onOk) onOk(res);
+        return;
+      }
+      if (res.reason.includes("snapshot unreadable") && !this.guardRetryQueue.has(k)) {
+        this.guardRetryQueue.set(k, { key: k, intent, scaleOut, et, suffix, limitPrice, onOk, until: Date.now() + GUARD_RETRY_WINDOW_MS, attempts: 0 });
+        console.log(`[guard-retry] ${key} parked — snapshot unreadable, retrying for ${GUARD_RETRY_WINDOW_MS / 1000}s`);
+      }
+    });
+  }
+
+  private pumpGuardRetries(): void {
+    if (this.guardRetryQueue.size === 0) return;
+    const now = Date.now();
+    for (const [k, r] of [...this.guardRetryQueue]) {
+      if (now >= r.until || r.attempts >= 3) {
+        this.guardRetryQueue.delete(k);
+        continue;
+      }
+      r.attempts++;
+      void this.placeMomentumOrder(r.key, r.intent, r.scaleOut, r.et, r.suffix, r.limitPrice).then((res) => {
+        if (res.ok) {
+          this.guardRetryQueue.delete(k);
+          if (res.orderId) attachLimitOrderId(k, res.orderId);
+          if (r.onOk) r.onOk(res);
+          console.log(`[guard-retry] ${k} placed on retry ${r.attempts}`);
+        }
+        // still unreadable → stays queued until the window closes
+      });
+    }
+  }
+
   private async placeMomentumOrder(
     key: string,
     intent: OrderIntent,
@@ -1967,8 +2021,7 @@ class SignalFeed {
         (useLimit ? ` · broker limit ${LIMIT_ENTRY_TTL_MS / 60_000}min TTL` : ""),
     );
 
-    void this.placeMomentumOrder(p.key, intent, p.scaleOut, et, " (retrace)", useLimit ? entry : undefined).then((res) => {
-      if (useLimit && res.ok && res.orderId) attachLimitOrderId(`mom|${p.key}`, res.orderId);
+    this.placeWithGuardRetry(p.key, intent, p.scaleOut, et, " (retrace)", useLimit ? entry : undefined, (res) => {
       if (p.scaleOut && res.runnerOrderId) {
         runnerTracker.register({
           id: res.runnerOrderId.replace(/-run$/, ""),
@@ -2892,6 +2945,12 @@ class SignalFeed {
     this.displayTimer = setInterval(() => {
       void this.refreshSnapshot().catch(() => {});
     }, 30_000);
+    // CrossTrade snapshot auto-retry pump (2026-10-15): re-attempts cards
+    // parked by "account snapshot unreadable" until the 90s window closes
+    this.retryTimer = setInterval(() => {
+      this.pumpGuardRetries();
+    }, 15_000);
+    if (typeof this.retryTimer.unref === "function") this.retryTimer.unref();
     // the interval is the BACKSTOP: it sleeps while the tail's close is
     // not newer than the max the events have seen, and fires the moment
     // the buffer rolls a bar the emits missed (or the tail is unparseable)

@@ -275,6 +275,18 @@ export type DaybookHeal = {
   reseeds: number;
 };
 
+/** signal-kill canary record (scripts/signalKillCanary.ts) — one per
+ *  nightly replay-diff run with a divergence (replay cards without live
+ *  signal rows). The durable "live killed signals?" audit trail. */
+export type DaybookCanary = {
+  t: "canary";
+  at: number;
+  day: string;
+  missed: number;
+  momMissed: number;
+  detail: string;
+};
+
 /** execution-ledger record (lib/execTracker.ts) — one per state change
  *  of an executed signal: placed → filled → closed (win/loss/flat) /
  *  failed, with the Tradovate order/fill identity and the $ result. */
@@ -353,6 +365,7 @@ export type DaybookRecord =
   | DaybookManualAction
   | DaybookGuard
   | DaybookHeal
+  | DaybookCanary
   | DaybookLatency
   | DaybookEnd;
 

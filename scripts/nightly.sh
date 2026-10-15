@@ -90,6 +90,15 @@ else
   log "NEON_API_KEY not set — quota watchdog skipped (add it to the jobs env)"
 fi
 
+log "--- signal-kill canary (replay-diff: did live fire what the replay says?) ---"
+# Replays the production detectors on the just-collected session and diffs
+# against the signals table; pages the operator on divergence (the
+# 2026-10-15 clock-mix class must never hide again). Runs AFTER the
+# backfill so the collected tape exists.
+"$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/signalKillCanary.ts 2>&1
+CANARY_RC=$?
+log "signalKillCanary exit=$CANARY_RC"
+
 log "--- tape parity: skipped (2026-10-08) ---"
 # The parity snapshot/compare diffed the live-written candles_1m against
 # the vendor candles the ingester used to overwrite them with. The bulk
