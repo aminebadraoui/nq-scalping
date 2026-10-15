@@ -298,15 +298,27 @@ export function tapeGateDecision(
  * (labeled), and a bar older than STALE_SIGNAL_VETO_MS never fires at
  * all. 0 = the old infinite hold (fail-closed escape hatch).) ---- */
 
-/** the tick-fire threshold — env TAPE_GATE_TICK_FIRE_MS (default 120s). */
+/** the tick-fire threshold — env TAPE_GATE_TICK_FIRE_MS (default 300s:
+ *  the fallback exists for STALLS; the vendor's NORMAL confirmation lag
+ *  is ~2 min, so 120s tripped constantly during healthy operation and
+ *  spammed TICK-BAR FIRE notices). */
 export function tapeGateTickFireMs(env: Record<string, string | undefined> = process.env): number {
-  const n = Number(env.TAPE_GATE_TICK_FIRE_MS ?? "120000");
-  return Number.isFinite(n) && n >= 0 ? n : 120000;
+  const n = Number(env.TAPE_GATE_TICK_FIRE_MS ?? "300000");
+  return Number.isFinite(n) && n >= 0 ? n : 300000;
 }
 
 /** pure: does the unconfirmed tail bar's age force the tick-bar release? */
 export function tapeGateTimeoutFire(ageMs: number, thresholdMs: number): boolean {
   return thresholdMs > 0 && ageMs >= thresholdMs;
+}
+
+/** the age at which a tick-fire release is a STALL (not a slow confirm)
+ *  and the Telegram notice goes out. */
+export const TAPE_GATE_FIRE_NOTICE_MS = 10 * 60_000;
+
+/** pure: page on the tick-fire only when the lag is stall-grade. */
+export function tapeGateFireNotice(ageMs: number): boolean {
+  return ageMs >= TAPE_GATE_FIRE_NOTICE_MS;
 }
 
 /** a completed bar older than this can never carry a live signal — the
@@ -668,7 +680,9 @@ class SignalFeed {
       })();
       if (tapeGateTimeoutFire(age, threshold)) {
         hold = false;
-        if (now - this.tapeGateFireLoggedAt >= 30 * 60_000) {
+        // the release itself is silent (a slow confirm is normal); the
+        // Telegram notice only fires at stall-grade lag
+        if (tapeGateFireNotice(age) && now - this.tapeGateFireLoggedAt >= 30 * 60_000) {
           this.tapeGateFireLoggedAt = now;
           console.log(`[tape-gate] ${scan}: tick-fire fallback — tail bar ${Math.round(age / 1000)}s old, releasing on tick data`);
           void this.push(
@@ -678,6 +692,8 @@ class SignalFeed {
               `Candle confirmation lagging ${Math.round(age / 1000)}s — cards fire on the lossy tick bar until the vendor confirms again.`,
             ].join("\n"),
           );
+        } else if (tapeGateFireNotice(age)) {
+          console.log(`[tape-gate] ${scan}: tick-fire fallback (tail ${Math.round(age / 1000)}s old) — notice throttled`);
         }
       }
     }

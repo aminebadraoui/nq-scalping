@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeCandleMinutes, tapeTailStale, type LiveMinute } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
-import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, staleTailBar } from "../lib/signalFeed";
+import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, tapeGateFireNotice, staleTailBar } from "../lib/signalFeed";
 import type { BootCandle } from "../lib/footprintProto";
 
 const nowKey = "2026-10-05|18:00";
@@ -192,18 +192,24 @@ test("tapePageDecision: 3+ healed episodes page despite the active ladder (the s
   assert.equal(tapePageDecision({ sinceAt: now - 10_000, step: 1, episodes: 2 }, now), false);
 });
 
-test("tapeGateTickFireMs: default 120s, env override, 0 = never, garbage = default", () => {
-  assert.equal(tapeGateTickFireMs({}), 120_000);
+test("tapeGateTickFireMs: default 300s (above the normal ~2min confirm lag), env override, 0 = never, garbage = default", () => {
+  assert.equal(tapeGateTickFireMs({}), 300_000);
   assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "60000" }), 60_000);
   assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "0" }), 0);
-  assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "x" }), 120_000);
+  assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "x" }), 300_000);
 });
 
 test("tapeGateTimeoutFire: releases at/after the threshold, never below, never when off", () => {
-  assert.equal(tapeGateTimeoutFire(119_999, 120_000), false);
-  assert.equal(tapeGateTimeoutFire(120_000, 120_000), true);
-  assert.equal(tapeGateTimeoutFire(999_000, 120_000), true);
+  assert.equal(tapeGateTimeoutFire(299_999, 300_000), false);
+  assert.equal(tapeGateTimeoutFire(300_000, 300_000), true);
+  assert.equal(tapeGateTimeoutFire(999_000, 300_000), true);
   assert.equal(tapeGateTimeoutFire(999_000, 0), false); // 0 = the old infinite hold
+});
+
+test("tapeGateFireNotice: only stall-grade lag pages (a 2min confirm is silent)", () => {
+  assert.equal(tapeGateFireNotice(120_000), false);
+  assert.equal(tapeGateFireNotice(10 * 60_000), true);
+  assert.equal(tapeGateFireNotice(6 * 3600_000), true);
 });
 
 test("staleTailBar: a bar older than the veto window can never fire (the 02:54-on-22:52 case)", () => {
