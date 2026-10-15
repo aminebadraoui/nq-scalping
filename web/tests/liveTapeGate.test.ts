@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeCandleMinutes, tapeTailStale, type LiveMinute } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
-import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, tapeGateFireNotice, staleTailBar } from "../lib/signalFeed";
+import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, tapeGateFireNotice, staleTailBar, barCloseMs } from "../lib/signalFeed";
 import type { BootCandle } from "../lib/footprintProto";
 
 const nowKey = "2026-10-05|18:00";
@@ -214,10 +214,17 @@ test("tapeGateFireNotice: only stall-grade lag pages (a 2min confirm is silent)"
 
 test("staleTailBar: a bar older than the veto window can never fire (the 02:54-on-22:52 case)", () => {
   const bars = [{ t: "22:52", d: "2026-10-14" }];
-  const close = Date.UTC(2026, 9, 14, 22, 52) + 60_000;
+  // the footprint clock is America/Chicago: 22:52 CDT Oct 14 = 03:52 UTC Oct 15
+  const close = Date.UTC(2026, 9, 15, 3, 52) + 60_000;
   assert.equal(staleTailBar(bars, 10 * 60_000, close + 9 * 60_000), false);
   assert.equal(staleTailBar(bars, 10 * 60_000, close + 11 * 60_000), true);
   assert.equal(staleTailBar(bars, 10 * 60_000, close + 4 * 3600_000), true); // 4h late — veto
+});
+
+test("barCloseMs: footprint bars are Chicago-stamped — 10:28 CDT Oct 15 = 15:28 UTC (the clock-mix bug)", () => {
+  assert.equal(barCloseMs({ t: "10:28", d: "2026-10-15" }), Date.UTC(2026, 9, 15, 15, 28) + 60_000);
+  // live minutes carry the UTC date and are passed through as-is
+  assert.equal(barCloseMs({ t: "14:28", du: "2026-10-15" }), Date.UTC(2026, 9, 15, 14, 28) + 60_000);
 });
 
 test("tapeTailStale: a frozen tail older than the recovery window trips (the 6-hour vendor freeze)", () => {

@@ -105,21 +105,49 @@ function symbol(): string {
   return process.env.GOCHARTING_SYMBOL || "NQZ26";
 }
 
-/** close epoch (ms) of a completed minute bar from its UTC du+t stamps;
- *  null when unparseable. The tail's du/t basis makes plain key compare
- *  unreliable (the vendor frame re-replaces the tail with a lagging
- *  candle, oscillating the tail between two stamps), so both cadence
- *  rules compare CLOSE EPOCHS against a monotonic max instead. `d`
- *  (the feed calendar date) is accepted as the du fallback for
- *  FootprintMinute rows. */
+/** offset (ms) of a timezone at a given UTC instant — the Intl round-trip
+ *  trick (format the epoch in the zone, parse the wall clock back as UTC). */
+function tzOffsetMs(epochMs: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(new Date(epochMs));
+  const g = Object.fromEntries(parts.map((x) => [x.type, x.value]));
+  const asUtc = Date.UTC(Number(g.year), Number(g.month) - 1, Number(g.day), Number(g.hour), Number(g.minute), Number(g.second));
+  return asUtc - epochMs;
+}
+
+/** close epoch (ms) of a completed minute bar. Two clocks coexist:
+ *  · `du` (UTC date) + `t` (UTC HH:mm) — the LIVE minutes
+ *  · `d` (feed date) + `t` (feed HH:mm) — the FOOTPRINT bars, stamped in
+ *    the vendor's feed clock (America/Chicago — see times.ts
+ *    utcToFeedStamp). Mixing the two inflated the tail age by the
+ *    zone offset and made the tape-gate fallback + stale veto misfire
+ *    (2026-10-15: a healthy 1-minute tail read as 18,060 s old and the
+ *    veto killed every card). */
 export function barCloseMs(bar: { t: string; du?: string; d?: string } | undefined): number | null {
   if (!bar || !/^\d{2}:\d{2}$/.test(bar.t)) return null;
-  const basis = bar.du ?? bar.d;
-  if (!basis) return null;
-  const [y, mo, d] = basis.split("-").map(Number);
   const [hh, mm] = bar.t.split(":").map(Number);
-  const ms = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
-  return Number.isFinite(ms) ? ms : null;
+  if (bar.du) {
+    const [y, mo, d] = bar.du.split("-").map(Number);
+    const ms = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (bar.d) {
+    const [y, mo, d] = bar.d.split("-").map(Number);
+    const wallAsUtc = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
+    if (!Number.isFinite(wallAsUtc)) return null;
+    // true epoch = the Chicago wall clock minus Chicago's offset at that
+    // instant (the DST transition hour is approximate — market-irrelevant)
+    return wallAsUtc - tzOffsetMs(wallAsUtc, "America/Chicago");
+  }
+  return null;
 }
 
 /** pure event-tick decision, monotonic over the MAX close ever seen:
