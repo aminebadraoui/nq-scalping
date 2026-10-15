@@ -224,6 +224,11 @@ export async function GET(req: NextRequest) {
                   // tape-gap self-heal ladder (lib/live.ts): episode clock,
                   // current step, and the recovery actions taken so far
                   heal: st.heal ?? null,
+                  // the family checkers' gate view (2026-10-15): the SAME
+                  // tail/age/composed decision the signal path makes — a
+                  // healthy feed must show veto:false (the post-deploy smoke
+                  // script asserts exactly this)
+                  tapeGate: (await import("@/lib/signalFeed")).tapeGateDiagnostics(st.minutes, now),
                 };
               } catch (e) {
                 console.error("[health] liveFeed error:", e);

@@ -20,7 +20,7 @@
  * Collected data is used only for the static level stack.
  * ------------------------------------------------------------------ */
 
-import { getLive } from "./live";
+import { getLive, type LiveMinute } from "./live";
 import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
 import type { FootprintMinute } from "./gcdata";
@@ -42,6 +42,7 @@ import {
   loadCollectedContext,
   computeSignal,
   liveVwap,
+  liveMinutesToFootprint,
   type CollectedContext,
   type SignalSnapshot,
 } from "./signalEngine";
@@ -382,6 +383,22 @@ export function cardGateDecision(args: {
   if (hold && tailAgeMs !== null && tapeGateTimeoutFire(tailAgeMs, tapeGateTickFireMs(env))) hold = false;
   const veto = tailAgeMs !== null && tailAgeMs > STALE_SIGNAL_VETO_MS;
   return { hold, veto };
+}
+
+/** live tape-gate diagnostics for the health endpoint + the post-deploy
+ *  smoke script (2026-10-15): the SAME computation the family checkers
+ *  make — tail, age, and the composed decision — so "is the gate open"
+ *  is an API glance instead of a log dig. */
+export function tapeGateDiagnostics(
+  minutes: LiveMinute[],
+  now: number = Date.now(),
+): { totalBars: number; tail: number; tailAgeMs: number | null; hold: boolean; veto: boolean; lastBarClose: number | null } {
+  const fp = liveMinutesToFootprint(minutes);
+  const tail = tapeTailCount(fp);
+  const close = barCloseMs(fp[fp.length - 1]);
+  const tailAgeMs = close !== null ? now - close : null;
+  const d = cardGateDecision({ tail, totalBars: fp.length, tailAgeMs, now, lastAlertAt: 0 });
+  return { totalBars: fp.length, tail, tailAgeMs, hold: d.hold, veto: d.veto, lastBarClose: close };
 }
 
 /** How long the self-heal ladder may work an episode before the operator

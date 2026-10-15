@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeCandleMinutes, tapeTailStale, type LiveMinute } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
-import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, tapeGateFireNotice, staleTailBar, barCloseMs, cardGateDecision, STALE_SIGNAL_VETO_MS, TAPE_GATE_FIRE_NOTICE_MS } from "../lib/signalFeed";
+import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, tapeGateFireNotice, staleTailBar, barCloseMs, cardGateDecision, tapeGateDiagnostics, STALE_SIGNAL_VETO_MS } from "../lib/signalFeed";
 import type { BootCandle } from "../lib/footprintProto";
 
 const nowKey = "2026-10-05|18:00";
@@ -265,6 +265,31 @@ test("round-trip: a bar whose age comes from barCloseMs itself is never stale wh
   assert.equal(close, Date.UTC(2026, 9, 15, 15, 28) + 60_000);
   assert.equal(staleTailBar([bar], STALE_SIGNAL_VETO_MS, close + 60_000), false); // fresh bar passes
   assert.equal(staleTailBar([bar], STALE_SIGNAL_VETO_MS, close + STALE_SIGNAL_VETO_MS + 60_000), true); // actually stale vetoes
+});
+
+test("tapeGateDiagnostics: a healthy live buffer reads veto:false (the post-deploy smoke contract)", () => {
+  const minute = (t: string, src: "candle" | "tick"): LiveMinute => ({
+    t,
+    du: "2026-10-15",
+    o: 29650,
+    h: 29660,
+    l: 29640,
+    c: 29655,
+    vol: 100,
+    buy: 60,
+    sell: 40,
+    live: false,
+    source: src,
+    levels: {},
+  });
+  const now = Date.UTC(2026, 9, 15, 14, 0); // 14:00 UTC
+  const fresh = tapeGateDiagnostics([minute("13:50", "candle"), minute("13:51", "candle")], now);
+  // the 13:51 bar closed at 13:52 UTC — 8 min before `now`
+  assert.deepEqual(fresh, { totalBars: 2, tail: 0, tailAgeMs: 480_000, hold: false, veto: false, lastBarClose: Date.UTC(2026, 9, 15, 13, 51) + 60_000 });
+
+  // a genuinely stale tail (20 min) must veto — the real dead-bar case
+  const stale = tapeGateDiagnostics([minute("13:50", "candle"), minute("13:51", "candle")], now + 20 * 60_000);
+  assert.equal(stale.veto, true);
 });
 
 test("tapeTailStale: a frozen tail older than the recovery window trips (the 6-hour vendor freeze)", () => {

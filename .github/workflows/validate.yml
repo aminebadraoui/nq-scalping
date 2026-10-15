@@ -45,3 +45,9 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}
         run: bash scripts/exec-gate.sh "$BEFORE" "$GITHUB_SHA"
+      - name: post-deploy smoke (polls for the Coolify deploy)
+        working-directory: web
+        # read-only health assertions: the deployed buildId must match, the
+        # feed must be live, and tapeGate.veto must be clear (the 2026-10-15
+        # clock-mix signature). --allow-stale-candles tolerates halt hours.
+        run: node --import ./scripts/ts-loader.mjs scripts/live-smoke.ts --expect-build "$GITHUB_SHA" --allow-stale-candles
