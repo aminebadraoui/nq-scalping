@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeCandleMinutes, tapeTailStale, type LiveMinute } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
-import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, tapeGateFireNotice, staleTailBar, barCloseMs } from "../lib/signalFeed";
+import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, tapeGateFireNotice, staleTailBar, barCloseMs, cardGateDecision, STALE_SIGNAL_VETO_MS, TAPE_GATE_FIRE_NOTICE_MS } from "../lib/signalFeed";
 import type { BootCandle } from "../lib/footprintProto";
 
 const nowKey = "2026-10-05|18:00";
@@ -225,6 +225,46 @@ test("barCloseMs: footprint bars are Chicago-stamped — 10:28 CDT Oct 15 = 15:2
   assert.equal(barCloseMs({ t: "10:28", d: "2026-10-15" }), Date.UTC(2026, 9, 15, 15, 28) + 60_000);
   // live minutes carry the UTC date and are passed through as-is
   assert.equal(barCloseMs({ t: "14:28", du: "2026-10-15" }), Date.UTC(2026, 9, 15, 14, 28) + 60_000);
+});
+
+/* ---- the composed gate chain (cardGateDecision) — the healthy-flow
+ * matrix that pins "healthy data flows through untouched" (2026-10-15:
+ * each gate passed its unit tests while the composition killed every
+ * card). ---- */
+
+test("cardGateDecision: HEALTHY FLOW — a fresh candle-confirmed tail never holds and never vetoes", () => {
+  // a bar that just closed, candle-confirmed (tail 0)
+  const close = barCloseMs({ t: "10:28", d: "2026-10-15" })!;
+  const d = cardGateDecision({ tail: 0, totalBars: 120, tailAgeMs: 30_000, now: close + 30_000, lastAlertAt: 0 });
+  assert.deepEqual(d, { hold: false, veto: false });
+});
+
+test("cardGateDecision: the unconfirmed tail holds until the fallback age, then releases", () => {
+  const now = Date.now();
+  assert.deepEqual(cardGateDecision({ tail: 2, totalBars: 120, tailAgeMs: 60_000, now, lastAlertAt: 0 }), { hold: true, veto: false });
+  assert.deepEqual(cardGateDecision({ tail: 2, totalBars: 120, tailAgeMs: 60_000 + 300_000, now, lastAlertAt: 0 }), { hold: false, veto: false });
+});
+
+test("cardGateDecision: the stale veto is the last word — a dead tail is never tradeable", () => {
+  const now = Date.now();
+  assert.deepEqual(cardGateDecision({ tail: 1, totalBars: 120, tailAgeMs: STALE_SIGNAL_VETO_MS + 1, now, lastAlertAt: 0 }), { hold: false, veto: true });
+  // even an unconfirmed, old tail is vetoed, not held forever
+  assert.deepEqual(cardGateDecision({ tail: 5, totalBars: 120, tailAgeMs: STALE_SIGNAL_VETO_MS + 1, now, lastAlertAt: 0 }), { hold: false, veto: true });
+});
+
+test("cardGateDecision: an unparseable tail never vetoes (empty/seed buffers)", () => {
+  assert.deepEqual(cardGateDecision({ tail: 0, totalBars: 120, tailAgeMs: null, now: Date.now(), lastAlertAt: 0 }), { hold: false, veto: false });
+});
+
+test("round-trip: a bar whose age comes from barCloseMs itself is never stale when fresh (clock-regression tripwire)", () => {
+  // if anyone reverts the Chicago conversion, this round-trip breaks:
+  // the SAME helper that computes the age also computes the freshness —
+  // a clock mix inflates the age and flips the veto.
+  const bar = { t: "10:28", d: "2026-10-15" };
+  const close = barCloseMs(bar)!;
+  assert.equal(close, Date.UTC(2026, 9, 15, 15, 28) + 60_000);
+  assert.equal(staleTailBar([bar], STALE_SIGNAL_VETO_MS, close + 60_000), false); // fresh bar passes
+  assert.equal(staleTailBar([bar], STALE_SIGNAL_VETO_MS, close + STALE_SIGNAL_VETO_MS + 60_000), true); // actually stale vetoes
 });
 
 test("tapeTailStale: a frozen tail older than the recovery window trips (the 6-hour vendor freeze)", () => {
