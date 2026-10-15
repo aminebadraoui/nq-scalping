@@ -432,6 +432,14 @@ wider stop grid and the user's approval. Scratch studies
   `FLATTEN_AT_PROFIT` deliberately unset (the one-more-trade arm stays).
   Note: the cap applies PER ORDER PAYLOAD, so scale-out legs cap
   separately (bank leg truncation only on tight stops, always smaller).
+  **FLATTEN ARM REMOVED 2026-10-15 (owner decision):** the flatten-on-
+  floating-P&L behavior was reverted — the day floor is judged on REALIZED
+  (closed) P&L only (`DAILY_LOSS_FLOOR=250` halts new entries; the open
+  trade always runs to its bracket). The `FLATTEN_AT_*` env reads and the
+  webhook-flatten I/O were deleted from the code, so the stale Coolify
+  `FLATTEN_AT_LOSS=250` value is inert after deploy — ⚠️ still needs to be
+  UNSET in the Coolify app env (owner action) to keep the live env clean.
+  `MAX_MICRO_CONTRACTS=8` stays.
   Also on 2026-10-12: Coolify root user's `team_user` role was
   `member` (which 403s root API tokens via the ApiAbility middleware) —
   promoted to `admin`; instance `allowed_ips` untouched (original 6-IP

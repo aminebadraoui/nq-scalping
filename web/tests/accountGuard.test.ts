@@ -279,43 +279,19 @@ test("daily floor halt is NOT latched — it clears automatically once day P&L r
   __resetGuardForTest();
 });
 
-test("flatten arm (FLATTEN_AT_LOSS): live P&L crossing fires once per day", () => {
+test("flatten arm removed (2026-10-15): floating P&L never flattens — the day floor is realized-only", () => {
   __resetGuardForTest();
   setStage("eval");
-  process.env.FLATTEN_AT_LOSS = "250";
   guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
-  // realized −180 + open −80 → live −260 ≤ −250 → flatten (NOT the floor halt)
-  const d = guardCheck({ equity: 49_820, realized: 49_820, openPnl: -80 }, new Date("2026-10-05T17:01:00Z"));
-  assert.equal(d.verdict, "flatten");
-  // 13:00 ET Oct 5 is still the Oct 4 session (the day rolls at 18:00 ET)
-  assert.equal(guardState().flattenFiredDay, "2026-10-04");
-  // latched: the same day can never re-fire, even as P&L worsens
-  const again = guardCheck({ equity: 49_500, realized: 49_500, openPnl: -400 }, new Date("2026-10-05T17:02:00Z"));
-  assert.notEqual(again.verdict, "flatten");
-  delete process.env.FLATTEN_AT_LOSS;
-  __resetGuardForTest();
-});
-
-test("flatten arm (FLATTEN_AT_PROFIT): live P&L crossing fires the profit side", () => {
-  __resetGuardForTest();
-  setStage("eval");
-  process.env.FLATTEN_AT_PROFIT = "400";
-  guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
-  // realized +350 + open +60 → live +410 ≥ +400 → flatten
-  const d = guardCheck({ equity: 50_350, realized: 50_350, openPnl: 60 }, new Date("2026-10-05T17:01:00Z"));
-  assert.equal(d.verdict, "flatten");
-  assert.equal(guardState().flattenFiredDay, "2026-10-04");
-  delete process.env.FLATTEN_AT_PROFIT;
-  __resetGuardForTest();
-});
-
-test("flatten arm defaults OFF — the old halt behavior is unchanged", () => {
-  __resetGuardForTest();
-  setStage("eval");
-  delete process.env.FLATTEN_AT_LOSS;
-  delete process.env.FLATTEN_AT_PROFIT;
-  guardCheck(snap(50_000), new Date("2026-10-05T17:00:00Z"));
-  assert.equal(guardCheck(snap(49_740), new Date("2026-10-05T17:02:00Z")).verdict, "halt-daily-floor");
+  // realized −180 + open −80 → live −260 ≤ −250 — the OLD flatten arm
+  // closed the account at market here. Removed: the trade runs, and the
+  // gate answers with the realized-only floor verdict (still above −$250
+  // realized → no halt yet).
+  const d = guardCheck({ equity: 49_820, realized: 49_820 }, new Date("2026-10-05T17:01:00Z"));
+  assert.equal(d.verdict, "ok");
+  // the trade CLOSES at −$260 realized → now the daily floor halts (the
+  // trade itself was allowed to run to its bracket)
+  assert.equal(guardCheck({ equity: 49_740, realized: 49_740 }, new Date("2026-10-05T17:02:00Z")).verdict, "halt-daily-floor");
   __resetGuardForTest();
 });
 

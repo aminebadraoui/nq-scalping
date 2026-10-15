@@ -5,8 +5,9 @@
  * (Bearer auth, origin=tradovate). Every order state transition arrives
  * as an orderUpdate frame; a Rejected STOP leg is reacted to instantly
  * (lib/crossTrade.ts reactToPushedStopRejection) instead of waiting for
- * the burst poller or the 10s watchdog. The P&L stream doubles as a
- * liveness heartbeat — a silent connection is force-reconnected.
+ * the burst poller or the 10s watchdog. The P&L stream (streamPnl)
+ * doubles as a liveness heartbeat — a silent connection is
+ * force-reconnected.
  *
  * One connection per user is enforced server-side; reconnects use
  * exponential backoff under the 5-upgrades/IP/60s limit. Started from
@@ -23,37 +24,6 @@ let backoffMs = 5_000;
 let lastFrameAt = 0;
 let livenessTimer: ReturnType<typeof setInterval> | null = null;
 let bootLogged = false;
-
-/** pushed P&L frame handler (registered by instrumentation → crossGuard):
- *  the sub-second trigger for the flatten arm. Null = no handler. */
-export type PushedPnl = { name: string; realized: number; openPnl: number; equity: number };
-let pnlFrameHandler: ((a: PushedPnl) => void) | null = null;
-export function setPnlFrameHandler(fn: ((a: PushedPnl) => void) | null): void {
-  pnlFrameHandler = fn;
-}
-
-/** pure parser for the CrossTrade pnlUpdate frame (captured live
- *  2026-10-12):
- *    {"type":"pnlUpdate","origin":"tradovate","accounts":[{"name":…,
- *     "stats":{"pnl":…},"pnl":{"unrealized":…},"netLiquidation":…}]}
- *  Returns the per-account rows, or null when the frame isn't a
- *  tradovate pnlUpdate. */
-export function parsePnlUpdate(msg: unknown): PushedPnl[] | null {
-  if (!msg || typeof msg !== "object") return null;
-  const m = msg as { type?: unknown; origin?: unknown; accounts?: unknown };
-  if (m.type !== "pnlUpdate" || m.origin !== "tradovate" || !Array.isArray(m.accounts)) return null;
-  const out: PushedPnl[] = [];
-  for (const raw of m.accounts) {
-    const a = raw as { name?: unknown; stats?: { pnl?: unknown }; pnl?: { unrealized?: unknown }; netLiquidation?: unknown };
-    const realized = Number(a.stats?.pnl);
-    const openPnl = Number(a.pnl?.unrealized);
-    const equity = Number(a.netLiquidation);
-    if (typeof a.name === "string" && Number.isFinite(realized) && Number.isFinite(openPnl) && Number.isFinite(equity)) {
-      out.push({ name: a.name, realized, openPnl, equity });
-    }
-  }
-  return out.length ? out : null;
-}
 
 const STALE_AFTER_MS = 30_000;
 const MAX_BACKOFF_MS = 60_000;
@@ -114,18 +84,10 @@ function connect(): void {
     if (msg.type === "orderUpdate" && msg.order) ctApplyWsFrame("order", msg.order);
     if (msg.type === "positionUpdate" && msg.position) ctApplyWsFrame("position", msg.position);
     if (msg.type === "pnlUpdate") {
-      // pushed P&L (streamPnl): the flatten arm's sub-second trigger —
-      // the handler re-evaluates the guard with the pushed open P&L.
-      const rows = parsePnlUpdate(msg);
-      if (rows && pnlFrameHandler) {
-        for (const a of rows) {
-          try {
-            pnlFrameHandler(a);
-          } catch {
-            /* best-effort — the 25s poll is the backstop */
-          }
-        }
-      }
+      // streamPnl stays enabled purely as the liveness heartbeat — a flat,
+      // quiet account emits no order frames, and the pnl cadence is what
+      // keeps the connection from force-reconnecting. No handler (the
+      // P&L-based flatten arm was removed 2026-10-15).
       return;
     }
     if (msg.type !== "orderUpdate") return;

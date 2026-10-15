@@ -32,11 +32,6 @@ export type GuardConfig = {
   dailyFloor: number;
   /** day P&L at/above profitArm arms the one-more-trade rule (0 = off) */
   profitArm: number;
-  /** flatten arm (lib/flattenArm.ts): live P&L (realized + open) at/above
-   *  this flattens the account at market (0 = off — the shipped default) */
-  flattenAtProfit: number;
-  /** flatten arm: live P&L at/below −this flattens the account (0 = off) */
-  flattenAtLoss: number;
   /** give-back: halt once day P&L gives back givebackPct × dayPeak (0 = off) */
   givebackPct: number;
   /** give-back floor: below this dayPeak the protection is dormant */
@@ -74,8 +69,6 @@ export function guardConfigFromEnv(env: Record<string, string | undefined> = pro
   return {
     dailyFloor: num("DAILY_LOSS_FLOOR", 250),
     profitArm: num("PROFIT_ARM", 400),
-    flattenAtProfit: num("FLATTEN_AT_PROFIT", 0),
-    flattenAtLoss: num("FLATTEN_AT_LOSS", 0),
     givebackPct: num("GUARD_GIVEBACK_PCT", 0.5),
     givebackFloor: num("GUARD_GIVEBACK_FLOOR", 250),
     consistencyCap: num("MFF_CONSISTENCY_CAP", Math.round(RAPID_EOD_50K.profitTarget * RAPID_EOD_50K.consistency)),

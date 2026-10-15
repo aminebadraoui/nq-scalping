@@ -1,5 +1,13 @@
 # Flatten arm — instant flatten on the daily target / daily loss (2026-10-12)
 
+**Status: SUPERSEDED — REMOVED 2026-10-15 (owner decision).** The
+flatten-on-floating-P&L behavior was reverted: the day floor is judged on
+REALIZED (closed) P&L only, the open trade always runs to its bracket, and
+new entries halt when a CLOSED trade takes the day below the floor (the
+existing `DAILY_LOSS_FLOOR` halt). `FLATTEN_AT_PROFIT` / `FLATTEN_AT_LOSS`
+no longer exist as knobs; the Coolify `FLATTEN_AT_LOSS=250` value is stale
+and must be unset. This doc is kept as the design record.
+
 **Status:** SHIPPED as code, **OFF by default** (`FLATTEN_AT_PROFIT` /
 `FLATTEN_AT_LOSS` unset = no-op; every fire path honors the `EXECUTE_LIVE`
 dry-run gate). No Coolify env has been changed and none may be without the

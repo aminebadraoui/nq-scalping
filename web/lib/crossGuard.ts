@@ -26,13 +26,12 @@ import {
 } from "./accountGuard";
 import { accountRow, ctSnapshot, ctSnapshotDisplay, type CtSnapshot } from "./ctAccount";
 
-type Snapshot = { equity: number; realized: number; openPnl?: number; asOf?: number };
+type Snapshot = { equity: number; realized: number; asOf?: number };
 
 /** map the shared ctAccount snapshot to the guard's numbers — equity =
- *  netLiq, realized = realizedPnl, openPnl = live open P&L (the flatten
- *  arm reads it; omitted/NaN when the snapshot lacks it). `asOf` carries
- *  the cache's read time so the guard can refuse to roll the day over
- *  on stale data (a penalty-served cache must never rebaseline the day). */
+ *  netLiq, realized = realizedPnl. `asOf` carries the cache's read time
+ *  so the guard can refuse to roll the day over on stale data (a
+ *  penalty-served cache must never rebaseline the day). */
 function mapSnapshot(s: CtSnapshot | null): Snapshot | null {
   if (!s || !s.accounts) return null;
   const acct = accountRow(s, process.env.CROSSTRADE_ACCOUNT ?? "");
@@ -40,7 +39,6 @@ function mapSnapshot(s: CtSnapshot | null): Snapshot | null {
   return {
     equity: Number(acct.netLiq),
     realized: Number(acct.realizedPnl),
-    openPnl: Number.isFinite(acct.openPnl) ? Number(acct.openPnl) : undefined,
     asOf: s.at,
   };
 }
@@ -114,41 +112,7 @@ export async function crossGuardGate(): Promise<GuardDecision> {
     };
   }
   const d = guardCheck(snap);
-  // the flatten verdict carries an ACTION (close the account); fire it
-  // without blocking the entry gate — the verdict itself already halts.
-  void actOnGuardDecision(d);
   return d;
-}
-
-/** act on decisions that carry an ACTION (the flatten arm). Halts are
- *  passive. The flatten I/O lives in lib/crossTrade.ts, which imports
- *  crossGuard — the reverse edge is loaded dynamically so the static
- *  import graph stays acyclic. The guard's once-per-day latch is the
- *  de-dupe; flattenArmFire itself verifies instead of re-firing. */
-export async function actOnGuardDecision(d: GuardDecision): Promise<void> {
-  if (d.verdict !== "flatten") return;
-  try {
-    const { flattenArmFire } = await import("./crossTrade");
-    await flattenArmFire(d.reason);
-  } catch (e) {
-    console.error(`[crossGuard] flatten action failed: ${String(e)}`);
-  }
-}
-
-/** pushed P&L frame from the CrossTrade stream (lib/ctStream.ts): the
- *  flatten arm's SUB-SECOND trigger — re-evaluate the guard with the
- *  pushed open P&L and act on a flatten verdict. Best-effort; the 25s
- *  poll remains the backstop. */
-export function handlePushedPnlFrame(a: { name: string; realized: number; openPnl: number; equity: number }): void {
-  try {
-    if (!enabled()) return;
-    if (a.name !== process.env.CROSSTRADE_ACCOUNT) return;
-    const d = guardCheck({ equity: a.equity, realized: a.realized, openPnl: a.openPnl });
-    if (d.verdict !== "ok" && d.verdict !== "flatten") console.log(`[guard] pnl-push: ${d.verdict} — ${d.reason}`);
-    void actOnGuardDecision(d);
-  } catch {
-    /* best-effort — never crash the stream on a guard hiccup */
-  }
 }
 
 /** today's realized P&L per the guard's day reference (0 before the
@@ -203,9 +167,6 @@ export function startCrossGuardPoll(intervalMs = 25_000): void {
         bootstrap(snap);
         const d = guardCheck(snap);
         if (d.verdict !== "ok") console.log(`[guard] poll: ${d.verdict} — ${d.reason}`);
-        // the flatten verdict carries an ACTION — the poll is its
-        // trigger cadence between entries (fires once; guard latch + verify)
-        void actOnGuardDecision(d);
       } catch {
         /* the poll is best-effort — never crash the server on it */
       }

@@ -10,8 +10,6 @@ import type { DollarizedTrade } from "../lib/propAccount";
 const CFG: GuardConfig = {
   dailyFloor: 250,
   profitArm: 400,
-  flattenAtProfit: 0,
-  flattenAtLoss: 0,
   givebackPct: 0.5,
   givebackFloor: 250,
   consistencyCap: 900,
