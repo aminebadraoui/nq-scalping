@@ -284,11 +284,18 @@ export function confirmRaceEnabled(env: Record<string, string | undefined> = pro
   return fastDispatchEnabled(env) || env.CONFIRM_RACE_PROBE === "1";
 }
 
+/** the race window: how long after a bar close we keep polling REST for
+ *  the just-closed candle (polls every 1.5 s). 20 s since 2026-10-15 —
+ *  the probe's ~7.5 s figure didn't hold live (8/8 races lost the 12 s
+ *  window on day one); 20 s still beats the 32–57 s frame channel and
+ *  degrades harmlessly when REST is slower. */
+export const RACE_WINDOW_MS = 20_000;
+
 /** pure: format a confirmation-race outcome line (unit-tested).
  *  restMs/frameMs = first-confirmed epoch per channel (0 = not confirmed). */
 export function formatConfirmRace(key: string, closeMs: number, restMs: number, frameMs: number, now: number): string {
   if (restMs === 0 && frameMs === 0) {
-    return `[confirm-race] bar ${key} — NEITHER confirmed within 12s (vendor lag; ${((now - closeMs) / 1000).toFixed(1)}s since close)`;
+    return `[confirm-race] bar ${key} — NEITHER confirmed within 20s (vendor lag; ${((now - closeMs) / 1000).toFixed(1)}s since close)`;
   }
   const winner = restMs > 0 && (frameMs === 0 || restMs <= frameMs) ? "REST" : "frame";
   const rest = restMs > 0 ? `REST+${((restMs - closeMs) / 1000).toFixed(1)}s` : "REST —";
@@ -515,7 +522,11 @@ class LiveFeed {
   /** CONFIRM_RACE_PROBE=1 — measure whether the vendor's REST endpoint
    *  publishes a just-closed candle faster than their own FOOTPRINT/V2
    *  frames (~7.5s observed). After each bar completes, while the tail is
-   *  tick-source, poll the REST fetch every 1.5s for ≤12s (reusing the
+   *  tick-source, poll the REST fetch every 1.5s for ≤RACE_WINDOW_MS
+   *  (20s — the 2026-10-15 widening: the probe's ~7.5s observation did
+   *  not hold live, 8/8 races lost the 12s window on day one; 20s still
+   *  beats the 32–57s frame channel when REST wins, and loses harmlessly
+   *  when it doesn't) (reusing the
    *  cached token — no new Cognito auths) and merge through the same
    *  idempotent mergeCandleMinutes path the frames use. Read-only probe:
    *  the card gate still requires a candle-source bar — this only
@@ -540,7 +551,7 @@ class LiveFeed {
     const step = (): void => {
       if (!this.raceActive || this.raceBarKey !== key) return;
       const now = Date.now();
-      if (this.raceRestMs > 0 || this.raceFrameMs > 0 || now >= closeMs + 12_000 || !marketOpenAt(now)) {
+      if (this.raceRestMs > 0 || this.raceFrameMs > 0 || now >= closeMs + RACE_WINDOW_MS || !marketOpenAt(now)) {
         this.finishConfirmRace(key);
         return;
       }
@@ -553,7 +564,7 @@ class LiveFeed {
             this.state.barsRevision++;
             this.emit();
           }
-          // the raced bar is the buffer tail for the whole 12s window (bars
+          // the raced bar is the buffer tail for the whole race window (bars
           // are 60s apart); match on SOURCE like the tape gate does — the
           // vendor candle's day stamp uses the feed clock, not UTC, so a
           // du/t key match would miss the confirmation
