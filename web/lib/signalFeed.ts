@@ -50,6 +50,8 @@ import { detectOneSidedReclaim } from "./reclaimSetup";
 import { contractsForRisk, RAPID_EOD_50K, planMaxMicro } from "./propRules";
 import { rvol, isUnusualVolume } from "./volumeProfile";
 import { utcToET, cdtToET, utcToFeedStamp } from "./times";
+import { inRTH } from "./softMomentum";
+import { dbEnabled, getDb } from "./gcdb";
 import { placeOrder, placeScaleOut, type OrderIntent } from "./executor";
 import { crossTradeEnabled } from "./crossTrade";
 import { runnerTracker } from "./runnerTracker";
@@ -459,6 +461,27 @@ const expRetraceEnabled = (): boolean => feedFlag("EXP_RETRACE", true);
  *  staleness veto, so a retried card is never a stale card. */
 const GUARD_RETRY_WINDOW_MS = 90_000;
 
+/* ---- session-quiet watchdog (2026-10-15, the owner's no-wasted-sessions
+ * rule): during RTH hours, a HEALTHY feed with no card attempt for
+ * QUIET_SESSION_PAGE_MS pages the operator — a session being wasted
+ * silently is the one failure no other alarm catches. */
+
+export const QUIET_SESSION_PAGE_MS = 90 * 60_000;
+
+/** pure decision (unit-tested): page only when the session is open for
+ *  business, the feed is demonstrably healthy, and NO card attempt
+ *  exists for the whole session (or the stretch exceeds the threshold). */
+export function quietSessionDecision(args: {
+  now: number;
+  lastCardAtMs: number | null; // null = no card attempt seen today
+  inRthWindow: boolean;
+  feedHealthy: boolean;
+}): { page: boolean } {
+  if (!args.inRthWindow || !args.feedHealthy) return { page: false };
+  const age = args.lastCardAtMs === null ? Number.POSITIVE_INFINITY : args.now - args.lastCardAtMs;
+  return { page: age >= QUIET_SESSION_PAGE_MS };
+}
+
 /**
  * Broker leg of a filled expansion retrace: a RESTING LIMIT at the tape
  * fill price by default. Backtested: scripts/retraceSlippageStudy.ts
@@ -711,6 +734,9 @@ class SignalFeed {
   private tapeGateDeferPageAt = 0;
   /** clock self-check page throttle (the 2026-10-15 clock-mix bug) */
   private clockMismatchPageAt = 0;
+  /** session-quiet watchdog (the no-wasted-sessions rule) */
+  private quietPageAt = 0;
+  private quietSessionKey = "";
 
   /** Cards may only fire on a bar confirmed by the vendor footprint candle.
    *  The tick-built tape undercounts volume (~7% of true volume measured
@@ -750,6 +776,49 @@ class SignalFeed {
       ].join("\n"),
     );
   }
+  /** the session-quiet watchdog (the owner's no-wasted-sessions rule,
+   *  2026-10-15): during RTH hours, a demonstrably healthy feed with NO
+   *  card attempt for the whole session (or 90+ min of silence) pages the
+   *  operator once — a session being wasted silently is the one failure
+   *  no other alarm catches. Re-arms the moment a card fires. */
+  private async checkQuietSession(): Promise<void> {
+    if (!dbEnabled()) return;
+    const now = Date.now();
+    const utcNow = new Date(now).toISOString();
+    const chicago = utcToFeedStamp(utcNow.slice(11, 16), utcNow.slice(0, 10));
+    if (!chicago.hhmm || !inRTH(chicago.hhmm)) return;
+    const st = getLive().state;
+    if (!st.connected) return;
+    if (!(st.lastCandleRefreshAt > 0 && now - st.lastCandleRefreshAt < 10 * 60_000)) return;
+    const tg = tapeGateDiagnostics(st.minutes, now);
+    if (tg.veto) return; // a veto alarm owns this state already
+    const day = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date(now));
+    let lastCardAtMs: number | null = null;
+    try {
+      const rows = (await getDb()`select max(ts) as mx from exec_trades where day = ${day}`) as { mx: string | number | null }[];
+      const mx = rows[0]?.mx;
+      lastCardAtMs = mx !== null && mx !== undefined ? Number(mx) : null;
+    } catch {
+      return; // DB unreadable — the guard's own alarms own this state
+    }
+    if (!quietSessionDecision({ now, lastCardAtMs, inRthWindow: true, feedHealthy: true }).page) return;
+    if (lastCardAtMs !== null && lastCardAtMs > this.quietPageAt) {
+      // a card fired since the last page — re-arm for the next stretch
+      this.quietSessionKey = "";
+    }
+    if (this.quietSessionKey === day && now - this.quietPageAt < 60 * 60_000) return; // one page per hour per session
+    this.quietSessionKey = day;
+    this.quietPageAt = now;
+    void this.push(
+      [
+        `🔇 <b>SESSION QUIET</b> — ${lastCardAtMs === null ? "no card attempt ALL session" : `no card attempt for ${Math.round((now - lastCardAtMs) / 60_000)} min`} with a healthy feed`,
+        `<code>${symbol()} · ${new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" })} ET · day ${day}</code>`,
+        `Feed connected, candles fresh, gate open (veto false, tail ${tg.tail} bar(s), ${tg.tailAgeMs === null ? "?" : Math.round(tg.tailAgeMs / 1000)}s). Either the market genuinely has no setup — or a detector is silently blocked. Check /api/gc?action=health and the runbook (INCIDENT-RUNBOOK.md §1).`,
+      ].join("\n"),
+    );
+    console.log(`[quiet] session quiet page — no card attempt for the RTH window (feed healthy)`);
+  }
+
 
   /** Shared gate for every card family: hold while the last completed
    *  bar is tick-source, and page the operator when the tail of
@@ -2944,6 +3013,7 @@ class SignalFeed {
     // card) runs on its own 30s cadence — OFF the dispatch tick
     this.displayTimer = setInterval(() => {
       void this.refreshSnapshot().catch(() => {});
+      void this.checkQuietSession().catch(() => {});
     }, 30_000);
     // CrossTrade snapshot auto-retry pump (2026-10-15): re-attempts cards
     // parked by "account snapshot unreadable" until the 90s window closes

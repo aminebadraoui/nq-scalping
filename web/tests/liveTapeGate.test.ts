@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeCandleMinutes, tapeTailStale, type LiveMinute } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
-import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, tapeGateFireNotice, staleTailBar, barCloseMs, cardGateDecision, tapeGateDiagnostics, STALE_SIGNAL_VETO_MS } from "../lib/signalFeed";
+import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, tapeGateFireNotice, staleTailBar, barCloseMs, cardGateDecision, tapeGateDiagnostics, quietSessionDecision, QUIET_SESSION_PAGE_MS, STALE_SIGNAL_VETO_MS } from "../lib/signalFeed";
 import type { BootCandle } from "../lib/footprintProto";
 
 const nowKey = "2026-10-05|18:00";
@@ -299,4 +299,18 @@ test("tapeTailStale: a frozen tail older than the recovery window trips (the 6-h
   assert.equal(tapeTailStale([tail], close + 3 * 60_000 + 1), true); // frozen
   assert.equal(tapeTailStale([], close + 60_000), false); // no bars — not stale (boot)
   assert.equal(tapeTailStale([{ t: "bad", du: "" }], close + 99_000), false); // unparseable — never stale
+});
+
+test("quietSessionDecision: pages ONLY when RTH is open, the feed is healthy, and no card fired for the stretch", () => {
+  const now = Date.now();
+  // no cards all session + healthy + RTH -> page
+  assert.deepEqual(quietSessionDecision({ now, lastCardAtMs: null, inRthWindow: true, feedHealthy: true }), { page: true });
+  // a recent card -> silent
+  assert.deepEqual(quietSessionDecision({ now, lastCardAtMs: now - 60_000, inRthWindow: true, feedHealthy: true }), { page: false });
+  // an old card (past the threshold) -> page
+  assert.deepEqual(quietSessionDecision({ now, lastCardAtMs: now - QUIET_SESSION_PAGE_MS - 60_000, inRthWindow: true, feedHealthy: true }), { page: true });
+  // outside RTH hours -> silent (quiet ETH nights are normal)
+  assert.deepEqual(quietSessionDecision({ now, lastCardAtMs: null, inRthWindow: false, feedHealthy: true }), { page: false });
+  // unhealthy feed -> silent (the stall alarms own that state)
+  assert.deepEqual(quietSessionDecision({ now, lastCardAtMs: null, inRthWindow: true, feedHealthy: false }), { page: false });
 });

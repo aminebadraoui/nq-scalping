@@ -61,6 +61,13 @@ async function main() {
     return;
   }
 
+  // the archive file is END-keyed: <day>_ETH.json = the session
+  // <day-1> 18:00 ET → <day> 17:00 ET. Live rows are matched by the same
+  // timestamp window (the session spans two calendar dates).
+  const prevDay = new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  const windowStartMs = Date.parse(`${prevDay}T22:00:00Z`); // <day-1> 18:00 ET
+  const windowEndMs = Date.parse(`${day}T21:00:00Z`); // <day> 17:00 ET
+
   // 1. replay the production detectors
   const cards: Card[] = [];
   for (const s of detectMomentum(minutes, MOM_PROD).filter((x) => x.kind === "flush")) {
@@ -81,45 +88,52 @@ async function main() {
   try {
     live = (await sql`
       select time_et, side, verdict from signals
-      where day = ${day} and sent = true`) as typeof live;
+      where ts >= ${windowStartMs} and ts < ${windowEndMs} and sent = true`) as typeof live;
   } catch (e) {
     console.log(`[canary] ${day}: signals read failed (${String(e)}) — cannot diff`);
     await sql.end();
     return;
   }
-  await sql.end();
 
   // 3. diff: a replay card with no live row at the same ET minute (same
   //    side) is a missed signal. Tolerate the RTH family less strictly:
   //    live RTH cards carry cluster/stack gates the archive replay can't
-  //    fully reproduce, so report them but only PAGE on momentum misses.
+  //    fully reproduce, so report them but the ALARM weight is momentum.
   const missed: Card[] = [];
   for (const c of cards) {
     const hit = live.some((r) => r.time_et === c.timeET && (r.side === c.side || r.side === ""));
     if (!hit) missed.push(c);
   }
   const momMissed = missed.filter((c) => c.family !== "rth");
-
-  console.log(`[canary] ${day}: live fired ${live.length} rows · ${missed.length} replay cards unmatched (${momMissed.length} momentum)`);
-  if (missed.length === 0) {
-    console.log(`[canary] ${day}: PASS — every replay card has a live counterpart`);
-    return;
+  if (missed.length > 0) {
+    appendDaybook({ t: "canary", at: Date.now(), day, missed: missed.length, momMissed: momMissed.length, detail: missed.map((c) => `${c.timeET} ${c.family} ${c.side}`).join(" · ") });
   }
 
-  const line = missed.map((c) => `${c.timeET} ${c.family} ${c.side} @${c.entry.toFixed(2)}`).join(" · ");
-  appendDaybook({ t: "canary", at: Date.now(), day, missed: missed.length, momMissed: momMissed.length, detail: line });
-  console.log(`[canary] ${day}: DIVERGENCE — ${line}`);
-  if (dry) return;
-  void sendTelegram(
-    [
-      momMissed.length > 0
-        ? `🚨 <b>SIGNAL-KILL CANARY</b> — the replay found ${momMissed.length} momentum card(s) live never fired`
-        : `⚠ <b>CANARY NOTE</b> — ${missed.length} replayed card(s) unmatched (non-momentum)`,
-      `<code>${day} · ${line}</code>`,
-      `The nightly replay-diff found replay cards without live signal rows — investigate before the next session (live-only gates may explain it, but the 2026-10-15 clock-mix class must be ruled out).`,
-    ].join("\n"),
-    { parseMode: "HTML" },
-  ).catch(() => {});
+  // 4. the evening session report: replay vs live vs placed vs filled —
+  //    the no-wasted-sessions guarantee. ALWAYS sent (the owner must know
+  //    a session ran cleanly too, not only when it diverged).
+  const placed = (await sql`
+    select count(*)::int as n from exec_trades where ts >= ${windowStartMs} and ts < ${windowEndMs} and status <> 'placed'`) as { n: number }[];
+  const filled = (await sql`
+    select count(*)::int as n from exec_trades where ts >= ${windowStartMs} and ts < ${windowEndMs} and status in ('filled', 'closed')`) as { n: number }[];
+  await sql.end();
+
+  const divLine = missed.length === 0
+    ? "✅ canary clean — every replay card has a live counterpart"
+    : momMissed.length > 0
+      ? `🚨 canary divergence — ${momMissed.length} momentum replay card(s) never fired live`
+      : `⚠ canary note — ${missed.length} unmatched replay card(s) (non-momentum)`;
+  const summary = [
+    `📋 <b>SESSION REPORT · ${day}</b>`,
+    `<code>replay ${cards.length} cards · live fired ${live.length} · placed ${placed[0]?.n ?? 0} · filled ${filled[0]?.n ?? 0}</code>`,
+    divLine,
+    missed.length > 0 ? `<code>${missed.map((c) => `${c.timeET} ${c.family} ${c.side} @${c.entry.toFixed(2)}`).join(" · ")}</code>` : "",
+    momMissed.length > 0 ? `Investigate before the next session (INCIDENT-RUNBOOK.md §1) — the 2026-10-15 clock-mix class must be ruled out.` : `The session's detection layer matches the replay — no silent signal kills.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  console.log(summary);
+  if (!dry) void sendTelegram(summary, { parseMode: "HTML" }).catch(() => {});
 }
 
 main().catch((e) => {
