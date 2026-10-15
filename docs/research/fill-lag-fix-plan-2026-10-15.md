@@ -78,7 +78,10 @@ Shipped in `e1becf9` (`web/lib/live.ts`):
 
 1. After each completed minute (tail is tick-source), poll
    `fetchFootprintBars` (the same vendor REST the 60 s refresh uses)
-   every **1.5 s for ≤12 s**, reusing the cached token — no fresh
+   every **1.5 s for ≤20 s** (widened from 12 s on day one — the probe's
+   ~7.5 s REST figure didn't hold live; the race lost 8/8 on day one,
+   and the probe now measures the real latency), reusing the cached
+   token — no fresh
    Cognito auths (the lockout risk), no new data semantics: the merged
    bar is byte-compatible with the archive the backtests were computed
    on.

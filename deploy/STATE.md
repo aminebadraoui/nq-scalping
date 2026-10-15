@@ -438,11 +438,16 @@ wider stop grid and the user's approval. Scratch studies
   list); the temporary agent API token used for the change was deleted
   afterwards.
 - **Fast dispatch (applied 2026-10-15, owner-approved)** — Coolify app env
-  `FAST_DISPATCH=1` (was unset = 0). Races the vendor REST endpoint for
-  the just-closed candle every 1.5 s for ≤12 s after each bar close so
+  `FAST_DISPATCH=1` (was unset = 0) + `CONFIRM_RACE_PROBE=1` (measurement
+  logging). Races the vendor REST endpoint for
+  the just-closed candle every 1.5 s for ≤20 s after each bar close so
   the limit-entry cards dispatch ~25–50 s earlier than the 32–57 s frame
-  confirmation. Fail-closed: the card gate still requires a candle-source
-  bar; a losing race degrades to the old cadence. Evidence:
+  confirmation. The window was widened 12 s → 20 s on day one (commit
+  `420cb73`): the probe's ~7.5 s REST figure didn't hold live — the first
+  day's races all lost, and the probe now measures the real per-bar
+  latency for the re-evaluation. Fail-closed: the card gate still
+  requires a candle-source bar; a losing race degrades to the old
+  cadence. Evidence:
   `docs/research/fast-dispatch-2026-10-15.md` +
   `docs/research/fill-lag-fix-plan-2026-10-15.md`; code `[backtested:
   scripts/fastDispatchStudy.ts --offline]` commit `e1becf9` + env-plumbing
