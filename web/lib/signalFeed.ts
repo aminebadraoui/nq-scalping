@@ -2078,7 +2078,34 @@ class SignalFeed {
     // crossed-stop dispatch gate (2026-10-08 incident): if the tape gapped
     // through the stop between the touch and dispatch, the OSO stop would
     // be rejected (InvalidPrice) and the entry would fill naked. Skip.
-    const gateLtp = live.snapshot?.ltp ?? live.minutes.at(-1)?.c ?? null;
+    // 2026-10-15 hardening: with no fresh tick the tape cannot validate
+    // the stop broker-side at all — refuse the limit (never fall back to
+    // a minute-close guess; the live fill 30016.75 vs stop 30014.94 is
+    // exactly the stale-tape case).
+    const wsFreshM = Number.isFinite(live.lastMessage) && Date.now() - live.lastMessage < 30_000;
+    const gateLtp = wsFreshM && Number.isFinite(live.snapshot?.ltp) ? live.snapshot?.ltp : null;
+    if (useLimit && gateLtp === null) {
+      console.log(`[expRetrace] stale-tape gate: skipping ${p.dir} — no fresh tick to validate the OSO stop against the live market`);
+      await this.record({
+        timeET: et,
+        day: p.day,
+        symbol: symbol(),
+        side: p.dir,
+        price: entry,
+        entry: entry.toFixed(2),
+        stop: stop.toFixed(2),
+        target: target.toFixed(2),
+        size: sizeStr,
+        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        headline: `NQ momentum ${p.dir}`,
+        source: "live",
+        test: false,
+        sent: false,
+        reason: "stale-tape gate — no fresh tick to validate the OSO stop against the live broker market (2026-10-15 naked fill)",
+        features: { ...p.features, retrace: "stale-tape" },
+      });
+      return;
+    }
     if (useLimit && stopCrossedAtDispatch(p.dir, stop, gateLtp) === true) {
       console.log(`[expRetrace] crossed-stop gate: skipping ${p.dir} — tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch`);
       await this.record({
@@ -2375,22 +2402,31 @@ class SignalFeed {
       // crossed-limit gate on a stale ltp (live lost −$43.20).
       const snapLtp = live.snapshot?.ltp;
       const wsFresh = Number.isFinite(live.lastMessage) && Date.now() - live.lastMessage < 30_000;
-      const gateLtp = wsFresh && Number.isFinite(snapLtp) ? snapLtp : (live.minutes.at(-1)?.c ?? snapLtp ?? null);
+      const tapeStale = !wsFresh || !Number.isFinite(snapLtp);
+      // 2026-10-15 naked-stop incident: a limit dispatched on a stale tape
+      // can be marketable at the broker BEYOND its stop — the OSO stop is
+      // rejected (InvalidPrice) and the entry fills naked (live fill
+      // 30016.75 vs stop 30014.94). Without a fresh tick the broker-side
+      // validity of the stop is unknowable — refuse the limit.
+      const gateLtp = wsFresh && Number.isFinite(snapLtp) ? snapLtp : null;
       const approachPts = Number(process.env.RTH_LIMIT_APPROACH_GATE_PTS) || 0;
       const crossedStop = useLimitEntry && stopCrossedAtDispatch(s.dir, stop, gateLtp) === true;
       const crossedLimit = useLimitEntry && limitCrossedAtDispatch(s.dir, s.entry, gateLtp) === true;
       const approachBlocked = useLimitEntry && approachGateBlocked(s.dir, s.entry, gateLtp, approachPts) === true;
-      if (crossedStop || crossedLimit || approachBlocked) {
+      const staleTapeRefuse = useLimitEntry && tapeStale;
+      if (crossedStop || crossedLimit || approachBlocked || staleTapeRefuse) {
         const es = esCardChips(esCtx, nqMid, s, false);
         const rn = roundNumberChips(s);
         const gch = gapChips(fp, s, gaps);
         const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
-        const gateName = crossedStop ? "crossed-stop" : crossedLimit ? "crossed-limit" : `approach (${approachPts} pts)`;
+        const gateName = crossedStop ? "crossed-stop" : crossedLimit ? "crossed-limit" : staleTapeRefuse ? "stale-tape" : `approach (${approachPts} pts)`;
         const gateWhy = crossedStop
           ? `tape ${Number(gateLtp).toFixed(2)} past stop ${stop.toFixed(2)} at dispatch (stop would be rejected → naked fill)`
           : crossedLimit
             ? `tape ${Number(gateLtp).toFixed(2)} through limit ${s.entry.toFixed(2)} at dispatch (fill would drift and compress the stop)`
-            : `tape ${Number(gateLtp).toFixed(2)} within ${approachPts} pts of the limit ${s.entry.toFixed(2)} on the approach side (about-to-fill cohort)`;
+            : staleTapeRefuse
+              ? "no fresh tick to validate the OSO stop against the live broker market — limit refused (2026-10-15 naked fill)"
+              : `tape ${Number(gateLtp).toFixed(2)} within ${approachPts} pts of the limit ${s.entry.toFixed(2)} on the approach side (about-to-fill cohort)`;
         console.log(`[rth] ${gateName} gate: skipping ${key} — ${gateWhy}`);
         await this.recordSkip({
           timeET: cdtToET(s.t),
@@ -2410,7 +2446,9 @@ class SignalFeed {
                 ? "crossed-stop dispatch gate"
                 : crossedLimit
                   ? "crossed-limit dispatch gate"
-                  : `approach gate pts=${approachPts}`,
+                  : staleTapeRefuse
+                    ? "stale-tape dispatch gate"
+                    : `approach gate pts=${approachPts}`,
             ],
             ...es.features,
             ...rn.features,

@@ -17,9 +17,13 @@ import {
   reanchorBracketForFill,
   buildReArmBracketPayload,
   maxContracts,
+  confirmFlatREST,
+  tapeFreshForDispatch,
+  TAPE_FRESH_MS,
   MNQ_TICK,
   type CrossTradeConfig,
 } from "../lib/crossTrade";
+import { __resetCtAccountForTest } from "../lib/ctAccount";
 import type { OrderIntent } from "../lib/executor";
 
 const CFG: CrossTradeConfig = {
@@ -398,4 +402,69 @@ test("maxContracts delegates to planMaxMicro — MAX_MICRO_CONTRACTS env, defaul
   assert.equal(maxContracts(), 2);
   delete process.env.MAX_MICRO_CONTRACTS;
   assert.equal(maxContracts(), 30);
+});
+
+/* ------- flat confirmation + stale-tape refusal (2026-10-15) --------- *
+ * The naked-stop incident: a single positions read 0.2s after the fill
+ * read "flat" (vendor reconciliation lag / degraded empty-list response)
+ * while an 8-lot short was open — the repair aborted silently. Flat must
+ * now be double-confirmed, and unreadable is never all-clear. */
+
+const posFetch = (seq: Array<"flat" | "open" | "err">) => {
+  let reads = 0;
+  return {
+    reads: () => reads,
+    fetchFn: (async () => {
+      const s = seq[Math.min(reads, seq.length - 1)];
+      reads += 1;
+      if (s === "err") return { status: 500, text: async () => "boom" };
+      return {
+        status: 200,
+        text: async () =>
+          JSON.stringify({ success: true, data: s === "flat" ? [] : [{ instrument: "MNQZ6", netPos: -8 }] }),
+      };
+    }) as unknown as typeof fetch,
+  };
+};
+
+test("confirmFlatREST: flat is only confirmed by two consistent reads", async () => {
+  __resetCtAccountForTest({ gapMs: 0 });
+  const flatFlat = posFetch(["flat", "flat"]);
+  assert.equal(await confirmFlatREST({ confirmDelayMs: 0, fetchFn: flatFlat.fetchFn }), "flat");
+  assert.equal(flatFlat.reads(), 2, "both reads taken before the flat verdict");
+});
+
+test("confirmFlatREST: a later position sighting overrides an early flat read", async () => {
+  __resetCtAccountForTest({ gapMs: 0 });
+  const flatOpen = posFetch(["flat", "open"]);
+  assert.equal(await confirmFlatREST({ confirmDelayMs: 0, fetchFn: flatOpen.fetchFn }), "open");
+  assert.equal(flatOpen.reads(), 2);
+});
+
+test("confirmFlatREST: open/unreadable first reads short-circuit (no silent wait)", async () => {
+  __resetCtAccountForTest({ gapMs: 0 });
+  const open = posFetch(["open"]);
+  assert.equal(await confirmFlatREST({ confirmDelayMs: 0, fetchFn: open.fetchFn }), "open");
+  assert.equal(open.reads(), 1, "open on the first read needs no second read");
+  const err = posFetch(["err"]);
+  assert.equal(await confirmFlatREST({ confirmDelayMs: 0, fetchFn: err.fetchFn }), "unreadable");
+  assert.equal(err.reads(), 1);
+});
+
+test("confirmFlatREST: a degraded second read is never all-clear", async () => {
+  __resetCtAccountForTest({ gapMs: 0 });
+  const flatErr = posFetch(["flat", "err"]);
+  assert.equal(await confirmFlatREST({ confirmDelayMs: 0, fetchFn: flatErr.fetchFn }), "unreadable");
+  assert.equal(flatErr.reads(), 2);
+});
+
+test("tapeFreshForDispatch: limits require a tick within TAPE_FRESH_MS — stale/absent refuse", () => {
+  const now = 10_000_000;
+  assert.equal(tapeFreshForDispatch(now, now), true, "tick at now");
+  assert.equal(tapeFreshForDispatch(now + TAPE_FRESH_MS - 1, now), true, "just inside the window");
+  assert.equal(tapeFreshForDispatch(now + TAPE_FRESH_MS, now), false, "at the boundary → stale");
+  assert.equal(tapeFreshForDispatch(now + TAPE_FRESH_MS + 60_000, now), false, "deeply stale");
+  assert.equal(tapeFreshForDispatch(now, 0), false, "no tick ever → refuse");
+  assert.equal(tapeFreshForDispatch(now, null), false, "null tick → refuse");
+  assert.equal(tapeFreshForDispatch(now, Number.NaN), false, "garbage tick → refuse");
 });

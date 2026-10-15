@@ -606,6 +606,18 @@ export async function placeCrossTradeOrderREST(
   // then fills naked — refuse at the choke point so no caller can place
   // one. Feeds keep their own quiet skips for the journal.
   if (opts.limitPrice !== undefined) {
+    // 2026-10-15 naked-stop incident: the crossed-stop gate validates
+    // against the GoCharting TAPE, which lags the broker market by
+    // seconds. A limit dispatched on a stale tape can be marketable at
+    // the broker beyond its stop — the OSO stop is rejected and the
+    // entry fills naked. With a stale/unknown tape the broker-side
+    // validity of the stop cannot be proven — refuse the limit.
+    if (!tapeFreshForDispatch()) {
+      return {
+        ok: false,
+        reason: "stale-tape gate — the tape is not fresh enough to validate the OSO stop against the live market; limit dispatch refused (2026-10-15 naked fill)",
+      };
+    }
     const ltp = currentTapeLtp();
     if (stopCrossedAtDispatch(intent.dir, intent.stop, ltp) === true) {
       return {
@@ -1283,6 +1295,22 @@ export function currentTapeLtp(): number | null {
   return ltp !== null && Number.isFinite(ltp) ? ltp : null;
 }
 
+/** is the event-tick tape fresh enough to validate a limit's OSO stop?
+ *  The tape lags the broker market (2026-10-04: tape 31141 vs broker
+ *  31155); a limit dispatched on a stale tape can be marketable at the
+ *  broker BEYOND its stop — the OSO stop is rejected (InvalidPrice) and
+ *  the entry fills naked (2026-10-15: fill 30016.75 vs stop 30014.94,
+ *  8 MNQ unprotected). Limit dispatches require a tick within
+ *  TAPE_FRESH_MS — no fresh tick, no limit. Market entries are
+ *  unaffected (nothing resting to validate). */
+export const TAPE_FRESH_MS = 30_000;
+/** `lastMessage` is injectable for unit tests — the live WS client must
+ *  never be spun up inside a pure check. Omitted → the live feed's tick. */
+export function tapeFreshForDispatch(nowMs: number = Date.now(), lastMessage?: number | null): boolean {
+  const last = lastMessage !== undefined ? Number(lastMessage ?? 0) : Number(getLive().state.lastMessage ?? 0);
+  return Number.isFinite(last) && last > 0 && nowMs - last < TAPE_FRESH_MS;
+}
+
 /** the emergency re-arm stop: anchored just beyond the CURRENT tape so
  *  Tradovate accepts it (a crossed stop is rejected with InvalidPrice).
  *  Pure + unit-tested. */
@@ -1296,13 +1324,15 @@ export function rearmStopPrice(dir: "long" | "short", ltp: number | null | undef
  *  open, null = unreadable (callers treat unreadable as "keep acting",
  *  never as "all clear"). Fresh read — the flat gate and the repair
  *  paths must see the live book, so this never reads a cache. */
-export async function readMnqFlatREST(): Promise<boolean | null> {
+export async function readMnqFlatREST(opts?: { fetchFn?: typeof fetch }): Promise<boolean | null> {
   const cfg = loadConfig();
+  const fetchFn = opts?.fetchFn ?? fetch;
   try {
     const res = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`,
       { headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
       { extraRetries: 1, retryOn503: true },
+      fetchFn,
     );
     if (res.status < 200 || res.status >= 300) return null;
     const j = JSON.parse(res.text) as { success?: boolean; data?: Array<Record<string, unknown>> };
@@ -1316,6 +1346,26 @@ export async function readMnqFlatREST(): Promise<boolean | null> {
   } catch {
     return null;
   }
+}
+
+/** two-read flat confirmation (2026-10-15 naked-stop incident). A single
+ *  positions read taken moments after a fill can read "flat" because the
+ *  vendor hasn't reconciled the fill yet — and a degraded endpoint
+ *  (success:true with an empty list) is indistinguishable from genuinely
+ *  flat. Only two consistent flat reads ~4s apart count as closed.
+ *  "unreadable" means KEEP WATCHING — it is never all-clear. */
+export async function confirmFlatREST(opts?: {
+  confirmDelayMs?: number;
+  fetchFn?: typeof fetch;
+}): Promise<"flat" | "open" | "unreadable"> {
+  const first = await readMnqFlatREST(opts);
+  if (first === false) return "open";
+  if (first === null) return "unreadable";
+  await new Promise((r) => setTimeout(r, opts?.confirmDelayMs ?? 4000));
+  const second = await readMnqFlatREST(opts);
+  if (second === false) return "open";
+  if (second === null) return "unreadable";
+  return "flat";
 }
 
 /** signed MNQ net position qty from the same read as readMnqFlatREST —
@@ -1492,8 +1542,12 @@ const isResting = (s: string) => s === "Working" || s === "OnHold" || s === "Sus
 
 /** the shared stop-leg-bad reaction (used by the burst poller AND the
  *  WebSocket stream): cancel a resting entry before it can fill naked,
- *  or repair the already-filled position. */
-async function reactToBadStopLeg(o: ActiveBracket, entryStatus: string, stopStatus: string): Promise<void> {
+ *  or repair the already-filled position. Returns "resolved" when the
+ *  card is conclusively handled (cancelled / repaired / double-confirmed
+ *  flat); "unresolved" means the book was UNREADABLE — the caller must
+ *  keep watching (the burst keeps polling, the bracket stays registered
+ *  for the WS stream, and the protection watchdog stays armed). */
+async function reactToBadStopLeg(o: ActiveBracket, entryStatus: string, stopStatus: string): Promise<"resolved" | "unresolved"> {
   if (o.entryOrderId && isResting(entryStatus)) {
     const c = await cancelCrossTradeOrderREST(o.entryOrderId);
     void logExec({
@@ -1509,28 +1563,47 @@ async function reactToBadStopLeg(o: ActiveBracket, entryStatus: string, stopStat
         (c.ok ? "" : `\n<b>CANCEL FAILED — verify manually NOW:</b> ${c.reason}`),
       { parseMode: "HTML" },
     ).catch(() => {});
-    return;
+    return "resolved";
   }
   // the entry already filled (or is a market entry we cannot cancel). A
   // fast full OCO cycle also lands here (target hit within seconds → the
-  // stop shows Canceled with the account flat) — confirm a position
-  // actually exists before repairing.
-  const flat = await readMnqFlatREST();
-  if (flat === true) {
-    // the book went flat while we reacted — a fast OCO completion or the
-    // owner's manual close. Until 2026-10-12 this branch returned
-    // silently, which is exactly why the 10:28 repair left no trace.
+  // stop shows Canceled with the account flat) — but 2026-10-15 proved a
+  // SINGLE flat read is not proof: taken 0.2s after the fill (vendor
+  // reconciliation lag, or a degraded empty-list response) it read "flat"
+  // while an 8-lot short was open, and the protection went silent. Flat
+  // must now be double-confirmed ~4s apart; anything else keeps the
+  // protection armed, ALERTS, and repairs the moment the position is
+  // confirmed (or keeps watching while the book is unreadable).
+  const verdict = await confirmFlatREST();
+  if (verdict === "flat") {
     void logExec({
       key: o.key,
       label: o.label,
       attempt: "watch",
       outcome: "repair_aborted_flat",
-      reason: `stop leg ${stopStatus} but the account is already flat (fast OCO or manual close) — no repair needed`,
+      reason: `stop leg ${stopStatus} but the account is flat on two reads 4s apart (fast OCO or manual close) — no repair needed`,
     });
-    return;
+    return "resolved";
   }
-  void logExec({ key: o.key, label: o.label, attempt: "watch", outcome: "stop_missing", reason: `stop leg ${stopStatus} after entry ${entryStatus}` });
-  void repairNakedPosition(o.intent, o.label, o.key);
+  void logExec({
+    key: o.key,
+    label: o.label,
+    attempt: "watch",
+    outcome: "stop_missing",
+    reason: `stop leg ${stopStatus} after entry ${entryStatus} — ${verdict === "open" ? "position confirmed open, repairing" : "book UNREADABLE, watchdog stays armed"}`,
+  });
+  void sendTelegram(
+    `🚨 <b>STOP LEG ${stopStatus.toUpperCase()} WITH A FILLED ENTRY</b> — <code>${o.label}</code>\n` +
+      (verdict === "open"
+        ? "the position is open with no working stop — repairing now (re-arm, flatten on failure)."
+        : "the book is UNREADABLE — the protection watchdog stays armed and will repair the moment the position is confirmed. Verify manually."),
+    { parseMode: "HTML" },
+  ).catch(() => {});
+  if (verdict === "open") {
+    void repairNakedPosition(o.intent, o.label, o.key);
+    return "resolved";
+  }
+  return "unresolved";
 }
 
 /** one burst poll: reads the session orders, decides, acts. Returns
@@ -1546,8 +1619,8 @@ async function burstPollOnce(o: ActiveBracket): Promise<"done" | "continue"> {
   const targetStatus = rowStatus(target);
 
   if (isBad(stopStatus)) {
-    await reactToBadStopLeg(o, entryStatus, stopStatus);
-    return "done";
+    const v = await reactToBadStopLeg(o, entryStatus, stopStatus);
+    return v === "unresolved" ? "continue" : "done";
   }
   if (isBad(entryStatus)) return "done"; // entry rejected/cancelled — nothing will fill
   if (isBad(targetStatus) && !isBad(stopStatus)) {
@@ -1629,7 +1702,6 @@ export function verifyBracketsAfterPlace(o: {
 export async function reactToPushedStopRejection(stopId: string | number, orderAction?: string): Promise<void> {
   const b = activeBracket();
   if (b && b.stopChildId !== undefined && String(b.stopChildId) === String(stopId)) {
-    setActiveBracket(null);
     const entryStatus = await (async () => {
       if (b.nativeEntryId === undefined && !b.entryOrderId) return "";
       try {
@@ -1640,7 +1712,10 @@ export async function reactToPushedStopRejection(stopId: string | number, orderA
         return "";
       }
     })();
-    await reactToBadStopLeg(b, entryStatus, "Rejected");
+    const v = await reactToBadStopLeg(b, entryStatus, "Rejected");
+    // unresolved keeps the bracket registered so later order events can
+    // re-check; resolved releases it
+    if (v === "resolved") setActiveBracket(null);
     return;
   }
   // mid-trade: a tracked position exists and the stop-side order was

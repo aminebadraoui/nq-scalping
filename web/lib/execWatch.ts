@@ -34,7 +34,7 @@
 
 import { sendTelegram } from "./notify";
 import { placeOrder, placeScaleOut, cancelOrder, type OrderIntent } from "./executor";
-import { stopCrossedAtDispatch, limitCrossedAtDispatch, currentTapeLtp, repairNakedPosition, openProtection, setOpenProtection, reanchorBracketForFill, rearmCrossTradeBracketREST } from "./crossTrade";
+import { stopCrossedAtDispatch, limitCrossedAtDispatch, currentTapeLtp, repairNakedPosition, openProtection, setOpenProtection, reanchorBracketForFill, rearmCrossTradeBracketREST, type OpenProtection } from "./crossTrade";
 import { tradingHalted } from "./tradingHalt";
 import { momentumProfile, timeExitAt } from "./profile";
 import { registerTimeExit } from "./timeExit";
@@ -159,18 +159,26 @@ async function fetchPositionsCached(): Promise<Array<Record<string, unknown>> | 
   return ctPositions();
 }
 
-/** signed MNQ position from the fill-reconciled read (null = flat or
- *  unreadable — callers treat unreadable as "keep waiting"). */
-async function readMnqPosition(): Promise<{ qty: number; dir: "long" | "short" } | null> {
+/** signed MNQ position from the fill-reconciled read — but NEVER collapse
+ *  "unreadable" into "flat" (2026-10-15 naked-stop incident: the degraded
+ *  positions endpoint read empty/flat all afternoon while an 8-lot short
+ *  ran unprotected, and the watchdog cleared the protection on that "flat"
+ *  read and went silent). Callers get a discriminated result. */
+type MnqPositionRead =
+  | { status: "flat" }
+  | { status: "open"; qty: number; dir: "long" | "short" }
+  | { status: "unreadable" };
+
+async function readMnqPositionRead(): Promise<MnqPositionRead> {
   const rows = await fetchPositionsCached();
-  if (rows === null) return null;
+  if (rows === null) return { status: "unreadable" };
   let qty = 0;
   for (const p of rows) {
     if (!String(p.instrument ?? p.contractName ?? "").includes(MNQ)) continue;
     qty += Number(p.netPos ?? p.qty ?? 0);
   }
-  if (qty === 0) return null;
-  return { qty, dir: qty > 0 ? "long" : "short" };
+  if (qty === 0) return { status: "flat" };
+  return { status: "open", qty, dir: qty > 0 ? "long" : "short" };
 }
 
 /** the exit-fill window for the slippage alarm (2026-10-12 recurrence):
@@ -226,22 +234,70 @@ async function checkExitSlippage(intent: OrderIntent): Promise<void> {
 /** the 30s protection watchdog: while an MNQ position is open, verify a
  *  working stop covers it. Tracked positions are repaired (re-arm →
  *  flatten); untracked ones (manual trades) alert only, never touched. */
+/** one protection poll must never release the registry on a single "flat"
+ *  read (2026-10-15): either an opposite-side exit fill covering the entry
+ *  proves the close, or the flat claim persists across two polls. */
+const FLAT_CLAIM_PERSIST_MS = 20_000; // two 10s polls
+let flatClaimReg: OpenProtection | null = null;
+let flatClaimSeenAt = 0;
+let protectionBookUnreadableAlerted = false;
+
+async function flatClaimSupported(reg: OpenProtection): Promise<boolean> {
+  // strongest evidence: the broker's own fills show the exit leg
+  const fills = await ctFills();
+  if (fills && fills.length > 0) {
+    const want = reg.intent.dir === "long" ? "Sell" : "Buy";
+    const need = Math.max(1, Math.floor(reg.intent.contracts * 0.8));
+    const exitQty = fills.filter((f) => f.action === want && f.ts >= reg.at - 5_000).reduce((s, f) => s + f.qty, 0);
+    if (exitQty >= need) return true;
+  }
+  // weaker evidence: the flat positions read persisting across two polls
+  const now = Date.now();
+  if (flatClaimReg !== reg) {
+    flatClaimReg = reg;
+    flatClaimSeenAt = now;
+    return false;
+  }
+  return now - flatClaimSeenAt >= FLAT_CLAIM_PERSIST_MS;
+}
+
 export async function checkProtection(): Promise<void> {
   if (!enabled()) return;
-  const pos = await readMnqPosition();
+  const read = await readMnqPositionRead();
   const reg = openProtection();
-  if (!pos) {
+  if (read.status === "unreadable") {
+    // 2026-10-15: unreadable must NEVER look like flat. Keep the
+    // registry armed and page the operator — a tracked entry may be
+    // open and unprotected right now.
+    if (reg && !protectionBookUnreadableAlerted) {
+      protectionBookUnreadableAlerted = true;
+      void alert(
+        `⚠️ <b>PROTECTION BOOK UNREADABLE</b> — a tracked entry (<code>${reg.intent.dir} ${reg.intent.contracts} MNQ</code>) may be open and the positions endpoint cannot confirm or deny it — the watchdog stays armed and verifies continuously.`,
+      );
+    }
+    return;
+  }
+  if (read.status === "flat") {
+    protectionBookUnreadableAlerted = false;
     if (reg) {
-      // flat transition — the trade just exited. If the exit fill landed
-      // far beyond the intended stop (gap-through slippage, the
-      // 2026-10-08 −$1,056 event), scream: the risk model needs to know
-      // its stop fills are not landing where they were priced.
+      // a flat claim while a tracked bracket could be open needs proof
+      // (exit fills) or persistence — otherwise keep the registry armed
+      // and verify again next poll (never silently release)
+      if (!(await flatClaimSupported(reg))) return;
+      // flat transition confirmed — the trade just exited. If the exit
+      // fill landed far beyond the intended stop (gap-through slippage,
+      // the 2026-10-08 −$1,056 event), scream: the risk model needs to
+      // know its stop fills are not landing where they were priced.
       void checkExitSlippage(reg.intent);
       setOpenProtection(null); // flat — the entry closed or expired
     }
     return;
   }
-  if (!reg || reg.intent.dir !== pos.dir) {
+  // position open: reset the unreadable latch + the flat-claim window so
+  // a later flat claim must re-prove itself from scratch
+  protectionBookUnreadableAlerted = false;
+  flatClaimSeenAt = 0;
+  if (!reg || reg.intent.dir !== read.dir) {
     if (reg) setOpenProtection(null);
     if (!nakedAlerted()) {
       setNakedAlerted(true);
@@ -250,13 +306,13 @@ export async function checkProtection(): Promise<void> {
         label: "protection watchdog",
         attempt: "watch",
         outcome: "naked_untracked",
-        reason: `MNQ position ${pos.dir} open with no tracked bracket — verify manually`,
+        reason: `MNQ position ${read.dir} open with no tracked bracket — verify manually`,
       });
-      void alert(`⚠️ <b>UNTRACKED MNQ POSITION OPEN</b> — ${pos.dir} ${pos.qty} with no bracket we placed — verify manually (never auto-touched).`);
+      void alert(`⚠️ <b>UNTRACKED MNQ POSITION OPEN</b> — ${read.dir} ${read.qty} with no bracket we placed — verify manually (never auto-touched).`);
     }
     return;
   }
-  const ws = await findWorkingStop(pos.dir);
+  const ws = await findWorkingStop(read.dir);
   if (!ws.ok) return; // unreadable book — never guess, retry next poll
   if (ws.found) {
     setNakedAlerted(false);
@@ -272,16 +328,16 @@ export async function checkProtection(): Promise<void> {
     setNakedSince(Date.now());
     void logExec({
       key: `protect|${Date.now()}`,
-      label: `protection watchdog ${pos.dir}`,
+      label: `protection watchdog ${read.dir}`,
       attempt: "watch",
       outcome: "stop_missing",
       reason: "position open with no working stop",
     });
-    void alert(`🚨 <b>NO WORKING STOP ON OPEN POSITION</b> — ${pos.dir} ${pos.qty} MNQ — re-arming in ~30s if it persists (flatten fallback).`);
+    void alert(`🚨 <b>NO WORKING STOP ON OPEN POSITION</b> — ${read.dir} ${read.qty} MNQ — re-arming in ~30s if it persists (flatten fallback).`);
     return;
   }
   if (Date.now() - since < NAKED_PERSIST_MS) return;
-  void repairNakedPosition(reg.intent, `protection watchdog ${pos.dir}`, `protect|${Date.now()}`);
+  void repairNakedPosition(reg.intent, `protection watchdog ${read.dir}`, `protect|${Date.now()}`);
   // retry on a cooldown while the position stays naked (repair alerts)
   setNakedSince(Date.now() + REPAIR_COOLDOWN_MS);
 }
