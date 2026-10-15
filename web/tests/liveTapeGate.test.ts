@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeCandleMinutes, type LiveMinute } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
-import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS } from "../lib/signalFeed";
+import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, staleTailBar } from "../lib/signalFeed";
 import type { BootCandle } from "../lib/footprintProto";
 
 const nowKey = "2026-10-05|18:00";
@@ -182,4 +182,34 @@ test("tapePageDecision: a ladder escalation pages immediately", () => {
   const now = 100_000;
   assert.equal(tapePageDecision({ sinceAt: now - 10_000, step: 2 }, now), true);
   assert.equal(tapePageDecision({ sinceAt: now - 10_000, step: 3 }, now), true);
+});
+
+/* ---- tick-fire fallback + stale-signal veto (2026-10-15) ------- */
+
+test("tapePageDecision: 3+ healed episodes page despite the active ladder (the silent 801-deferral night)", () => {
+  const now = 100_000;
+  assert.equal(tapePageDecision({ sinceAt: now - 10_000, step: 1, episodes: 3 }, now), true);
+  assert.equal(tapePageDecision({ sinceAt: now - 10_000, step: 1, episodes: 2 }, now), false);
+});
+
+test("tapeGateTickFireMs: default 120s, env override, 0 = never, garbage = default", () => {
+  assert.equal(tapeGateTickFireMs({}), 120_000);
+  assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "60000" }), 60_000);
+  assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "0" }), 0);
+  assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "x" }), 120_000);
+});
+
+test("tapeGateTimeoutFire: releases at/after the threshold, never below, never when off", () => {
+  assert.equal(tapeGateTimeoutFire(119_999, 120_000), false);
+  assert.equal(tapeGateTimeoutFire(120_000, 120_000), true);
+  assert.equal(tapeGateTimeoutFire(999_000, 120_000), true);
+  assert.equal(tapeGateTimeoutFire(999_000, 0), false); // 0 = the old infinite hold
+});
+
+test("staleTailBar: a bar older than the veto window can never fire (the 02:54-on-22:52 case)", () => {
+  const bars = [{ t: "22:52", d: "2026-10-14" }];
+  const close = Date.UTC(2026, 9, 14, 22, 52) + 60_000;
+  assert.equal(staleTailBar(bars, 10 * 60_000, close + 9 * 60_000), false);
+  assert.equal(staleTailBar(bars, 10 * 60_000, close + 11 * 60_000), true);
+  assert.equal(staleTailBar(bars, 10 * 60_000, close + 4 * 3600_000), true); // 4h late — veto
 });

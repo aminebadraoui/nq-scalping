@@ -109,10 +109,14 @@ function symbol(): string {
  *  null when unparseable. The tail's du/t basis makes plain key compare
  *  unreliable (the vendor frame re-replaces the tail with a lagging
  *  candle, oscillating the tail between two stamps), so both cadence
- *  rules compare CLOSE EPOCHS against a monotonic max instead. */
-export function barCloseMs(bar: { t: string; du?: string } | undefined): number | null {
-  if (!bar || !/^\d{2}:\d{2}$/.test(bar.t) || !bar.du) return null;
-  const [y, mo, d] = bar.du.split("-").map(Number);
+ *  rules compare CLOSE EPOCHS against a monotonic max instead. `d`
+ *  (the feed calendar date) is accepted as the du fallback for
+ *  FootprintMinute rows. */
+export function barCloseMs(bar: { t: string; du?: string; d?: string } | undefined): number | null {
+  if (!bar || !/^\d{2}:\d{2}$/.test(bar.t)) return null;
+  const basis = bar.du ?? bar.d;
+  if (!basis) return null;
+  const [y, mo, d] = basis.split("-").map(Number);
   const [hh, mm] = bar.t.split(":").map(Number);
   const ms = Date.UTC(y, mo - 1, d, hh, mm) + 60_000;
   return Number.isFinite(ms) ? ms : null;
@@ -286,6 +290,35 @@ export function tapeGateDecision(
   return { hold, alert };
 }
 
+/* ---- tick-fire fallback + stale-signal veto (2026-10-15, owner-approved:
+ * the 2026-10-14 overnight stall held ~801 card dispatches — a 22:52 card
+ * fired four hours late on a dead bar. The gate must stop killing signals:
+ * candle confirmation stays preferred, but an unconfirmed tail bar older
+ * than TAPE_GATE_TICK_FIRE_MS releases the card on the TICK-built bar
+ * (labeled), and a bar older than STALE_SIGNAL_VETO_MS never fires at
+ * all. 0 = the old infinite hold (fail-closed escape hatch).) ---- */
+
+/** the tick-fire threshold — env TAPE_GATE_TICK_FIRE_MS (default 120s). */
+export function tapeGateTickFireMs(env: Record<string, string | undefined> = process.env): number {
+  const n = Number(env.TAPE_GATE_TICK_FIRE_MS ?? "120000");
+  return Number.isFinite(n) && n >= 0 ? n : 120000;
+}
+
+/** pure: does the unconfirmed tail bar's age force the tick-bar release? */
+export function tapeGateTimeoutFire(ageMs: number, thresholdMs: number): boolean {
+  return thresholdMs > 0 && ageMs >= thresholdMs;
+}
+
+/** a completed bar older than this can never carry a live signal — the
+ *  family checkers veto it (the 02:54 fire on the 22:52 bar). */
+export const STALE_SIGNAL_VETO_MS = 10 * 60_000;
+
+/** pure: the tail bar closed more than thresholdMs ago. */
+export function staleTailBar(fp: Array<{ t: string; du?: string; d?: string }>, thresholdMs: number, now: number = Date.now()): boolean {
+  const close = barCloseMs(fp[fp.length - 1]);
+  return close !== null && now - close > thresholdMs;
+}
+
 /** How long the self-heal ladder may work an episode before the operator
  *  page fires (2026-10-07: 8 stalls, 8 auto-heals, 8 noisy pages — most
  *  episodes closed within ~1 min via the first forced fetch). */
@@ -302,10 +335,15 @@ export const TAPE_PAGE_DELAY_MS = 120_000;
  *     ladder's first forced fetch usually confirms the tail in seconds)
  */
 export function tapePageDecision(
-  heal: { sinceAt: number; step: number } | null,
+  heal: { sinceAt: number; step: number; episodes?: number } | null,
   now: number,
 ): boolean {
   if (!heal || heal.sinceAt === 0) return true;
+  // 2026-10-15: three or more healed episodes in a session means the
+  // vendor feed is stalling REPEATEDLY — page the operator once even
+  // while the ladder keeps "healing" (the 2026-10-14 overnight had 3
+  // episodes, ~801 deferrals and zero pages).
+  if ((heal.episodes ?? 0) >= 3) return true;
   if (heal.step >= 2) return true;
   return now - heal.sinceAt >= TAPE_PAGE_DELAY_MS;
 }
@@ -535,7 +573,7 @@ class SignalFeed {
   } | null = null;
   /** per-tick tape-gate hold memo — the tail/hold are pure functions of
    *  the footprint, computed once per tick and shared by every scan */
-  private tapeHoldMemo: { epoch: number; fp: FootprintMinute[]; tail: number; hold: boolean } | null = null;
+  private tapeHoldMemo: { epoch: number; fp: FootprintMinute[]; tail: number } | null = null;
   /** display-snapshot timer — the heavy computeSignal runs on this 30s
    *  cadence for the dashboard/API, OFF the dispatch-critical tick */
   private displayTimer: ReturnType<typeof setInterval> | null = null;
@@ -580,6 +618,11 @@ class SignalFeed {
   /** last console line for a HELD page (throttle — the alert re-evaluates
    *  every scan while the ladder works the episode) */
   private tapeGateHeldLoggedAt = 0;
+  /** tick-fire fallback notice throttle + cumulative deferral pager */
+  private tapeGateFireLoggedAt = 0;
+  private tapeGateDeferCount = 0;
+  private tapeGateDeferWindowStart = 0;
+  private tapeGateDeferPageAt = 0;
 
   /** Cards may only fire on a bar confirmed by the vendor footprint candle.
    *  The tick-built tape undercounts volume (~7% of true volume measured
@@ -601,22 +644,64 @@ class SignalFeed {
    *  unconfirmed bars grows past TAPE_GATE_TAIL_ALERT (see
    *  tapeGateDecision). */
   private tapeGateHoldsCore(fp: FootprintMinute[], scan: string): boolean {
-    // per-tick memo: tail + hold are pure functions of the footprint —
-    // all three card checkers share one computation per tick (the alert
+    // per-tick memo: the tail is a pure function of the footprint — all
+    // three card checkers share one computation per tick (the alert
     // paging below stays per-scan so its throttles keep working)
     const now = Date.now();
     let tail: number;
-    let hold: boolean;
     if (this.tapeHoldMemo && this.tapeHoldMemo.epoch === this.tickEpoch && this.tapeHoldMemo.fp === fp) {
       tail = this.tapeHoldMemo.tail;
-      hold = this.tapeHoldMemo.hold;
     } else {
       tail = tapeTailCount(fp);
-      hold = tapeGateDecision(tail, fp.length, now, this.tapeGateAlertedAt).hold;
-      this.tapeHoldMemo = { epoch: this.tickEpoch, fp, tail, hold };
+      this.tapeHoldMemo = { epoch: this.tickEpoch, fp, tail };
+    }
+    let hold = tapeGateDecision(tail, fp.length, now, this.tapeGateAlertedAt).hold;
+    if (hold) {
+      // tick-fire fallback (2026-10-15): when the unconfirmed tail bar is
+      // older than the threshold, holding the card kills the setup — the
+      // vendor's confirmation lag is the failure, not the signal. Release
+      // on the tick-built bar (the card is labeled below by the callers).
+      const threshold = tapeGateTickFireMs();
+      const age = (() => {
+        const close = barCloseMs(fp[fp.length - 1]);
+        return close !== null ? now - close : 0;
+      })();
+      if (tapeGateTimeoutFire(age, threshold)) {
+        hold = false;
+        if (now - this.tapeGateFireLoggedAt >= 30 * 60_000) {
+          this.tapeGateFireLoggedAt = now;
+          console.log(`[tape-gate] ${scan}: tick-fire fallback — tail bar ${Math.round(age / 1000)}s old, releasing on tick data`);
+          void this.push(
+            [
+              `⚠ <b>TICK-BAR FIRE</b> — <code>${scan}</code> cards releasing on tick-built bars`,
+              `<code>${symbol()} · ${new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" })} ET</code>`,
+              `Candle confirmation lagging ${Math.round(age / 1000)}s — cards fire on the lossy tick bar until the vendor confirms again.`,
+            ].join("\n"),
+          );
+        }
+      }
     }
     if (!hold) return false;
     this.logTapeGate(scan);
+    // cumulative deferral page (2026-10-15): the 2026-10-14 overnight
+    // held ~801 dispatches with zero pages because the consecutive-tail
+    // rule never latched — page once per hour on deferral VOLUME too.
+    if (now - this.tapeGateDeferWindowStart >= 3600_000) {
+      this.tapeGateDeferWindowStart = now;
+      this.tapeGateDeferCount = 0;
+    }
+    this.tapeGateDeferCount++;
+    if (this.tapeGateDeferCount >= 240 && now - this.tapeGateDeferPageAt >= 3600_000) {
+      this.tapeGateDeferPageAt = now;
+      void this.push(
+        [
+          `⚠ <b>TAPE-GATE VOLUME</b> — ${this.tapeGateDeferCount} card deferrals in the last hour`,
+          `<code>${symbol()} · ${new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" })} ET</code>`,
+          `The vendor candle feed keeps stalling — cards are being held. Check /api/gc?action=health → barSource.`,
+        ].join("\n"),
+      );
+      console.log(`[tape-gate] ${scan}: ${this.tapeGateDeferCount} deferrals in the window — volume page sent`);
+    }
     if (tapeGateDecision(tail, fp.length, now, this.tapeGateAlertedAt).alert) {
       if (marketOpenAt(now)) {
         // the self-heal ladder (lib/live.ts) works the same stall the
@@ -624,7 +709,7 @@ class SignalFeed {
         // ladder hasn't escalated — 8 pages for 8 self-healed stalls on
         // 2026-10-07 was pure noise. A blind gate (no ladder) still pages.
         const heal = getLive().state.heal ?? null;
-        if (!tapePageDecision(heal ? { sinceAt: heal.sinceAt, step: heal.step } : null, now)) {
+        if (!tapePageDecision(heal ? { sinceAt: heal.sinceAt, step: heal.step, episodes: heal.episodes } : null, now)) {
           // keep alertedAt stale so the page still fires the moment the
           // ladder escalates or the episode outlives the delay; throttle
           // the console line so a long episode doesn't spam the log
@@ -1085,6 +1170,7 @@ class SignalFeed {
     if (!live.connected || live.minutes.length < 30) return;
     const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (this.tapeGateHolds(fp, "momentum")) return;
+    if (staleTailBar(fp, STALE_SIGNAL_VETO_MS)) return; // dead bar — never fire late (the 02:54-on-22:52 incident)
     // cross-asset context + gap inventory + mids — computed ONCE per tick
     // and shared by momentum/RTH/open (tickChips memo)
     const { es: esCtx, nqMid, gaps } = this.tickChips(fp);
@@ -1800,6 +1886,7 @@ class SignalFeed {
     if (!live.connected || live.minutes.length < 30) return;
     const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (this.tapeGateHolds(fp, "rth")) return;
+    if (staleTailBar(fp, STALE_SIGNAL_VETO_MS)) return;
     const { es: esCtx, nqMid, gaps } = this.tickChips(fp);
     if (nb) console.log(`[news] ${nb} blackout — skipping RTH cards (candidates recorded)`);
     for (const s of detectSoftMomentumMemo(fp, SOFT_PROD, live.barsRevision)) {
@@ -2144,6 +2231,7 @@ class SignalFeed {
     if (!live.connected || live.minutes.length < 60) return;
     const fp = cachedFootprint(live.minutes, live.barsRevision);
     if (this.tapeGateHolds(fp, "open")) return;
+    if (staleTailBar(fp, STALE_SIGNAL_VETO_MS)) return;
     // price-gap inventory for the journal-only gap chips (Naso hypotheses)
     const { gaps } = this.tickChips(fp);
 
