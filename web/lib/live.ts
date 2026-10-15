@@ -6,6 +6,7 @@ import { marketOpenAt } from "./marketHours";
 import { sessionDayOf } from "./times";
 import { esFrontMonth } from "./esJoin";
 import { appendDaybook } from "./daybook";
+import { sendTelegram } from "./notify";
 
 /* ------------------------------------------------------------------ */
 /* Live GoCharting feed (server-side singleton)                        */
@@ -234,6 +235,26 @@ function liveMinuteCloseMs(m: { t: string; du?: string }): number {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+/** bars-frozen watchdog (2026-10-15): the 2026-10-15 afternoon went blind
+ *  for 6+ hours — the vendor candle pipeline froze at 09:34 ET and the
+ *  tick frames carried stale timestamps, so NO bar completed. The heal
+ *  ladder never saw it (its trigger is an unconfirmed TAIL, and the tail
+ *  stayed at 1 while bars stopped completing). This detector keys on the
+ *  tail bar's close age: while the market is open, a completed tail older
+ *  than STALE_BARS_RECOVERY_MS means the bar-builder is frozen — feed the
+ *  ladder a synthetic stall (fetch → reconnect → reseed) and page the
+ *  operator. */
+export const STALE_BARS_RECOVERY_MS = 3 * 60_000;
+
+/** pure: the buffer's tail closed more than thresholdMs ago (0 = unparseable
+ *  tail — never stale). */
+export function tapeTailStale(minutes: Array<{ t: string; du?: string }>, now: number, thresholdMs: number = STALE_BARS_RECOVERY_MS): boolean {
+  const last = minutes[minutes.length - 1];
+  if (!last) return false; // empty buffer — seed in flight, never stale
+  const close = liveMinuteCloseMs(last);
+  return close > 0 && now - close > thresholdMs;
+}
+
 /** pure: format a confirmation-race outcome line (unit-tested).
  *  restMs/frameMs = first-confirmed epoch per channel (0 = not confirmed). */
 export function formatConfirmRace(key: string, closeMs: number, restMs: number, frameMs: number, now: number): string {
@@ -394,6 +415,9 @@ class LiveFeed {
   private candleFrameLoggedAt = 0;
   /** last healed-episode timestamp already logged (dedup for the heal log) */
   private healLoggedAt = 0;
+  /** bars-frozen watchdog (2026-10-15): log + operator page throttles */
+  private frozenLoggedAt = 0;
+  private frozenPageAt = 0;
 
   private tickTail(): number {
     let n = 0;
@@ -1014,8 +1038,32 @@ class LiveFeed {
       if (marketOpenAt(now)) {
         const tail = this.tickTail();
         const total = this.state.minutes.length;
+        // bars-frozen watchdog (2026-10-15): a frozen tail while the market
+        // trades means the vendor data pipeline stopped completing bars
+        // (candles stale + tick frames replaying old stamps) — the ladder's
+        // tail-count trigger can't see it, so feed it a synthetic stall and
+        // page the operator.
+        const frozen = tapeTailStale(this.state.minutes, now);
+        if (frozen) {
+          if (now - this.frozenLoggedAt >= 60_000) {
+            this.frozenLoggedAt = now;
+            const close = liveMinuteCloseMs(this.state.minutes[this.state.minutes.length - 1] as { t: string; du?: string });
+            console.log(`[live] BARS FROZEN — tail close ${Math.round((now - close) / 1000)}s ago while the market is open (vendor pipeline stalled)`);
+          }
+          if (now - this.frozenPageAt >= 30 * 60_000) {
+            this.frozenPageAt = now;
+            void sendTelegram(
+              [
+                `🚨 <b>VENDOR DATA FROZEN</b> — bars stopped completing`,
+                `<code>${new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" })} ET</code>`,
+                `The tail bar closed ${Math.round((now - liveMinuteCloseMs(this.state.minutes[this.state.minutes.length - 1] as { t: string; du?: string })) / 1000)}s ago while the market is open — the self-heal ladder is force-fetching/reconnecting/reseeding. No signals can fire until the vendor stream resumes.`,
+              ].join("\n"),
+              { parseMode: "HTML" },
+            ).catch(() => {});
+          }
+        }
         const prev = this.state.heal; // pre-decision state carries the episode's ladder usage
-        const { next, action } = tapeHealDecision(prev, now, tail, total);
+        const { next, action } = tapeHealDecision(prev, now, frozen ? TAPE_HEAL_TAIL_ALERT + 1 : tail, frozen ? total - 1 : total);
         this.state.heal = next;
         if (action === "force-fetch") {
           console.log(`[heal] unconfirmed tail ${tail} — forced candle fetch (${next.forcedFetches}/${TAPE_HEAL_MAX_FORCED_FETCHES})`);

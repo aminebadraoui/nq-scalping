@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mergeCandleMinutes, type LiveMinute } from "../lib/live";
+import { mergeCandleMinutes, tapeTailStale, type LiveMinute } from "../lib/live";
 import { liveMinutesToFootprint } from "../lib/signalEngine";
 import { tapeGateDecision, tapeTailCount, TAPE_GATE_TAIL_ALERT, TAPE_GATE_REALERT_MS, tapePageDecision, TAPE_PAGE_DELAY_MS, tapeGateTickFireMs, tapeGateTimeoutFire, staleTailBar } from "../lib/signalFeed";
 import type { BootCandle } from "../lib/footprintProto";
@@ -212,4 +212,13 @@ test("staleTailBar: a bar older than the veto window can never fire (the 02:54-o
   assert.equal(staleTailBar(bars, 10 * 60_000, close + 9 * 60_000), false);
   assert.equal(staleTailBar(bars, 10 * 60_000, close + 11 * 60_000), true);
   assert.equal(staleTailBar(bars, 10 * 60_000, close + 4 * 3600_000), true); // 4h late — veto
+});
+
+test("tapeTailStale: a frozen tail older than the recovery window trips (the 6-hour vendor freeze)", () => {
+  const tail = { t: "09:33", du: "2026-10-15" };
+  const close = Date.UTC(2026, 9, 15, 9, 33) + 60_000;
+  assert.equal(tapeTailStale([tail], close + 60_000), false); // fresh
+  assert.equal(tapeTailStale([tail], close + 3 * 60_000 + 1), true); // frozen
+  assert.equal(tapeTailStale([], close + 60_000), false); // no bars — not stale (boot)
+  assert.equal(tapeTailStale([{ t: "bad", du: "" }], close + 99_000), false); // unparseable — never stale
 });
