@@ -13,6 +13,7 @@ import { getLive } from "@/lib/live";
 import { crossTradeEnabled, mapInstrument } from "@/lib/crossTrade";
 import {
   FEED_MOMENTUM,
+  FEED_BIGBAR,
   FEED_RTH,
   FEED_OPEN,
   FEED_OPEN_DRIVE,
@@ -179,6 +180,7 @@ export async function GET(req: NextRequest) {
             })(),
             feeds: {
               momentum: FEED_MOMENTUM,
+              bigbar: FEED_BIGBAR,
               rth: FEED_RTH,
               openDrive: FEED_OPEN_DRIVE,
               open: FEED_OPEN,

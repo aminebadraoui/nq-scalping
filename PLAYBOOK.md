@@ -104,6 +104,30 @@ Long 78.5% (PF 3.08) / short 76.4% (PF 2.88). First card of the day alone:
 
 ---
 
+## 🔷 THE BIG-BAR CARD — first ≥100-pt bar continuation (live 2026-10-15, `FEED_BIGBAR=1`)
+
+The reverse-engineered macro-day capture pattern (family D,
+`docs/research/reverse-engineered-patterns-2026-10-15.md`):
+
+1. **TRIGGER** — the session's FIRST bar with range ≥ 100 pts past the
+   first 30 bars; direction = the bar's delta sign (buy−sell ≠ 0).
+2. **ENTRY** — resting limit AT the bar's close, TTL 9 min (the
+   flush-limit path — no marketable chase). Brackets rebuilt from the
+   fill.
+3. **RISK** — max(3.5, ATR14 at the trigger bar) (≈29 pts on macro days →
+   1 micro at the $100 budget); target 1R; 60-bar time exit.
+4. **One candidate per session** — news-blackout bars are recorded as
+   skips (no re-arm); journal family `momentum_bigbar`.
+
+Validation: the LIMIT arm (the live-fillable one) — 107 trades, **57.0%
+WR, PF 1.42, +4.63 pts/trade** (train 52% / test 62%). The market-entry
+arm (76.5% WR, PF 3.74, +15.2 pts) is the unreachable close-fill ideal —
+the chase wall applies here exactly like the flush family. ~1 trade per
+1.1 weeks, session-concentrated edge — an experimental seasoning:
+journal every card against these baselines.
+
+---
+
 ## ⚠ THE UNUSUAL-VOLUME ALERT — context, never a trade (SILENT: `FEED_UNUSUAL_VOLUME=0`)
 
 Off by default since 2026-10-05 (owner rule: Telegram gets trade-signal cards

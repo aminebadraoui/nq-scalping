@@ -25,6 +25,7 @@ import { getOptionsFeed } from "./optionsFeed";
 import { optionsSnapshot } from "./gcdata";
 import type { FootprintMinute } from "./gcdata";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, midOf, type MomentumSignal } from "./momentum";
+import { detectBigBar, BIGBAR_MIN_RANGE, type BigBarMinute } from "./bigBar";
 import { buildEsContext, esCardChips, type EsContext, type EsMinute } from "./esJoin";
 import { seasonalChips } from "./seasonal";
 import { sideFilterChips } from "./sideFilter";
@@ -220,6 +221,13 @@ export const FEED_PULLBACK_TICKET = feedFlag("FEED_PULLBACK_TICKET", false);
  *  card (lib/momentum.ts, MOM_PROD). THE single active strategy. 77.5% win /
  *  PF 2.98 in the 568-session replay — joins the one-sided run. */
 export const FEED_MOMENTUM = feedFlag("FEED_MOMENTUM", true);
+/** FEED_BIGBAR — big-bar continuation (family D, lib/bigBar.ts): the
+ *  session's FIRST ≥100-pt bar continued in its delta direction, riding
+ *  the flush-limit path (limit at the close, TTL 9, 1R from the fill).
+ *  Measured by scripts/reverseEngineerStudy.ts (D100L arm: n=107,
+ *  57.0% WR, PF 1.42, +4.63 pts/trade). OFF by default — the owner
+ *  turned it live 2026-10-15 (Coolify env FEED_BIGBAR=1). */
+export const FEED_BIGBAR = feedFlag("FEED_BIGBAR", false);
 /** broker resting-limit entry TTL — the expansion-retrace window is 5 bars;
  *  the broker limit mirrors it and is cancelled by the watcher at expiry
  *  (CROSSTRADE_LIMIT_ENTRIES=1). */
@@ -706,6 +714,8 @@ class SignalFeed {
   private reclaimSent = new Set<string>();
   private volumeAlerted = new Set<string>();
   private momentumSent = new Set<string>();
+  /** big-bar family days already handled (one candidate per session) */
+  private bigBarDays = new Set<string>();
   /** RTH cards already emitted per session day (the RTH_MAX_CARDS_PER_DAY cap) */
   private rthDayCount = new Map<string, number>();
 
@@ -1393,6 +1403,23 @@ class SignalFeed {
     const expKeys = new Set(expSigs.map((x) => `${x.d}|${x.dir}|${x.t}`));
     const sigs = [...momSigs, ...expSigs];
 
+    // big-bar continuation (family D, FEED_BIGBAR): one candidate per
+    // session — the FIRST ≥100-pt bar, and only when it is the
+    // just-closed minute. The scan runs only when the tail bar is
+    // big-bar-sized, so the per-tick cost is the normal case's O(1).
+    const tailBar = fp[fp.length - 1];
+    const bigBar =
+      FEED_BIGBAR && tailBar && tailBar.high - tailBar.low >= BIGBAR_MIN_RANGE && !this.bigBarDays.has(tailBar.d)
+        ? detectBigBar(fp as unknown as BigBarMinute[])
+        : null;
+    const bigSig =
+      bigBar && bigBar.entryIdx === fp.length - 1 ? (bigBar as MomentumSignal & { __bigBar?: boolean }) : null;
+    if (bigSig) {
+      bigSig.__bigBar = true;
+      this.bigBarDays.add(bigSig.d);
+      sigs.push(bigSig);
+    }
+
     // news blackout: no card, no order — but every just-fired candidate is
     // recorded as a skip so the insight loop can count what the gate ate
     if (nb) {
@@ -1413,8 +1440,12 @@ class SignalFeed {
           entry: s.entry,
           stop: s.stop,
           target: s.target,
-          verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
-          headline: `NQ momentum ${s.dir}`,
+          verdict: (s as MomentumSignal & { __bigBar?: boolean }).__bigBar
+            ? "momentum (big-bar continuation)"
+            : s.kind === "expansion"
+              ? "momentum (huge-bar expansion)"
+              : "momentum (failed-flush breakout)",
+          headline: `NQ ${(s as MomentumSignal & { __bigBar?: boolean }).__bigBar ? "big-bar continuation" : "momentum"} ${s.dir}`,
           reason: `news blackout — ${nb}`,
           features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features, ...seasonal.features, ...sf.features, ...rn.features, ...gch.features, ...wall.features }),
         });
@@ -1427,6 +1458,19 @@ class SignalFeed {
       const key = `${s.d}|${s.dir}|${s.t}`;
       const aPlus = expKeys.has(key) && momSigs.some((x) => `${x.d}|${x.dir}|${x.t}` === key);
       if (this.momentumSent.has(key)) continue;
+      const isBigBar = (s as MomentumSignal & { __bigBar?: boolean }).__bigBar === true;
+      const famStr = isBigBar ? "momentum_bigbar" : s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
+      const verdictTxt = isBigBar
+        ? "momentum (big-bar continuation)"
+        : s.kind === "expansion"
+          ? "momentum (huge-bar expansion)"
+          : "momentum (failed-flush breakout)";
+      const verdictVetoTxt = isBigBar
+        ? "momentum (big-bar continuation · ticket veto)"
+        : s.kind === "expansion"
+          ? "momentum (huge-bar expansion · ticket veto)"
+          : "momentum (failed-flush breakout · ticket veto)";
+      const headlineTxt = `NQ ${isBigBar ? "big-bar continuation" : "momentum"} ${s.dir}`;
       const et = cdtToET(s.t);
       const firstToday = !this.cardedDays.has(s.d);
       const es = esCardChips(esCtx, nqMid, s, true);
@@ -1444,7 +1488,7 @@ class SignalFeed {
 
       // ---- self-improvement gates (strategy_overrides) — the approved
       //      insight loop filters the card BEFORE anything is sent ----
-      const family = s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
+      const family = famStr;
       const ov = await getOverrides();
       const dec = decideSignal(ov, {
         families: [family, "momentum", "all"],
@@ -1466,8 +1510,8 @@ class SignalFeed {
           entry: s.entry,
           stop: s.stop,
           target: s.target,
-          verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
-          headline: `NQ momentum ${s.dir}`,
+          verdict: verdictTxt,
+          headline: headlineTxt,
           reason: `overrides: ${dec.reasons.join("; ")}`,
           features: signalFeatures(s as unknown as Record<string, unknown>, {
             aPlus,
@@ -1509,11 +1553,8 @@ class SignalFeed {
           entry: s.entry,
           stop: s.stop,
           target: s.target,
-          verdict:
-            s.kind === "expansion"
-              ? "momentum (huge-bar expansion · ticket veto)"
-              : "momentum (failed-flush breakout · ticket veto)",
-          headline: `NQ momentum ${s.dir}`,
+          verdict: verdictVetoTxt,
+          headline: headlineTxt,
           reason: vet.reason,
           features: signalFeatures(s as unknown as Record<string, unknown>, {
             aPlus,
@@ -1630,16 +1671,18 @@ class SignalFeed {
         registerExpectation({
           key: `mom|${key}`,
           ts: Date.now(),
-          label: `momentum ${s.dir} ${et} (${flush ? "flush" : "retrace"} limit)`,
+          label: `momentum ${s.dir} ${et} (${isBigBar ? "big-bar" : flush ? "flush" : "retrace"} limit)`,
           intent,
           scaleOut,
           limit: { price: level, expireAtMs },
         });
         const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
         const armText = [
-          flush
-            ? `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · failed-flush breakout — broker limit resting · ${et} NY</b>`
-            : `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace — broker limit resting · ${et} NY</b>`,
+          isBigBar
+            ? `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · big-bar continuation — broker limit resting · ${et} NY</b>`
+            : flush
+              ? `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · failed-flush breakout — broker limit resting · ${et} NY</b>`
+              : `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace — broker limit resting · ${et} NY</b>`,
           ``,
           flush
             ? `<code>LIMIT   ${fmtPx(level)}   (signal close — no chase)</code>`
@@ -1648,12 +1691,12 @@ class SignalFeed {
           `<code>SIZE    ${sizeStrArm}</code>`,
           ``,
           `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}limit rests at the broker for up to ${lp.ttlMin} min, cancelled if untraded`,
-          `<i>${flush ? "no market order — the chase fills past the signal and the target fires instantly (momentum entry-mechanics study 2026-10-14)" : STATS.momentum.expRetrace}</i>`,
+          `<i>${isBigBar ? "first ≥100-pt bar of the session, continued in its delta direction — limit at the close, 1R from the fill (reverse-engineered pattern family D, reverseEngineerStudy D100L arm)" : flush ? "no market order — the chase fills past the signal and the target fires instantly (momentum entry-mechanics study 2026-10-14)" : STATS.momentum.expRetrace}</i>`,
         ].join("\n");
         const res = await this.push(armText);
         if (!res.sent) this.lastError = res.reason;
-        this.placeWithGuardRetry(key, intent, scaleOut, et, flush ? " (flush limit)" : " (retrace)", level);
-        console.log(`[${flush ? "flushLimit" : "expRetrace"}] broker limit placed ${s.dir} @ ${fmtPx(level)} · ${et} NY · expires after ${lp.ttlMin} min`);
+        this.placeWithGuardRetry(key, intent, scaleOut, et, isBigBar ? " (big-bar limit)" : flush ? " (flush limit)" : " (retrace)", level);
+        console.log(`[${isBigBar ? "bigBarLimit" : flush ? "flushLimit" : "expRetrace"}] broker limit placed ${s.dir} @ ${fmtPx(level)} · ${et} NY · expires after ${lp.ttlMin} min`);
         continue;
       }
       if (s.kind === "expansion" && expRetraceEnabled()) {

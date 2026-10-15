@@ -456,6 +456,15 @@ wider stop grid and the user's approval. Scratch studies
   `/api/gc?action=health` → `liveFeed.confirmRace` {fastDispatch, races,
   restWins, frameWins, lastRestConfirmMs}. Kill-switch: set back to `0`,
   one Coolify edit.
+- **Big-bar continuation live (2026-10-15, owner-approved)** — Coolify app
+  env `FEED_BIGBAR=1` (was unset = 0): family D, the session's FIRST
+  ≥100-pt bar continued in its delta direction via the flush-limit path
+  (limit at the close, TTL 9, 1R from the fill, risk = max(3.5, ATR14)).
+  Code `[backtested: scripts/reverseEngineerStudy.ts --offline]`; the
+  measured D100L arm: 107 trades, 57.0% WR, PF 1.42, +4.63 pts/trade
+  (train/test 52/62). One candidate per session; news-blackout bars are
+  recorded as skips. Journal family `momentum_bigbar`. Kill-switch:
+  `FEED_BIGBAR=0`, one Coolify edit.
 - **Time exits (2026-10-05, `lib/timeExit.ts`)** — profile orders register
   a bar-based exit on the feed tick: past exitAt with a position still
   open → bracketless REST market exit (OCO brackets cancel on the
