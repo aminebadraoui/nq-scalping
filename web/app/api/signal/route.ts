@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { getSignalFeed, FEED_REVERSAL, FEED_SWEEP_RECLAIM, FEED_UNUSUAL_VOLUME, FEED_PULLBACK_TICKET, FEED_MOMENTUM, FEED_OPEN, FEED_OPEN_DRIVE, FEED_OPEN_PULLBACK, FEED_OPEN_SNIPER, FEED_RTH, FEED_GAP_ALERTS } from "@/lib/signalFeed";
+import { cardGateOpen } from "@/lib/signals";
 import { getSignalHistory } from "@/lib/signalHistory";
 
 export const dynamic = "force-dynamic";
@@ -67,7 +68,33 @@ export async function GET() {
           agree: s.signal.agree,
           verdict: s.signal.verdict,
           headline: s.signal.headline,
-          boxes: s.signal.boxes.map((b) => ({ name: b.name, side: b.side, label: b.label ?? null })),
+          // every box, fully — vote, tone, conviction score and verdict text
+          boxes: s.signal.boxes.map((b) => ({
+            id: b.id,
+            name: b.name,
+            side: b.side,
+            tone: b.tone,
+            score: b.score,
+            verdict: b.verdict,
+            kind: b.kind ?? "directional",
+            label: b.label ?? null,
+          })),
+          contextNotes: s.signal.contextNotes,
+          // the card gate's verdict on THIS snapshot — why Telegram would or
+          // would not receive the reversal card right now
+          gate: cardGateOpen(s.signal, s.mech),
+          // the full ingredient checklist inside the order-flow box
+          ingredients: s.mech.ingredients.map((i) => ({
+            key: i.key,
+            n: i.n,
+            name: i.name,
+            role: i.role,
+            state: i.state,
+            short: i.short,
+            value: i.value,
+            why: i.why,
+          })),
+          present: s.mech.present,
           lastPrice: s.lastPrice,
           timeET: s.timeET,
           day: s.day,
@@ -75,7 +102,7 @@ export async function GET() {
           minutes: s.minutes,
           symbol: s.symbol,
           vwap: s.vwap,
-          orderflow: { tone: s.mech.tone, verdict: s.mech.verdict, trigger: s.mech.trigger, invalidation: s.mech.invalidation, target: s.mech.target },
+          orderflow: { side: s.mech.side, tone: s.mech.tone, verdict: s.mech.verdict, trigger: s.mech.trigger, invalidation: s.mech.invalidation, target: s.mech.target },
           pullback: { side: s.pb.side, tone: s.pb.tone, verdict: s.pb.verdict, trigger: s.pb.trigger, invalidation: s.pb.invalidation, target: s.pb.target },
           priceaction: s.pa.verdict,
           options: s.opt ? s.opt.note : null,

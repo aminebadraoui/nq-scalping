@@ -96,13 +96,13 @@ function Node({
       <span className={`absolute inset-x-0 top-0 h-[2px] rounded-t ${LEVEL_BAR[stage.level]} ${stage.level === "unknown" ? "" : "opacity-90"}`} />
       <span className="flex items-center gap-1.5">
         <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${LEVEL_DOT[stage.level]}`} />
-        <span className="truncate font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-zinc-400">
+        <span className="break-words font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-zinc-400">
           <span className="mr-0.5 text-zinc-600">{stage.icon}</span>
           {stage.name}
         </span>
       </span>
-      <span className={`mt-1 block truncate font-mono text-[10px] font-semibold leading-tight ${LEVEL_TEXT[stage.level]}`}>{stage.metric}</span>
-      <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-zinc-500">{stage.headline}</span>
+      <span className={`mt-1 block break-words font-mono text-[10px] font-semibold leading-tight ${LEVEL_TEXT[stage.level]}`}>{stage.metric}</span>
+      <span className="mt-0.5 block break-words font-mono text-[9px] leading-tight text-zinc-500">{stage.headline}</span>
     </button>
   );
 }
@@ -160,9 +160,9 @@ export default function HealthPipeline({ health }: { health: ExecHealth | null }
           </div>
           <div className="mt-1.5 grid gap-x-6 gap-y-1 sm:grid-cols-2 xl:grid-cols-4">
             {sel.details.map((d) => (
-              <div key={d.label} className="flex items-baseline justify-between gap-2 border-b border-zinc-800/60 pb-0.5">
+              <div key={d.label} className="flex items-start justify-between gap-2 border-b border-zinc-800/60 pb-0.5">
                 <span className="shrink-0 font-mono text-[9px] uppercase tracking-wider text-zinc-500">{d.label}</span>
-                <span className={`truncate text-right font-mono text-[10px] ${d.tone ? LEVEL_TEXT[d.tone] : "text-zinc-300"}`}>{d.value}</span>
+                <span className={`min-w-0 break-words text-right font-mono text-[10px] ${d.tone ? LEVEL_TEXT[d.tone] : "text-zinc-300"}`}>{d.value}</span>
               </div>
             ))}
           </div>

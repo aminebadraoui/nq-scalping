@@ -131,8 +131,6 @@ const ageSec = (ms: number, now: number) => Math.round((now - ms) / 1000);
 
 const secFmt = (ms: number | null) => (ms === null ? "—" : `${(ms / 1000).toFixed(1)}s`);
 
-const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-
 /** feed flag display names (same order as the health payload) */
 const FEED_NAMES: Record<string, string> = {
   momentum: "MOM",
@@ -330,16 +328,16 @@ function cardStage(h: PipelineHealthInput, now: number): PipelineStage {
     headline = `no live context — ${sc.lastNote ?? "feed not live"}`;
   } else if (sc.lastError) {
     level = "warn";
-    headline = `last push failed — ${short(sc.lastError, 60)}`;
+    headline = `last push failed — ${sc.lastError}`;
   }
 
   const last = sc.lastSignal;
   details.push({ label: "last tick", value: sc.lastRunMs ? `${ageSec(sc.lastRunMs, now)}s ago` : "never" });
   details.push({ label: "live context", value: sc.live ? "yes" : "no", tone: sc.live ? undefined : "warn" });
-  if (sc.lastNote) details.push({ label: "note", value: short(sc.lastNote, 48) });
-  if (sc.lastError) details.push({ label: "last error", value: short(sc.lastError, 48), tone: "warn" });
+  if (sc.lastNote) details.push({ label: "note", value: sc.lastNote });
+  if (sc.lastError) details.push({ label: "last error", value: sc.lastError, tone: "warn" });
   if (last) {
-    details.push({ label: "last card", value: `${last.side !== "none" ? last.side.toUpperCase() : "•"} ${last.timeET} ET · ${short(last.headline, 40)}` });
+    details.push({ label: "last card", value: `${last.side !== "none" ? last.side.toUpperCase() : "•"} ${last.timeET} ET · ${last.headline}` });
   } else {
     details.push({ label: "last card", value: "none yet" });
   }
@@ -362,7 +360,7 @@ function guardStage(h: PipelineHealthInput): PipelineStage {
 
   const st = p.status;
   const level: PipelineLevel = st.state === "live" ? "ok" : st.state === "halted" ? "down" : st.state === "dry" ? "off" : "warn";
-  const headline = st.state === "live" ? "all gates clear — trading" : `${st.state === "halted" ? "halted" : st.state === "dry" ? "dry-run" : "watch"} — ${short(st.reason, 60)}`;
+  const headline = st.state === "live" ? "all gates clear — trading" : `${st.state === "halted" ? "halted" : st.state === "dry" ? "dry-run" : "watch"} — ${st.reason}`;
 
   const eq = p.account?.equity ?? null;
   details.push({ label: "day pnl", value: usd(p.dayPnl), tone: p.dayPnl >= 0 ? "ok" : "warn" });
@@ -371,7 +369,7 @@ function guardStage(h: PipelineHealthInput): PipelineStage {
   if (p.profitArmed) details.push({ label: "profit arm", value: "armed", tone: "warn" });
   if (p.dd.halved) details.push({ label: "dd size", value: "halved", tone: "warn" });
   details.push({ label: "stage", value: p.stage });
-  if (st.halts.length > 0) details.push({ label: "halts", value: st.halts.map((x) => short(x, 40)).join(" · "), tone: "down" });
+  if (st.halts.length > 0) details.push({ label: "halts", value: st.halts.join(" · "), tone: "down" });
 
   const haltsNote = st.halts.length > 0 ? ` · ${st.halts.length} halt(s)` : "";
   return { id: "guard", name: "guard", icon: "⛨", level, headline, metric: `day ${usd(p.dayPnl)}${haltsNote}`, details };
@@ -419,7 +417,7 @@ function routeStage(h: PipelineHealthInput, now: number): PipelineStage {
     const last = trades.last;
     details.push({
       label: "last order",
-      value: `${short(last.label, 30)} · ${last.status}${last.result ? ` ${last.result}` : ""}`,
+      value: `${last.label} · ${last.status}${last.result ? ` ${last.result}` : ""}`,
       tone: last.status === "failed" ? "down" : last.result === "loss" ? "warn" : undefined,
     });
     details.push({ label: "today", value: `${trades.wins}W / ${trades.losses}L · net ${usd(trades.netUsd)}`, tone: trades.netUsd >= 0 ? undefined : "warn" });
@@ -447,7 +445,7 @@ function watchStage(h: PipelineHealthInput, now: number): PipelineStage {
     if (last)
       details.push({
         label: "last close",
-        value: `${short(last.label, 30)} · ${last.status}${last.result ? ` ${last.result}` : ""} · ${usd(last.netUsd)}`,
+        value: `${last.label} · ${last.status}${last.result ? ` ${last.result}` : ""} · ${usd(last.netUsd)}`,
       });
     return { id: "watch", name: "watch", icon: "◉", level: "idle", headline: "book flat — nothing to manage", metric: "flat", details };
   }
@@ -466,7 +464,7 @@ function watchStage(h: PipelineHealthInput, now: number): PipelineStage {
   if (last)
     details.push({
       label: "position",
-      value: `${short(last.label, 34)} · ${last.status}${last.fillEntryAt ? " (filled)" : ""}`,
+      value: `${last.label} · ${last.status}${last.fillEntryAt ? " (filled)" : ""}`,
       tone: level === "warn" ? "warn" : undefined,
     });
   details.push({ label: "today", value: `${trades.wins}W / ${trades.losses}L · net ${usd(trades.netUsd)}` });
