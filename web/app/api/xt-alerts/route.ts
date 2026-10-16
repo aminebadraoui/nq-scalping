@@ -71,14 +71,14 @@ export async function POST(req: Request) {
     if (kind === "closed") {
       const c = parsePositionClosed(message);
       if (c) {
-        const rows = await sql.unsafe<Array<Record<string, unknown>>>(
-          `select id, key, side, contracts, sig_entry from exec_trades
+        const rows = await sql<Array<Record<string, unknown>>>`
+          select id, key, side, contracts, sig_entry from exec_trades
            where status in ('placed','filled')
              and lower(side) = ${c.side}
              and contracts = ${c.qty}
              and day >= ${new Date(Date.now() - 2 * 24 * 3600_000).toISOString().slice(0, 10)}
-           order by ts desc limit 5`,
-        );
+           order by ts desc limit 5
+        `;
         const match = rows.find((r) => {
           const e = Number(r.sig_entry);
           // the closed position's entry must be plausibly close to what
