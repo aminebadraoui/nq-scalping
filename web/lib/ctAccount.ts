@@ -99,8 +99,48 @@ let ctGapOverride: number | null = null;
 /** TEST ONLY: override the default pacing backoff base. */
 let ctBackoffOverride: number | null = null;
 
+/* ---- broker-refusal soft escalation (2026-10-16) -------------------- *
+ * The DEMO login's Tradovate budget refills slowly: with the base 400ms
+ * gap the poll stack exhausted it constantly, so nearly every positions
+ * call 429'd on attempt 1 and succeeded on the retry (the logs showed
+ * "retry 1/2" every ~40s all evening). A broker refusal therefore
+ * widens the spacing for the NEXT calls — 1.5s after one refusal, 3s
+ * after two+ — decaying once 60s pass without another refusal. This
+ * spreads the same calls instead of feeding the exhausted budget (every
+ * request on a penalized login restarts its hour clock). Only the
+ * `broker` shape escalates: `ct_pacing`/`snapshot_pending` are cheap
+ * governor hints that clear in seconds and keep the fast cadence.
+ * -------------------------------------------------------------------- */
+const CT_GAP_BROKER1_MS = 1_500;
+const CT_GAP_BROKER2_MS = 3_000;
+const CT_GAP_ESCALATE_WINDOW_MS = 60_000;
+
+let brokerRefusals = 0;
+let lastBrokerRefusalAt = 0;
+/** TEST ONLY overrides */
+let brokerGap1Override: number | null = null;
+let brokerGap2Override: number | null = null;
+let escalateWindowOverride: number | null = null;
+
 function ctGapMs(): number {
-  return ctGapOverride ?? CT_MIN_GAP_MS;
+  const base = ctGapOverride ?? CT_MIN_GAP_MS;
+  const windowMs = escalateWindowOverride ?? CT_GAP_ESCALATE_WINDOW_MS;
+  if (brokerRefusals > 0 && Date.now() - lastBrokerRefusalAt <= windowMs) {
+    const gap =
+      brokerRefusals >= 2 ? (brokerGap2Override ?? CT_GAP_BROKER2_MS) : (brokerGap1Override ?? CT_GAP_BROKER1_MS);
+    return Math.max(base, gap);
+  }
+  return base;
+}
+
+function noteBrokerRefusal(): void {
+  lastBrokerRefusalAt = Date.now();
+  if (brokerRefusals < 2) brokerRefusals++;
+}
+
+function noteCleanResponse(): void {
+  const windowMs = escalateWindowOverride ?? CT_GAP_ESCALATE_WINDOW_MS;
+  if (brokerRefusals > 0 && Date.now() - lastBrokerRefusalAt > windowMs) brokerRefusals = 0;
 }
 
 /** which vendor pacing shape is this? (docs name three, plus the
@@ -189,8 +229,12 @@ export async function ctFetch(
     status = res.status;
     text = await readBody(res);
     const paced = isCtRateLimited(status, text) || (retryOn503 && status === 503);
-    if (!paced) return { status, text };
+    if (!paced) {
+      noteCleanResponse();
+      return { status, text };
+    }
     lastKind = classifyCtRateLimit(status, text);
+    if (lastKind === "broker") noteBrokerRefusal();
     lastRetryAfterMs = parseRetryAfterMs(status, text, headersOf(res));
     console.warn(`[crossTrade] vendor pacing (HTTP ${status}${lastKind ? ` · ${lastKind}` : ""}) on ${url.split("/").pop()} — retry ${attempt + 1}/${extra}`);
   }
@@ -300,7 +344,7 @@ let wsMirror: CtWsMirror = {
   positions: new Map(),
 };
 
-const WS_FRESH_MS = 30_000;
+const WS_FRESH_MS = 60_000;
 
 /** the stream reconnected/resynced: the mirror is un-hydrated until the
  *  next REST read re-seeds it (replayed events are not complete). */
@@ -595,6 +639,9 @@ export function __resetCtAccountForTest(opts?: {
   backoffBaseMs?: number;
   penaltyMinMs?: number;
   penaltyMaxMs?: number;
+  brokerGap1Ms?: number;
+  brokerGap2Ms?: number;
+  escalateWindowMs?: number;
 }) {
   snapCache = null;
   fillsCache = null;
@@ -607,5 +654,10 @@ export function __resetCtAccountForTest(opts?: {
   ctPenaltyMaxOverride = opts?.penaltyMaxMs ?? null;
   ctPenaltyUntil = 0;
   ctPenaltyKind = null;
+  brokerGap1Override = opts?.brokerGap1Ms ?? null;
+  brokerGap2Override = opts?.brokerGap2Ms ?? null;
+  escalateWindowOverride = opts?.escalateWindowMs ?? null;
+  brokerRefusals = 0;
+  lastBrokerRefusalAt = 0;
   wsMirror = { ordersHydratedAt: 0, positionsHydratedAt: 0, lastFrameAt: 0, orders: new Map(), positions: new Map() };
 }

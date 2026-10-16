@@ -395,6 +395,23 @@ export function cardGateDecision(args: {
   return { hold, veto };
 }
 
+/** momentum/RTH freshness acceptance — the trigger bar may be the buffer
+ *  tail (the in-progress bar) OR the just-closed bar, but the just-closed
+ *  bar only when it is candle-source (2026-10-16). The strict
+ *  tail-only check silently dropped every bar-close candidate whenever
+ *  the tape gate held past the minute roll — the 2026-10-15 15:23 ET RTH
+ *  setup never carded and was never journaled. The open family already
+ *  accepts the just-closed bar; this aligns momentum/RTH with it and
+ *  with the archive replay (the backtested baseline — every archive bar
+ *  is a completed candle bar). Tick-built bars can never carry a card:
+ *  the tape gate's tick-fire fallback still releases the scan, but
+ *  src!=="candle" fails here, and the tail slot keeps its existing
+ *  tick-fire behavior unchanged. */
+export function tailOrJustClosedBar(fp: Array<{ src?: string }>, breakIdx: number): boolean {
+  if (breakIdx === fp.length - 1) return true;
+  return breakIdx === fp.length - 2 && (fp[fp.length - 2]?.src ?? "") === "candle";
+}
+
 /** live tape-gate diagnostics for the health endpoint + the post-deploy
  *  smoke script (2026-10-15): the SAME computation the family checkers
  *  make — tail, age, and the composed decision — so "is the gate open"
@@ -1378,8 +1395,9 @@ class SignalFeed {
    *  1) the failed-flush → one-sided breakout sequence (MOM_PROD)
    *  2) the huge-bar expansion scalp (EXP_PROD)
    *  Same ticket mechanics (entry at the bar's close, stop under its low,
-   *  1R target); same-bar double-fires are deduped to one card. Fires only
-   *  when the trigger bar is the just-completed minute. */
+   *  1R target); same-bar double-fires are deduped to one card. Fires when
+   *  the trigger bar is the just-completed minute or the in-progress bar
+   *  (tailOrJustClosedBar — the just-closed bar must be candle-source). */
   private async checkMomentum(): Promise<void> {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
@@ -1424,7 +1442,7 @@ class SignalFeed {
     // recorded as a skip so the insight loop can count what the gate ate
     if (nb) {
       for (const s of sigs) {
-        if (s.breakIdx !== fp.length - 1) continue;
+        if (!tailOrJustClosedBar(fp, s.breakIdx)) continue;
         const fam = s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
         const es = esCardChips(esCtx, nqMid, s, true);
         const seasonal = seasonalChips(s);
@@ -1450,11 +1468,11 @@ class SignalFeed {
           features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features, ...seasonal.features, ...sf.features, ...rn.features, ...gch.features, ...wall.features }),
         });
       }
-      console.log(`[news] ${nb} blackout — skipping momentum card (${sigs.filter((s) => s.breakIdx === fp.length - 1).length} candidates recorded)`);
+      console.log(`[news] ${nb} blackout — skipping momentum card (${sigs.filter((s) => tailOrJustClosedBar(fp, s.breakIdx)).length} candidates recorded)`);
       return;
     }
     for (const s of sigs) {
-      if (s.breakIdx !== fp.length - 1) continue; // only the just-closed bar
+      if (!tailOrJustClosedBar(fp, s.breakIdx)) continue; // in-progress or just-closed bar
       const key = `${s.d}|${s.dir}|${s.t}`;
       const aPlus = expKeys.has(key) && momSigs.some((x) => `${x.d}|${x.dir}|${x.t}` === key);
       if (this.momentumSent.has(key)) continue;
@@ -2212,7 +2230,7 @@ class SignalFeed {
     const { es: esCtx, nqMid, gaps } = this.tickChips(fp);
     if (nb) console.log(`[news] ${nb} blackout — skipping RTH cards (candidates recorded)`);
     for (const s of detectSoftMomentumMemo(fp, SOFT_PROD, live.barsRevision)) {
-      if (s.breakIdx !== fp.length - 1) continue;
+      if (!tailOrJustClosedBar(fp, s.breakIdx)) continue;
       if (nb) {
         const es = esCardChips(esCtx, nqMid, s, false);
         const rn = roundNumberChips(s);

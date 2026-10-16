@@ -2,7 +2,7 @@
  * the pure fill/expire/wait decision + the feed-clock gap helper. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { resolveRetrace, feedMinutesGap, retraceUseLimit, momentumLimitParams } from "../lib/signalFeed";
+import { resolveRetrace, feedMinutesGap, retraceUseLimit, momentumLimitParams, tailOrJustClosedBar } from "../lib/signalFeed";
 
 const bar = (o: number, high: number, low: number) => ({ o, high, low });
 
@@ -73,4 +73,27 @@ test("momentumLimitParams: flush rests AT the signal close for 9 min (the flushL
 test("momentumLimitParams: expansion retrace rests 1 pt behind the close for 5 min (unchanged)", () => {
   assert.deepEqual(momentumLimitParams("expansion", 31261.375, "long"), { level: 31260.375, ttlMin: 5 });
   assert.deepEqual(momentumLimitParams("expansion", 30908.75, "short"), { level: 30909.75, ttlMin: 5 });
+});
+
+/* ---- tailOrJustClosedBar: the just-closed-bar acceptance (2026-10-16) ---- */
+
+test("tailOrJustClosedBar accepts the buffer tail (in-progress bar) regardless of source", () => {
+  const fp = [{ src: "candle" }, { src: "candle" }, { src: "tick" }];
+  assert.equal(tailOrJustClosedBar(fp, 2), true); // tick-built tail keeps the existing tick-fire behavior
+  assert.equal(tailOrJustClosedBar(fp, 0), false); // older bar
+});
+
+test("tailOrJustClosedBar accepts the just-closed bar only when candle-source", () => {
+  const fp = [{ src: "candle" }, { src: "candle" }, { src: "tick" }];
+  assert.equal(tailOrJustClosedBar(fp, 1), true); // just-closed, candle-source
+  const tickClosed = [{ src: "candle" }, { src: "tick" }, { src: "tick" }];
+  assert.equal(tailOrJustClosedBar(tickClosed, 1), false); // tick-built just-closed bar can never carry a card
+});
+
+test("tailOrJustClosedBar rejects older bars and tolerates missing src", () => {
+  const fp = [{ src: "candle" }, { src: "candle" }, { src: "candle" }, { src: "tick" }];
+  assert.equal(tailOrJustClosedBar(fp, 1), false); // two bars back
+  const noSrc = [{}, {}, {}];
+  assert.equal(tailOrJustClosedBar(noSrc, 1), false); // src missing = not candle
+  assert.equal(tailOrJustClosedBar(noSrc, 2), true); // tail slot still accepted
 });

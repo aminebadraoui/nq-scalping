@@ -394,9 +394,24 @@ class DomFeed {
     let ticks = 0;
     this.timer = setInterval(() => {
       ticks += 1;
+      const now = Date.now();
+      // keep-alive (2026-10-16): the vendor idle-kills the DOM socket after
+      // ~4 min of silence — one session accumulated 45 silent reconnects
+      // from that alone. PING every 30s + re-assert the DOM_V2 subscription
+      // every 60s, the same cadence the main feed keeps on its socket
+      // (lib/live.ts). The channel itself still delivers nothing (vendor
+      // side — probe-verified 2026-10-15/16 on both the wsdom and the main
+      // ws hosts), so this stops the churn without inventing data.
+      if (this.state.connected) {
+        try {
+          this.ws?.send(JSON.stringify({ command: "PING" }));
+        } catch {
+          /* ignore */
+        }
+        if (ticks % 2 === 0) this.subscribeChannel();
+      }
       // staleness watchdog (mirrors live.ts): a silent DOM socket while the
       // market is open means the subscription died — force a reconnect
-      const now = Date.now();
       const stale =
         this.state.connected &&
         this.state.lastMessage > 0 &&

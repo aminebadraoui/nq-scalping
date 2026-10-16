@@ -478,3 +478,80 @@ test("ctOrders/ctPositions serve the WS mirror once hydrated, REST re-seeds afte
   await ctOrders({ fetchFn: restFetch });
   assert.equal(restCalls, 3);
 });
+
+/* ---- broker-refusal gap escalation (2026-10-16, demo-login budget) ---- */
+
+test("ctFetch widens the call spacing after a broker refusal, decaying after the window", async () => {
+  __resetCtAccountForTest({ gapMs: 5, brokerGap1Ms: 40, brokerGap2Ms: 80, escalateWindowMs: 150 });
+  const times: number[] = [];
+  let first = true;
+  const fetchFn: typeof fetch = (input, init) => {
+    times.push(Date.now());
+    if (first) {
+      first = false;
+      return textFetch({ success: false, error: "broker_rate_limited" }, 429)(input, init);
+    }
+    return textFetch("ok", 200)(input, init);
+  };
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  assert.ok(times[1] - times[0] >= 35, `escalated gap ${times[1] - times[0]}ms`);
+  await new Promise((r) => setTimeout(r, 180)); // window passes
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn); // clean call resets
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  assert.ok(times[3] - times[2] < 30, `decayed gap ${times[3] - times[2]}ms`);
+});
+
+test("two broker refusals escalate the spacing to the second tier", async () => {
+  __resetCtAccountForTest({ gapMs: 5, brokerGap1Ms: 40, brokerGap2Ms: 80, escalateWindowMs: 1000 });
+  const times: number[] = [];
+  let refusals = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    times.push(Date.now());
+    if (refusals < 2) {
+      refusals++;
+      return textFetch({ success: false, error: "broker_rate_limited" }, 429)(input, init);
+    }
+    return textFetch("ok", 200)(input, init);
+  };
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  assert.ok(times[1] - times[0] >= 35, `tier1 gap ${times[1] - times[0]}ms`);
+  assert.ok(times[2] - times[1] >= 75, `tier2 gap ${times[2] - times[1]}ms`);
+});
+
+test("a ct_pacing refusal does NOT widen the spacing (cheap governor hint)", async () => {
+  __resetCtAccountForTest({ gapMs: 5, brokerGap1Ms: 40, brokerGap2Ms: 80, escalateWindowMs: 1000 });
+  const times: number[] = [];
+  let first = true;
+  const fetchFn: typeof fetch = (input, init) => {
+    times.push(Date.now());
+    if (first) {
+      first = false;
+      return textFetch({ success: false, error: "rate_limited", retryAfter: 1 }, 429)(input, init);
+    }
+    return textFetch("ok", 200)(input, init);
+  };
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0, backoffBaseMs: 1 }, fetchFn);
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  assert.ok(times[1] - times[0] < 30, `no escalation ${times[1] - times[0]}ms`);
+});
+
+test("a broker refusal on the first attempt escalates even when the retry succeeds (the live pattern)", async () => {
+  __resetCtAccountForTest({ gapMs: 5, brokerGap1Ms: 40, brokerGap2Ms: 80, escalateWindowMs: 1000, backoffBaseMs: 1 });
+  setEnv(BASE_ENV);
+  const times: number[] = [];
+  let calls = 0;
+  const fetchFn: typeof fetch = (input, init) => {
+    times.push(Date.now());
+    calls++;
+    return calls === 1
+      ? textFetch({ success: false, error: "broker_rate_limited" }, 429)(input, init)
+      : textFetch({ success: true, data: [] }, 200)(input, init);
+  };
+  const rows = await ctPositions({ fetchFn }); // attempt 1 paced → retry succeeds
+  assert.deepEqual(rows, []);
+  await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
+  assert.ok(times[times.length - 1] - times[1] >= 35, `escalated after retry-success call (${times[times.length - 1] - times[1]}ms)`);
+});
