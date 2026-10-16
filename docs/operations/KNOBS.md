@@ -36,6 +36,8 @@
 | Knob | Default | Effect |
 |---|---|---|
 | `FEED_MOMENTUM` / `FEED_RTH` / `FEED_OPEN` / `FEED_OPEN_DRIVE` | ON | family on/off toggles | `0` disables a family |
+| `FEED_OPEN_PULLBACK` | ON since 2026-10-16 (was off) | open-pullback card (69.8% WR, +5.2 pts/trade, ~4 days in 5) | `0` = off |
+| `FEED_BIGBAR` | ON since 2026-10-15 | first ≥100-pt bar continuation (57.0% WR limit arm, PF 1.42) | `0` = off |
 | `SIGNAL_EVENT_TICK` | unset (OFF) | event-driven bar-advance tick (zero-latency detection) | `1` = enable |
 | `RTH_LIMIT_ENTRIES` | unset (OFF) | RTH resting-limit entries | `1` = enable (validated: rthLimitValidation) |
 | `RTH_LIMIT_STOP_MULT` / `RTH_LIMIT_TARGET_R` / `RTH_LIMIT_TTL_MS` | 0.5 / 2.5 / 9 min | RTH limit bracket | with RTH_LIMIT_ENTRIES=1 |

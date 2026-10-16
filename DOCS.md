@@ -65,6 +65,7 @@ checklist, sources) and `web/tests/README.md` (what the 361 tests pin down).
 | `docs/research/overfit-validation-pipeline-2026-10-04.md` | **active** | The audit layer over every grid: `web/scripts/exportSweep.ts` → `gcdata/validate_sweep.py` (purgedcv DSR/PBO/PSR/MinTRL, frozen single-use holdout) → `gcdata/optuna_view.py` (viewer-only) + trials ledger + `/backtest` UI. All three families DSR 1.000 and holdout PASS: momentum PBO 0.242 (selection gray — plateau-pick), expansion PBO 0.001, RTH PBO 0.003 (selection rock-stable). |
 | `docs/research/vol-sizing-study-2026-10-04.md` | **active** | 649-session stop×size sweep (zero vetoes): tighter stops (s0.75) win (PF 2.86→3.53, +$17.5k, maxDD −35%); vol/VIX/structure-conditional sizing loses because the regime buckets are flat or inverted (HIGH-vol + counter-structure are the BEST cells). |
 | `docs/research/quality-filter-sweep-2026-10-02.md` | **active** | ATR vs footprint gates head-to-head; **rr1.0 beats rr0.85** on WR/PF/net → adopted (`minBreakRangeR: 1.0`). |
+| `docs/research/signal-frequency-sweep-2026-10-16.md` | **active** | Gate-relaxation frontier (656 sessions): the 2026-10-16 frequency calibration — flush breakFrac 0.72 / window 15 / flushFrac 0.35 → 8.1/day (WR 74.0, PF 2.49, per-trade flat); expansion rr1.4 / df0.45 → 14.3/day (75.9 / 2.74). Dead levers measured too (momentum gap3, failTol, RTH minClusters). CLI: `web/scripts/signalFrequencySweep.ts`. |
 | `docs/research/context-veto-stoprun-2026-10-02.md` | **active** | Every expansion context veto (cumD/VWAP/swing) **degrades** the edge; stop-runs = 5% of stops, no hour clustering; pads degrade monotonically. Defends the current prod config. |
 | `docs/research/es-features-study-2026-10-02.md` | **active** | ES twin study (649 sessions): BROAD CONFIRM chip 85.2% WR / PF 4.84 (test 87.4%); ES-delta-negative shorts = worst cell. |
 | `docs/research/htf-short-pullback-2026-10-02.md` | **active** | 12,460 trades: don't veto HTF-bullish counter-trend shorts (vetoed subset 80.6% WR / +9,214 pts); early-Globex shorts weakest (9.1% tick-stop rate). |
@@ -133,10 +134,10 @@ checklist, sources) and `web/tests/README.md` (what the 361 tests pin down).
 
 | Strategy | Feeds | Design | Validation | Headline |
 |---|---|---|---|---|
-| Momentum flush + expansion | `FEED_MOMENTUM=1` **LIVE** | `docs/strategy/MOMENTUM_SIGNAL.md`, `PLAYBOOK.md` | `docs/research/FOOTPRINT_CANDLE_RESEARCH.md`, `docs/research/quality-filter-sweep-2026-10-02.md` | 4,822 trades · 77.5% WR · PF 2.98 · +11,680 pts |
+| Momentum flush + expansion | `FEED_MOMENTUM=1` **LIVE** | `docs/strategy/MOMENTUM_SIGNAL.md`, `PLAYBOOK.md` | `docs/research/FOOTPRINT_CANDLE_RESEARCH.md`, `docs/research/quality-filter-sweep-2026-10-02.md`, `docs/research/signal-frequency-sweep-2026-10-16.md` | flush 5,296 (74.0% WR, PF 2.49) + expansion 9,375 (75.9%, 2.74) — 2026-10-16 calibration |
 | RTH breakout card | `FEED_RTH=1` **LIVE** | `PLAYBOOK.md` | `PLAYBOOK.md` (rthImpact) | 10,325 trades · 82.2% WR · PF 3.47 · +3.13 pts/trade |
 | Open drive | `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` **LIVE** | `PLAYBOOK.md` | `PLAYBOOK.md` | 493 trades (87% of days) · 96% hit TP10/SL30 |
-| Open pullback / sniper | OFF | `PLAYBOOK.md` | `PLAYBOOK.md` | 69.8% WR +5.2 pts / 55.8% +6.5 pts (small n) |
+| Open pullback / sniper | pullback **LIVE 2026-10-16** · sniper OFF | `PLAYBOOK.md` | `PLAYBOOK.md` | 69.8% WR +5.2 pts / 55.8% +6.5 pts (small n) |
 | Unusual-volume alert | OFF (`FEED_UNUSUAL_VOLUME=0` — Telegram = trade signals only) | `PLAYBOOK.md`, `web/README.md` | — | never a trade signal |
 | Reversal (LVN) | `FEED_REVERSAL=0` retired | `docs/strategy/STRATEGY.md` (archive) | `docs/research/FOOTPRINT_REVERSAL_RESEARCH.md` | 5,104 signals · 37% WR · PF 2.16 · +27,424 pts (had ~2-bar lookahead) |
 | Sweep-reclaim | retired | code + `PLAYBOOK.md` archive | `docs/research/sweep-reclaim-v2-atr-confirmation-2026-10-03.md` | 80/80 variants breach — closed |

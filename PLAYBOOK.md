@@ -7,10 +7,11 @@ tested (207 tests), and measured over the same 568-session archive
 first-touch scoring, sequential one-trade-at-a-time replay).
 
 **Feed status (live VPS, matches the code defaults):** `FEED_MOMENTUM=1` ·
-`FEED_RTH=1` · `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` · everything else 0
-(reversal, sweep-reclaim, pullback ticket, open pullback, open sniper,
-unusual-volume heads-up, feed-gap alert — Telegram gets the trade-signal
-cards only). Verify any time via
+`FEED_RTH=1` · `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` · `FEED_OPEN_PULLBACK=1`
+(since 2026-10-16) · `FEED_BIGBAR=1` (since 2026-10-15) · everything else 0
+(reversal, sweep-reclaim, pullback ticket, open sniper, unusual-volume
+heads-up, feed-gap alert — Telegram gets the trade-signal cards only).
+Verify any time via
 `/api/gc?action=health` → `execution.feeds`.
 
 ---
@@ -24,20 +25,26 @@ dedupe to one card; the day's first card is marked `1st today`.
 
 ### Trigger 1 — failed-flush breakout (`MOM_PROD`)
 
-1. **FLUSH** — buy-frac ≤ 0.30 (≥70% sell) for a long setup, volume
-   ≥ max(15, min(0.5 × trailing 60-bar median, 250)). Short mirror: ≥70% buy.
+1. **FLUSH** — buy-frac ≤ 0.35 (≥65% sell) for a long setup, volume
+   ≥ max(15, min(0.5 × trailing 60-bar median, 250)). Short mirror: ≥65% buy.
 2. **FAILED flush** — the flush makes **no new session low**: low ≥ session
    low − 0.5 (mirror: high ≤ session high + 0.5). A flush that breaks the
    extreme is a real breakdown — the machine resets.
-3. **BREAKOUT** — within 10 bars of the flush, a bar with buy-frac ≥ 0.75
-   (mirror ≤ 0.25), same volume gate, whose **high trades through the
+3. **BREAKOUT** — within 15 bars of the flush, a bar with buy-frac ≥ 0.72
+   (mirror ≤ 0.28), same volume gate, whose **high trades through the
    reference** = max high of the flush bar + the 2 bars before it (mirror:
    low through the reference low). No separate response bar required
    (merged mode).
 4. **Candle-size gate** — breakout bar range ≥ 1.0 × ATR14 (adopted
    2026-10-02 over 0.85 per `docs/research/quality-filter-sweep-2026-10-02.md`).
 
-Risk 3.5–30 pts (stops tighter than 3.5 widen to the floor). Validation (flush trigger): 1,828 trades, 76.1% WR, PF 2.76.
+Risk 3.5–30 pts (stops tighter than 3.5 widen to the floor). Frequency
+calibration 2026-10-16 (`docs/research/signal-frequency-sweep-2026-10-16.md`):
+the looser flush/breakout/window gates raise the flush card 3.3→8.1
+signals/day — 5,296 sequential trades, **74.0% WR, PF 2.49, +2.11 pts/trade,
++11,164 pts net** (market-entry replay; the live `flushLimit` arm fills
+2.1× at WR 55.2% / PF 1.16, `momentum-entry-mechanics-2026-10-14.md`
+baseline 57.1% / 1.27).
 
 **ES cross-asset chips (journal-only labels, never gates)** — the live card
 prints up to three chips from the ES twin feed (`web/lib/esJoin.ts`, measured
@@ -83,24 +90,28 @@ criteria live in `docs/research/naso-hypotheses-backtest-plan-2026-10-04.md`):
 
 ### Trigger 2 — huge-bar expansion (`EXP_PROD`)
 
-1. Bar range ≥ **1.6 × ATR14**.
-2. **|delta| ÷ volume ≥ 0.5** (≥75% one-sided).
+1. Bar range ≥ **1.4 × ATR14** (frequency calibration 2026-10-16; was 1.6).
+2. **|delta| ÷ volume ≥ 0.45** (≥72.5% one-sided; was 0.5).
 3. **Direction-matching cluster stack**: ≥3 price rows with ≥3 lots and
    ≥2:1 dominance on the trade side.
 4. Volume ≥ max(15, min(0.5 × med60, 250)); risk 3.5–15 pts (floor-widened).
 
-Validation (expansion trigger): 4,152 sequential trades, 78.4% WR, PF 3.14.
+Frequency calibration 2026-10-16
+(`docs/research/signal-frequency-sweep-2026-10-16.md`): 7.5→14.3 signals/day —
+9,375 sequential trades, **75.9% WR, PF 2.74, +2.35 pts/trade, +22,060 pts
+net** (was 4,152 trades, 78.4% WR, PF 3.14 at the old gates).
 
-**Combined card:** 4,822 trades, **77.5% WR, PF 2.98, +11,680 pts** (market-entry replay).
-Per year: 2024 80.0% · 2025 75.3% · 2026 (out-of-sample) 77.9%.
-Long 78.5% (PF 3.08) / short 76.4% (PF 2.88). First card of the day alone:
-77.2% WR, **PF 3.15**.
+**Combined card (market-entry replay, 656 sessions):** flush 5,296 +
+expansion 9,375 sequential trades per family — see the per-family numbers
+above (the pre-calibration combined 4,822-trade / 77.5% WR / PF 2.98 line
+is superseded).
 
 > **LIVE expansion path:** the huge-bar expansion card no longer market-fills —
 > it rests a 1-pt limit behind the close for up to 5 bars and rebuilds the
-> brackets from the fill (`EXP_RETRACE`): **68% WR, PF 1.29** (entryQuality
-> study, 649 sessions, train+test). The market-entry 77.5% numbers above are
-> research context for the flush trigger only.
+> brackets from the fill (`EXP_RETRACE`): **68% WR, PF 1.29** at the old
+> gates; the 2026-10-16 calibration re-validated it at **68.3% WR, PF 1.36**
+> (entryQuality study, 656 sessions, train+test). The market-entry numbers
+> above are research context — the retrace arm is the live one.
 
 ---
 
@@ -145,7 +156,7 @@ is unchanged; set `FEED_UNUSUAL_VOLUME=1` to bring the cards back.
 
 ---
 
-## 🔔 THE OPEN FAMILY (9:30–10:30 ET) — `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` (live)
+## 🔔 THE OPEN FAMILY (9:30–10:30 ET) — `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` · `FEED_OPEN_PULLBACK=1` (live)
 
 All sized like the momentum card ($100 budget, 30-micro cap) and journaled
 separately.
@@ -162,7 +173,7 @@ separately.
   TP15/SL35, +8.3/+11.6 pts gross. The fakeout (extreme without delta
   backing) is NOT traded — fading it measured negative.
 
-### 🔔 OPEN PULLBACK (`PULLBACK_PROD`)
+### 🔔 OPEN PULLBACK (`PULLBACK_PROD`) — **live since 2026-10-16**
 
 - Window: 9:30–10:30 (scans from bar 9:46).
 - **TREND** — the trailing 15-bar cumulative delta is positive (mirror:

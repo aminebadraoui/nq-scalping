@@ -521,6 +521,26 @@ wider stop grid and the user's approval. Scratch studies
   (train/test 52/62). One candidate per session; news-blackout bars are
   recorded as skips. Journal family `momentum_bigbar`. Kill-switch:
   `FEED_BIGBAR=0`, one Coolify edit.
+- **Frequency calibration + open pullback live (2026-10-16,
+  owner-approved)** — commit `868aebf` `[backtested:
+  scripts/sizingOptimizer.ts --split 2026-01-01
+  scripts/entryQualityStudy.ts --offline
+  scripts/momentumEntryMechanicsStudy.ts]` + Coolify app env
+  `FEED_OPEN_PULLBACK=1` (set via API PATCH before the push so ONE
+  redeploy baked both). Code: `MOM_PROD` breakFrac 0.75→0.72 ·
+  breakWindow 10→15 · flushFrac 0.30→0.35; `EXP_PROD` minRangeR
+  1.6→1.4 · minAbsDeltaFrac 0.5→0.45. Measured (656-session replay):
+  flush 3.3→8.1 signals/day (WR 75.4→74.0, PF 2.69→2.49, per-trade
+  +2.15→+2.11), expansion 7.5→14.3/day (WR 77.7→75.9, PF 3.02→2.74).
+  Live-arm re-validation: EXP_RETRACE holds 68.3% WR / PF 1.36;
+  flushLimit 2.1× fills at PF 1.27→1.16 (P(pass) 0.98→0.88 — journal
+  against this). Sizing campaign PASS (P=1.00, maxDD 39% of MLL).
+  Evidence: `docs/research/signal-frequency-sweep-2026-10-16.md` +
+  `web/scripts/signalFrequencySweep.ts`. Deployed MID-RTH (~14:00 ET)
+  on explicit owner instruction ("push it now") — the deploy restarts
+  the executor (in-memory state reset). Kill-switch: revert the five
+  knobs, or `FEED_MOMENTUM=0` / `FEED_OPEN_PULLBACK=0` (one Coolify
+  edit each).
 - **Time exits (2026-10-05, `lib/timeExit.ts`)** — profile orders register
   a bar-based exit on the feed tick: past exitAt with a position still
   open → bracketless REST market exit (OCO brackets cancel on the
