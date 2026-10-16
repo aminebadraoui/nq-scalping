@@ -1,14 +1,16 @@
 "use client";
 
-import { useExecStatus } from "@/lib/useExecStatus";
+import type { ExecHealth } from "@/lib/useExecStatus";
 import AccountSettings from "./AccountSettings";
 import TradingToggle from "./TradingToggle";
 
 /* ------------------------------------------------------------------ *
  * ExecStatusBar — the live status strip at the top of the dashboard.
  * Mirrors the executor's health endpoint (guard state, account
- * snapshot, day-plan rules, feeds, tape) every 20s. DISPLAY-ONLY:
- * the real gate is crossGuardGate() before every order.
+ * snapshot, day-plan rules, feeds, tape). The parent page polls
+ * /api/gc?action=health once (20s) and shares the snapshot with this
+ * strip and the HealthPipeline. DISPLAY-ONLY: the real gate is
+ * crossGuardGate() before every order.
  * ------------------------------------------------------------------ */
 
 const usd = (n: number) => `${n < 0 ? "−$" : "+$"}${Math.abs(Math.round(n)).toLocaleString("en-US")}`;
@@ -22,8 +24,8 @@ function Chip({ on, label, tone = "zinc" }: { on: boolean; label: string; tone?:
   );
 }
 
-export default function ExecStatusBar() {
-  const h = useExecStatus();
+export default function ExecStatusBar({ data }: { data: ExecHealth | null }) {
+  const h = data;
   const ex = h?.execution ?? null;
   const p = ex?.protections ?? null;
   const st = p?.status ?? { state: "watch" as const, label: "…", reason: "connecting", halts: [] };

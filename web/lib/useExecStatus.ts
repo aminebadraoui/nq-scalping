@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { PipelineExtras } from "./pipelineHealth";
 
 /** the /api/gc?action=health payload — display-only execution status */
 export type ExecHealth = {
@@ -37,8 +38,38 @@ export type ExecHealth = {
       lastTradeAgeSec: number | null;
       lastVolChangeAgeSec: number | null;
       ratio: number | null;
+      barSource: { candle: number; tick: number } | null;
+      confirmRace: {
+        fastDispatch: boolean;
+        active: boolean;
+        races: number;
+        restWins: number;
+        frameWins: number;
+        lastRestConfirmMs: number;
+        lastFrameConfirmMs: number;
+      } | null;
+      heal: { step: number; episodes: number } | null;
+      tapeGate: {
+        totalBars: number;
+        tail: number;
+        tailAgeMs: number | null;
+        hold: boolean;
+        veto: boolean;
+        lastBarClose: number | null;
+      } | null;
+      detectors: { bars: number; momentumFlush: number; momentumExpansion: number; rth: number } | null;
+    } | null;
+    domFeed: {
+      connected: boolean;
+      frames: number;
+      silentConnects: number;
+      lastReconnectAt: number;
+      nqSnapshots: number;
+      nqIncrements: number;
     } | null;
     market: { open: boolean; sessionDay: string; next: { kind: string; atMs: number } } | null;
+    /** the health-pipeline extras (signal card / latency / exec ledger) */
+    pipeline: PipelineExtras | null;
   } | null;
 };
 

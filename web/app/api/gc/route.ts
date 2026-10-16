@@ -351,6 +351,80 @@ export async function GET(req: NextRequest) {
                 return null;
               }
             })(),
+            // the health pipeline — every step of signal production →
+            // execution in one payload (display-only reads of live state)
+            pipeline: await (async () => {
+              try {
+                const { getSignalFeed } = await import("@/lib/signalFeed");
+                const { latencySnapshot } = await import("@/lib/execLatency");
+                const { execTradesMemory } = await import("@/lib/execTracker");
+                const { signalWindowOpen } = await import("@/lib/marketHours");
+                const now = Date.now();
+                const feed = getSignalFeed();
+                const snap = feed.lastSnapshot;
+                const lat = latencySnapshot();
+                const trades = execTradesMemory();
+                const open = trades.filter((t) => t.status === "placed" || t.status === "filled");
+                const nyDay = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(now);
+                const today = trades.filter((t) => t.day === nyDay);
+                const closed = today.filter((t) => t.status === "closed");
+                const failed = trades.filter((t) => t.status === "failed");
+                return {
+                  windowOpen: signalWindowOpen(now),
+                  signalCard: {
+                    live: feed.liveOk,
+                    lastRunMs: feed.lastRun,
+                    lastError: feed.lastError,
+                    lastNote: feed.lastNote,
+                    lastSignal: snap
+                      ? { timeET: snap.timeET, day: snap.day, side: snap.signal.side ?? "none", headline: snap.signal.headline }
+                      : null,
+                  },
+                  latency: {
+                    latest: lat.latest
+                      ? {
+                          totalMs: lat.latest.totalMs,
+                          source: lat.latest.detail?.source ?? "",
+                          barAgeMs: lat.latest.detail?.barAgeMs ?? null,
+                          stages: { ...lat.latest.stages },
+                        }
+                      : null,
+                    fills: lat.lastFills.slice(-5).map((f) => ({
+                      ts: f.ts,
+                      label: f.detail.label,
+                      dir: f.detail.dir,
+                      qty: f.detail.qty,
+                      submitMs: f.detail.submitMs,
+                      ackMs: f.detail.ackMs,
+                      fillMs: f.detail.fillMs,
+                      seenMs: f.detail.seenMs,
+                    })),
+                  },
+                  execTrades: {
+                    open: open.length,
+                    wins: closed.filter((t) => t.result === "win").length,
+                    losses: closed.filter((t) => t.result === "loss").length,
+                    netUsd: Math.round(closed.reduce((s, t) => s + t.netUsd, 0) * 100) / 100,
+                    failed: failed.length,
+                    lastFailAt: failed.length ? Math.max(...failed.map((t) => t.ts)) : null,
+                    // the ring is newest-first (upsertMemory unshifts)
+                    last: trades[0]
+                      ? {
+                          ts: trades[0].ts,
+                          label: trades[0].label,
+                          status: trades[0].status,
+                          result: trades[0].result,
+                          netUsd: trades[0].netUsd,
+                          fillEntryAt: trades[0].fillEntryAt,
+                        }
+                      : null,
+                  },
+                };
+              } catch (e) {
+                console.error("[health] pipeline error:", e);
+                return null;
+              }
+            })(),
             // the calendar's view of the market — "open per calendar but no
             // prints arriving" is the dead-feed signature
             market: await (async () => {

@@ -9,9 +9,11 @@ import SignalHistory, { type HistoryEntry as SignalEntry } from "@/components/Si
 import DomIcebergPanel from "@/components/DomIcebergPanel";
 import TickMomentumPanel from "@/components/TickMomentumPanel";
 import ExecStatusBar from "@/components/ExecStatusBar";
+import HealthPipeline from "@/components/HealthPipeline";
 import SessionPicker, { type DatasetInfo } from "@/components/SessionPicker";
 import { blendLiveMinutes, type FPMinute } from "@/lib/footprint";
 import { useLive, type LiveMinute } from "@/lib/useLive";
+import { useExecStatus } from "@/lib/useExecStatus";
 import { imbalanceFor, summarizeImb } from "@/lib/imbalance";
 import { etToFeed } from "@/lib/times";
 import { readPriceAction } from "@/lib/priceaction";
@@ -20,6 +22,9 @@ type FootMinute = { t: string; d?: string; o?: number; c?: number; vwap?: number
 
 export default function DashboardPage() {
   const live = useLive();
+  /** the executor health snapshot — ONE 20s poll shared by the pipeline
+   *  strip and the exec status bar (both are display-only mirrors) */
+  const execHealth = useExecStatus();
   const [hist, setHist] = useState<LiveMinute[]>([]);
   const [fp, setFp] = useState<{ minutes: FPMinute[]; minPrice: number; maxPrice: number } | null>(null);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
@@ -239,10 +244,15 @@ export default function DashboardPage() {
         </span>
       </div>
 
+      {/* HEALTH PIPELINE — every step of signal production → execution,
+          one node per stage with its live health level. Reads the same
+          /api/gc?action=health poll as the strip below. Display-only. */}
+      <HealthPipeline health={execHealth} />
+
       {/* LIVE EXEC STATUS — the operator strip: guard state, account
           snapshot, day-plan rules, feeds, tape. Polls /api/gc?action=health
           every 20s. Display-only — the real gate is crossGuardGate(). */}
-      <ExecStatusBar />
+      <ExecStatusBar data={execHealth} />
 
       {/* live strip */}
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
