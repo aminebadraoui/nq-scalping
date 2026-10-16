@@ -49,11 +49,22 @@ export async function POST(req: Request) {
 
   const sql = getDb();
   try {
+    // self-healing DDL: the table is normally created by the nightly
+    // ingest (db/schema.sql) — ensure it exists without waiting for it
     await sql.unsafe(
-      `insert into xt_alerts (ts, type, title, message, account, details)
-       values (${ts}, ${type}, ${title}, ${message}, ${account}, ${JSON.stringify(alert.details ?? null)}::jsonb)
-       on conflict (ts, type, title) do nothing`,
+      `create table if not exists xt_alerts (
+         id bigint generated always as identity primary key,
+         ts bigint not null, type text not null default '', title text not null default '',
+         message text not null default '', account text not null default '', details jsonb,
+         created_at timestamptz not null default now(),
+         unique (ts, type, title)
+       ); create index if not exists xt_alerts_ts_idx on xt_alerts (ts desc);`,
     );
+    await sql`
+      insert into xt_alerts (ts, type, title, message, account, details)
+      values (${ts}, ${type}, ${title}, ${message}, ${account}, ${JSON.stringify(alert.details ?? null)}::jsonb)
+      on conflict (ts, type, title) do nothing
+    `;
 
     // position closed: the push IS the flat transition — close the
     // matching open ledger row with the vendor's own exit + P&L.
@@ -78,11 +89,13 @@ export async function POST(req: Request) {
           const entryPx = Number(match.sig_entry);
           const dir = c.side === "long" ? 1 : -1;
           const pts = (c.exitPrice - entryPx) * dir;
+          const result = c.pnlUsd > 0 ? "win" : c.pnlUsd < 0 ? "loss" : "flat";
+          const exitAction = c.side === "long" ? "Sell" : "Buy";
           await sql.unsafe(
             `update exec_trades set status = 'closed', exit_avg = ${c.exitPrice},
                pts = ${pts.toFixed(2)}, gross_usd = ${c.pnlUsd.toFixed(2)},
-               net_usd = ${(c.pnlUsd - 0).toFixed(2)}, result = ${c.pnlUsd > 0 ? "'win'" : c.pnlUsd < 0 ? "'loss'" : "'flat'"},
-               exit_fills = ${JSON.stringify([{ ts, action: c.side === "long" ? "Sell" : "Buy", qty: c.qty, price: c.exitPrice }])}::jsonb,
+               net_usd = ${c.pnlUsd.toFixed(2)}, result = ${result},
+               exit_fills = ${JSON.stringify([{ ts, action: exitAction, qty: c.qty, price: c.exitPrice }])}::jsonb,
                updated_at = now()
              where id = ${Number(match.id)}`,
           );
