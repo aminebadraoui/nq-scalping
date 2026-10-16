@@ -43,10 +43,23 @@ fi
 
 HTTP=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$URL" 2>/dev/null || echo 000)
 
-read -r FAILS LAST_RESTART < "$STATE_FILE" 2>/dev/null || true
+if [ -f "$STATE_FILE" ]; then
+  read -r FAILS LAST_RESTART < "$STATE_FILE" || { FAILS=0; LAST_RESTART=0; }
+else
+  FAILS=0
+  LAST_RESTART=0
+fi
 FAILS=${FAILS:-0}
 LAST_RESTART=${LAST_RESTART:-0}
 NOW=$(date +%s)
+
+# 404 = the route does not exist on the serving build yet (a deploy
+# transition). The server is ALIVE — never restart for a missing route.
+if [ "$HTTP" = "404" ]; then
+  log "healthz 404 — build transition (route not in the serving image yet) — not a failure"
+  echo "0 $LAST_RESTART" > "$STATE_FILE"
+  exit 0
+fi
 
 if [ "$HTTP" = "200" ]; then
   if [ "$FAILS" -gt 0 ]; then
