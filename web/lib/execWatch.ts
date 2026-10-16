@@ -740,7 +740,7 @@ export async function verifyAbsent(opts?: { fetchFn?: typeof fetch }): Promise<{
     // backoff via ctFetch instead of aborting the verified re-send.
     const ordRes = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/orders`,
-      { headers, signal: AbortSignal.timeout(15_000) },
+      { headers, signal: AbortSignal.timeout(30_000) },
       { extraRetries: 2, retryOn503: true },
       fetchFn,
     );
@@ -754,7 +754,7 @@ export async function verifyAbsent(opts?: { fetchFn?: typeof fetch }): Promise<{
     // positions (fill-reconciled): the ultimate truth — a filled order shows here
     const posRes = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(account)}/positions`,
-      { headers, signal: AbortSignal.timeout(15_000) },
+      { headers, signal: AbortSignal.timeout(30_000) },
       { extraRetries: 2, retryOn503: true },
       fetchFn,
     );

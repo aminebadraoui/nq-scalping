@@ -22,6 +22,11 @@ let started = false;
 let sock: WebSocket | null = null;
 let backoffMs = 5_000;
 let lastFrameAt = 0;
+/** the liveness watchdog closed the socket itself (the stream was
+ *  silent) — the mirror hydration survives such reconnects (nothing
+ *  could have been missed while silent) instead of forcing a REST
+ *  re-seed that feeds the already-exhausted demo-login budget */
+let selfClosed = false;
 let livenessTimer: ReturnType<typeof setInterval> | null = null;
 let bootLogged = false;
 
@@ -52,10 +57,10 @@ function connect(): void {
   next.onopen = () => {
     backoffMs = 5_000;
     lastFrameAt = Date.now();
-    // (re)connect: the state mirror must re-seed over REST before the
-    // pushed frames are trusted (replayed events are incomplete — the
-    // vendor's resync guidance). Pnl/status frames heartbeat it.
-    ctWsMarkResync();
+    // no markResync here: an ABNORMAL close already un-hydrated the
+    // mirror in onclose; a liveness-forced reconnect keeps the
+    // hydration (the stream was silent — nothing was missed, and a
+    // REST re-seed here would feed the exhausted login's budget).
     next.send(JSON.stringify({ action: "subscribe", events: ["orders", "executions", "positions"], origin: "tradovate" }));
     next.send(JSON.stringify({ action: "streamPnl", enabled: true, origin: "tradovate" }));
     if (!bootLogged) {
@@ -105,6 +110,8 @@ function connect(): void {
   };
   next.onclose = () => {
     sock = null;
+    if (!selfClosed) ctWsMarkResync(); // abnormal disconnect — the mirror is untrusted until re-seeded
+    selfClosed = false;
     scheduleReconnect();
   };
   next.onerror = () => {
@@ -123,6 +130,7 @@ export function startCtOrderStream(): void {
   livenessTimer = setInterval(() => {
     if (sock && Date.now() - lastFrameAt > STALE_AFTER_MS) {
       console.warn("[ctStream] no frames for 30s — forcing reconnect");
+      selfClosed = true;
       try {
         sock.close();
       } catch {

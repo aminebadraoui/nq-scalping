@@ -555,3 +555,37 @@ test("a broker refusal on the first attempt escalates even when the retry succee
   await ctFetch("https://app.crosstrade.io/x", {}, { extraRetries: 0 }, fetchFn);
   assert.ok(times[times.length - 1] - times[1] >= 35, `escalated after retry-success call (${times[times.length - 1] - times[1]}ms)`);
 });
+
+/* ---- slow-lane cooldown (2026-10-16: the demo login answers ~9s) ---- */
+
+test("a slow-but-successful read pauses the polls (slow-lane), critical reads unaffected", async () => {
+  __resetCtAccountForTest({ slowThresholdMs: 0, gapMs: 0, backoffBaseMs: 1 });
+  setEnv(BASE_ENV);
+  // warm the snapshot cache with a slow read (threshold 0 = any read counts)
+  const slowOk: typeof fetch = (input, init) => textFetch({ accounts: [{ name: ACCT, netLiq: 50100, realizedPnl: 42.5 }] }, 200)(input, init);
+  await ctSnapshot({ fetchFn: slowOk, retryDelayMs: 0 });
+  // polls now serve the cache without fetching
+  let pollCalls = 0;
+  const counting: typeof fetch = (input, init) => {
+    pollCalls++;
+    return textFetch({ accounts: [{ name: ACCT, netLiq: 99999, realizedPnl: 1 }] }, 200)(input, init);
+  };
+  await ctSnapshot({ fetchFn: counting, retryDelayMs: 0 });
+  await ctFills({ force: true, fetchFn: counting });
+  await ctPositions({ fetchFn: counting });
+  await ctOrders({ fetchFn: counting });
+  assert.equal(pollCalls, 0, "polls fetched during the slow-lane pause");
+  // the cached truth is served, not a fresh fetch
+  assert.equal(ctSnapshotDisplay()?.accounts?.[0]?.netLiq, 50100);
+});
+
+test("ctFetch flags slow responses but never treats them as pacing refusals", async () => {
+  __resetCtAccountForTest({ slowThresholdMs: 0, gapMs: 0, backoffBaseMs: 1 });
+  const res = await ctFetch(
+    "https://app.crosstrade.io/v1/api/tv/accounts/snapshot",
+    {},
+    { extraRetries: 0 },
+    textFetch({ accounts: [] }, 200),
+  );
+  assert.equal(res.status, 200); // not paced — success returned normally
+});

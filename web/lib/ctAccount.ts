@@ -143,6 +143,34 @@ function noteCleanResponse(): void {
   if (brokerRefusals > 0 && Date.now() - lastBrokerRefusalAt > windowMs) brokerRefusals = 0;
 }
 
+/* ---- slow-lane cooldown (2026-10-16 execution failure) ------------- *
+ * The demo login's budget stays exhausted, so the vendor SLOW-LANES
+ * the reads instead of refusing them: snapshot + positions answered
+ * in ~9s each. The critical paths abort at 15s, so two paced reads
+ * (with retry sleeps) blew the abort and the 11:41 ET RTH card was
+ * refused with "cannot verify flat state (TimeoutError)". A slow
+ * response (> 5s) therefore opens a light cooldown: the POLLS pause
+ * for 60s (they were the ones feeding the exhausted login), while the
+ * critical reads keep trying with the extended 30s aborts below.
+ * -------------------------------------------------------------------- */
+const CT_SLOW_THRESHOLD_MS = 5_000;
+const CT_SLOW_PAUSE_MS = 60_000;
+let ctSlowUntil = 0;
+/** TEST ONLY: override the slow-lane threshold. */
+let ctSlowThresholdOverride: number | null = null;
+
+export function ctSlowActive(): boolean {
+  return Date.now() < ctSlowUntil;
+}
+
+function noteSlowResponse(): void {
+  ctSlowUntil = Math.max(ctSlowUntil, Date.now() + CT_SLOW_PAUSE_MS);
+}
+
+function slowPaused(): boolean {
+  return ctSlowActive();
+}
+
 /** which vendor pacing shape is this? (docs name three, plus the
  *  snapshot contention 429) */
 export type CtRateLimitKind = "ct_pacing" | "broker" | "snapshot_pending";
@@ -225,9 +253,17 @@ export async function ctFetch(
     const gapWait = Math.max(0, lastCtCallAt + ctGapMs() - Date.now());
     if (gapWait > 0) await sleep(gapWait);
     lastCtCallAt = Date.now();
+    const t0 = Date.now();
     const res = await fetchFn(url, init);
     status = res.status;
     text = await readBody(res);
+    // slow-lane detection: a SUCCESSFUL read that took >5s means the
+    // login is being throttled without a refusal — pause the polls
+    const slowThreshold = ctSlowThresholdOverride ?? CT_SLOW_THRESHOLD_MS;
+    if (Date.now() - t0 >= slowThreshold && status >= 200 && status < 300 && !isCtRateLimited(status, text)) {
+      noteSlowResponse();
+      console.warn(`[crossTrade] slow response (${Math.round(Date.now() - t0)}ms) on ${url.split("/").pop()} — polls paused ${Math.round(CT_SLOW_PAUSE_MS / 1000)}s, critical reads keep trying`);
+    }
     const paced = isCtRateLimited(status, text) || (retryOn503 && status === 503);
     if (!paced) {
       noteCleanResponse();
@@ -379,7 +415,7 @@ function wsMirrorFresh(kind: "order" | "position"): boolean {
 async function fetchSnapshotRaw(fetchFn: typeof fetch): Promise<CtSnapshotAccount[]> {
   const res = await ctFetch(
     "https://app.crosstrade.io/v1/api/tv/accounts/snapshot",
-    { headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+    { headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(30_000) },
     { extraRetries: 1, retryOn503: true },
     fetchFn,
   );
@@ -425,7 +461,7 @@ export async function ctSnapshot(opts?: { fetchFn?: typeof fetch; retryDelayMs?:
   // (realized P&L only moves on fills — the guard's floor checks are
   // safe on it) and go silent on the wire so the vendor penalty clears;
   // no usable cache → fail closed exactly as before.
-  if (penaltyPaused()) {
+  if (penaltyPaused() || slowPaused()) {
     if (snapCache?.accounts && Date.now() - snapCache.at <= PENALTY_STALE_MAX_MS) return snapCache;
     return { at: Date.now(), accounts: null };
   }
@@ -469,7 +505,7 @@ export function accountRow(snap: CtSnapshot, account: string): CtSnapshotAccount
 async function fetchFillsRaw(fetchFn: typeof fetch): Promise<CtFill[]> {
   const res = await ctFetch(
     "https://app.crosstrade.io/v1/api/tv/fills",
-    { headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+    { headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(30_000) },
     { extraRetries: 2, retryOn503: true },
     fetchFn,
   );
@@ -501,7 +537,7 @@ async function fetchFillsRaw(fetchFn: typeof fetch): Promise<CtFill[]> {
  *  not feed a penalized login. */
 export async function ctFills(opts?: { force?: boolean; fetchFn?: typeof fetch }): Promise<CtFill[] | null> {
   if (!opts?.force && fillsCache && Date.now() - fillsCache.at < FILLS_TTL_MS) return fillsCache.fills;
-  if (penaltyPaused()) return fillsCache?.fills ?? null;
+  if (penaltyPaused() || slowPaused()) return fillsCache?.fills ?? null;
   try {
     const fills = await fetchFillsRaw(opts?.fetchFn ?? fetch);
     fillsCache = { at: Date.now(), fills };
@@ -518,7 +554,7 @@ async function fetchPositionsRaw(fetchFn: typeof fetch): Promise<Record<string, 
     `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(configuredAccount())}/positions`,
     {
       headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(30_000),
     },
     { extraRetries: 2, retryOn503: true },
     fetchFn,
@@ -535,7 +571,7 @@ async function fetchPositionsRaw(fetchFn: typeof fetch): Promise<Record<string, 
 export async function ctPositions(opts?: { fetchFn?: typeof fetch }): Promise<Record<string, unknown>[] | null> {
   if (wsMirrorFresh("position")) return [...wsMirror.positions.values()];
   if (positionsCache && Date.now() - positionsCache.at < POSITIONS_TTL_MS) return positionsCache.rows;
-  if (penaltyPaused()) return positionsCache?.rows ?? null;
+  if (penaltyPaused() || slowPaused()) return positionsCache?.rows ?? null;
   try {
     const rows = await fetchPositionsRaw(opts?.fetchFn ?? fetch);
     positionsCache = { at: Date.now(), rows };
@@ -558,13 +594,13 @@ export async function ctPositions(opts?: { fetchFn?: typeof fetch }): Promise<Re
  *  Penalty cooldown: ok=false without fetching. */
 export async function ctOrders(opts?: { fetchFn?: typeof fetch }): Promise<{ ok: boolean; orders: Record<string, unknown>[] }> {
   if (wsMirrorFresh("order")) return { ok: true, orders: [...wsMirror.orders.values()] };
-  if (penaltyPaused()) return { ok: false, orders: [] };
+  if (penaltyPaused() || slowPaused()) return { ok: false, orders: [] };
   try {
     const res = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(configuredAccount())}/orders`,
       {
         headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(30_000),
       },
       { extraRetries: 2, retryOn503: true },
       opts?.fetchFn ?? fetch,
@@ -596,7 +632,7 @@ const ORDERS_HIST_TTL_MS = 30_000;
 async function fetchOrdersHistRaw(fetchFn: typeof fetch): Promise<CtOrderHist[]> {
   const res = await ctFetch(
     "https://app.crosstrade.io/v1/api/tv/orders?activeOnly=false",
-    { headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+    { headers: { Authorization: `Bearer ${ctKey()}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(30_000) },
     { extraRetries: 1, retryOn503: true },
     fetchFn,
   );
@@ -623,7 +659,7 @@ async function fetchOrdersHistRaw(fetchFn: typeof fetch): Promise<CtOrderHist[]>
  *  null on failure (callers fall back to chronological pairing). */
 export async function ctOrdersHistory(opts?: { fetchFn?: typeof fetch }): Promise<CtOrderHist[] | null> {
   if (ordersHistCache && Date.now() - ordersHistCache.at < ORDERS_HIST_TTL_MS) return ordersHistCache.rows;
-  if (penaltyPaused()) return ordersHistCache?.rows ?? null;
+  if (penaltyPaused() || slowPaused()) return ordersHistCache?.rows ?? null;
   try {
     const rows = await fetchOrdersHistRaw(opts?.fetchFn ?? fetch);
     ordersHistCache = { at: Date.now(), rows };
@@ -642,6 +678,7 @@ export function __resetCtAccountForTest(opts?: {
   brokerGap1Ms?: number;
   brokerGap2Ms?: number;
   escalateWindowMs?: number;
+  slowThresholdMs?: number;
 }) {
   snapCache = null;
   fillsCache = null;
@@ -654,6 +691,8 @@ export function __resetCtAccountForTest(opts?: {
   ctPenaltyMaxOverride = opts?.penaltyMaxMs ?? null;
   ctPenaltyUntil = 0;
   ctPenaltyKind = null;
+  ctSlowThresholdOverride = opts?.slowThresholdMs ?? null;
+  ctSlowUntil = 0;
   brokerGap1Override = opts?.brokerGap1Ms ?? null;
   brokerGap2Override = opts?.brokerGap2Ms ?? null;
   escalateWindowOverride = opts?.escalateWindowMs ?? null;

@@ -300,7 +300,7 @@ export async function placeCrossTradeOrder(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(30_000),
     });
     const cls = classifyResponse(res.status, await res.text());
     // the webhook path carries no OSO child ids for the late-rejection
@@ -342,7 +342,7 @@ export async function changeCrossTradeOrder(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(30_000),
     });
     return classifyResponse(res.status, await res.text());
   } catch (e) {
@@ -408,7 +408,7 @@ export async function placeCrossTradeScaleOut(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(30_000),
       });
       return classifyResponse(res.status, await res.text());
     } catch (e) {
@@ -795,7 +795,7 @@ async function postRESTLeg(payload: Omit<RESTPlacePayload, "stopLoss"> & { stopL
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(30_000),
       },
       { extraRetries: 1, backoffBaseMs: 1500 },
     );
@@ -871,7 +871,7 @@ async function restFlatGate(cfg: CrossTradeConfig): Promise<{ ok: boolean; reaso
     // pacing refusal with backoff before this gate fails closed.
     const res = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`,
-      { headers: { Authorization: `Bearer ${cfg.key}` }, signal: AbortSignal.timeout(15_000) },
+      { headers: { Authorization: `Bearer ${cfg.key}` }, signal: AbortSignal.timeout(30_000) },
       { extraRetries: 2, backoffBaseMs: 1200, retryOn503: true },
     );
     if (res.status < 200 || res.status >= 300) {
@@ -1029,7 +1029,7 @@ async function postWebhookLeg(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(30_000),
     });
     return classifyResponse(res.status, await res.text());
   } catch (e) {
@@ -1094,7 +1094,7 @@ export async function cancelCrossTradeOrderREST(orderId: string): Promise<{ ok: 
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
         body: "{}",
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(30_000),
       },
     );
     const bodyText = await res.text();
@@ -1196,7 +1196,7 @@ export async function rearmCrossTradeBracketREST(args: {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(30_000),
       },
     );
     const bodyText = await res.text();
@@ -1235,7 +1235,7 @@ export async function flattenCrossTradePositionREST(): Promise<{ ok: boolean; re
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
         body: "{}",
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(30_000),
       },
     );
     const bodyText = await res.text();
@@ -1330,7 +1330,7 @@ export async function readMnqFlatREST(opts?: { fetchFn?: typeof fetch }): Promis
   try {
     const res = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`,
-      { headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+      { headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(30_000) },
       { extraRetries: 1, retryOn503: true },
       fetchFn,
     );
@@ -1376,7 +1376,7 @@ export async function readMnqQtyREST(): Promise<number | null> {
   try {
     const res = await ctFetch(
       `https://app.crosstrade.io/v1/api/tv/accounts/${encodeURIComponent(cfg.account)}/positions`,
-      { headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(15_000) },
+      { headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(30_000) },
       { extraRetries: 1, retryOn503: true },
     );
     if (res.status < 200 || res.status >= 300) return null;
@@ -1452,7 +1452,7 @@ async function latestEntryFill(intent: OrderIntent, sinceMs: number): Promise<{ 
   try {
     const res = await fetch("https://app.crosstrade.io/v1/api/tv/fills", {
       headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(30_000),
     });
     const j = (await res.json()) as { data?: Array<{ data?: Array<Record<string, unknown>> }> };
     let best: { ts: number; price: number } | null = null;
@@ -1514,7 +1514,7 @@ async function readSessionOrdersREST(): Promise<{ ok: boolean; rows: Array<Recor
   try {
     const res = await fetch("https://app.crosstrade.io/v1/api/tv/orders", {
       headers: { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(30_000),
     });
     const j = (await res.json()) as { success?: boolean; data?: Array<{ data?: Array<Record<string, unknown>> }> };
     if (!j.success) return { ok: false, rows: [] };
