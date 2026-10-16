@@ -3,6 +3,7 @@ import { Callout, Section } from "@/components/ui";
 /** live FEED_* switch states as served by /api/gc?action=health */
 export type FeedFlags = {
   momentum?: boolean;
+  bigbar?: boolean;
   rth?: boolean;
   open?: boolean;
   openDrive?: boolean;
@@ -55,6 +56,29 @@ const STRATEGIES: Strategy[] = [
       { label: "Per year", value: "2024 80.0% · 2025 75.3% · 2026 (out-of-sample) 77.9%" },
       { label: "By direction", value: "long 78.5% (PF 3.08) · short 76.4% (PF 2.88)" },
       { label: "Sequential replay", value: "one trade at a time — only ~1% of signals overlap; edge intact" },
+    ],
+  },
+  {
+    emoji: "🔷",
+    name: "BIG-BAR — first ≥100-pt bar continuation (family D)",
+    status: "LIVE",
+    feeds: ["bigbar"],
+    window: "all hours · one candidate per session (news-blackout bars skip)",
+    conditions: [
+      "TRIGGER: the session's FIRST bar with range ≥100 pts, past the first 30 bars",
+      "DIRECTION: the bar's delta sign (buy − sell ≠ 0) — the footprint's one-sided proof on the macro minute",
+      "ENTRY: resting limit AT the bar's close (the flush-limit path — no marketable chase), TTL 9 min, cancelled if untraded",
+    ],
+    mechanics: {
+      entry: "resting limit at the trigger bar's close, TTL 9 min",
+      stop: "fill ∓ max(3.5, ATR14) pts",
+      target: "1R from the fill · 60-bar time exit",
+      risk: "≈29 pts on macro days → 1 micro at the $100 budget",
+    },
+    stats: [
+      { label: "Verified (live limit arm)", value: "107 trades · 57.0% WR · PF 1.42 · +4.63 pts per trade · train/test 52/62" },
+      { label: "Coverage", value: "~1 trade per 1.1 weeks — only days whose tape prints a 100-pt minute" },
+      { label: "The catch", value: "the market-entry arm (76.5% WR, PF 3.74) is the unreachable close-fill ideal — the live card rests a limit" },
     ],
   },
   {
@@ -190,8 +214,8 @@ function statusFor(s: Strategy, feeds: FeedFlags | null): { text: string; cls: s
 
 export function LiveStrategiesSection({ feeds = null }: { feeds?: FeedFlags | null }) {
   const callout = feeds
-    ? `⚡ momentum ${feeds.momentum ? "ON" : "OFF"} · 🟦 RTH ${feeds.rth ? "ON" : "OFF"} · 🔔 open master ${feeds.open ? "ON" : "OFF"} (drive ${feeds.openDrive ? "ON" : "OFF"}, pullback ${feeds.openPullback ? "ON" : "OFF"}, sniper ${feeds.openSniper ? "ON" : "OFF"}) · ⚠ unusual volume ${feeds.unusualVolume ? "ON" : "OFF"} · gap alerts ${feeds.gapAlerts ? "ON" : "OFF"} · reversal ${feeds.reversal ? "ON" : "OFF"} / sweep-reclaim ${feeds.sweepReclaim ? "ON" : "OFF"} / pullback ticket ${feeds.pullbackTicket ? "ON" : "OFF"} — read live from this server's environment.`
-    : "⚡ momentum ON · 🟦 RTH ON · 🔔 open master ON (drive ON, pullback/sniper OFF) · ⚠ unusual volume OFF · gap alerts OFF · reversal / sweep-reclaim / pullback ticket OFF.";
+    ? `⚡ momentum ${feeds.momentum ? "ON" : "OFF"} · 🔷 big-bar ${feeds.bigbar ? "ON" : "OFF"} · 🟦 RTH ${feeds.rth ? "ON" : "OFF"} · 🔔 open master ${feeds.open ? "ON" : "OFF"} (drive ${feeds.openDrive ? "ON" : "OFF"}, pullback ${feeds.openPullback ? "ON" : "OFF"}, sniper ${feeds.openSniper ? "ON" : "OFF"}) · ⚠ unusual volume ${feeds.unusualVolume ? "ON" : "OFF"} · gap alerts ${feeds.gapAlerts ? "ON" : "OFF"} · reversal ${feeds.reversal ? "ON" : "OFF"} / sweep-reclaim ${feeds.sweepReclaim ? "ON" : "OFF"} / pullback ticket ${feeds.pullbackTicket ? "ON" : "OFF"} — read live from this server's environment.`
+    : "⚡ momentum ON · 🔷 big-bar ON · 🟦 RTH ON · 🔔 open master ON (drive ON, pullback/sniper OFF) · ⚠ unusual volume OFF · gap alerts OFF · reversal / sweep-reclaim / pullback ticket OFF.";
 
   return (
     <>
