@@ -388,6 +388,7 @@ export async function checkManualActions(): Promise<void> {
       if (posNet !== 0) held = posNet > 0 ? "long" : "short";
     }
 
+    lastPosNet = posNet;
     const fills = await ctFills();
     const tracked = await trackedTrades();
     if (fills) {
@@ -531,6 +532,18 @@ export async function checkManualActions(): Promise<void> {
 /* ---- lifecycle + reads ------------------------------------------------- */
 
 let started = false;
+/** the last pass's MNQ net position — flat book → 60s cadence */
+let lastPosNet = 0;
+/** a manual position exists → keep the 10s cadence; flat → 60s */
+let manualTick = 0;
+
+/** pure cadence decision (unit-tested): ZERO broker reads while flat
+ *  (2026-10-16 owner directive — no polling when flat). The detector
+ *  only runs while a position is known to exist (its lifecycle
+ *  journaling), which can only begin via our own execution path. */
+export function manualDetectDue(flat: boolean): boolean {
+  return !flat;
+}
 
 /** the 10s manual-action detector. Independent of EXECUTE_LIVE — manual
  *  activity matters most precisely when the bot is NOT trading. */
@@ -541,6 +554,7 @@ export function startManualDetect(intervalMs = 10_000): void {
   if (!key || !acct) return;
   started = true;
   const timer = setInterval(() => {
+    if (!manualDetectDue(lastPosNet === 0)) return; // flat: NO broker reads (2026-10-16)
     void checkManualActions().catch(() => {});
   }, intervalMs);
   if (typeof timer.unref === "function") timer.unref();

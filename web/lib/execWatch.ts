@@ -261,8 +261,25 @@ async function flatClaimSupported(reg: OpenProtection): Promise<boolean> {
   return now - flatClaimSeenAt >= FLAT_CLAIM_PERSIST_MS;
 }
 
+/**
+ * Does the protection sweep have anything to protect? ZERO book
+ * polling while flat (2026-10-16 owner directive): with nothing
+ * tracked and nothing in flight, the sweep never reads the broker.
+ * The flat gate still reads FRESH at every card (fail-closed on an
+ * open position), and our own placements register expectations BEFORE
+ * dispatch — so `tracked` becomes true the moment a position can
+ * exist and the sweep resumes at full cadence instantly. Manual
+ * positions are the owner's responsibility while flat. Pure —
+ * unit-tested.
+ */
+export function protectionSweepDue(tracked: boolean): boolean {
+  return tracked;
+}
+
 export async function checkProtection(): Promise<void> {
   if (!enabled()) return;
+  const tracked = openProtection() !== null || openExecs().size > 0 || pending.size > 0;
+  if (!protectionSweepDue(tracked)) return;
   const read = await readMnqPositionRead();
   const reg = openProtection();
   if (read.status === "unreadable") {

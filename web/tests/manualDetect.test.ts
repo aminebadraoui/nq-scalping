@@ -8,6 +8,7 @@ import {
   classifyManualFills,
   groupManualFills,
   isBotFill,
+  manualDetectDue,
   pairManualGroup,
   nyDay,
   __resetManualDetectForTest,
@@ -150,4 +151,14 @@ test("groupManualFills: partial exit keeps the trip open for the rest", () => {
   assert.equal(groups.size, 1);
   const pair = pairManualGroup(groups.values().next().value ?? []);
   assert.equal(pair.closed, false); // still open — not a closed round trip
+});
+
+/* ---- flat-state skip (2026-10-16: zero broker reads while flat) ---- */
+
+test("manualDetectDue: flat book -> never due (no broker reads)", () => {
+  assert.equal(manualDetectDue(true), false);
+});
+
+test("manualDetectDue: a known position -> due every tick", () => {
+  assert.equal(manualDetectDue(false), true);
 });

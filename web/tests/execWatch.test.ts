@@ -4,7 +4,7 @@
  * naked-position repair from the 2026-10-08 incident. */
 import { test } from "node:test";
 import assert from "node:assert";
-import { stopCoversPosition, classifyExitFill, pickExitFill, EXIT_SLIP_WINDOW_MS, findMatchingFill, bracketExitFills, pollExitFills } from "../lib/execWatch";
+import { stopCoversPosition, classifyExitFill, pickExitFill, EXIT_SLIP_WINDOW_MS, findMatchingFill, bracketExitFills, pollExitFills, protectionSweepDue } from "../lib/execWatch";
 import { rearmStopPrice } from "../lib/crossTrade";
 
 test("rearmStopPrice: long anchors the stop just BELOW the tape (Tradovate-valid)", () => {
@@ -453,4 +453,14 @@ test("bracketExitFills: a single fill larger than the entry size is skipped, the
   );
   assert.equal(out.length, 1);
   assert.equal(out[0].qty, 8);
+});
+
+/* ---- flat-state sweep skip (2026-10-16: zero book polls while flat) ---- */
+
+test("protectionSweepDue: zero polling while flat and nothing in flight", () => {
+  assert.equal(protectionSweepDue(false), false);
+});
+
+test("protectionSweepDue: full cadence the moment anything is tracked", () => {
+  assert.equal(protectionSweepDue(true), true);
 });
