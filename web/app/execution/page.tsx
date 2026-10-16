@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { StageLayout } from "@/components/stage/StageLayout";
+import ExecLedgerPanel from "@/components/ExecLedgerPanel";
 import ExecLogPanel from "@/components/ExecLogPanel";
 import ExecLatencyPanel from "@/components/ExecLatencyPanel";
 import ExecutionsPanel from "@/components/ExecutionsPanel";
@@ -25,6 +26,7 @@ export default function ExecutionPage() {
       }
     >
       <div className="space-y-4">
+        <ExecLedgerPanel />
         <ExecutionsPanel />
         <ExecLatencyPanel />
         <ExecLogPanel />
