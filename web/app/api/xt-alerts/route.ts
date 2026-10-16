@@ -91,14 +91,14 @@ export async function POST(req: Request) {
           const pts = (c.exitPrice - entryPx) * dir;
           const result = c.pnlUsd > 0 ? "win" : c.pnlUsd < 0 ? "loss" : "flat";
           const exitAction = c.side === "long" ? "Sell" : "Buy";
-          await sql.unsafe(
-            `update exec_trades set status = 'closed', exit_avg = ${c.exitPrice},
+          await sql`
+            update exec_trades set status = 'closed', exit_avg = ${c.exitPrice},
                pts = ${pts.toFixed(2)}, gross_usd = ${c.pnlUsd.toFixed(2)},
                net_usd = ${c.pnlUsd.toFixed(2)}, result = ${result},
                exit_fills = ${JSON.stringify([{ ts, action: exitAction, qty: c.qty, price: c.exitPrice }])}::jsonb,
                updated_at = now()
-             where id = ${Number(match.id)}`,
-          );
+             where id = ${Number(match.id)}
+          `;
           console.log(`[xt-alerts] pushed close: ${match.key} → ${c.exitPrice} (${c.pnlUsd >= 0 ? "+" : "−"}$${Math.abs(c.pnlUsd).toFixed(2)})`);
         }
       }
