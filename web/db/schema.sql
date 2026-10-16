@@ -122,3 +122,19 @@ create table if not exists signals (
 );
 create index if not exists signals_ts_idx on signals (ts desc);
 create index if not exists signals_outcome_idx on signals (outcome, day);
+
+-- CrossTrade pushed alerts (2026-10-16: the HTTP Webhook alert destination
+-- → /api/xt-alerts). One row per vendor alert — position opened/closed and
+-- protection events arrive PUSHED, so the book state no longer needs polling.
+create table if not exists xt_alerts (
+  id        bigint generated always as identity primary key,
+  ts        bigint not null,
+  type      text not null default '',
+  title     text not null default '',
+  message   text not null default '',
+  account   text not null default '',
+  details   jsonb,
+  created_at timestamptz not null default now(),
+  unique (ts, type, title)
+);
+create index if not exists xt_alerts_ts_idx on xt_alerts (ts desc);
