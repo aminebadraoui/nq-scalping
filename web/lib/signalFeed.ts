@@ -1713,6 +1713,46 @@ class SignalFeed {
         ].join("\n");
         const res = await this.push(armText);
         if (!res.sent) this.lastError = res.reason;
+        // journal the card like every other candidate (2026-10-16): the
+        // limit branch used to skip recordSignal entirely — the broker
+        // still placed the order, but the signals table / insight miner /
+        // history never saw the card (the 10-16 overnight limit cards
+        // exist only in exec_trades). Journaling only — no trade behavior.
+        await this.record({
+          timeET: et,
+          day: s.d,
+          symbol: symbol(),
+          side: s.dir,
+          price: level,
+          entry: level.toFixed(2),
+          stop: (level - (s.dir === "long" ? 1 : -1) * risk).toFixed(2),
+          target: (level + (s.dir === "long" ? 1 : -1) * risk).toFixed(2),
+          size: sizeStrArm,
+          verdict: isBigBar
+            ? "momentum (big-bar continuation · limit)"
+            : s.kind === "expansion"
+              ? "momentum (huge-bar expansion · retrace limit)"
+              : "momentum (failed-flush breakout · limit)",
+          headline: `NQ ${isBigBar ? "big-bar continuation" : "momentum"} ${s.dir}`,
+          source: "live",
+          test: false,
+          sent: res.sent,
+          reason: res.reason,
+          features: signalFeatures(s as unknown as Record<string, unknown>, {
+            aPlus,
+            firstToday,
+            family,
+            limitEntry: level,
+            limitTtlMin: lp.ttlMin,
+            gates: this.gateSnapshot(ov),
+            ...es.features,
+            ...seasonal.features,
+            ...sf.features,
+            ...rn.features,
+            ...gch.features,
+            ...wall.features,
+          }),
+        });
         this.placeWithGuardRetry(key, intent, scaleOut, et, isBigBar ? " (big-bar limit)" : flush ? " (flush limit)" : " (retrace)", level);
         console.log(`[${isBigBar ? "bigBarLimit" : flush ? "flushLimit" : "expRetrace"}] broker limit placed ${s.dir} @ ${fmtPx(level)} · ${et} NY · expires after ${lp.ttlMin} min`);
         continue;
