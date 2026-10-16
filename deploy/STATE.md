@@ -1,5 +1,53 @@
 # Deploy state (last verified 2026-10-15)
 
+## Silent-failure loop fixes (2026-10-15, commit `3a23291`, deployed 2026-10-16)
+
+Evening diagnosis of "no signals" (10-15) — the pipeline was healthy and
+the evening tape genuinely had no qualifying setups (production detectors
+run over the captured live buffer: 0 momentum / 0 expansion / 0 RTH-soft
+new candidates; the only evening near-misses failed the one-sided
+cluster-stack check). Three real silent failures were found and fixed:
+
+1. **CrossTrade 429 pacing spam** — the DEMO login's Tradovate budget
+   refills slowly, so the poll stack (guard 25s · watch 5s · exit/
+   protection 10s · manualDetect 10s) exhausted it and nearly every
+   positions call 429'd on attempt 1 ("retry 1/2" ~1.6/min all evening).
+   Fix (`lib/ctAccount.ts`): broker refusals escalate the REST call
+   spacing 1.5s → 3s with a 60s decay (broker shape only — ct_pacing /
+   snapshot hints don't escalate); WS mirror freshness 30s → 60s to
+   match the demo pnl frame cadence (~40s — pushed position/order frames
+   still arrive instantly, and the 30s liveness watchdog still
+   reconnects a silent stream). Pure pacing — no order/gate semantics
+   change.
+2. **Bar-close card drop** — momentum/RTH fired only when the trigger
+   bar was the buffer TAIL; whenever the tape gate held past the minute
+   roll, the just-closed-bar candidate was silently dropped (never
+   journaled). The 10-15 15:23 ET RTH setup was lost this way. Fix
+   (`lib/signalFeed.ts` `tailOrJustClosedBar`): the just-closed bar is
+   accepted when candle-source — the open family's existing convention
+   and the archive-replay baseline (tick-built bars still can never
+   carry a card). Evidence re-run: `scripts/entryQualityStudy.ts
+   --offline` (live(ref) 12,078 trades, 75.9% WR, PF 2.88) +
+   `scripts/rthOptimizer.ts` full campaign (primary PASS eval+funded,
+   P(pass before breach)=100%).
+3. **DOM feed reconnect churn** — the DOM_V2 channel is VENDOR-SILENT:
+   probe-verified 2026-10-16 on both the wsdom and the main ws hosts
+   with single- and double-symbol payloads (Welcome, then zero frames —
+   same signature the production watchdog proved). The vendor
+   additionally idle-killed the socket every ~4 min → 45 silentConnects
+   per session. Fix (`lib/dom.ts`): 30s PING + 60s re-subscribe (the
+   live.ts cadence) keeps the socket alive; the feed stays connected and
+   still records nothing until the vendor serves data. Nothing gates on
+   DOM — display/features only. If the DOM panel shows L2 in the
+   GoCharting web terminal, that's an entitlement/endpoint difference to
+   chase vendor-side.
+
+Not changed (documented decisions): `footprint_ticks` Neon writes stay
+OFF (2026-10-08 quota incident — candles persist, ticks live in RAM/R2
+by design); the RTH card cap counter is in-memory and resets on
+redeploys (5 cards sent 10-15 under cap 3 across deploys) — persisting
+it needs an owner decision.
+
 ## Live resources
 
 | Resource | Value |
