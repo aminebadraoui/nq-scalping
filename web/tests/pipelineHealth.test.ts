@@ -149,8 +149,14 @@ test("bars: 8 unconfirmed bars is down (page threshold)", () => {
   assert.equal(s.level, "down");
 });
 
-test("bars: 3-bar confirm lag degrades", () => {
-  const s = stage(input({ exec: { liveFeed: { ...healthyExecution().liveFeed!, tapeGate: { ...healthyExecution().liveFeed!.tapeGate!, tail: 3, tailAgeMs: 60_000 } } } }), "bars");
+test("bars: 3-4 unconfirmed bars is the normal vendor cadence (ok, not warn)", () => {
+  const s = stage(input({ exec: { liveFeed: { ...healthyExecution().liveFeed!, tapeGate: { ...healthyExecution().liveFeed!.tapeGate!, hold: true, tail: 4, tailAgeMs: 60_000 } } } }), "bars");
+  assert.equal(s.level, "ok");
+  assert.ok(s.headline.includes("normal cadence"));
+});
+
+test("bars: 6 unconfirmed bars degrades to warn (real lag)", () => {
+  const s = stage(input({ exec: { liveFeed: { ...healthyExecution().liveFeed!, tapeGate: { ...healthyExecution().liveFeed!.tapeGate!, tail: 6, tailAgeMs: 60_000 } } } }), "bars");
   assert.equal(s.level, "warn");
 });
 

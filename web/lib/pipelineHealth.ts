@@ -240,12 +240,16 @@ function barsStage(h: PipelineHealthInput): PipelineStage {
   } else if (tg.hold && tg.tailAgeMs !== null && tg.tailAgeMs >= TICK_FIRE_MS) {
     level = "warn";
     headline = "tick-fire fallback released a held card (stall-grade lag)";
-  } else if (tg.tail >= 3) {
+  } else if (tg.tail >= 6) {
+    // real degradation: the vendor's normal publish cycle leaves a tail
+    // of 0-4 (it confirms each bar ~60-90s late); 6+ unconfirmed bars
+    // means confirmation is genuinely falling behind, short of the
+    // operator-page threshold (8)
     level = "warn";
     headline = `confirmation lag — ${tg.tail} bars unconfirmed`;
   } else if (tg.hold) {
     level = "ok";
-    headline = `confirming the just-closed bar (tail ${tg.tail})`;
+    headline = `vendor confirming — ${tg.tail} unconfirmed bar${tg.tail === 1 ? "" : "s"} (normal cadence)`;
   } else {
     level = "ok";
     headline = "bars confirmed — gate clear";
