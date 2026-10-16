@@ -206,14 +206,22 @@ export const MOM_DEFAULTS: MomConfig = {
  *  tighter than 3.5 pts widen to entry ∓ 3.5 (target follows at 1R) — the
  *  floor sweep peaks at 3.5 (+1.9% total vs structural, −5% worst day);
  *  floors past ~4 hurt the tail. Stops under minRiskPts (3) still never
- *  trade. Big stops stay (docs/research/sizing-cap-2026-10-02.md). */
+ *  trade. Big stops stay (docs/research/sizing-cap-2026-10-02.md).
+ *
+ *  Frequency calibration 2026-10-16 (656 sessions,
+ *  docs/research/signal-frequency-sweep-2026-10-16.md): breakFrac 0.75→0.72,
+ *  breakWindow 10→15, flushFrac 0.30→0.35 together raise the flush card
+ *  from 3.3 to 8.1 signals/day at WR 75.4→74.0, PF 2.69→2.49, per-trade
+ *  +2.15→+2.11 pts (flat) and total net +4,579→+11,164 pts — the
+ *  "more legs traded without giving up per-trade edge" calibration. */
 export const MOM_PROD: MomConfig = {
   ...MOM_DEFAULTS,
   needResponse: false,
   stopMode: "breakout",
   stopPad: 0.5,
-  breakFrac: 0.75,
-  breakWindow: 10,
+  flushFrac: 0.35,
+  breakFrac: 0.72,
+  breakWindow: 15,
   minRiskPts: 3,
   targetR: 1,
   riskFloorPts: 3.5,
@@ -907,9 +915,18 @@ export const EXP_DEFAULTS: ExpansionConfig = {
  *  huge bar (≥1.6× ATR14) with ≥75% one-sided delta and a direction-matching
  *  cluster stack, stop under its low, 1R target. Sequential replay: 4,144
  *  trades, 78.4% win, PF 3.14 — combined with the flush trigger: 4,822
- *  trades, 77.5% win, PF 2.98. */
+ *  trades, 77.5% win, PF 2.98.
+ *
+ *  Frequency calibration 2026-10-16 (656 sessions,
+ *  docs/research/signal-frequency-sweep-2026-10-16.md): minRangeR 1.6→1.4 +
+ *  minAbsDeltaFrac 0.5→0.45 raise the expansion card from 7.5 to 14.3
+ *  signals/day at WR 77.7→75.9, PF 3.02→2.74, per-trade +2.50→+2.35 and
+ *  total net +12,271→+22,060 pts — the live EXP_RETRACE fill arm is the
+ *  validation surface (scripts/entryQualityStudy.ts). */
 export const EXP_PROD: ExpansionConfig = {
   ...EXP_DEFAULTS,
+  minRangeR: 1.4,
+  minAbsDeltaFrac: 0.45,
   hourFilter: "globex",
   riskFloorPts: 3.5,
 };

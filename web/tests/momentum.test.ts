@@ -106,7 +106,10 @@ test("the 18:16 long fires structurally — its 3.5-pt stop sits AT the widen fl
   const s = sigs[0];
   assert.equal(s.dir, "long");
   assert.equal(s.t, "22:16"); // 18:16 ET
-  assert.equal(s.flushIdx, 10); // 22:10 flush
+  // flushFrac 0.35 (frequency calibration 2026-10-16) arms the first
+  // qualifying flush: 22:06, 66% sell, holding the session low — the
+  // 22:10 78%-sell flush never gets the watch because 22:06 owns it.
+  assert.equal(s.flushIdx, 6); // 22:06 flush
   assert.equal(s.breakIdx, 16); // 22:16 breakout
   assert.equal(s.respIdx, 16); // merged mode: the breakout bar is its own response evidence
   assert.ok(Math.abs(s.entry - 30738.0) < 0.01, `entry ${s.entry}`);

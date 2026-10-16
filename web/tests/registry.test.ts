@@ -59,7 +59,7 @@ test("fieldRows renders values from the live object", () => {
   const rows = fieldRows(mom);
   const breakFrac = rows.find((r) => r.key === "breakFrac");
   assert.ok(breakFrac);
-  assert.equal(breakFrac!.value, "0.75"); // if MOM_PROD changes, this test pins the render, not the value
+  assert.equal(breakFrac!.value, "0.72"); // if MOM_PROD changes, this test pins the render, not the value
   assert.equal(typeof MOM_PROD.breakFrac, "number"); // sanity: value came from the object
 });
 
