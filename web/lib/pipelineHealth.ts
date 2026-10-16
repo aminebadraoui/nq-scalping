@@ -179,8 +179,18 @@ function tapeStage(h: PipelineHealthInput): PipelineStage {
     }
   }
   if (level !== "down" && lf.ratio !== null && lf.ratio < 0.7) {
-    level = "warn";
-    headline = `volume undercount — feed ratio ×${lf.ratio.toFixed(2)}`;
+    // the ratio compares the live buffer's volume against the vendor's
+    // day snapshot — windows that only line up by accident (12.96 one
+    // boot, 0.51 the next). It is only meaningful when the recent bars
+    // are materially TICK-built (the undercount it exists to detect).
+    // A candle-healthy mix (cards fire on vendor candle bars) shows the
+    // ratio in the details without crying wolf.
+    const mix0 = lf.barSource;
+    const tickFrac0 = mix0 && mix0.candle + mix0.tick > 0 ? mix0.tick / (mix0.candle + mix0.tick) : 0;
+    if (tickFrac0 > 0.3) {
+      level = "warn";
+      headline = `volume undercount — feed ratio ×${lf.ratio.toFixed(2)}`;
+    }
   }
   const mix = lf.barSource;
   if (level === "ok" && mix && mix.candle + mix.tick > 0 && mix.tick / (mix.candle + mix.tick) > 0.6) {

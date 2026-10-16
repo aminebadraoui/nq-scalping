@@ -128,8 +128,16 @@ test("tape: stale prints during a closed market stay ok (no prints is normal)", 
   assert.equal(s.level, "ok");
 });
 
-test("tape: volume undercount (ratio < 0.7) degrades", () => {
+test("tape: ratio undercount with a candle-healthy mix is ok (window mismatch, not a real undercount)", () => {
   const s = stage(input({ exec: { liveFeed: { ...healthyExecution().liveFeed!, ratio: 0.55 } } }), "tape");
+  assert.equal(s.level, "ok");
+});
+
+test("tape: ratio undercount with a materially tick-built mix degrades", () => {
+  const s = stage(
+    input({ exec: { liveFeed: { ...healthyExecution().liveFeed!, ratio: 0.55, barSource: { candle: 60, tick: 60 } } } }),
+    "tape",
+  );
   assert.equal(s.level, "warn");
 });
 
