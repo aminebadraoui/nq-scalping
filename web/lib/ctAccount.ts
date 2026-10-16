@@ -117,6 +117,10 @@ const CT_GAP_ESCALATE_WINDOW_MS = 60_000;
 
 let brokerRefusals = 0;
 let lastBrokerRefusalAt = 0;
+/** totals for the dashboard pacing badge (display-only) */
+let brokerRefusalsTotal = 0;
+let slowResponsesTotal = 0;
+let lastSlowAtMs = 0;
 /** TEST ONLY overrides */
 let brokerGap1Override: number | null = null;
 let brokerGap2Override: number | null = null;
@@ -135,6 +139,7 @@ function ctGapMs(): number {
 
 function noteBrokerRefusal(): void {
   lastBrokerRefusalAt = Date.now();
+  brokerRefusalsTotal++;
   if (brokerRefusals < 2) brokerRefusals++;
 }
 
@@ -165,6 +170,33 @@ export function ctSlowActive(): boolean {
 
 function noteSlowResponse(): void {
   ctSlowUntil = Math.max(ctSlowUntil, Date.now() + CT_SLOW_PAUSE_MS);
+  slowResponsesTotal++;
+  lastSlowAtMs = Date.now();
+}
+
+/** the dashboard pacing badge snapshot — display-only, no fetch. */
+export function ctPacingSnapshot(): {
+  penaltyActive: boolean;
+  penaltyKind: string | null;
+  penaltyUntilMs: number;
+  slowActive: boolean;
+  slowUntilMs: number;
+  brokerRefusalsTotal: number;
+  slowResponsesTotal: number;
+  lastBrokerRefusalAtMs: number;
+  lastSlowAtMs: number;
+} {
+  return {
+    penaltyActive: ctPenaltyActive(),
+    penaltyKind: ctPenaltyKind,
+    penaltyUntilMs: ctPenaltyUntil,
+    slowActive: ctSlowActive(),
+    slowUntilMs: ctSlowUntil,
+    brokerRefusalsTotal,
+    slowResponsesTotal,
+    lastBrokerRefusalAtMs: lastBrokerRefusalAt,
+    lastSlowAtMs,
+  };
 }
 
 function slowPaused(): boolean {
@@ -693,6 +725,9 @@ export function __resetCtAccountForTest(opts?: {
   ctPenaltyKind = null;
   ctSlowThresholdOverride = opts?.slowThresholdMs ?? null;
   ctSlowUntil = 0;
+  brokerRefusalsTotal = 0;
+  slowResponsesTotal = 0;
+  lastSlowAtMs = 0;
   brokerGap1Override = opts?.brokerGap1Ms ?? null;
   brokerGap2Override = opts?.brokerGap2Ms ?? null;
   escalateWindowOverride = opts?.escalateWindowMs ?? null;

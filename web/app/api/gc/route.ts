@@ -97,6 +97,7 @@ export async function GET(req: NextRequest) {
           dataDir: process.env.GC_DATA_DIR ?? null,
           execution: {
             crosstradeConfigured: crossTradeEnabled(),
+            ctPacing: (await import("@/lib/ctAccount")).ctPacingSnapshot(),
             tradingHalt: (await import("@/lib/tradingHalt")).tradingHalted(),
             account: masked,
             instrument: mapInstrument(process.env.GOCHARTING_SYMBOL || "NQZ26", process.env.CROSSTRADE_INSTRUMENT),

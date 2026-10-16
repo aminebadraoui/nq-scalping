@@ -9,6 +9,17 @@ export type ExecHealth = {
   now: string;
   execution: {
     crosstradeConfigured: boolean;
+    ctPacing: {
+      penaltyActive: boolean;
+      penaltyKind: string | null;
+      penaltyUntilMs: number;
+      slowActive: boolean;
+      slowUntilMs: number;
+      brokerRefusalsTotal: number;
+      slowResponsesTotal: number;
+      lastBrokerRefusalAtMs: number;
+      lastSlowAtMs: number;
+    } | null;
     tradingHalt: boolean;
     account: string | null;
     instrument: string;

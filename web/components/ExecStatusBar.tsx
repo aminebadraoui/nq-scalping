@@ -32,6 +32,7 @@ export default function ExecStatusBar({ data }: { data: ExecHealth | null }) {
   const feeds = ex?.feeds ?? null;
   const tape = ex?.liveFeed ?? null;
   const market = ex?.market ?? null;
+  const ct = ex?.ctPacing ?? null;
 
   const badgeCls =
     st.state === "live" ? "bg-long/10 text-long border-long/40"
@@ -53,6 +54,31 @@ export default function ExecStatusBar({ data }: { data: ExecHealth | null }) {
         <span className="font-mono text-[10px] text-zinc-400">
           {ex?.executeLive ? "EXECUTE_LIVE" : "dry-run"} · {ex?.account ?? "no account"} · {ex?.instrument ?? ""}
         </span>
+        {/* CrossTrade pacing badge — the live 429/slow-lane state */}
+        {ct && (
+          <span
+            className={`rounded border px-2 py-0.5 font-mono text-[10px] ${
+              ct.penaltyActive
+                ? "border-short/40 bg-short/10 text-short"
+                : ct.slowActive
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                  : ct.brokerRefusalsTotal > 0
+                    ? "border-zinc-600 bg-zinc-800/40 text-zinc-300"
+                    : "border-long/40 bg-long/10 text-long"
+            }`}
+            title={`broker 429 refusals: ${ct.brokerRefusalsTotal} · slow responses: ${ct.slowResponsesTotal}${
+              ct.penaltyActive ? ` · penalty (${ct.penaltyKind}) ${Math.max(0, Math.round((ct.penaltyUntilMs - Date.now()) / 1000))}s` : ""
+            }${ct.slowActive ? ` · slow-lane ${Math.max(0, Math.round((ct.slowUntilMs - Date.now()) / 1000))}s` : ""}`}
+          >
+            CT {ct.penaltyActive
+              ? `penalty ${Math.max(0, Math.round((ct.penaltyUntilMs - Date.now()) / 1000))}s`
+              : ct.slowActive
+                ? `slow-lane ${Math.max(0, Math.round((ct.slowUntilMs - Date.now()) / 1000))}s`
+                : ct.brokerRefusalsTotal > 0
+                  ? `429s: ${ct.brokerRefusalsTotal}`
+                  : "ok"}
+          </span>
+        )}
         <AccountSettings />
         <TradingToggle />
 
