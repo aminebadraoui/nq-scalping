@@ -57,6 +57,31 @@ test("min_break_frac / max_risk / first_only gates", () => {
   assert.equal(decideSignal([ov("all", "first_only", { required: true })], ctx({ firstOfDay: true })).allow, true);
 });
 
+test("side_veto blocks the matching side, optionally hour-scoped", () => {
+  const o = ov("momentum_expansion", "side_veto", { side: "short", hours: [16] });
+  assert.equal(decideSignal([o], ctx({ side: "short", hourET: 16 })).allow, false);
+  assert.equal(decideSignal([o], ctx({ side: "short", hourET: 22 })).allow, true);
+  assert.equal(decideSignal([o], ctx({ side: "long", hourET: 16 })).allow, true);
+  // no hours → the side is vetoed everywhere
+  const all = ov("momentum_expansion", "side_veto", { side: "short" });
+  assert.equal(decideSignal([all], ctx({ side: "short", hourET: 3 })).allow, false);
+  // fail-open: invalid value never blocks
+  const bad = ov("momentum_expansion", "side_veto", { junk: 1 });
+  assert.equal(decideSignal([bad], ctx({ side: "short" })).allow, true);
+});
+
+test("min_count_frac blocks below the floor and fails open on null counts", () => {
+  const o = ov("momentum_expansion", "min_count_frac", { min: 0.6, on: "count" });
+  assert.equal(decideSignal([o], ctx({ countFrac: 0.55 })).allow, false);
+  assert.equal(decideSignal([o], ctx({ countFrac: 0.7 })).allow, true);
+  // fail-open: the live tape does not supply counts yet
+  assert.equal(decideSignal([o], ctx({ countFrac: null })).allow, true);
+  assert.equal(decideSignal([o], ctx({})).allow, true);
+  // fail-open: wrong `on` never blocks
+  const bad = ov("momentum_expansion", "min_count_frac", { min: 0.6, on: "volume" });
+  assert.equal(decideSignal([bad], ctx({ countFrac: 0.3 })).allow, true);
+});
+
 test("generic family matches apply to children (momentum → expansion)", () => {
   const d = decideSignal([ov("momentum", "hour_veto", { hours: [22] })], ctx({ hourET: 22 }));
   assert.equal(d.allow, false);

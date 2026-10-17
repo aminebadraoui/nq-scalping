@@ -66,6 +66,7 @@ import { recordSignal } from "./signalHistory";
 import { domContextForSignal } from "./dom";
 import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
+import { alignedCountFrac } from "./imbalance";
 import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
 import { registerExpectation, registerSendFailure, attachLimitOrderId } from "./execWatch";
@@ -1517,6 +1518,7 @@ class SignalFeed {
         breakRangeR: s.breakRangeR,
         cumDelta: s.cumDelta,
         firstOfDay: firstToday,
+        countFrac: alignedCountFrac(fp[s.entryIdx]?.levels ?? [], s.dir),
       });
       if (!dec.allow) {
         console.log(`[overrides] momentum ${s.dir} ${et} SKIPPED — ${dec.reasons.join("; ")}`);
@@ -2303,6 +2305,7 @@ class SignalFeed {
         breakRangeR: null,
         cumDelta: s.cumDelta,
         firstOfDay: false,
+        countFrac: alignedCountFrac(fp[s.entryIdx]?.levels ?? [], s.dir),
       });
       if (!dec.allow) {
         const es = esCardChips(esCtx, nqMid, s, false);

@@ -22,10 +22,11 @@ export type BootCandle = {
   buy: number;
   /** aggressive-sell volume for the minute. */
   sell: number;
-  /** per-price footprint rows (price × 100 → buy/sell volumes) — the same
-   *  clusters the archive and the backtests use. Absent when the feed
-   *  returns no per-level data. */
-  levels?: { level: number; buy: number; sell: number }[];
+  /** per-price footprint rows (price × 100 → buy/sell volumes + trade
+   *  counts) — the same clusters the archive and the backtests use.
+   *  Absent when the feed returns no per-level data. Counts are optional:
+   *  older decoders/fixtures may omit them. */
+  levels?: { level: number; buy: number; sell: number; bTrades?: number; sTrades?: number }[];
 };
 
 export type FootprintResponse = {
@@ -135,18 +136,26 @@ function decodeLevels(r: Reader): { buy: number; sell: number } {
   return { buy, sell };
 }
 
-function decodeFootprint(r: Reader): { level: number; buy: number; sell: number } {
+function decodeFootprint(r: Reader): { level: number; buy: number; sell: number; bTrades: number; sTrades: number } {
   let level = 0;
   let buy = 0;
   let sell = 0;
+  let bTrades = 0;
+  let sTrades = 0;
   while (!r.eof()) {
     const [field, wire] = r.readTag();
     if (field === 1 && wire === 0) level = r.readVarint();
-    else if (field === 2 && wire === 2) buy = decodeCluster(new Reader(r.readBytes())).volume;
-    else if (field === 3 && wire === 2) sell = decodeCluster(new Reader(r.readBytes())).volume;
-    else r.skip(wire);
+    else if (field === 2 && wire === 2) {
+      const c = decodeCluster(new Reader(r.readBytes()));
+      buy = c.volume;
+      bTrades = c.trades;
+    } else if (field === 3 && wire === 2) {
+      const c = decodeCluster(new Reader(r.readBytes()));
+      sell = c.volume;
+      sTrades = c.trades;
+    } else r.skip(wire);
   }
-  return { level, buy, sell };
+  return { level, buy, sell, bTrades, sTrades };
 }
 
 function decodeCandle(r: Reader): BootCandle | null {
@@ -155,7 +164,7 @@ function decodeCandle(r: Reader): BootCandle | null {
   let low = 0;
   let buy = 0;
   let sell = 0;
-  const levels: { level: number; buy: number; sell: number }[] = [];
+  const levels: { level: number; buy: number; sell: number; bTrades: number; sTrades: number }[] = [];
   while (!r.eof()) {
     const [field, wire] = r.readTag();
     if (field === 1 && wire === 2) t = r.readString();

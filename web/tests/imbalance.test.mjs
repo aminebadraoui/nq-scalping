@@ -1,7 +1,7 @@
 /* Imbalance engine: fixture-level rules + a full-session recomputation. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { imbalanceFor, summarizeImb, IMB_RATIO, IMB_MIN } from "../lib/imbalance.ts";
+import { imbalanceFor, summarizeImb, alignedCountFrac, IMB_RATIO, IMB_MIN } from "../lib/imbalance.ts";
 import { loadDay, DATE } from "./helpers.mjs";
 
 const rows = (spec) => spec.map(([price, buy, sell]) => ({ price, buy, sell }));
@@ -148,4 +148,24 @@ test("degenerate inputs never throw or leak NaN", () => {
     assert.ok(s.stacked === null || Number.isFinite(s.stacked.from));
     assert.ok(!JSON.stringify(s).includes("NaN"));
   }
+});
+
+test("alignedCountFrac: trade-count fraction by direction, null on no counts", () => {
+  const levels = [
+    { bTrades: 6, sTrades: 2 },
+    { bTrades: 3, sTrades: 9 },
+  ];
+  assert.equal(alignedCountFrac(levels, "long"), 9 / 20);
+  assert.equal(alignedCountFrac(levels, "short"), 11 / 20);
+  assert.equal(alignedCountFrac([], "long"), null);
+  assert.equal(alignedCountFrac([{ bTrades: 0, sTrades: 0 }], "long"), null);
+});
+
+test("imbalanceFor carries trade counts through when supplied", () => {
+  const lv = imbalanceFor([{ price: 100, buy: 8, sell: 2, bTrades: 5, sTrades: 1 }]);
+  assert.equal(lv[0].bTrades, 5);
+  assert.equal(lv[0].sTrades, 1);
+  const legacy = imbalanceFor([{ price: 100, buy: 8, sell: 2 }]);
+  assert.equal(legacy[0].bTrades, 0);
+  assert.equal(legacy[0].sTrades, 0);
 });

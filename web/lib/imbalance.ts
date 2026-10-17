@@ -61,7 +61,7 @@ export const IMB_MIN = 10;
 /** see the note in the header — flip to false for the strict reading */
 export const IMB_ALLOW_ZERO_COUNTERPART = true;
 
-export function imbalanceFor(rows: { price: number; buy: number; sell: number }[]): FPLevel[] {
+export function imbalanceFor(rows: { price: number; buy: number; sell: number; bTrades?: number; sTrades?: number }[]): FPLevel[] {
   // rows are sorted high -> low; index +1 is one tick (0.25) BELOW
   return rows.map((r, i) => {
     const below = rows[i + 1];
@@ -78,8 +78,23 @@ export function imbalanceFor(rows: { price: number; buy: number; sell: number }[
     // horizontal imbalance: both sides must have traded for 3:1 to mean anything
     const hBuy = tot >= IMB_MIN && r.sell > 0 && r.buy >= IMB_RATIO * r.sell;
     const hSell = tot >= IMB_MIN && r.buy > 0 && r.sell >= IMB_RATIO * r.buy;
-    return { ...r, bTrades: 0, sTrades: 0, dBuy, dSell, hBuy, hSell, ratio, dBuyRatio, dSellRatio };
+    return { ...r, bTrades: r.bTrades ?? 0, sTrades: r.sTrades ?? 0, dBuy, dSell, hBuy, hSell, ratio, dBuyRatio, dSellRatio };
   });
+}
+
+/** trigger-bar aligned trade-count fraction: bT/(bT+sT) for longs, mirror
+ *  for shorts, over the bar's levels. null when the bar carries no counts
+ *  (the fail-open value the min_count_frac gate must see). */
+export function alignedCountFrac(levels: { bTrades: number; sTrades: number }[], dir: "long" | "short"): number | null {
+  let bT = 0;
+  let sT = 0;
+  for (const l of levels) {
+    bT += l.bTrades;
+    sT += l.sTrades;
+  }
+  const tc = bT + sT;
+  if (tc === 0) return null;
+  return dir === "long" ? bT / tc : sT / tc;
 }
 
 export function summarizeImb(levels: FPLevel[]): ImbSummary {

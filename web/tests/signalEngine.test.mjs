@@ -72,3 +72,29 @@ test("liveVwap weights typical price by volume", () => {
   const expected = (100 * 20 + 101 * 40) / 60;
   assert.ok(Math.abs(liveVwap(mins) - expected) < 1e-9, `got ${liveVwap(mins)}, want ${expected}`);
 });
+
+test("liveMinutesToFootprint carries per-level trade counts when present", () => {
+  const mins = [
+    {
+      t: "14:30",
+      du: "2026-09-25",
+      o: 100,
+      h: 101,
+      l: 99,
+      c: 100.5,
+      vol: 10,
+      buy: 6,
+      sell: 4,
+      live: true,
+      levels: { "100.00": [3, 1], "100.25": [3, 3] },
+      levelTrades: { "100.00": [5, 2], "100.25": [4, 4] },
+    },
+  ];
+  const fp = liveMinutesToFootprint(mins);
+  const totals = fp[0].levels.reduce((a, l) => ({ b: a.b + l.bTrades, s: a.s + l.sTrades }), { b: 0, s: 0 });
+  assert.equal(totals.b, 9);
+  assert.equal(totals.s, 6);
+  // legacy minutes without levelTrades stay fail-open (0 counts, no throw)
+  const legacy = liveMinutesToFootprint([{ t: "14:30", du: "2026-09-25", o: 100, h: 101, l: 99, c: 100.5, vol: 10, buy: 6, sell: 4, live: true, levels: { "100.00": [3, 1] } }]);
+  assert.equal(legacy[0].levels.reduce((a, l) => a + l.bTrades + l.sTrades, 0), 0);
+});

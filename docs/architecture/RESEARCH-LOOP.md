@@ -79,6 +79,37 @@ changed and study it again.
 6. **Decay watch** — the rolling control chart alarms if the promoted
    edge degrades live; the response is a revert, not a re-tune.
 
+### 5b. The direct path — backtest → production, contract-gated (2026-10-16)
+
+The manual step 5 stays for detector/env/risk changes. For the
+**suppressive override gates** (`enable`, `hour_veto`, `trend_filter`,
+`min_break_frac`, `min_break_range`, `max_risk`, `first_only`,
+`side_veto`) a study may promote directly:
+
+- the study emits a machine-readable report (`--report-json`,
+  `lib/promotionGate.ts` `StudyReport`);
+- `scripts/promoteFromBacktest.ts --report … [--apply] [--now]` checks
+  the **promotion contract** and writes nothing on failure:
+  named-study allowlist per gate, declared Stack row, sample floors
+  (candidate n ≥ 100, test n ≥ 80), test WR lower CI > 50%, test
+  PF ≥ 1.1, expR > 0, **vetoed trades must fail the cost bar**
+  (test exp ≤ 0.25 pts or WR CI lower < 50% — the ticketVeto standard),
+  vetoed test n ≥ 30, veto budget ≤ 30% of cards, kept test exp
+  ≥ 0.9 × baseline, prop sim PASS train + test, DSR ≤ 0.15 / PBO ≤ 0.30
+  on grids;
+- the row lands in `strategy_overrides` (live within ~5 min, no deploy);
+  the nightly `SELF_IMPROVE=1` arm applies queued proposals;
+- **auto-revert**: an edge-monitor breach deactivates the family's
+  auto-applied rows (the response to degradation is a revert, never a
+  re-tune).
+
+The first candidate run (side-veto scan, 2026-10-16) was rejected by the
+contract — the direct path fails closed by construction. The first
+contract PASS (2026-10-17): `min_count_frac` {min: 0.60, on: "count"} on
+`momentum_expansion` (countFracGateStudy + validate_sweep DSR 1.000 /
+PBO 0.108) — proposal written via `promoteFromBacktest --apply`,
+activation gated on the live tape supplying trigger-bar trade counts.
+
 A study that varies two layers at once is confounded and discarded, no
 matter how good its numbers look.
 

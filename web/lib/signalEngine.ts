@@ -136,7 +136,10 @@ export function liveMinutesToFootprint(mins: LiveMinute[]): FootprintMinute[] {
     if (!stamp.hhmm) continue;
     const levels = imbalanceFor(
       Object.entries(m.levels ?? {})
-        .map(([p, v]) => ({ price: Number(p), buy: v[0], sell: v[1] }))
+        .map(([p, v]) => {
+          const ct = m.levelTrades?.[p];
+          return { price: Number(p), buy: v[0], sell: v[1], bTrades: ct?.[0] ?? 0, sTrades: ct?.[1] ?? 0 };
+        })
         .sort((a, b) => b.price - a.price),
     );
     let num = 0;

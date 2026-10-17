@@ -33,7 +33,8 @@ import {
   type MomentumSignal,
 } from "../lib/momentum";
 // consolidated engine: canonical scorer + standard T1/T2/T4 + verdict
-import { scoreTrade, scoreSequential, coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict } from "../lib/backtestEngine";
+import { scoreTrade, scoreSequential, coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict, PRODUCTION_STACK } from "../lib/backtestEngine";
+import { buildReport, type CohortStats } from "../lib/promotionGate";
 
 const REMOTE = process.env.GC_REMOTE_URL?.replace(/\/+$/, "") ?? "";
 const CONCURRENCY = 8;
@@ -43,7 +44,7 @@ const HOLD_BARS = 60;
 /* ---------------- CLI ---------------- */
 
 function parseArgs(argv: string[]) {
-  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; sweep: boolean; mode: "momentum" | "expansion" | "open" | "overlap" | "veto"; sequential: boolean; warm: boolean; offline: boolean; warmConcurrency: number } = {
+  const o: { max?: number; split?: string; cfg: Partial<MomConfig>; dump?: string; reportJson?: string; sweep: boolean; mode: "momentum" | "expansion" | "open" | "overlap" | "veto"; sequential: boolean; warm: boolean; offline: boolean; warmConcurrency: number } = {
     cfg: {},
     sweep: false,
     mode: "momentum",
@@ -68,6 +69,7 @@ function parseArgs(argv: string[]) {
         (o.cfg as Record<string, unknown>)[k.trim()] = Number(v);
       }
     } else if (a === "--dump") o.dump = argv[++i];
+    else if (a === "--report-json") o.reportJson = argv[++i];
     else if (a === "--sweep") o.sweep = true;
   }
   return o;
@@ -489,6 +491,73 @@ async function main() {
       JSON.stringify({ generated: new Date().toISOString(), variants: variants.map((v) => v.cfg), trades: Object.fromEntries(variants.map((v, idx) => [v.name, perVariant[idx]])), account: dumpAccount }, null, 1),
     );
     console.log(`\nsignals dumped → ${o.dump}`);
+  }
+
+  if (o.reportJson) {
+    // machine-readable promotion report (lib/promotionGate.ts). The
+    // candidate is the best variant by the study's ranking (train WR desc);
+    // the baseline is the variant named "*base*" or "prod" when present.
+    const baseName = variants.map((v) => v.name).find((n) => n.includes("base")) ?? variants.map((v) => v.name).find((n) => n.includes("prod"));
+    if (!baseName) {
+      console.error("--report-json needs a baseline variant named '*base*' or '*prod*' (run --mode veto or --sweep)");
+      process.exit(1);
+    }
+    const baseIdx = variants.findIndex((v) => v.name === baseName);
+    const cohortOfStats = (s: Stats): CohortStats => ({
+      n: s.n,
+      wr: s.wr,
+      wrCi: wilson95(s.wins, s.n),
+      pf: s.pf,
+      expPts: s.avgPts,
+      expR: s.expR,
+      sessions: s.sessionsWithSignals,
+    });
+    const bestRow = rows.find((r) => r.name === best.name)!;
+    const baseRow = rows.find((r) => r.name === baseName)!;
+    // the trades the gate removed = baseline trades whose (date, bar, dir)
+    // key is absent from the candidate cohort — the vetoed set
+    const candKeys = new Set(perVariant[bv].map((t) => `${t.date}|${t.entryIdx}|${t.dir}`));
+    const vetoedTrades = perVariant[baseIdx].filter((t) => !candKeys.has(`${t.date}|${t.entryIdx}|${t.dir}`));
+    const vetoedAll = stats(vetoedTrades);
+    const vetoedTest = stats(vetoedTrades.filter((t) => t.date >= splitDate));
+    const simOf = (name: string) => dumpAccount[name] as Record<string, { breachDay: string | null; passDay: string | null } | undefined>;
+    const passOf = (s: { breachDay: string | null; passDay: string | null } | undefined): boolean => !!s && s.breachDay === null && s.passDay !== null;
+    const fundedOk = (s: { breachDay: string | null; passDay: string | null } | undefined): boolean => !!s && s.breachDay === null;
+    const report = buildReport({
+      script: "scripts/momentumStudy.ts",
+      cli: argv.join(" "),
+      sha: "",
+      splitDate,
+      stack: `${PRODUCTION_STACK} · varying layer: ${mode} detector config`,
+      family: "all",
+      gate: "hour_veto",
+      value: null,
+      note: "",
+      baseline: {
+        ...cohortOfStats(baseRow.all),
+        train: cohortOfStats(baseRow.train),
+        test: cohortOfStats(baseRow.test),
+      },
+      candidate: {
+        ...cohortOfStats(bestRow.all),
+        train: cohortOfStats(bestRow.train),
+        test: cohortOfStats(bestRow.test),
+      },
+      vetoedSharePct: perVariant[baseIdx].length ? (vetoedTrades.length / perVariant[baseIdx].length) * 100 : 0,
+      vetoed: {
+        ...cohortOfStats(vetoedAll),
+        test: cohortOfStats(vetoedTest),
+      },
+      viability: {
+        evalPass: passOf(simOf(best.name)?.evalAll as never),
+        fundedPass: fundedOk(simOf(best.name)?.fundedAll as never),
+        evalTestPass: passOf(simOf(best.name)?.evalTest as never),
+        fundedTestPass: fundedOk(simOf(best.name)?.fundedTest as never),
+      },
+      grid: { variants: variants.length },
+    });
+    await fs.writeFile(o.reportJson, JSON.stringify(report, null, 1));
+    console.log(`\npromotion report → ${o.reportJson} (baseline ${baseName} → candidate ${best.name}; patch --family/--gate/--value via promoteFromBacktest.ts)`);
   }
 }
 

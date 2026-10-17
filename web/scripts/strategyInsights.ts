@@ -456,6 +456,29 @@ async function main() {
     console.log(`  EDGE ${e.status.toUpperCase().padEnd(11)} ${e.family}: ${e.detail}`);
   }
 
+  // ---- auto-revert: edge breach deactivates auto-applied overrides ----
+  // (owner-approved 2026-10-16, "backtest to prod directly": auto-applied
+  // rows auto-revert; the response to degradation is a revert, never a
+  // re-tune — RESEARCH-LOOP operating rule 5.) Runs only when the
+  // self-improvement loop is armed, mirroring the apply arm above.
+  if (process.env.SELF_IMPROVE === "1") {
+    for (const e of edges) {
+      if (e.status !== "breach") continue;
+      const reverted = await sql`
+        update strategy_overrides o set active = false, note = ${`auto-revert: edge breach ${e.family} ${new Date().toISOString().slice(0, 10)}`}
+        from insights i
+        where o.insight_id = i.id and i.auto_apply = true and o.active = true and o.family = ${e.family}
+        returning o.id, o.gate`;
+      await sql`
+        update insights i set status = 'reverted'
+        from strategy_overrides o
+        where o.insight_id = i.id and o.family = ${e.family} and o.active = false and o.note like 'auto-revert:%'`;
+      if (reverted.length > 0) {
+        console.log(`  [insights] AUTO-REVERT ${e.family}: deactivated ${reverted.length} auto-applied override(s) (${reverted.map((r) => r.gate).join(", ")}) — edge breached`);
+      }
+    }
+  }
+
   // ---- manual-trade audit (cross-referenced labels for the review) ----
   const manual = await loadManualContext(since.getTime());
   if (manual && manual.total > 0) {

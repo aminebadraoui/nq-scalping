@@ -53,6 +53,9 @@ export type LiveMinute = {
   source?: "tick" | "candle";
   /** price (0.25-tick) -> [buy, sell] contracts — only kept for the recent minutes */
   levels?: Record<string, [number, number]>;
+  /** price (0.25-tick) -> [buyTrades, sellTrades] counts — parallel to
+   *  levels; feeds the min_count_frac gate (fail-open when absent) */
+  levelTrades?: Record<string, [number, number]>;
 };
 
 export type LiveState = {
@@ -799,7 +802,10 @@ class LiveFeed {
       rolled = true;
       if (buf.minutes.length > MAX_MINUTES) buf.minutes = buf.minutes.slice(-MAX_MINUTES);
       // levels are only meaningful for the recent window — drop the rest
-      for (let i = 0; i < buf.minutes.length - 30; i++) delete buf.minutes[i].levels;
+      for (let i = 0; i < buf.minutes.length - 30; i++) {
+        delete buf.minutes[i].levels;
+        delete buf.minutes[i].levelTrades;
+      }
       cur = { t: hhmm, du: key.slice(0, 10), o: t.ltp, h: t.ltp, l: t.ltp, c: t.ltp, vol: 0, buy: 0, sell: 0, live: true, source: "tick" };
       buf.cur = cur;
     }
@@ -816,6 +822,11 @@ class LiveFeed {
     const cell = lv[pxKey] ?? [0, 0];
     cell[t.side === 1 ? 0 : 1] += t.size;
     lv[pxKey] = cell;
+    // per-level trade counts (each tick = one trade) — the min_count_frac gate input
+    const lt = (cur.levelTrades ??= {});
+    const tcell = lt[pxKey] ?? [0, 0];
+    tcell[t.side === 1 ? 0 : 1] += 1;
+    lt[pxKey] = tcell;
     return rolled;
   }
 
@@ -1205,6 +1216,9 @@ export function mergeCandleMinutes(
     const levels: Record<string, [number, number]> | undefined = c.levels?.length
       ? Object.fromEntries(c.levels.map((l) => [(l.level / 100).toFixed(2), [l.buy, l.sell]]))
       : undefined;
+    const levelTrades: Record<string, [number, number]> | undefined = c.levels?.length
+      ? Object.fromEntries(c.levels.map((l) => [(l.level / 100).toFixed(2), [l.bTrades ?? 0, l.sTrades ?? 0]]))
+      : undefined;
     const bar: LiveMinute = {
       t: hhmm,
       du,
@@ -1218,12 +1232,13 @@ export function mergeCandleMinutes(
       live: true,
       source: "candle",
       levels,
+      levelTrades,
     };
     const prev = byKey.get(key);
     if (prev) {
       // the candle is authoritative; keep tick-built levels only when the
       // candle carried none (defensive — never blank a usable footprint)
-      Object.assign(prev, bar, { levels: levels ?? prev.levels });
+      Object.assign(prev, bar, { levels: levels ?? prev.levels, levelTrades: levelTrades ?? prev.levelTrades });
       replaced++;
     } else {
       byKey.set(key, bar);

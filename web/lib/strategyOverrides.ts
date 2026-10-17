@@ -79,6 +79,10 @@ export type GateContext = {
   breakRangeR: number | null;
   cumDelta: number | null; // session cumulative delta at entry
   firstOfDay: boolean;
+  /** trigger-bar aligned trade-count fraction (bT/(bT+sT) for longs,
+   *  mirror shorts). Optional + null = the live tape does not supply
+   *  counts yet — the min_count_frac gate FAILS OPEN on it. */
+  countFrac?: number | null;
 };
 
 export type GateDecision = { allow: boolean; reasons: string[] };
@@ -125,6 +129,34 @@ export function decideSignal(ovs: Override[], ctx: GateContext): GateDecision {
     if (v?.required && ctx.cumDelta !== null) {
       const agrees = ctx.side === "long" ? ctx.cumDelta > 0 : ctx.cumDelta < 0;
       if (!agrees) return { allow: false, reasons: [`against session trend (trend_filter, ${o.family})`] };
+    }
+  }
+
+  // side veto: value { side: "long" | "short", hours?: number[] } — skip
+  // one side (optionally only inside given ET hours). The promotion-contract
+  // gate for side-specific measured cells (ticketVeto side table,
+  // sideFilterStudy). Fail-open: missing/invalid value never blocks.
+  for (const o of all) {
+    if (o.gate !== "side_veto") continue;
+    const v = parseValue(o.value);
+    const side = v?.side as string | undefined;
+    const hours = (v?.hours ?? v?.value) as number[] | number | undefined;
+    const list = Array.isArray(hours) ? hours.map(Number) : hours !== undefined ? [Number(hours)] : null;
+    if (side === ctx.side && (list === null || list.includes(ctx.hourET))) {
+      return { allow: false, reasons: [`${ctx.side} veto${list === null ? "" : ` in hour${list.length === 1 ? "" : "s"} ${list.join(",")} ET`} (${o.family})`] };
+    }
+  }
+
+  // min count fraction: value { min: number, on: "count" } — the trigger
+  // bar's aligned trade-count one-sidedness floor (countFracGateStudy,
+  // 2026-10-16). Fail-open: null/unknown countFrac never blocks.
+  for (const o of all) {
+    if (o.gate !== "min_count_frac") continue;
+    const v = parseValue(o.value);
+    const min = numOf(v?.min);
+    const on = v?.on;
+    if (min !== null && on === "count" && ctx.countFrac !== null && ctx.countFrac !== undefined && ctx.countFrac < min) {
+      return { allow: false, reasons: [`countFrac ${ctx.countFrac.toFixed(2)} < min ${min.toFixed(2)} (${o.family})`] };
     }
   }
 
