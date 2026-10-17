@@ -93,10 +93,12 @@ type Opts = {
   slip: number;
   slipSweep: boolean;
   byhourTrain: boolean;
+  extremeLocation: boolean;
+  locationFree: boolean;
 };
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { split: "2026-01-01", warm: false, session: "rth", stop: STOP_PTS, slip: 0, slipSweep: false, byhourTrain: false };
+  const o: Opts = { split: "2026-01-01", warm: false, session: "rth", stop: STOP_PTS, slip: 0, slipSweep: false, byhourTrain: false, extremeLocation: false, locationFree: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--max") o.max = Number(argv[++i]);
@@ -109,6 +111,8 @@ function parseArgs(argv: string[]): Opts {
     else if (a === "--slip") o.slip = Number(argv[++i]);
     else if (a === "--slip-sweep") o.slipSweep = true;
     else if (a === "--byhour-train") o.byhourTrain = true;
+    else if (a === "--extreme-location") o.extremeLocation = true;
+    else if (a === "--location-free") o.locationFree = true;
   }
   return o;
 }
@@ -237,10 +241,14 @@ type SessionResult = {
   bars: number;
   sigA: RawSig[];
   sigB: RawSig[];
+  sigC: RawSig[];
+  sigD: RawSig[];
   /** PA vote classification at every bar where the OF-only gate opened */
   gateBPa: { same: number; neutral: number; opposite: number };
   gateBOk: number; // bars where gate B opened (before filters)
   gateAOk: number; // bars where gate A opened (before filters)
+  gateCOk: number; // bars where the extremes-as-location gate opened
+  gateDOk: number; // bars where the no-location gate opened
   filteredA: number; // bars dropped by the footprint filters (gate A ok)
   filteredB: number;
 };
@@ -250,6 +258,8 @@ function replaySession(
   staticCtx: { edges: Edge[]; pocs: PocCand[] },
   date: string,
   hourAllow?: Set<number>,
+  extremeLocation = false,
+  locationFree = false,
 ): SessionResult {
   const n = fp.length;
   const res: SessionResult = {
@@ -257,9 +267,13 @@ function replaySession(
     bars: n,
     sigA: [],
     sigB: [],
+    sigC: [],
+    sigD: [],
     gateBPa: { same: 0, neutral: 0, opposite: 0 },
     gateBOk: 0,
     gateAOk: 0,
+    gateCOk: 0,
+    gateDOk: 0,
     filteredA: 0,
     filteredB: 0,
   };
@@ -291,6 +305,8 @@ function replaySession(
   let vwDen = 0;
   const firedA = new Set<string>();
   const firedB = new Set<string>();
+  const firedC = new Set<string>();
+  const firedD = new Set<string>();
 
   const rollAdd = (m: FootprintMinute) => {
     for (const l of m.levels) {
@@ -370,6 +386,40 @@ function replaySession(
     const gateA = cardGateOpen(sigA, mech);
     const gateB = cardGateOpen(sigB, mech);
 
+    // ---- arm C (opt-in): session extremes count as FULL location ----
+    // In replay there are no gamma walls, so a "partial" location is
+    // precisely the live atExtreme test (price within 2.5 pts of the
+    // running session high/low). Promote it to "yes" and re-gate.
+    let mechC = mech;
+    if (extremeLocation) {
+      const li = mech.ingredients.findIndex((i) => i.key === "location");
+      if (li >= 0 && mech.ingredients[li].state === "partial") {
+        mechC = {
+          ...mech,
+          present: mech.present + 1,
+          ingredients: mech.ingredients.map((i, k) => (k === li ? { ...i, state: "yes" as const } : i)),
+        };
+      }
+    }
+    const sigC = composeSignals([boxFromMechanism(mechC), boxFromPriceAction(pa)]);
+    const gateC = cardGateOpen(sigC, mechC);
+
+    // ---- arm D (opt-in): NO location requirement — the location layer's
+    // full volume headroom. Whatever state location is in, force "yes".
+    let mechD = mech;
+    if (locationFree) {
+      const li = mech.ingredients.findIndex((i) => i.key === "location");
+      if (li >= 0 && mech.ingredients[li].state !== "yes") {
+        mechD = {
+          ...mech,
+          present: mech.present + 1,
+          ingredients: mech.ingredients.map((i, k) => (k === li ? { ...i, state: "yes" as const } : i)),
+        };
+      }
+    }
+    const sigD = composeSignals([boxFromMechanism(mechD), boxFromPriceAction(pa)]);
+    const gateD = cardGateOpen(sigD, mechD);
+
     // the live maybeSend footprint filters (identical for both arms)
     const stackOk = !stackAtT || stackAtT.side === (mech.side === "long" ? "buy" : "sell");
     const deltaOk = mech.side === "long" ? mech.lastDelta > 0 : mech.side === "short" ? mech.lastDelta < 0 : false;
@@ -381,15 +431,17 @@ function replaySession(
       res.gateBPa[vote]++;
     }
     if (gateA.ok) res.gateAOk++;
+    if (gateC.ok) res.gateCOk++;
+    if (gateD.ok) res.gateDOk++;
     if (gateB.ok && !filtersOk) res.filteredB++;
     if (gateA.ok && !filtersOk) res.filteredA++;
 
-    const record = (side: "long" | "short", key: string): RawSig | null => {
-      if (!Number.isFinite(mech.targetPx)) return null;
+    const record = (side: "long" | "short", key: string, targetPx: number): RawSig | null => {
+      if (!Number.isFinite(targetPx)) return null;
       const dir: 1 | -1 = side === "long" ? 1 : -1;
       const entry = mid;
       const stop = side === "long" ? mid - STOP_PTS : mid + STOP_PTS;
-      const target = mech.targetPx;
+      const target = targetPx;
       if (dir > 0 && !(stop < entry && entry < target)) return null;
       if (dir < 0 && !(target < entry && entry < stop)) return null;
       const vote = pa.side === null ? "neutral" : pa.side === side ? "same" : "opposite";
@@ -408,7 +460,7 @@ function replaySession(
       const key = `${date}|${lastRec.t}|${lastRec.price}|${lastRec.dir}`;
       if (!firedA.has(key)) {
         firedA.add(key);
-        const sig = record(mech.side, key);
+        const sig = record(mech.side, key, mech.targetPx);
         if (sig) res.sigA.push(sig);
       }
     }
@@ -416,8 +468,24 @@ function replaySession(
       const key = `${date}|${lastRec.t}|${lastRec.price}|${lastRec.dir}`;
       if (!firedB.has(key)) {
         firedB.add(key);
-        const sig = record(mech.side, key);
+        const sig = record(mech.side, key, mech.targetPx);
         if (sig) res.sigB.push(sig);
+      }
+    }
+    if (extremeLocation && gateC.ok && filtersOk && mechC.side && lastRec) {
+      const key = `${date}|${lastRec.t}|${lastRec.price}|${lastRec.dir}`;
+      if (!firedC.has(key)) {
+        firedC.add(key);
+        const sig = record(mechC.side, key, mechC.targetPx);
+        if (sig) res.sigC.push(sig);
+      }
+    }
+    if (locationFree && gateD.ok && filtersOk && mechD.side && lastRec) {
+      const key = `${date}|${lastRec.t}|${lastRec.price}|${lastRec.dir}`;
+      if (!firedD.has(key)) {
+        firedD.add(key);
+        const sig = record(mechD.side, key, mechD.targetPx);
+        if (sig) res.sigD.push(sig);
       }
     }
   }
@@ -496,10 +564,14 @@ async function main() {
   const t0 = Date.now();
   const allA: RawSig[] = [];
   const allB: RawSig[] = [];
+  const allC: RawSig[] = [];
+  const allD: RawSig[] = [];
   const sessionBars = new Map<string, { high: number; low: number }[]>();
   const paTally = { same: 0, neutral: 0, opposite: 0 };
   let gateBOk = 0;
   let gateAOk = 0;
+  let gateCOk = 0;
+  let gateDOk = 0;
   let filteredA = 0;
   let filteredB = 0;
   let bars = 0;
@@ -522,18 +594,22 @@ async function main() {
       continue;
     }
     const staticCtx = buildStaticContext(prior);
-    const res = replaySession(fpSess, staticCtx, date, hourAllow);
+    const res = replaySession(fpSess, staticCtx, date, hourAllow, o.extremeLocation, o.locationFree);
     prior.push({ date, fpRth: rthSlice(eth).map(toFootprint), fpEth });
     if (prior.length > 6) prior.shift();
     loaded++;
     bars += res.bars;
     allA.push(...res.sigA);
     allB.push(...res.sigB);
+    if (o.extremeLocation) allC.push(...res.sigC);
+    if (o.locationFree) allD.push(...res.sigD);
     paTally.same += res.gateBPa.same;
     paTally.neutral += res.gateBPa.neutral;
     paTally.opposite += res.gateBPa.opposite;
     gateBOk += res.gateBOk;
     gateAOk += res.gateAOk;
+    gateCOk += res.gateCOk;
+    gateDOk += res.gateDOk;
     filteredA += res.filteredA;
     filteredB += res.filteredB;
     if (loaded % 100 === 0) console.log(`  ${loaded}/${dates.length} sessions · ${((Date.now() - t0) / 1000).toFixed(0)}s`);
@@ -575,7 +651,27 @@ async function main() {
   const BN = scoreArm(bNeutral, sessionBars, { stop: o.stop, slip: o.slip });
   const BO = scoreArm(bOpp, sessionBars, { stop: o.stop, slip: o.slip });
   const ADD = scoreArm(addedOnly, sessionBars, { stop: o.stop, slip: o.slip });
-  console.log(`scored trades: A=${A.scored} · B=${B.scored} · B∩neutral=${BN.scored} · B∩opposite=${BO.scored} · added-only=${ADD.scored}`);
+  let C = { trades: [] as EngineTrade[], hours: [] as number[], scored: 0, dropped: 0 };
+  let CADD = { trades: [] as EngineTrade[], hours: [] as number[], scored: 0, dropped: 0 };
+  let cShared = 0;
+  let cAddedOnly: RawSig[] = [];
+  if (o.extremeLocation) {
+    C = scoreArm(allC, sessionBars, { stop: o.stop, slip: o.slip });
+    cAddedOnly = allC.filter((s) => !mapA.has(s.key));
+    cShared = allC.length - cAddedOnly.length;
+    CADD = scoreArm(cAddedOnly, sessionBars, { stop: o.stop, slip: o.slip });
+  }
+  let D = { trades: [] as EngineTrade[], hours: [] as number[], scored: 0, dropped: 0 };
+  let DADD = { trades: [] as EngineTrade[], hours: [] as number[], scored: 0, dropped: 0 };
+  let dShared = 0;
+  let dAddedOnly: RawSig[] = [];
+  if (o.locationFree) {
+    D = scoreArm(allD, sessionBars, { stop: o.stop, slip: o.slip });
+    dAddedOnly = allD.filter((s) => !mapA.has(s.key));
+    dShared = allD.length - dAddedOnly.length;
+    DADD = scoreArm(dAddedOnly, sessionBars, { stop: o.stop, slip: o.slip });
+  }
+  console.log(`scored trades: A=${A.scored} · B=${B.scored} · B∩neutral=${BN.scored} · B∩opposite=${BO.scored} · added-only=${ADD.scored}${o.extremeLocation ? ` · C=${C.scored} · C∖A=${CADD.scored}` : ""}${o.locationFree ? ` · D=${D.scored} · D∖A=${DADD.scored}` : ""}`);
 
   const split = o.split;
   const arm = (label: string, trades: EngineTrade[]) => ({
@@ -591,6 +687,18 @@ async function main() {
     arm("B∩ · PA neutral (added)", BN.trades),
     arm("B∩ · PA opposite (added)", BO.trades),
     arm("B∖A · new episodes only", ADD.trades),
+    ...(o.extremeLocation
+      ? [
+          arm("C · extremes-as-location", C.trades),
+          arm("C∖A · extremes added", CADD.trades),
+        ]
+      : []),
+    ...(o.locationFree
+      ? [
+          arm("D · no-location gate", D.trades),
+          arm("D∖A · location-blocked added", DADD.trades),
+        ]
+      : []),
   ];
   console.log("\n=== ARM SUMMARY ===");
   for (const r of rows) {
@@ -652,6 +760,66 @@ async function main() {
         viability: viability.pPass === null ? "n/a" : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
       }),
     );
+  }
+
+  /* ---- standard report for arm C (extremes-as-location), when enabled ---- */
+  if (o.extremeLocation) {
+    const name = "C · extremes-as-location (proposed)";
+    const trades = C.trades;
+    console.log(`\n=== STANDARD REPORT — ${name} ===`);
+    console.log(
+      renderT1([
+        { label: "all", stats: coreStats(trades) },
+        { label: "train", stats: coreStats(trades.filter((t) => t.date < split)) },
+        { label: "test", stats: coreStats(trades.filter((t) => t.date >= split)) },
+      ]),
+    );
+    const viability = propViability(trades, { splitDate: split });
+    console.log(renderT4(viability));
+    console.log(
+      renderVerdict({
+        edge: coreStats(trades.filter((t) => t.date >= split)).expPts > 0 ? "real" : "absent",
+        significance: "—",
+        stability: (() => {
+          const tr = coreStats(trades.filter((t) => t.date < split));
+          const te = coreStats(trades.filter((t) => t.date >= split));
+          return `train/test WR ${tr.wr.toFixed(1)}/${te.wr.toFixed(1)}`;
+        })(),
+        holdout: "n/a",
+        viability: viability.pPass === null ? "n/a" : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+    );
+    console.log(`\nC episodes: ${allC.length} · shared with A: ${cShared} · C∖A (extremes added): ${cAddedOnly.length} · gate C open: ${gateCOk} bars (A: ${gateAOk})`);
+  }
+
+  /* ---- standard report for arm D (no location requirement), when enabled ---- */
+  if (o.locationFree) {
+    const name = "D · no-location gate (proposed)";
+    const trades = D.trades;
+    console.log(`\n=== STANDARD REPORT — ${name} ===`);
+    console.log(
+      renderT1([
+        { label: "all", stats: coreStats(trades) },
+        { label: "train", stats: coreStats(trades.filter((t) => t.date < split)) },
+        { label: "test", stats: coreStats(trades.filter((t) => t.date >= split)) },
+      ]),
+    );
+    const viability = propViability(trades, { splitDate: split });
+    console.log(renderT4(viability));
+    console.log(
+      renderVerdict({
+        edge: coreStats(trades.filter((t) => t.date >= split)).expPts > 0 ? "real" : "absent",
+        significance: "—",
+        stability: (() => {
+          const tr = coreStats(trades.filter((t) => t.date < split));
+          const te = coreStats(trades.filter((t) => t.date >= split));
+          return `train/test WR ${tr.wr.toFixed(1)}/${te.wr.toFixed(1)}`;
+        })(),
+        holdout: "n/a",
+        viability: viability.pPass === null ? "n/a" : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+    );
+    console.log(`\nD episodes: ${allD.length} · shared with A: ${dShared} · D∖A (location-blocked added): ${dAddedOnly.length} · gate D open: ${gateDOk} bars (A: ${gateAOk})`);
   }
 
   /* ---- stability by year ---- */
@@ -723,9 +891,21 @@ async function main() {
             BNeutral: { trades: BN.trades, stats: arm("BN", BN.trades) },
             BOpposite: { trades: BO.trades, stats: arm("BO", BO.trades) },
             AddedOnly: { trades: ADD.trades, stats: arm("ADD", ADD.trades) },
+            ...(o.extremeLocation
+              ? {
+                  C: { trades: C.trades, stats: arm("C", C.trades) },
+                  CAdded: { trades: CADD.trades, stats: arm("CADD", CADD.trades) },
+                }
+              : {}),
+            ...(o.locationFree
+              ? {
+                  D: { trades: D.trades, stats: arm("D", D.trades) },
+                  DAdded: { trades: DADD.trades, stats: arm("DADD", DADD.trades) },
+                }
+              : {}),
           },
-          episodes: { A: allA.length, B: allB.length, shared: sharedKeys.size, addedOnly: addedOnly.length, timingDeltas },
-          gateTally: { gateBOk, gateAOk, paTally, filteredA, filteredB },
+          episodes: { A: allA.length, B: allB.length, C: allC.length, D: allD.length, shared: sharedKeys.size, addedOnly: addedOnly.length, timingDeltas },
+          gateTally: { gateBOk, gateAOk, gateCOk, gateDOk, paTally, filteredA, filteredB },
         },
         null,
         1,

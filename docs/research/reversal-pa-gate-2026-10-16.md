@@ -5,8 +5,10 @@
 > The ~24% of trades it blocks test at ≈0 expectancy out-of-sample; the trades
 > it keeps improve out-of-sample. Removing it adds volume, not edge. Follow-ups
 > in the same harness: **hour-gated coverage** (dead overnight hours cut — test
-> expR 1.10 → 1.29) and a **stop/slip sweep** (the 5-pt stop beats the 7-pt
-> stop on per-trade R and PF at every slippage level tested).
+> expR 1.10 → 1.29), a **stop/slip sweep** (the 5-pt stop beats the 7-pt stop
+> on per-trade R and PF at every slippage level tested), and the **location
+> layer** (extremes-as-location adds ~0; removing location doubles volume with
+> a +0.71R OOS cohort — location should become a sizing tier, not a gate).
 
 ## Method
 
@@ -177,6 +179,61 @@ risk (1.4× contracts for 5 pt) the per-trade dollar volume scales up. That
 conversion — not the stop choice — is the viability question, and it still
 fails the deployment bands either way.
 
+## The location layer — where the volume actually lives
+
+Same harness, two location arms (both keep the PA gate and the footprint
+filters):
+
+- **C (`--extreme-location`)** — session extremes count as FULL location
+  (today they are only "partial", so episodes at fresh extremes never fire).
+- **D (`--location-free`)** — no location requirement at all: the location
+  ingredient is forced "yes". This measures the location layer's total
+  volume headroom.
+
+### Arm C — extremes-as-location adds nothing
+
+| | C∖A episodes | gate-open bars |
+|---|---|---|
+| RTH | 8 (of 1,489) | 11,174 vs 11,124 (A) |
+| hour-gated ETH | 21 (of 1,600) | 12,537 vs 12,417 (A) |
+
+C is statistically identical to A (test +8.67/+1.24R vs +8.71/+1.24R RTH).
+The sequence (absorption + reclaim + PA alignment) essentially never
+completes at a fresh session extreme without an LVN — so promoting extremes
+to "yes" is not a volume lever, and the live "partial" downgrade costs
+nothing.
+
+### Arm D — removing location doubles volume, at ~60% of the R
+
+| cohort | n (test) | WR [CI95] | PF | exp (pts) | exp (R) | maxDD (pts) | maxDD$ ÷ MLL | P(pass) |
+|---|---|---|---|---|---|---|---|---|
+| A · RTH (baseline) | 417 | 25.2% [21.3–29.6] | 2.55 | +8.71 | +1.24 | 211.2 | 148% | 86% |
+| **D · RTH (no location)** | 840 | 26.7% [23.8–29.8] | 2.28 | +7.06 | +1.01 | 299.8 | 210% | 86% |
+| **D∖A · location-blocked added** | 434 | 27.6% [23.7–32.0] | **1.91** | +4.94 | **+0.71** | — | — | — |
+| A · hour-gated (baseline) | 370 | 20.8% [17.0–25.2] | 2.52 | +9.05 | +1.29 | 172.5 | 121% | 80% |
+| D · hour-gated (no location) | 706 | 19.7% [16.9–22.8] | 2.11 | +6.67 | +0.95 | 308.6 | 216% | 69% |
+| D∖A · hour-gated added | 347 | 18.7% [15.0–23.2] | 1.62 | +3.78 | +0.54 | — | — | — |
+
+The location layer blocks **~50% of all episodes** (RTH: 1,414 of 2,893;
+hour-gated: 1,345 of 2,917) — and unlike the PA gate, the blocked cohort is
+**genuinely profitable out-of-sample**: +0.71R / PF 1.91 (RTH), +0.54R / PF
+1.62 (hour-gated). Mid-range reversals are a real, weaker edge, not noise.
+
+The cost of taking them: per-trade R drops ~20-30% (1.24 → 1.01; 1.29 →
+0.95), maxDD deepens 211 → 300 pts (148% → 210% of MLL; 216% hour-gated)
+and P(pass) falls to the FAIL band (69%) in the hour-gated config. The
+binary answer is therefore not "remove location" — it is:
+
+> **Location should be a sizing tier, not a binary gate.** LVN-located
+> sequences trade at full size (the +1.24R cohort); mid-range completed
+> sequences (location "no", everything else "yes") trade at half size (the
+> +0.71R cohort). That harvests the location layer's ~2× volume at bounded
+> drawdown — the natural next config to test once a sizing plan passes.
+
+And the structural ceiling: even with no location requirement at all, the
+card fires ~4.2×/day (RTH) — the absorption→reclaim→PA-alignment sequence is
+the frequency bottleneck ("no reclaim, no trade"), not location.
+
 ## What this falsifies and what it confirms
 
 1. **Falsifies: "the PA gate is just latency / a nuisance that delays cards."**
@@ -201,9 +258,14 @@ fails the deployment bands either way.
    slippage-sensitivity gradient — the decision to switch is a slippage-model
    + sizing decision, not an edge question.
 6. **The reversal family's viability problem is unchanged and unrelated to
-   the gate**: every config sits at 121–148% of MLL drawdown and P(pass)
+   the gate**: every config sits at 121–216% of MLL drawdown and P(pass)
    46–86%. Re-enabling the reversal product needs a sizing/plan fix first.
-7. **Harness cross-check**: arm A's +6.72 pts / PF 2.23 sits next to the
+7. **The location layer is where the volume lives — as a tier, not a gate.**
+   Session-extremes-as-location adds ~0 episodes; removing location entirely
+   doubles volume with a +0.71R OOS cohort — real edge, ~40% weaker per
+   trade, deeper maxDD. The design that harvests it is half-size mid-range
+   tiers, not gate removal.
+8. **Harness cross-check**: arm A's +6.72 pts / PF 2.23 sits next to the
    original footprint-reversal study's +5.4 pts / PF 2.16 (STRATEGY.md,
    different per-bar vs per-episode conventions) — the replay machinery
    reproduces the known numbers.
@@ -256,6 +318,13 @@ node --env-file=.env.local --import ../scripts/ts-loader.mjs \
 node --env-file=.env.local --import ../scripts/ts-loader.mjs \
   scripts/reversalGateStudy.ts --session eth --hours 7,8,9,10,11,12,13,14,15 \
   --slip-sweep --dump /tmp/reversal-gate-hourgated.json
+# location-layer arms (extremes-as-location + no-location):
+node --env-file=.env.local --import ../scripts/ts-loader.mjs \
+  scripts/reversalGateStudy.ts --extreme-location --location-free \
+  --dump /tmp/rth-location.json
+node --env-file=.env.local --import ../scripts/ts-loader.mjs \
+  scripts/reversalGateStudy.ts --session eth --hours 7,8,9,10,11,12,13,14,15 \
+  --extreme-location --location-free --dump /tmp/eth-location.json
 # warm the archive first if the local cache is cold:
 node --env-file=.env.local --import ../scripts/ts-loader.mjs \
   scripts/reversalGateStudy.ts --warm
