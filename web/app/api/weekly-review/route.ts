@@ -26,11 +26,18 @@ export async function GET(req: Request) {
   const weekParam = url.searchParams.get("week") ?? "";
 
   try {
-    const weeks = (await db`
-      select week_start::text as week_start, week_end::text as week_end, generated_at,
-             coalesce((stats->'trades'->>'count')::int, 0) as trades,
-             coalesce((stats->'trades'->'overall'->>'netUsd')::numeric, 0) as net
-      from weekly_reviews order by week_start desc limit 12`) as Row[];
+    // degrade gracefully on a fresh DB (weekly_reviews is created by the
+    // Saturday job's first run — before that, the surface shows the empty state)
+    let weeks: Row[] = [];
+    try {
+      weeks = (await db`
+        select week_start::text as week_start, week_end::text as week_end, generated_at,
+               coalesce((stats->'trades'->>'count')::int, 0) as trades,
+               coalesce((stats->'trades'->'overall'->>'netUsd')::numeric, 0) as net
+        from weekly_reviews order by week_start desc limit 12`) as Row[];
+    } catch {
+      /* table missing — first Saturday run creates it */
+    }
 
     const target = weekParam || (weeks[0] ? String(weeks[0].week_start) : "");
     let review: Row | null = null;
