@@ -149,9 +149,9 @@ describe("buildAccountRollup", () => {
     const rolls = buildAccountRollup(
       [],
       [
-        { account: "DEMO2323960", window_start: "2026-10-16", window_end: "2026-10-17", manual_fills: 4, manual_gross_usd: -83, account_net: 50217.2, account_realized: 217.2 },
-        { account: "DEMO2323960", window_start: "2026-10-16", window_end: "2026-10-17", manual_fills: 4, manual_gross_usd: -83, account_net: 50217.2, account_realized: 0 },
-        { account: "MFFUEVREOD706880007", window_start: "2026-10-13", window_end: "2026-10-14", manual_fills: 40, manual_gross_usd: 2143.67, account_net: null, account_realized: 777.8 },
+        { account: "DEMO2323960", window_start: "2026-10-16T00:45:00Z", window_end: "2026-10-17T00:45:00Z", manual_fills: 4, manual_gross_usd: -83, account_net: 50217.2, account_realized: 217.2 },
+        { account: "DEMO2323960", window_start: "2026-10-16T01:15:00Z", window_end: "2026-10-17T01:15:00Z", manual_fills: 4, manual_gross_usd: -83, account_net: 50217.2, account_realized: 0 },
+        { account: "MFFUEVREOD706880007", window_start: "2026-10-13T22:45:00Z", window_end: "2026-10-14T22:45:00Z", manual_fills: 40, manual_gross_usd: 2143.67, account_net: null, account_realized: 777.8 },
       ],
     );
     assert.equal(rolls.length, 2);

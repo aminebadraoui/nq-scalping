@@ -168,11 +168,12 @@ export function buildAccountRollup(trades: TradeLike[], runs: RunLike[]): Accoun
 
   // dedupe runs: same (window_start, window_end, account) twice a night —
   // keep the FIRST run of each window (the later one ran post-reset and
-  // reports a zeroed snapshot).
+  // reports a zeroed snapshot). Keyed at DATE level: the two nightly runs
+  // can carry slightly different timestamps for the same calendar window.
   const seen = new Set<string>();
   const runsLatest: RunLike[] = [];
   for (const r of runs) {
-    const key = `${String(r.window_start)}|${String(r.window_end)}|${(r.account ?? "").trim()}`;
+    const key = `${String(r.window_start).slice(0, 10)}|${String(r.window_end).slice(0, 10)}|${(r.account ?? "").trim()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     runsLatest.push(r);
