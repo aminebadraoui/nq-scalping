@@ -81,7 +81,9 @@ verdict/reasons, linked to that week's review. Studies without a
 `--report-json` emitter run research-only — recorded, never promoted; the
 promotion contract stays the only path into `strategy_overrides`.
 
-## Proposed cron (needs owner approval — Coolify `nq-jobs` change)
+## Cron (live 2026-10-17 — repo-managed)
+
+`scripts/jobs_entry.sh` installs the crontab at every container start:
 
 ```
 15 9 * * 6  scripts/weekly.sh    # Sat 09:15 ET — after the Friday
@@ -89,9 +91,11 @@ promotion contract stays the only path into `strategy_overrides`.
                                  # (risk-stack, breadth, FDR ledger)
 ```
 
-`GC_REMOTE_URL` is currently NOT set in the `nq-jobs` env (STATE.md
-2026-10-12 note), so the studies would log "no session inventory" there;
-adding it is part of the same approval.
+`CRON_WEEKLY` in the `nq-jobs` env overrides the slot. `RUN_WEEKLY=1`
+runs the review once at startup (then falls through to normal cron
+mode) — the verification path for new job code. `GC_REMOTE_URL` +
+Telegram envs are set on `nq-jobs` (2026-10-17), so the archive studies
+have the session inventory and the weekly summary card goes out.
 
 ## Roadmap
 

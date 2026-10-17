@@ -3,6 +3,9 @@
 #
 # RUN_ONCE=1   → run the nightly pipeline immediately once, then exit
 #                (verification mode: set the env, redeploy, read the logs).
+# RUN_WEEKLY=1 → run the weekly review (scripts/weekly.sh) once, then fall
+#                through to normal cron mode (verification of the Saturday
+#                job without missing the nightly slots).
 # otherwise    → install the crontab and run crond in the foreground.
 #
 # The pipeline itself is scripts/nightly.sh — identical to the Mac launchd
@@ -19,6 +22,12 @@ if [ "${RUN_ONCE:-0}" = "1" ]; then
   exec tail -f /dev/null
 fi
 
+if [ "${RUN_WEEKLY:-0}" = "1" ]; then
+  echo "[jobs] RUN_WEEKLY=1 — running the weekly review now (then normal cron mode)"
+  /bin/bash /app/scripts/weekly.sh "$@"
+  echo "[jobs] weekly review finished (rc=$?) — continuing to cron mode"
+fi
+
 SCHEDULE="${CRON_SCHEDULE:-45 17 * * 1-5}"
 RECONCILE_SCHEDULE="${CRON_RECONCILE:-50 16 * * 1-5}"
 # the Macro tab's AI interpretation: one daily slot (the combined read
@@ -27,17 +36,24 @@ RECONCILE_SCHEDULE="${CRON_RECONCILE:-50 16 * * 1-5}"
 # ramp so the shared VPS never competes with the executor's warm-up for
 # the 9:30 open (the only scheduled job that touched the live window).
 INTERPRET="${CRON_INTERPRET:-45 8 * * 1-5}"
+# the Saturday-morning weekly review (self-improvement pass, Phase 1–3):
+# after Friday's nightly + weekly arms, before the weekend — read-only vs
+# Neon + the R2 archive, dry-run promotion verdicts by default.
+WEEKLY="${CRON_WEEKLY:-15 9 * * 6}"
 LOG="/app/gcdata/data/nightly_cron.log"
 RLOG="/app/gcdata/data/reconcile_cron.log"
 ILOG="/app/gcdata/data/interpret_cron.log"
+WLOG="/app/gcdata/data/weekly_cron.log"
 {
   echo "$RECONCILE_SCHEDULE /bin/bash /app/scripts/reconcile.sh >> $RLOG 2>&1"
   echo "$INTERPRET /bin/bash /app/scripts/interpret.sh >> $ILOG 2>&1"
   echo "$SCHEDULE /bin/bash /app/scripts/nightly.sh >> $LOG 2>&1"
+  echo "$WEEKLY /bin/bash /app/scripts/weekly.sh >> $WLOG 2>&1"
 } > /var/spool/cron/crontabs/root
 chmod 600 /var/spool/cron/crontabs/root
 echo "[jobs] cron installed:"
 echo "[jobs]   reconcile $RECONCILE_SCHEDULE (tz=$(date +%Z)) → $RLOG"
 echo "[jobs]   interpret $INTERPRET (tz=$(date +%Z)) → $ILOG"
 echo "[jobs]   nightly   $SCHEDULE (tz=$(date +%Z)) → $LOG"
+echo "[jobs]   weekly    $WEEKLY (tz=$(date +%Z)) → $WLOG"
 exec crond -f -l 2

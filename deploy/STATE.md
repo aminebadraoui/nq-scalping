@@ -61,7 +61,7 @@ it needs an owner decision.
 | Neon project | **current: `little-tree-arpu7v0m`, region aws-us-west-2, pg 18** (switched ~2026-10-08; old project `summer-poetry-26619129` aws-us-east-1 is retired/superseded) |
 | DATABASE_URL | **secret** — `web/.env.local` (gitignored) AND Coolify app env AND Coolify `nq-jobs` env — all three verified pointing at `little-tree-arpu7v0m` (2026-10-12) |
 | R2 bucket | `nq-history` (Cloudflare account `437b14872d288fb1221f5492055c0b91`) — full 2.5y history, gzipped objects + `manifest.json` index |
-| GC_REMOTE_URL | `https://pub-d68008dba02c4ad190e9814f6c41cbef.r2.dev` (public r2.dev URL of `nq-history`); set in `web/.env.local` (localhost) and Coolify app env (deployed). ⚠️ NOT set on the `nq-jobs` compose app env — its Friday risk-stack step logs "no session inventory (set GC_REMOTE_URL)" (riskstack=1). Add it in Coolify to restore the weekly sim. |
+| GC_REMOTE_URL | `https://pub-d68008dba02c4ad190e9814f6c41cbef.r2.dev` (public r2.dev URL of `nq-history`); set in `web/.env.local` (localhost) and Coolify app env (deployed). **Set on the `nq-jobs` compose app env 2026-10-17** (declared in docker-compose.yml) — the Friday risk-stack + the Saturday weekly studies now have the archive inventory. |
 
 ## Database split (as of the 2026-10-08 transfer-cap fix)
 
@@ -541,6 +541,19 @@ wider stop grid and the user's approval. Scratch studies
   the executor (in-memory state reset). Kill-switch: revert the five
   knobs, or `FEED_MOMENTUM=0` / `FEED_OPEN_PULLBACK=0` (one Coolify
   edit each).
+- **RTH bracket target 2.5R→2.0R (2026-10-16, owner-approved)** — Coolify
+  app env `RTH_LIMIT_TARGET_R=2.0` (set via API PATCH 14:16 ET; redeploy
+  scheduled for the 16:05 ET halt window — env needs a redeploy to
+  re-bake). Evidence: `scripts/rthLimitValidation.ts` (656 sessions,
+  live crossed-stop gate ON, $1.90/RT): the 2.5R bracket breaches OOS
+  (dd −$2,337 capped 3/day vs $2,000 MLL); 2.0R passes every year
+  (OOS dd −$1,327 capped / −$1,601 uncapped; cost ladder $1.40–2.40/RT)
+  at WR 38.8% / PF 1.32 — a tail-protection tweak, not a signal
+  increase. The crossed-stop dispatch gate itself was RE-VALIDATED and
+  stays (the campaign's x-none/x-gate-limit PASS cells are phantom-win
+  models; every live-safe treatment breaches — see
+  `docs/research/leg-studies-2026-10-16.md` §6). Kill-switch:
+  `RTH_LIMIT_TARGET_R=2.5`, one Coolify edit.
 - **Time exits (2026-10-05, `lib/timeExit.ts`)** — profile orders register
   a bar-based exit on the feed tick: past exitAt with a position still
   open → bracketless REST market exit (OCO brackets cancel on the
@@ -762,6 +775,12 @@ curl -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
 #       45 17 * * 1-5  post-close    (inside scripts/nightly.sh, after ingest)
 #     45 17 * * 1-5  scripts/nightly.sh    — the full pipeline (fallback
 #        fill-level matching if the reset already ate the orders)
+#   LIVE (2026-10-17) — the crontab is repo-managed by scripts/jobs_entry.sh
+#   (rebuilt at every container start); CRON_WEEKLY overrides the slot:
+#     15 9 * * 6  scripts/weekly.sh        — Sat 09:15 ET weekly review
+#        (rollup + promotion-contract studies → weekly_reviews; see
+#        docs/architecture/WEEKLY-REVIEW.md). RUN_WEEKLY=1 in the nq-jobs
+#        env runs it once at startup for verification (then cron mode).
 #   CRON_BRIEFING_{EVENING,PREOPEN,POSTOPEN,MIDMORNING,MIDDAY,PRECLOSE}
 #   override the six briefing slots.
 #   AI briefing env: ANALYSIS_LLM_URL/KEY are required in the nq-jobs env
