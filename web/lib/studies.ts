@@ -210,6 +210,17 @@ export const studies: Study[] = [
     engine: true,
   },
   {
+    id: "kelly-fraction-sweep",
+    title: "Kelly fraction sweep — which fractional Kelly under the μ10 cap?",
+    date: "2026-10-17",
+    question: "With the owner sizing rule (fractional sizes floored to 1 micro, 10-micro cap), which Kelly fraction is appropriate across the day-plan pool and the marginal families?",
+    category: "risk",
+    script: "scripts/kellySizingStudy.ts",
+    cli: ["cd web", "NODE_OPTIONS=--max-old-space-size=8192 node --env-file=.env.local --import ../scripts/ts-loader.mjs scripts/kellySizingStudy.ts --offline"],
+    doc: "docs/research/kelly-fraction-sweep-2026-10-17.md",
+    engine: true,
+  },
+  {
     id: "live-stack-exact",
     title: "Exact live stack v2 — the RTH limit-entry mechanics in the combined backtest",
     date: "2026-10-13",
