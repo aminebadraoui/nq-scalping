@@ -101,6 +101,7 @@ type RawFill = {
   orderId: string;
   commission: number;
   fees: number;
+  account: string; // accountName from the fill record
 };
 
 const ctGet = async (url: string) => {
@@ -142,6 +143,7 @@ async function fetchFills(): Promise<RawFill[]> {
           orderId: String(f.orderId ?? ""),
           commission: Number(f.commission ?? 0),
           fees: Number(f.fees ?? 0),
+          account: String(f.accountName ?? f.accountId ?? CT_ACCOUNT),
         };
       }
       cursor = d.nextCursor ?? undefined;
@@ -155,9 +157,10 @@ async function fetchFills(): Promise<RawFill[]> {
   try {
     const d = (await ctGet("https://app.crosstrade.io/v1/api/tv/fills")) as {
       success?: boolean;
-      data?: Array<{ data?: Array<Record<string, unknown>> }>;
+      data?: Array<{ data?: Array<Record<string, unknown>>; name?: string; environment?: string }>;
     };
     for (const env of d.data ?? []) {
+      const envAccount = String(env.name ?? env.environment ?? CT_ACCOUNT);
       for (const f of env.data ?? []) {
         const ts = Date.parse(String(f.timestamp ?? ""));
         if (!Number.isFinite(ts) || ts < windowStartMs || ts >= windowEndMs) continue;
@@ -172,6 +175,7 @@ async function fetchFills(): Promise<RawFill[]> {
           orderId: String(f.orderId ?? ""),
           commission: 0,
           fees: 0,
+          account: String(f.accountName ?? f.accountId ?? envAccount),
         };
       }
     }
@@ -229,6 +233,8 @@ create table if not exists trades (
 );
 alter table trades add column if not exists features jsonb;
 alter table trades add column if not exists source text not null default 'reconcile';
+alter table trades add column if not exists account text not null default '';
+alter table reconcile_runs add column if not exists account text not null default '';
 create index if not exists trades_ts_idx on trades (ts desc);
 create table if not exists reconcile_runs (
   id bigint generated always as identity primary key,
@@ -331,6 +337,7 @@ type TradeRow = {
   grossPts: number;
   grossUsd: number;
   commissions: number;
+  account: string;
   result: "win" | "loss" | "flat" | "";
   sides: number;
 };
@@ -351,6 +358,7 @@ function pair(
     instrument: f.instrument,
     commission: f.commission,
     fees: f.fees,
+    account: f.account,
   }));
   const candidates = entryCandidates(orders, fillRows);
   const assignment = assignEntries(signals, candidates, ENTRY_BEFORE_MS, ENTRY_AFTER_MS);
@@ -369,7 +377,7 @@ function pair(
   for (const sig of signals) {
     const picked = assignment.get(sig.key) ?? [];
     if (!picked.length) {
-      trades.push({ sig, status: "unexecuted", grossPts: 0, grossUsd: 0, commissions: 0, result: "", sides: 0 });
+      trades.push({ sig, status: "unexecuted", grossPts: 0, grossUsd: 0, commissions: 0, result: "", sides: 0, account: "" });
       continue;
     }
 
@@ -413,6 +421,7 @@ function pair(
       grossPts,
       grossUsd,
       commissions,
+      account: entryFills[0]?.account ?? CT_ACCOUNT,
       result,
       sides: allFills.length,
     });
@@ -439,6 +448,7 @@ function manualNetUsd(orders: OrderRow[], fills: RawFill[], excludedOrderIds: Se
     instrument: f.instrument,
     commission: f.commission,
     fees: f.fees,
+    account: f.account,
   }));
   const candidates = entryCandidates(orders, fillRows).filter((c) => !excludedOrderIds.has(c.order.id));
   let usd = 0;
@@ -508,7 +518,7 @@ function pairFillsOnly(
     const e = entries[i];
     const sig = signals[i];
     if (!e) {
-      trades.push({ sig, status: "unexecuted", grossPts: 0, grossUsd: 0, commissions: 0, result: "", sides: 0 });
+      trades.push({ sig, status: "unexecuted", grossPts: 0, grossUsd: 0, commissions: 0, result: "", sides: 0, account: "" });
       continue;
     }
     const want = sig.side === "long" ? "Buy" : "Sell";
@@ -556,6 +566,7 @@ function pairFillsOnly(
       grossPts,
       grossUsd,
       commissions,
+      account: e.entryFills[0]?.account ?? CT_ACCOUNT,
       result,
       sides: allFills.length,
     });
@@ -642,14 +653,15 @@ async function main() {
       insert into trades
         (signal_key, day, time_et, ts, side, contracts, verdict, headline,
          sig_entry, sig_stop, sig_target, status, fill_entry, fill_entry_at,
-         exit_avg, exit_fills, gross_pts, gross_usd, commissions, net_usd, result, features, matched_at)
+         exit_avg, exit_fills, gross_pts, gross_usd, commissions, net_usd, result, features, matched_at, account)
       values
         (${s.key}, ${sessionDayOf(s.ts)}, ${s.timeET}, ${s.ts}, ${s.side}, ${s.contracts}, ${s.verdict}, ${s.headline},
          ${s.entry}, ${s.stop}, ${s.target}, ${t.status},
          ${t.fillEntry ?? null}, ${t.fillEntryAt ? new Date(t.fillEntryAt) : null},
          ${t.exitAvg ?? null}, ${t.exitFills ? JSON.stringify(t.exitFills) : null},
          ${t.grossPts.toFixed(2)}, ${t.grossUsd.toFixed(2)}, ${t.commissions.toFixed(2)},
-         ${(t.grossUsd - t.commissions).toFixed(2)}, ${t.result}, ${s.features ? JSON.stringify(s.features) : null}, now())
+         ${(t.grossUsd - t.commissions).toFixed(2)}, ${t.result}, ${s.features ? JSON.stringify(s.features) : null}, now(),
+         ${t.account || CT_ACCOUNT})
       on conflict (signal_key) do update set
         day = excluded.day,
         status = excluded.status,
@@ -663,6 +675,7 @@ async function main() {
         net_usd = excluded.net_usd,
         result = excluded.result,
         features = excluded.features,
+        account = excluded.account,
         matched_at = now()
       where (trades.status = 'unexecuted' or excluded.status = 'matched') and trades.source <> 'mff'`;
   }
@@ -679,11 +692,11 @@ async function main() {
   await sql`
     insert into reconcile_runs
       (window_start, window_end, fills_total, signals_total, matched, unexecuted,
-       manual_fills, manual_gross_usd, signals_gross_usd, account_net, account_realized, notes)
+       manual_fills, manual_gross_usd, signals_gross_usd, account_net, account_realized, notes, account)
     values
       (${windowStart}, ${windowEnd}, ${fills.length}, ${signals.length}, ${matched.length}, ${unexecuted.length},
        ${manual.length}, ${manualGross.toFixed(2)}, ${signalsGross.toFixed(2)},
-       ${accountNet ?? null}, ${accountRealized ?? null}, ${notes})`;
+       ${accountNet ?? null}, ${accountRealized ?? null}, ${notes}, ${CT_ACCOUNT})`;
 
   // ---- console summary ----
   console.log("\n=== reconciliation summary ===");

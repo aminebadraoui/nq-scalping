@@ -33,6 +33,7 @@ export type FillRow = {
   instrument: string;
   commission: number;
   fees: number;
+  account?: string; // accountName from the fill record (reconcile fills it)
 };
 
 export type EntryGroup = { order: OrderRow; fills: FillRow[] };

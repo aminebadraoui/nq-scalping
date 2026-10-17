@@ -71,7 +71,7 @@ import { edgeStatuses, type EdgeStatus } from "../lib/edgeMonitor";
 import { etParts } from "../lib/marketHours";
 import { coreStats, propViability, renderT1, renderT4, renderVerdict } from "../lib/backtestEngine";
 import { sendTelegram } from "../lib/notify";
-import { catalogPromptText, parseLlmPayload, budgetFor, parseBudgetEnv, type ExperimentRow, type Hypothesis } from "../lib/weeklyReview";
+import { catalogPromptText, parseLlmPayload, budgetFor, parseBudgetEnv, buildAccountRollup, type AccountRollup, type ExperimentRow, type Hypothesis } from "../lib/weeklyReview";
 
 /** repo paths anchored to this file — immune to the caller's cwd */
 const WEB_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // web/
@@ -367,12 +367,12 @@ function contractCheck(
 
 /* ---------------- the rollup (Neon) ---------------- */
 
-async function loadTrades(start: string, end: string): Promise<EnrichedTrade[]> {
+async function loadTrades(start: string, end: string): Promise<Array<EnrichedTrade & { account: string }>> {
   const rows = await sql`
     select * from trades
     where status = 'matched' and day >= ${start} and day <= ${end}
     order by ts asc`;
-  const out: EnrichedTrade[] = [];
+  const out: Array<EnrichedTrade & { account: string }> = [];
   for (const r of rows) {
     const fillEntry = num(r.fill_entry);
     if (fillEntry === null) continue;
@@ -415,6 +415,7 @@ async function loadTrades(start: string, end: string): Promise<EnrichedTrade[]> 
       stopRun: !!r.stop_run,
       lossLabel: (String(r.loss_label ?? "") as EnrichedTrade["lossLabel"]) || "",
       exitVsPlanPts: num(r.exit_vs_plan_pts),
+      account: String(r.account ?? ""),
     });
   }
   return out;
@@ -528,9 +529,28 @@ async function main() {
   const activeOverrides = overrides.filter((o) => !!o.active);
   const autoReverts = overrides.filter((o) => String(o.note ?? "").startsWith("auto-revert:"));
 
+  // per-account truth: matched bot trades × the reconcile's manual-fill
+  // residual + the account-reported realized P&L (the broker portal number)
+  const reconcileRuns = await guarded("reconcile_runs", async () => {
+    return (await sql`
+      select account, window_start, window_end, manual_fills, manual_gross_usd, account_net, account_realized
+      from reconcile_runs
+      where window_start >= ${new Date(win.startMs).toISOString()} and window_start < ${new Date(win.endMs).toISOString()}
+      order by window_start asc, id asc`) as Array<Record<string, unknown>>;
+  });
+  const accounts = buildAccountRollup(trades as Array<Record<string, unknown>>, reconcileRuns);
+  for (const a of accounts) {
+    console.log(
+      `[weekly] account ${a.account}: ${a.matched.n} bot trades net $${a.matched.netUsd.toFixed(2)} · ` +
+        `${a.manual.fills} manual fills gross $${a.manual.grossUsd.toFixed(2)} · ` +
+        `realized ${a.realizedUsd === null ? "—" : `$${a.realizedUsd.toFixed(2)}`}`,
+    );
+  }
+
   const summary = {
     week: `${win.start} → ${win.end}`,
     trades: { count: trades.length, overall, families },
+    accounts,
     edges,
     signals: { sent: sentN, vetoedTotal, vetoedByFamily: [...vetoedByFamily.entries()].map(([family, n]) => ({ family, n })) },
     friction,
@@ -712,6 +732,10 @@ async function llmNarrative(summary: unknown, studies: StudyResult[]): Promise<{
           "promotion-contract study verdicts. Rules: state the week window explicitly in every verdict; " +
           "state sample sizes (n) for every claim; separate real P&L from vetoed/unfilled would-be numbers; " +
           "a short verdict per strategy family; the ONE highest-leverage improvement per strategy. " +
+          "ACCOUNTS: the data carries a per-account rollup (accounts[]). Report PER ACCOUNT — every account's " +
+          "bot-matched trades, manual-fill residual, and account-reported realized P&L as its own block, and " +
+          "label the overall row as bot-matched trades only (it is NOT the account P&L). Never blend two " +
+          "accounts into one number; state each account's name explicitly. " +
           "You never decide production changes — the promotion contract does; a rejected study is a rejected " +
           "study, not an invitation to hand-wave. Be skeptical of small samples. Concise markdown, no disclaimers.\n" +
           "RESPOND WITH A SINGLE JSON OBJECT AND NOTHING ELSE:\n" +
@@ -752,13 +776,20 @@ function deterministicNarrative(summary: unknown, studies: StudyResult[]): strin
   const s = summary as {
     week: string;
     trades: { count: number; overall: { n: number; wins: number; losses: number; netUsd: number; winRate: number | null } | null };
+    accounts: AccountRollup[];
     edges: EdgeStatus[];
   };
   const o = s.trades.overall;
   const L: string[] = [
-    `Week ${s.week}: ${s.trades.count} matched trades` +
-      (o ? ` — ${o.wins}W/${o.losses}L${o.winRate !== null ? ` (${(o.winRate * 100).toFixed(1)}%)` : ""}, $${Math.round(o.netUsd)} net.` : "."),
+    `Week ${s.week}: ${s.trades.count} matched bot trades` +
+      (o ? ` — ${o.wins}W/${o.losses}L${o.winRate !== null ? ` (${(o.winRate * 100).toFixed(1)}%)` : ""}, $${Math.round(o.netUsd)} net (bot-matched only, NOT account P&L).` : "."),
   ];
+  for (const a of s.accounts ?? []) {
+    L.push(
+      `${a.account}: ${a.matched.n} bot trades net $${a.matched.netUsd.toFixed(2)} · ${a.manual.fills} manual fills gross $${a.manual.grossUsd.toFixed(2)}` +
+        (a.realizedUsd !== null ? ` · account realized $${a.realizedUsd.toFixed(2)}` : ""),
+    );
+  }
   for (const e of s.edges) {
     if (e.status !== "insufficient") L.push(`edge ${e.family}: ${e.status.toUpperCase()} (${e.detail}).`);
   }
@@ -776,11 +807,19 @@ function telegramText(summary: unknown, studies: StudyResult[]): string {
   const s = summary as {
     week: string;
     trades: { count: number; overall: { wins: number; losses: number; netUsd: number; stopRuns: number } | null };
+    accounts: AccountRollup[];
     edges: EdgeStatus[];
   };
   const o = s.trades.overall;
   const L = [`<b>Weekly review ${s.week}</b>`];
-  L.push(o ? `${s.trades.count} trades · ${o.wins}W/${o.losses}L · net $${Math.round(o.netUsd)} · ${o.stopRuns} stop-runs` : `${s.trades.count} trades`);
+  L.push(o ? `${s.trades.count} bot trades · ${o.wins}W/${o.losses}L · net $${Math.round(o.netUsd)} · ${o.stopRuns} stop-runs` : `${s.trades.count} bot trades`);
+  for (const a of s.accounts ?? []) {
+    L.push(
+      `<b>${a.account}</b>: ${a.matched.n} bot trades net $${a.matched.netUsd.toFixed(2)}` +
+        (a.manual.fills ? ` · ${a.manual.fills} manual fills gross $${a.manual.grossUsd.toFixed(2)}` : "") +
+        (a.realizedUsd !== null ? ` · <b>account realized $${a.realizedUsd.toFixed(2)}</b>` : ""),
+    );
+  }
   for (const e of s.edges) {
     if (e.status !== "insufficient") L.push(`· ${e.family}: ${e.status.toUpperCase()}`);
   }

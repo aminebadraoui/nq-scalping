@@ -99,6 +99,101 @@ export function budgetFor(budgets: Record<string, number>, script: string): numb
   return budgets[name] ?? null;
 }
 
+/* ---------------- per-account rollup (2026-10-17) ---------------- */
+
+export type AccountRollup = {
+  account: string;
+  matched: {
+    n: number;
+    wins: number;
+    losses: number;
+    grossUsd: number;
+    commissions: number;
+    netUsd: number;
+  };
+  manual: { fills: number; grossUsd: number };
+  realizedUsd: number | null;
+  netLiq: number | null;
+};
+
+type TradeLike = { account?: string; result?: string; grossUsd?: number; commissions?: number; netUsd?: number };
+type RunLike = {
+  account?: string;
+  window_start?: unknown;
+  window_end?: unknown;
+  manual_fills?: unknown;
+  manual_gross_usd?: unknown;
+  account_net?: unknown;
+  account_realized?: unknown;
+};
+
+const numOr = (v: unknown, fallback = 0): number => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+/**
+ * Merge the week's matched trades and reconcile_runs into one row per
+ * account. Reconcile runs are deduped by (window, account) keeping the
+ * LAST run of each window; `realizedUsd` is the max account-reported
+ * realized P&L for the week (the post-reset re-run reports 0 — the max
+ * preserves the number the broker portal showed). Pure — unit-tested.
+ */
+export function buildAccountRollup(trades: TradeLike[], runs: RunLike[]): AccountRollup[] {
+  const byAccount = new Map<string, { matched: AccountRollup["matched"]; manual: AccountRollup["manual"]; realizedUsd: number | null; netLiq: number | null }>();
+
+  const bucket = (account: string) => {
+    const a = byAccount.get(account) ??
+      (byAccount.set(account, {
+        matched: { n: 0, wins: 0, losses: 0, grossUsd: 0, commissions: 0, netUsd: 0 },
+        manual: { fills: 0, grossUsd: 0 },
+        realizedUsd: null,
+        netLiq: null,
+      }).get(account)!);
+    return a;
+  };
+
+  for (const t of trades) {
+    const account = (t.account ?? "").trim() || "unknown";
+    const b = bucket(account);
+    const m = b.matched;
+    m.n += 1;
+    const result = String(t.result ?? "");
+    if (result === "win") m.wins += 1;
+    if (result === "loss") m.losses += 1;
+    m.grossUsd += numOr(t.grossUsd);
+    m.commissions += numOr(t.commissions);
+    m.netUsd += numOr(t.netUsd);
+  }
+
+  // dedupe runs: same (window_start, window_end, account) twice a night —
+  // keep the FIRST run of each window (the later one ran post-reset and
+  // reports a zeroed snapshot).
+  const seen = new Set<string>();
+  const runsLatest: RunLike[] = [];
+  for (const r of runs) {
+    const key = `${String(r.window_start)}|${String(r.window_end)}|${(r.account ?? "").trim()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    runsLatest.push(r);
+  }
+
+  for (const r of runsLatest) {
+    const account = (r.account ?? "").trim() || "unknown";
+    const b = bucket(account);
+    b.manual.fills += numOr(r.manual_fills);
+    b.manual.grossUsd += numOr(r.manual_gross_usd);
+    const realized = r.account_realized === null || r.account_realized === undefined ? null : numOr(r.account_realized);
+    if (realized !== null && (b.realizedUsd === null || realized > b.realizedUsd)) b.realizedUsd = realized;
+    const netLiq = r.account_net === null || r.account_net === undefined ? null : numOr(r.account_net);
+    if (netLiq !== null) b.netLiq = netLiq;
+  }
+
+  return [...byAccount.entries()]
+    .map(([account, b]) => ({ account, ...b }))
+    .sort((a, b) => a.account.localeCompare(b.account));
+}
+
 /** flags a hypothesis may never carry (the job manages these itself) */
 const FORBIDDEN_ARG_PREFIXES = ["--report-json", "--apply", "--now", "--dump", "--warm", "--sweep-out"];
 const MAX_ARGS = 10;

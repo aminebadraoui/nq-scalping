@@ -83,9 +83,18 @@ type Study = {
   budgetMin: number | null;
 };
 
+type AccountRollup = {
+  account: string;
+  matched: { n: number; wins: number; losses: number; grossUsd: number; commissions: number; netUsd: number };
+  manual: { fills: number; grossUsd: number };
+  realizedUsd: number | null;
+  netLiq: number | null;
+};
+
 type ReviewStats = {
   week: string;
   trades: { count: number; overall: StatRow | null; families: StatRow[] };
+  accounts: AccountRollup[];
   edges: Edge[];
   signals: { sent: number; vetoedTotal: number; vetoedByFamily: Array<{ family: string; n: number }> };
   friction: Array<Record<string, unknown>>;
@@ -295,7 +304,7 @@ export function WeeklyBoard() {
           </p>
         </div>
         <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-          <p className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">net p&amp;l</p>
+          <p className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">net p&amp;l · bot-matched trades</p>
           <p className={`mt-1 text-2xl font-bold ${(o?.netUsd ?? 0) >= 0 ? "text-zinc-200" : "text-red-400"}`}>{fmtUsd(o?.netUsd ?? 0)}</p>
           <p className="mt-1 font-mono text-[10px] text-zinc-600">
             {o ? `${o.wins}W/${o.losses}L · ${pct(o.winRate)} · ${o.stopRuns} stop-runs` : "no matched trades"}
@@ -331,6 +340,57 @@ export function WeeklyBoard() {
           <p className="mt-1 font-mono text-[10px] text-zinc-600">DeepSeek week story + next-week hypotheses — proposes, never decides</p>
         </div>
       </div>
+
+      {/* accounts this week */}
+      {s && s.accounts && s.accounts.length > 0 && (
+        <section>
+          <h2 className="mb-1 font-mono text-xs uppercase tracking-widest text-zinc-500">accounts this week</h2>
+          <p className="mb-3 text-xs text-zinc-500">
+            per-account truth: bot-matched trades from the signal reconcile × the manual-fill residual × the
+            account-reported realized P&L (the broker portal number). The overview card&apos;s total is bot-matched
+            trades only — it is not the account P&L.
+          </p>
+          <div className="overflow-x-auto rounded-lg border border-zinc-800">
+            <table className="w-full min-w-[720px] text-left text-sm">
+              <thead className="bg-zinc-900/60 text-xs uppercase tracking-wider text-zinc-500">
+                <tr>
+                  <th className="px-3 py-2">account</th>
+                  <th className="px-3 py-2">bot trades</th>
+                  <th className="px-3 py-2">manual fills</th>
+                  <th className="px-3 py-2">account realized</th>
+                  <th className="px-3 py-2">net liq</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/60">
+                {s.accounts.map((a) => (
+                  <tr key={a.account}>
+                    <td className="px-3 py-2 font-mono text-[11px] text-zinc-200">{a.account}</td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-zinc-300">
+                      {a.matched.n} · {a.matched.wins}W/{a.matched.losses}L ·{" "}
+                      <span className={a.matched.netUsd >= 0 ? "text-long" : "text-red-400"}>
+                        {fmtUsd(a.matched.netUsd)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-zinc-400">
+                      {a.manual.fills} · {fmtUsd(a.manual.grossUsd)} gross
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-zinc-200">
+                      {a.realizedUsd === null ? (
+                        <span className="text-zinc-600">—</span>
+                      ) : (
+                        <span className={a.realizedUsd >= 0 ? "text-long" : "text-red-400"}>{fmtUsd(a.realizedUsd)}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-zinc-400">
+                      {a.netLiq === null ? <span className="text-zinc-600">—</span> : fmtUsd(a.netLiq)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {/* edge monitor */}
       {s && s.edges.length > 0 && (
