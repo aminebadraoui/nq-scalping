@@ -157,3 +157,24 @@ create table if not exists promotion_runs (
   applied   boolean not null default false
 );
 create index if not exists promotion_runs_script_idx on promotion_runs (script, run_at desc);
+
+-- Weekly reviews (2026-10-17): one row per trading week, written by
+-- scripts/weeklyReview.ts (the Saturday-morning self-improvement pass).
+-- stats = the week rollup (trades, edge monitor, friction, signals,
+-- insights, promotion ledger, live overrides); studies = the promotion-
+-- contract queue results with their full reports; narrative = the LLM
+-- week review + next-week hypotheses. Research/approval surface — it
+-- never touches live-execution state.
+create table if not exists weekly_reviews (
+  id               bigint generated always as identity primary key,
+  week_start       date not null unique,            -- Monday, New York calendar
+  week_end         date not null,                   -- Friday
+  generated_at     timestamptz not null default now(),
+  sha              text not null default '',
+  stats            jsonb not null default '{}'::jsonb,
+  studies          jsonb not null default '[]'::jsonb,
+  narrative        text not null default '',
+  narrative_source text not null default 'deterministic',
+  telegram_sent    boolean not null default false
+);
+create index if not exists weekly_reviews_generated_idx on weekly_reviews (generated_at desc);
