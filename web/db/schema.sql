@@ -138,3 +138,22 @@ create table if not exists xt_alerts (
   unique (ts, type, title)
 );
 create index if not exists xt_alerts_ts_idx on xt_alerts (ts desc);
+
+-- Promotion ledger (2026-10-17): every promotion-contract run, pass AND
+-- reject, written by scripts/promoteFromBacktest.ts. The /promotions
+-- surface renders this × the study catalog × the live overrides.
+create table if not exists promotion_runs (
+  id        bigint generated always as identity primary key,
+  run_at    timestamptz not null default now(),
+  script    text not null,
+  cli       text not null default '',
+  sha       text not null default '',
+  family    text not null default '',
+  gate      text not null default '',
+  value     jsonb,
+  verdict   text not null check (verdict in ('passed', 'rejected')),
+  reasons   jsonb not null default '[]',
+  note      text not null default '',
+  applied   boolean not null default false
+);
+create index if not exists promotion_runs_script_idx on promotion_runs (script, run_at desc);

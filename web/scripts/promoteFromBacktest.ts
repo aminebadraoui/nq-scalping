@@ -81,32 +81,71 @@ async function main(): Promise<void> {
   console.log(`sha:    ${report.sha} · split ${report.splitDate}`);
 
   const verdict = checkPromotion(report);
+
+  /* ---- promotion ledger: every verdict is recorded (pass AND reject),
+   *      best-effort — a dry run without a DB still prints the verdict ---- */
+  const DB_URL = process.env.DATABASE_URL;
+  let runId: number | null = null;
+  let sql: ReturnType<typeof postgres> | null = null;
+  if (DB_URL) {
+    try {
+      sql = postgres(DB_URL, { ssl: "require", max: 1 });
+      await sql`
+        create table if not exists promotion_runs (
+          id bigint generated always as identity primary key,
+          run_at timestamptz not null default now(),
+          script text not null,
+          cli text not null default '',
+          sha text not null default '',
+          family text not null default '',
+          gate text not null default '',
+          value jsonb,
+          verdict text not null check (verdict in ('passed', 'rejected')),
+          reasons jsonb not null default '[]',
+          note text not null default '',
+          applied boolean not null default false
+        )`;
+      const [row] = await sql`
+        insert into promotion_runs (script, cli, sha, family, gate, value, verdict, reasons, note, applied)
+        values (${report.script}, ${report.cli}, ${report.sha}, ${report.family}, ${report.gate},
+                ${report.value === null ? null : JSON.stringify(report.value)}::jsonb,
+                ${verdict.pass ? "passed" : "rejected"}, ${JSON.stringify(verdict.reasons)}::jsonb,
+                ${report.note}, false)
+        returning id`;
+      runId = Number(row.id);
+      console.log(`ledger run #${runId} recorded (${verdict.pass ? "passed" : "rejected"})`);
+    } catch (e) {
+      console.log(`ledger record skipped (${e instanceof Error ? e.message : e})`);
+    }
+  }
+
   if (!verdict.pass) {
     console.log("\nPROMOTION REJECTED — contract failures:");
     for (const r of verdict.reasons) console.log(`  ✗ ${r}`);
+    if (sql) await sql.end().catch(() => {});
     process.exit(1);
   }
   console.log("\nPROMOTION PASSED — contract clean.");
 
   if (!apply) {
     console.log("(dry run — pass --apply to write the proposal, --now to also apply it)");
+    if (sql) await sql.end().catch(() => {});
     return;
   }
 
-  const DB_URL = process.env.DATABASE_URL;
   if (!DB_URL) fail("--apply needs DATABASE_URL (Neon). Nothing was written.");
-
-  const sql = postgres(DB_URL, { ssl: "require", max: 1 });
+  const db = sql!;
   try {
     const title = `backtest promotion: ${report.gate} on ${report.family} (${report.script})`;
-    const existing = await sql`
+    const existing = await db`
       select id, status from insights where title = ${title} and status in ('proposed', 'applied', 'reverted') limit 1`;
     if (existing.length > 0) {
       console.log(`insight already exists (id ${existing[0].id}, status ${existing[0].status}) — skipping insert (idempotent)`);
+      if (runId !== null) await db`update promotion_runs set applied = true where id = ${runId}`;
       return;
     }
     const appliedAt = now ? "now()" : "null";
-    const [ins] = await sql`
+    const [ins] = await db`
       insert into insights (strategy, kind, severity, title, finding, evidence, proposed_action, auto_apply, status, source, run_at)
       values (${report.family}, 'rule_proposal', 'opportunity',
               ${title},
@@ -118,15 +157,16 @@ async function main(): Promise<void> {
     console.log(`insight #${ins.id} written (source=backtest, auto_apply=true)`);
 
     if (now) {
-      await sql`
+      await db`
         insert into strategy_overrides (insight_id, family, gate, value, active, note, applied_at)
         values (${Number(ins.id)}, ${report.family}, ${report.gate}, ${JSON.stringify(report.value)}::jsonb, true, ${report.note}, now())`;
       console.log(`strategy_overrides row applied — live within the feed's ~5 min cache`);
+      if (runId !== null) await db`update promotion_runs set applied = true where id = ${runId}`;
     } else {
       console.log("proposal queued — the nightly SELF_IMPROVE=1 arm applies it (or approve in the dashboard)");
     }
   } finally {
-    await sql.end();
+    await db.end();
   }
 }
 

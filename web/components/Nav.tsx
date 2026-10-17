@@ -18,6 +18,7 @@ const links = [
   { href: "/macro", label: "Macro", note: "market context — guides + AI interpretations", stage: null },
   { href: "/strategies", label: "Strategies", note: "what we trade — live, backtest, studies", stage: true },
   { href: "/gates", label: "Gates", note: "the regime a strategy can execute in", stage: true },
+  { href: "/promotions", label: "Promotions", note: "what passed / failed the promotion contract", stage: null },
   { href: "/execution", label: "Execution", note: "orders, fills, the executor", stage: true },
   { href: "/risk", label: "Risk", note: "account protection + sizing", stage: true },
   { href: "/journal", label: "Journal", note: "trades, win/loss analysis, AI review", stage: null },
