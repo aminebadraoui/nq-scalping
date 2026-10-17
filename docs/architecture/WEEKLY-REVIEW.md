@@ -68,6 +68,21 @@ picks the target week. New promotable studies join the queue by adding a
 | `WEEKLY_BUDGET_MIN` | `name=min,name=min` overrides | see below |
 | `WEEKLY_TG` | `0` disables the Telegram card | card on |
 
+## Per-account rollup (2026-10-17)
+
+The review reports **per account, never blended**: `stats.accounts[]` is
+built by `lib/weeklyReview.ts` `buildAccountRollup` from
+`trades.account` (the reconcile now stamps the fill's `accountName` on
+every matched trade) × `reconcile_runs.account` (manual-fill residual +
+the account-reported realized P&L, the broker-portal number — the
+post-reset 0 duplicate is dropped and the pre-reset realized kept).
+Every account gets its own block in the log, the LLM narrative (prompt
+rule: report per account, label the overall as bot-matched only), the
+Telegram card, and the `/review` accounts table. The overview net-P&L
+card is explicitly labeled **bot-matched trades** — it is not the
+account P&L, and unmatched account activity only appears on the
+account row.
+
 ## Runtime budgets (Phase 4)
 
 Every study's runtime is recorded (`durationSec` in the review row +

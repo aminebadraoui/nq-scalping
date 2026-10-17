@@ -60,6 +60,7 @@ it needs an owner decision.
 | Neon org | `nq-scalping` → `org-falling-cell-25919411` (free) |
 | Neon project | **current: `little-tree-arpu7v0m`, region aws-us-west-2, pg 18** (switched ~2026-10-08; old project `summer-poetry-26619129` aws-us-east-1 is retired/superseded) |
 | DATABASE_URL | **secret** — `web/.env.local` (gitignored) AND Coolify app env AND Coolify `nq-jobs` env — all three verified pointing at `little-tree-arpu7v0m` (2026-10-12) |
+| Account history | 2026-10-17: `trades.account` + `reconcile_runs.account` exist (reconcile stamps the fill's accountName). Backfilled by the known switch timeline: ≤2026-10-14 `MFFUSFREOD706880008` · 2026-10-15 `MFFUEVREOD706880009` · ≥2026-10-16 `DEMO2323960` (the current demo). The weekly review rolls up per account — see docs/architecture/WEEKLY-REVIEW.md. |
 | R2 bucket | `nq-history` (Cloudflare account `437b14872d288fb1221f5492055c0b91`) — full 2.5y history, gzipped objects + `manifest.json` index |
 | GC_REMOTE_URL | `https://pub-d68008dba02c4ad190e9814f6c41cbef.r2.dev` (public r2.dev URL of `nq-history`); set in `web/.env.local` (localhost) and Coolify app env (deployed). **Set on the `nq-jobs` compose app env 2026-10-17** (declared in docker-compose.yml) — the Friday risk-stack + the Saturday weekly studies now have the archive inventory. |
 
