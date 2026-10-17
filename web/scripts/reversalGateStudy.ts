@@ -49,6 +49,8 @@ import { imbalanceFor, summarizeImb } from "../lib/imbalance";
 import { readMechanism } from "../lib/mechanism";
 import { readPriceAction } from "../lib/priceaction";
 import { composeSignals, boxFromMechanism, boxFromPriceAction, cardGateOpen } from "../lib/signals";
+import { guardReplay } from "../lib/guardReplay";
+import { dollarize, simulateAccount, accountLine, type DollarizedTrade } from "../lib/propAccount";
 import {
   scoreTrade,
   scoreSequential,
@@ -95,10 +97,12 @@ type Opts = {
   byhourTrain: boolean;
   extremeLocation: boolean;
   locationFree: boolean;
+  tierSize: boolean;
+  extraLevels: boolean;
 };
 
 function parseArgs(argv: string[]): Opts {
-  const o: Opts = { split: "2026-01-01", warm: false, session: "rth", stop: STOP_PTS, slip: 0, slipSweep: false, byhourTrain: false, extremeLocation: false, locationFree: false };
+  const o: Opts = { split: "2026-01-01", warm: false, session: "rth", stop: STOP_PTS, slip: 0, slipSweep: false, byhourTrain: false, extremeLocation: false, locationFree: false, tierSize: false, extraLevels: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--max") o.max = Number(argv[++i]);
@@ -113,6 +117,8 @@ function parseArgs(argv: string[]): Opts {
     else if (a === "--byhour-train") o.byhourTrain = true;
     else if (a === "--extreme-location") o.extremeLocation = true;
     else if (a === "--location-free") o.locationFree = true;
+    else if (a === "--tier-size") o.tierSize = true;
+    else if (a === "--extra-levels") o.extraLevels = true;
   }
   return o;
 }
@@ -171,19 +177,23 @@ type PocCand = { label: string; p: number };
 
 type DayContext = { date: string; fpRth: FootprintMinute[]; fpEth: FootprintMinute[] };
 
-function profileFrom(fp: FootprintMinute[]): { lvns: [number, number][]; poc: number } | null {
+function profileFrom(fp: FootprintMinute[]): { lvns: [number, number][]; poc: number; vah: number; val: number } | null {
   if (fp.length < 60) return null;
   const rows = aggregate(candlesOf(fp), ROW_TICKS);
   const s = stats(rows);
   if (!s) return null;
-  return { lvns: s.lvns, poc: s.poc / 100 };
+  return { lvns: s.lvns, poc: s.poc / 100, vah: s.vah / 100, val: s.val / 100 };
 }
 
 /** the level stack the replay feeds readMechanism: prior-day RTH/ETH +
- *  5-day RTH composite — every input ≤ close of day D-1. */
-function buildStaticContext(prior: DayContext[]): { edges: Edge[]; pocs: PocCand[] } {
+ *  5-day RTH composite — every input ≤ close of day D-1. `extra` (VAH/VAL/
+ *  POC edges) and `pocPrior` are held apart so the baseline arms never see
+ *  them — only the --extra-levels arm F does. */
+function buildStaticContext(prior: DayContext[]): { edges: Edge[]; pocs: PocCand[]; extra: Edge[]; pocPrior: number } {
   const edges: Edge[] = [];
   const pocs: PocCand[] = [];
+  const extra: Edge[] = [];
+  let pocPrior = NaN;
   const rth = prior[prior.length - 1]?.fpRth ?? [];
   const eth = prior[prior.length - 1]?.fpEth ?? [];
   const rthP = profileFrom(rth);
@@ -196,6 +206,12 @@ function buildStaticContext(prior: DayContext[]): { edges: Edge[]; pocs: PocCand
       edges.push({ label: "P4 Prior RTH", p: pa, zone }, { label: "P4 Prior RTH", p: pb, zone });
     }
     pocs.push({ label: "P4 Prior RTH POC", p: rthP.poc });
+    // prior-day value-area boundaries + POC as EXTRA location edges (arm F only)
+    const pt = (label: string, p: number) => ({ label, p, zone: `${f2(p)}–${f2(p)}` });
+    if (Number.isFinite(rthP.vah) && rthP.vah > 0) extra.push(pt("P4 VAH", rthP.vah));
+    if (Number.isFinite(rthP.val) && rthP.val > 0) extra.push(pt("P4 VAL", rthP.val));
+    if (Number.isFinite(rthP.poc) && rthP.poc > 0) extra.push(pt("P4 POC", rthP.poc));
+    pocPrior = rthP.poc;
   }
   if (ethP) {
     for (const [a, b] of ethP.lvns) {
@@ -217,7 +233,7 @@ function buildStaticContext(prior: DayContext[]): { edges: Edge[]; pocs: PocCand
     }
     pocs.push({ label: "P5 Composite POC", p: compP.poc });
   }
-  return { edges, pocs };
+  return { edges, pocs, extra, pocPrior };
 }
 
 /* ---------------- per-session replay ---------------- */
@@ -234,6 +250,9 @@ type RawSig = {
   /** reclaim identity of the episode (lastRec.t|price|dir) */
   key: string;
   t: string;
+  /** location tier at the fire bar: full = location naturally "yes" (LVN),
+   *  half = location was forced (mid-range sequence) — for tier sizing */
+  tier?: "full" | "half";
 };
 
 type SessionResult = {
@@ -243,23 +262,26 @@ type SessionResult = {
   sigB: RawSig[];
   sigC: RawSig[];
   sigD: RawSig[];
+  sigF: RawSig[];
   /** PA vote classification at every bar where the OF-only gate opened */
   gateBPa: { same: number; neutral: number; opposite: number };
   gateBOk: number; // bars where gate B opened (before filters)
   gateAOk: number; // bars where gate A opened (before filters)
   gateCOk: number; // bars where the extremes-as-location gate opened
   gateDOk: number; // bars where the no-location gate opened
+  gateFOk: number; // bars where the extra-levels gate opened
   filteredA: number; // bars dropped by the footprint filters (gate A ok)
   filteredB: number;
 };
 
 function replaySession(
   fp: FootprintMinute[],
-  staticCtx: { edges: Edge[]; pocs: PocCand[] },
+  staticCtx: { edges: Edge[]; pocs: PocCand[]; extra: Edge[]; pocPrior: number },
   date: string,
   hourAllow?: Set<number>,
   extremeLocation = false,
   locationFree = false,
+  extraLevels = false,
 ): SessionResult {
   const n = fp.length;
   const res: SessionResult = {
@@ -269,11 +291,13 @@ function replaySession(
     sigB: [],
     sigC: [],
     sigD: [],
+    sigF: [],
     gateBPa: { same: 0, neutral: 0, opposite: 0 },
     gateBOk: 0,
     gateAOk: 0,
     gateCOk: 0,
     gateDOk: 0,
+    gateFOk: 0,
     filteredA: 0,
     filteredB: 0,
   };
@@ -299,6 +323,7 @@ function replaySession(
 
   // ---- rolling per-bar state ----
   const roll = new Map<number, { buy: number; sell: number }>();
+  const touched = new Set<number>(); // 1-pt buckets with volume so far (naked-POC check)
   let sessHigh = -Infinity;
   let sessLow = Infinity;
   let vwNum = 0;
@@ -307,6 +332,7 @@ function replaySession(
   const firedB = new Set<string>();
   const firedC = new Set<string>();
   const firedD = new Set<string>();
+  const firedF = new Set<string>();
 
   const rollAdd = (m: FootprintMinute) => {
     for (const l of m.levels) {
@@ -316,6 +342,7 @@ function replaySession(
       r.buy += l.buy;
       r.sell += l.sell;
       roll.set(bucket, r);
+      touched.add(Math.round(l.price));
     }
   };
 
@@ -420,6 +447,47 @@ function replaySession(
     const sigD = composeSignals([boxFromMechanism(mechD), boxFromPriceAction(pa)]);
     const gateD = cardGateOpen(sigD, mechD);
 
+    // ---- arm F (opt-in): prior-day VAH/VAL/POC + the naked POC as extra
+    // location edges. The naked POC = the prior-day RTH POC that today's
+    // tape has NOT revisited (no volume within ±3 pts, rolling — no
+    // lookahead), when price is back within 2.5 pts of it.
+    let mechF = mech;
+    if (extraLevels) {
+      const ext: Edge[] = [...lvnEdges, ...staticCtx.extra];
+      if (Number.isFinite(staticCtx.pocPrior)) {
+        const p0 = Math.round(staticCtx.pocPrior);
+        let revisited = false;
+        for (let k = -3; k <= 3; k++) {
+          if (touched.has(p0 + k)) {
+            revisited = true;
+            break;
+          }
+        }
+        if (!revisited && Math.abs(mid - staticCtx.pocPrior) <= 2.5) {
+          ext.push({ label: "Naked POC", p: staticCtx.pocPrior, zone: `${f2(staticCtx.pocPrior)}–${f2(staticCtx.pocPrior)}` });
+        }
+      }
+      mechF = readMechanism(
+        {
+          minutes: windowMins,
+          lastPrice: mid,
+          vwap,
+          absorption: analysis.absorption,
+          alerts: analysis.alerts,
+          reclaims: analysis.reclaims,
+          imbalance: { ...analysis.imbalance, lastStack: stackAtT },
+          lvnEdges: ext,
+          poc: nearestPoc,
+          sessionHigh: sessHigh,
+          sessionLow: sessLow,
+          newsWin: false,
+        },
+        indexOf,
+      );
+    }
+    const sigF = composeSignals([boxFromMechanism(mechF), boxFromPriceAction(pa)]);
+    const gateF = cardGateOpen(sigF, mechF);
+
     // the live maybeSend footprint filters (identical for both arms)
     const stackOk = !stackAtT || stackAtT.side === (mech.side === "long" ? "buy" : "sell");
     const deltaOk = mech.side === "long" ? mech.lastDelta > 0 : mech.side === "short" ? mech.lastDelta < 0 : false;
@@ -433,10 +501,11 @@ function replaySession(
     if (gateA.ok) res.gateAOk++;
     if (gateC.ok) res.gateCOk++;
     if (gateD.ok) res.gateDOk++;
+    if (extraLevels && gateF.ok) res.gateFOk++;
     if (gateB.ok && !filtersOk) res.filteredB++;
     if (gateA.ok && !filtersOk) res.filteredA++;
 
-    const record = (side: "long" | "short", key: string, targetPx: number): RawSig | null => {
+    const record = (side: "long" | "short", key: string, targetPx: number, tier?: "full" | "half"): RawSig | null => {
       if (!Number.isFinite(targetPx)) return null;
       const dir: 1 | -1 = side === "long" ? 1 : -1;
       const entry = mid;
@@ -445,7 +514,7 @@ function replaySession(
       if (dir > 0 && !(stop < entry && entry < target)) return null;
       if (dir < 0 && !(target < entry && entry < stop)) return null;
       const vote = pa.side === null ? "neutral" : pa.side === side ? "same" : "opposite";
-      return { date, dir, entry, stop, target, entryIdx: t, risk: STOP_PTS, paVote: vote, key, t: m.t };
+      return { date, dir, entry, stop, target, entryIdx: t, risk: STOP_PTS, paVote: vote, key, t: m.t, tier };
     };
 
     // the reclaim identity that gates the episode (same selection as readMechanism:
@@ -484,8 +553,18 @@ function replaySession(
       const key = `${date}|${lastRec.t}|${lastRec.price}|${lastRec.dir}`;
       if (!firedD.has(key)) {
         firedD.add(key);
-        const sig = record(mechD.side, key, mechD.targetPx);
+        const li = mech.ingredients.findIndex((i) => i.key === "location");
+        const tier: "full" | "half" = li >= 0 && mech.ingredients[li].state === "yes" ? "full" : "half";
+        const sig = record(mechD.side, key, mechD.targetPx, tier);
         if (sig) res.sigD.push(sig);
+      }
+    }
+    if (extraLevels && gateF.ok && filtersOk && mechF.side && lastRec) {
+      const key = `${date}|${lastRec.t}|${lastRec.price}|${lastRec.dir}`;
+      if (!firedF.has(key)) {
+        firedF.add(key);
+        const sig = record(mechF.side, key, mechF.targetPx);
+        if (sig) res.sigF.push(sig);
       }
     }
   }
@@ -498,7 +577,7 @@ function scoreArm(
   sigs: RawSig[],
   bars: Map<string, { high: number; low: number }[]>,
   cfg: { stop: number; slip: number } = { stop: STOP_PTS, slip: 0 },
-): { trades: EngineTrade[]; hours: number[]; scored: number; dropped: number } {
+): { trades: EngineTrade[]; hours: number[]; tiers: ("full" | "half")[]; scored: number; dropped: number } {
   const byDate = new Map<string, RawSig[]>();
   for (const s of sigs) {
     const a = byDate.get(s.date);
@@ -507,6 +586,7 @@ function scoreArm(
   }
   const trades: EngineTrade[] = [];
   const hours: number[] = [];
+  const tiers: ("full" | "half")[] = [];
   let scored = 0;
   for (const [date, list] of byDate) {
     const mins = bars.get(date);
@@ -522,7 +602,7 @@ function scoreArm(
           { dir: s.dir, entry: s.entry, stop, target: s.target, entryIdx: s.entryIdx, risk: cfg.stop },
           { costPts: COST_PTS, holdBars: HOLD_BARS, stopSlipPts: cfg.slip },
         );
-        return sc ? { ...sc, date: s.date, hour: Number(s.t.slice(0, 2)) } : null;
+        return sc ? { ...sc, date: s.date, hour: Number(s.t.slice(0, 2)), tier: s.tier ?? "full" } : null;
       },
       { occupy: "held", minGapBars: MIN_GAP_BARS },
     );
@@ -530,9 +610,10 @@ function scoreArm(
     for (const o of outcomes) {
       trades.push({ date: o.date, pnl: o.pnl, risk: o.risk });
       hours.push(o.hour);
+      tiers.push(o.tier);
     }
   }
-  return { trades, hours, scored, dropped: sigs.length - scored };
+  return { trades, hours, tiers, scored, dropped: sigs.length - scored };
 }
 
 function fmtStats(st: ReturnType<typeof coreStats>): string {
@@ -566,12 +647,14 @@ async function main() {
   const allB: RawSig[] = [];
   const allC: RawSig[] = [];
   const allD: RawSig[] = [];
+  const allF: RawSig[] = [];
   const sessionBars = new Map<string, { high: number; low: number }[]>();
   const paTally = { same: 0, neutral: 0, opposite: 0 };
   let gateBOk = 0;
   let gateAOk = 0;
   let gateCOk = 0;
   let gateDOk = 0;
+  let gateFOk = 0;
   let filteredA = 0;
   let filteredB = 0;
   let bars = 0;
@@ -594,7 +677,7 @@ async function main() {
       continue;
     }
     const staticCtx = buildStaticContext(prior);
-    const res = replaySession(fpSess, staticCtx, date, hourAllow, o.extremeLocation, o.locationFree);
+    const res = replaySession(fpSess, staticCtx, date, hourAllow, o.extremeLocation, o.locationFree || o.tierSize, o.extraLevels);
     prior.push({ date, fpRth: rthSlice(eth).map(toFootprint), fpEth });
     if (prior.length > 6) prior.shift();
     loaded++;
@@ -602,7 +685,8 @@ async function main() {
     allA.push(...res.sigA);
     allB.push(...res.sigB);
     if (o.extremeLocation) allC.push(...res.sigC);
-    if (o.locationFree) allD.push(...res.sigD);
+    if (o.locationFree || o.tierSize) allD.push(...res.sigD);
+    if (o.extraLevels) allF.push(...res.sigF);
     paTally.same += res.gateBPa.same;
     paTally.neutral += res.gateBPa.neutral;
     paTally.opposite += res.gateBPa.opposite;
@@ -610,6 +694,7 @@ async function main() {
     gateAOk += res.gateAOk;
     gateCOk += res.gateCOk;
     gateDOk += res.gateDOk;
+    gateFOk += res.gateFOk;
     filteredA += res.filteredA;
     filteredB += res.filteredB;
     if (loaded % 100 === 0) console.log(`  ${loaded}/${dates.length} sessions · ${((Date.now() - t0) / 1000).toFixed(0)}s`);
@@ -651,8 +736,8 @@ async function main() {
   const BN = scoreArm(bNeutral, sessionBars, { stop: o.stop, slip: o.slip });
   const BO = scoreArm(bOpp, sessionBars, { stop: o.stop, slip: o.slip });
   const ADD = scoreArm(addedOnly, sessionBars, { stop: o.stop, slip: o.slip });
-  let C = { trades: [] as EngineTrade[], hours: [] as number[], scored: 0, dropped: 0 };
-  let CADD = { trades: [] as EngineTrade[], hours: [] as number[], scored: 0, dropped: 0 };
+  let C = { trades: [] as EngineTrade[], hours: [] as number[], tiers: [] as ("full" | "half")[], scored: 0, dropped: 0 };
+  let CADD = { trades: [] as EngineTrade[], hours: [] as number[], tiers: [] as ("full" | "half")[], scored: 0, dropped: 0 };
   let cShared = 0;
   let cAddedOnly: RawSig[] = [];
   if (o.extremeLocation) {
@@ -661,17 +746,27 @@ async function main() {
     cShared = allC.length - cAddedOnly.length;
     CADD = scoreArm(cAddedOnly, sessionBars, { stop: o.stop, slip: o.slip });
   }
-  let D = { trades: [] as EngineTrade[], hours: [] as number[], scored: 0, dropped: 0 };
-  let DADD = { trades: [] as EngineTrade[], hours: [] as number[], scored: 0, dropped: 0 };
+  let D = { trades: [] as EngineTrade[], hours: [] as number[], tiers: [] as ("full" | "half")[], scored: 0, dropped: 0 };
+  let DADD = { trades: [] as EngineTrade[], hours: [] as number[], tiers: [] as ("full" | "half")[], scored: 0, dropped: 0 };
   let dShared = 0;
   let dAddedOnly: RawSig[] = [];
-  if (o.locationFree) {
+  if (o.locationFree || o.tierSize) {
     D = scoreArm(allD, sessionBars, { stop: o.stop, slip: o.slip });
     dAddedOnly = allD.filter((s) => !mapA.has(s.key));
     dShared = allD.length - dAddedOnly.length;
     DADD = scoreArm(dAddedOnly, sessionBars, { stop: o.stop, slip: o.slip });
   }
-  console.log(`scored trades: A=${A.scored} · B=${B.scored} · B∩neutral=${BN.scored} · B∩opposite=${BO.scored} · added-only=${ADD.scored}${o.extremeLocation ? ` · C=${C.scored} · C∖A=${CADD.scored}` : ""}${o.locationFree ? ` · D=${D.scored} · D∖A=${DADD.scored}` : ""}`);
+  let F = { trades: [] as EngineTrade[], hours: [] as number[], tiers: [] as ("full" | "half")[], scored: 0, dropped: 0 };
+  let FADD = { trades: [] as EngineTrade[], hours: [] as number[], tiers: [] as ("full" | "half")[], scored: 0, dropped: 0 };
+  let fShared = 0;
+  let fAddedOnly: RawSig[] = [];
+  if (o.extraLevels) {
+    F = scoreArm(allF, sessionBars, { stop: o.stop, slip: o.slip });
+    fAddedOnly = allF.filter((s) => !mapA.has(s.key));
+    fShared = allF.length - fAddedOnly.length;
+    FADD = scoreArm(fAddedOnly, sessionBars, { stop: o.stop, slip: o.slip });
+  }
+  console.log(`scored trades: A=${A.scored} · B=${B.scored} · B∩neutral=${BN.scored} · B∩opposite=${BO.scored} · added-only=${ADD.scored}${o.extremeLocation ? ` · C=${C.scored} · C∖A=${CADD.scored}` : ""}${o.locationFree || o.tierSize ? ` · D=${D.scored} · D∖A=${DADD.scored}` : ""}${o.extraLevels ? ` · F=${F.scored} · F∖A=${FADD.scored}` : ""}`);
 
   const split = o.split;
   const arm = (label: string, trades: EngineTrade[]) => ({
@@ -697,6 +792,12 @@ async function main() {
       ? [
           arm("D · no-location gate", D.trades),
           arm("D∖A · location-blocked added", DADD.trades),
+        ]
+      : []),
+    ...(o.extraLevels
+      ? [
+          arm("F · extra levels (VAH/VAL/POC/naked)", F.trades),
+          arm("F∖A · extra-levels added", FADD.trades),
         ]
       : []),
   ];
@@ -822,6 +923,71 @@ async function main() {
     console.log(`\nD episodes: ${allD.length} · shared with A: ${dShared} · D∖A (location-blocked added): ${dAddedOnly.length} · gate D open: ${gateDOk} bars (A: ${gateAOk})`);
   }
 
+  /* ---- standard report for arm F (extra location levels), when enabled ---- */
+  if (o.extraLevels) {
+    const name = "F · extra levels (VAH/VAL/POC/naked)";
+    const trades = F.trades;
+    console.log(`\n=== STANDARD REPORT — ${name} ===`);
+    console.log(
+      renderT1([
+        { label: "all", stats: coreStats(trades) },
+        { label: "train", stats: coreStats(trades.filter((t) => t.date < split)) },
+        { label: "test", stats: coreStats(trades.filter((t) => t.date >= split)) },
+      ]),
+    );
+    const viability = propViability(trades, { splitDate: split });
+    console.log(renderT4(viability));
+    console.log(
+      renderVerdict({
+        edge: coreStats(trades.filter((t) => t.date >= split)).expPts > 0 ? "real" : "absent",
+        significance: "—",
+        stability: (() => {
+          const tr = coreStats(trades.filter((t) => t.date < split));
+          const te = coreStats(trades.filter((t) => t.date >= split));
+          return `train/test WR ${tr.wr.toFixed(1)}/${te.wr.toFixed(1)}`;
+        })(),
+        holdout: "n/a",
+        viability: viability.pPass === null ? "n/a" : `${viability.pPass >= 0.9 ? "PASS" : viability.pPass >= 0.7 ? "weak" : "FAIL"} (P=${viability.pPass.toFixed(2)})`,
+      }),
+    );
+    console.log(`\nF episodes: ${allF.length} · shared with A: ${fShared} · F∖A (extra-levels added): ${fAddedOnly.length} · gate F open: ${gateFOk} bars (A: ${gateAOk})`);
+  }
+
+  /* ---- tier sizing + the live day-plan guard stack (guardReplay) ---- */
+  if (o.tierSize) {
+    const tierRows = (trades: EngineTrade[], tiers: ("full" | "half")[]) => {
+      const full = trades.filter((_, i) => tiers[i] !== "half");
+      const half = trades.filter((_, i) => tiers[i] === "half");
+      return { full, half };
+    };
+    const { full: dFull, half: dHalf } = tierRows(D.trades, D.tiers);
+    console.log("\n=== TIER DECOMPOSITION (arm D, location tier) ===");
+    console.log(`  full (LVN) : ${fmtStats(coreStats(dFull))}`);
+    console.log(`  half (mid) : ${fmtStats(coreStats(dHalf))}`);
+
+    // the tier-sized portfolio: half-tier trades at HALF the dollars
+    const sized = (trades: EngineTrade[], tiers: ("full" | "half")[]) =>
+      trades.map((t, i) => (tiers[i] === "half" ? { ...t, pnl: t.pnl / 2 } : t));
+    const guarded = (label: string, rows: EngineTrade[]) => {
+      const d = dollarize(rows.map((t) => ({ date: t.date, pnlPts: t.pnl, riskPts: t.risk })), undefined, { maxMicro: 30, pointValue: 2 });
+      const gEval = guardReplay(d, "eval");
+      const gFunded = guardReplay(d, "funded");
+      const evalSim = simulateAccount(gEval.rows.map((r) => ({ date: r.date, pnl: r.pnl })), "eval");
+      const fundedSim = simulateAccount(gFunded.rows.map((r) => ({ date: r.date, pnl: r.pnl })), "funded");
+      console.log(`  ${label.padEnd(22)} | eval ${accountLine(evalSim)} | funded ${accountLine(fundedSim)} | day-loss halts ${gEval.stats.halts.loss}`);
+    };
+    console.log("\n=== DAY-PLAN GUARD STACK (guardReplay · floor/arm/consistency/dd600) ===");
+    guarded("A · current", A.trades);
+    guarded("D · no-location", D.trades);
+    guarded("E · tier-sized (half mid)", sized(D.trades, D.tiers));
+    console.log("  — TEST WINDOW ONLY (≥ split, fresh state):");
+    guarded("A · current (test)", A.trades.filter((t) => t.date >= split));
+    guarded("D · no-location (test)", D.trades.filter((t) => t.date >= split));
+    const dTest = D.trades.filter((t) => t.date >= split);
+    const dTestTiers = D.tiers.filter((_, i) => D.trades[i].date >= split);
+    guarded("E · tier-sized (test)", sized(dTest, dTestTiers));
+  }
+
   /* ---- stability by year ---- */
   console.log("\n=== BY YEAR ===");
   for (const [name, trades] of [
@@ -899,13 +1065,19 @@ async function main() {
               : {}),
             ...(o.locationFree
               ? {
-                  D: { trades: D.trades, stats: arm("D", D.trades) },
+                  D: { trades: D.trades, tiers: D.tiers, stats: arm("D", D.trades) },
                   DAdded: { trades: DADD.trades, stats: arm("DADD", DADD.trades) },
                 }
               : {}),
+            ...(o.extraLevels
+              ? {
+                  F: { trades: F.trades, stats: arm("F", F.trades) },
+                  FAdded: { trades: FADD.trades, stats: arm("FADD", FADD.trades) },
+                }
+              : {}),
           },
-          episodes: { A: allA.length, B: allB.length, C: allC.length, D: allD.length, shared: sharedKeys.size, addedOnly: addedOnly.length, timingDeltas },
-          gateTally: { gateBOk, gateAOk, gateCOk, gateDOk, paTally, filteredA, filteredB },
+          episodes: { A: allA.length, B: allB.length, C: allC.length, D: allD.length, F: allF.length, shared: sharedKeys.size, addedOnly: addedOnly.length, timingDeltas },
+          gateTally: { gateBOk, gateAOk, gateCOk, gateDOk, gateFOk, paTally, filteredA, filteredB },
         },
         null,
         1,

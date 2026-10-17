@@ -6,9 +6,11 @@
 > it keeps improve out-of-sample. Removing it adds volume, not edge. Follow-ups
 > in the same harness: **hour-gated coverage** (dead overnight hours cut — test
 > expR 1.10 → 1.29), a **stop/slip sweep** (the 5-pt stop beats the 7-pt stop
-> on per-trade R and PF at every slippage level tested), and the **location
-> layer** (extremes-as-location adds ~0; removing location doubles volume with
-> a +0.71R OOS cohort — location should become a sizing tier, not a gate).
+> on per-trade R and PF at every slippage level tested), the **location
+> layer** (removing it doubles volume with a +0.71R OOS cohort), and the
+> **deployment path**: RTH + location-tier sizing (full at LVN, half
+> mid-range) under the live day-plan guard stack is the only config that
+> passes the prop eval out-of-sample (24 days, consist ✓).
 
 ## Method
 
@@ -233,6 +235,72 @@ binary answer is therefore not "remove location" — it is:
 And the structural ceiling: even with no location requirement at all, the
 card fires ~4.2×/day (RTH) — the absorption→reclaim→PA-alignment sequence is
 the frequency bottleneck ("no reclaim, no trade"), not location.
+
+## Extra location levels + tier sizing + the guard stack (the deployment path)
+
+Three more arms, same harness: **F** (`--extra-levels`) adds the prior-day
+VAH/VAL/POC plus the **naked POC** (the prior-day RTH POC that today's tape
+has not revisited within ±3 pts, rolling — lookahead-free) as location
+edges; **E** (`--tier-size`) is arm D's portfolio sized by location tier
+(full at LVNs, half mid-range), run through the live day-plan guard stack
+(`guardReplay` — the SAME rule module the executor reads: floor 250 · arm
+400 · consistency 900 · dd600).
+
+### Arm F — extra levels: small volume add, best per-trade quality
+
+| | F∖A episodes | test n | test WR [CI95] | test PF | test exp (R) | maxDD (pts) | P(pass) |
+|---|---|---|---|---|---|---|---|
+| RTH | 49 | 426 | 26.5% [22.6–30.9] | **2.61** | **+1.27** | 145.9 | **88%** |
+| hour-gated | 32 | 371 | 21.0% [17.2–25.5] | **2.56** | **+1.32** | 160.3 | 79% |
+
+The VAH/VAL/POC/naked-POC edges add only ~2-3% of episodes (the location
+layer's real headroom is mid-range sequences, not these levels) — but they
+sharpen the reads they do capture: F posts the best test PF/expR of any
+config in both samples, and the best RTH P(pass). A free, small improvement.
+
+### Tier decomposition (arm D, location tier)
+
+| tier | RTH n | RTH exp (R) | RTH PF | RTH maxDD | hour-gated n | hour-gated exp (R) | hour-gated PF | hour-gated maxDD |
+|---|---|---|---|---|---|---|---|---|
+| full (LVN) | 1,293 | +1.04 | 2.36 | 181 | 1,354 | +1.07 | 2.33 | 165 |
+| half (mid) | 1,482 | +0.72 | 1.96 | 202 | 1,414 | +0.54 | 1.66 | 368 |
+
+Both tiers carry real edge; the mid-range tier is ~40% weaker per R and its
+raw drawdown is the location layer's entire cost (368 pts in the hour-gated
+sample). Half-sizing it is what makes it affordable.
+
+### The guard stack decides it — and the tier-sized portfolio is the one that passes (on RTH)
+
+`guardReplay` over the FULL period, then over the TEST window (≥ 2026-01-01,
+fresh account state):
+
+| config | guard · eval (full) | guard · eval (test window) |
+|---|---|---|
+| A · current card (RTH) | PASS 2024-03-13 · consist ✓ · 38 days | PASS 2026-02-24 · consist ✓ · 30 days · 2 halts |
+| D · no-location, untiered (RTH) | no-pass · consist ✗ | PASS 2026-02-19 · consist ✓ · 31 days · 9 halts |
+| **E · tier-sized (RTH)** | **PASS 2024-01-25 · consist ✓ · 25 days** | **PASS 2026-02-06 · consist ✓ · 24 days · 4 halts** |
+| A · hour-gated (test window) | no-pass · consist ✗ | no-pass · consist ✗ (best day $2,669 vs 30% bar $8,895) |
+| D · hour-gated (test window) | no-pass · −$805 | no-pass · consist ✗ |
+| E · hour-gated (test window) | PASS 2024-02-01 · 29 days (full) | no-pass · consist ✗ ($2,155 vs 30% bar) |
+
+On RTH, the tier-sized portfolio dominates: it is the fastest guarded pass
+(24 days vs 30 for the current card), the highest final equity ($6,219), and
+4 day-loss halts vs 9 for the untiered no-location card. The guard stack's
+day-loss halts convert the bare-sim breaches (121–216% of MLL) into passes
+by stopping the bleeding days.
+
+The hour-gated extension, despite the best per-trade edge (+1.29R), **fails
+the prop consistency rule out-of-sample in every variant** — its problem is
+best-day concentration (one $2,669 day ≈ 39% of total), not drawdown, and
+the consistency rule is exactly the test that catches it. Hour-gating stays
+a per-trade quality finding, not a deployment config, unless a day-P&L cap
+(profit arm) or more trading days changes that.
+
+`VERDICT (deployment): the reversal card's viability path = RTH + location-tier
+sizing (full LVN / half mid-range) under the live day-plan guard stack ·
+edge real · significance — · stability of the mid tier: positive but weaker
+(+0.72R) · holdout n/a · viability PASS (guarded, test window: 24 days,
+consist ✓ — the only passing OOS cell; hour-gated fails consistency OOS)`
 
 ## What this falsifies and what it confirms
 
