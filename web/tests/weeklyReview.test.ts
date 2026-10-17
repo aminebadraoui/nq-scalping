@@ -3,7 +3,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseLlmPayload, sanitizeHypothesis, catalogPromptText, STUDY_CATALOG } from "../lib/weeklyReview";
+import { parseLlmPayload, sanitizeHypothesis, catalogPromptText, STUDY_CATALOG, parseBudgetEnv, budgetFor, DEFAULT_STUDY_BUDGETS } from "../lib/weeklyReview";
 
 describe("sanitizeHypothesis", () => {
   it("accepts a valid catalog hypothesis", () => {
@@ -98,5 +98,29 @@ describe("catalogPromptText", () => {
       assert.ok(t.includes(c.study), `missing ${c.study}`);
       assert.ok(t.includes(c.gates), `missing gates for ${c.study}`);
     }
+  });
+});
+
+describe("study budgets (Phase 4)", () => {
+  it("returns the warm-cache defaults", () => {
+    assert.equal(parseBudgetEnv("").countFracGateStudy, 20);
+    assert.equal(parseBudgetEnv("").sideVetoStudy, 15);
+  });
+
+  it("merges valid overrides and ignores junk", () => {
+    const b = parseBudgetEnv("countFracGateStudy=30,sideVetoStudy=2.5,bad,=10,other=-5,big=99,empty=0");
+    assert.equal(b.countFracGateStudy, 30);
+    assert.equal(b.sideVetoStudy, 2.5);
+    assert.equal(b.other, undefined);
+    assert.equal(b.big, undefined); // > 60 rejected
+    assert.equal(b.empty, undefined); // 0 rejected
+  });
+
+  it("resolves a budget from a script path", () => {
+    const b = parseBudgetEnv("");
+    assert.equal(budgetFor(b, "scripts/countFracGateStudy.ts"), 20);
+    assert.equal(budgetFor(b, "scripts/unknown.ts"), null);
+    assert.equal(budgetFor(b, "countFracGateStudy"), 20);
+    assert.equal(DEFAULT_STUDY_BUDGETS.hourExpectancyStudy, 15);
   });
 });

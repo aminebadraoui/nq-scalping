@@ -36,6 +36,11 @@
  *                            grid numbers from gcdata/validate_sweep.py
  *                            (without both, that report rejects on the
  *                            grid-discipline rule — honest, by design)
+ *   WEEKLY_BUDGET_MIN=name=min,…  per-study advisory runtime budgets
+ *                            (defaults: countFracGateStudy 20 · sideVeto
+ *                            15 · hourExpectancy 15 — ~5× the measured
+ *                            warm-cache runtimes; over-budget logs an
+ *                            alarm + flags the row)
  *   WEEKLY_TG=0               skip the Telegram summary card
  *
  * Phase 3 — the next-week experiment queue:
@@ -66,7 +71,7 @@ import { edgeStatuses, type EdgeStatus } from "../lib/edgeMonitor";
 import { etParts } from "../lib/marketHours";
 import { coreStats, propViability, renderT1, renderT4, renderVerdict } from "../lib/backtestEngine";
 import { sendTelegram } from "../lib/notify";
-import { catalogPromptText, parseLlmPayload, type ExperimentRow, type Hypothesis } from "../lib/weeklyReview";
+import { catalogPromptText, parseLlmPayload, budgetFor, parseBudgetEnv, type ExperimentRow, type Hypothesis } from "../lib/weeklyReview";
 
 /** repo paths anchored to this file — immune to the caller's cwd */
 const WEB_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // web/
@@ -281,6 +286,10 @@ type StudyResult = {
   reasons: string[];
   logTail: string;
   report: Record<string, unknown> | null;
+  /** Phase 4 — runtime telemetry + advisory budget (minutes; the hard
+   *  kill stays the 60-min subprocess timeout). */
+  durationSec: number | null;
+  budgetMin: number | null;
 };
 
 /** does this study script emit --report-json? (research-only studies run
@@ -299,7 +308,7 @@ function supportsReportJson(script: string): boolean {
 }
 
 /** Run one study (subprocess, offline) → report-json file. Never throws. */
-function runStudy(q: QueuedStudy, tmpDir: string, withReport: boolean): { ok: boolean; exit: number | null; logTail: string } {
+function runStudy(q: QueuedStudy, tmpDir: string, withReport: boolean): { ok: boolean; exit: number | null; logTail: string; durationSec: number } {
   const reportPath = path.join(tmpDir, `${q.name}.json`);
   const args = [...q.args];
   if (process.env.WEEKLY_MAX) args.push("--max", process.env.WEEKLY_MAX);
@@ -314,13 +323,14 @@ function runStudy(q: QueuedStudy, tmpDir: string, withReport: boolean): { ok: bo
       encoding: "utf8",
       env: process.env,
     });
-    console.log(`[weekly] study ${q.name} done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-    return { ok: true, exit: 0, logTail: out.trim() };
+    const sec = (Date.now() - t0) / 1000;
+    console.log(`[weekly] study ${q.name} done in ${sec.toFixed(0)}s`);
+    return { ok: true, exit: 0, logTail: out.trim(), durationSec: sec };
   } catch (e) {
     const err = e as { status?: number; signal?: string; stdout?: string; stderr?: string; message?: string };
     const tail = `${err.stdout ?? ""}\n${err.stderr ?? ""}`.trim().split("\n").slice(-25).join("\n");
     console.error(`[weekly] study ${q.name} FAILED (${err.signal ?? `status ${err.status}`}): ${err.message ?? ""}`);
-    return { ok: false, exit: err.status ?? null, logTail: tail };
+    return { ok: false, exit: err.status ?? null, logTail: tail, durationSec: (Date.now() - t0) / 1000 };
   }
 }
 
@@ -461,6 +471,8 @@ async function storeHypotheses(weekStart: string, hypotheses: Hypothesis[], sour
 
 async function main() {
   await sql.unsafe(SCHEMA_SQL);
+  const jobStart = Date.now();
+  const budgets = parseBudgetEnv(process.env.WEEKLY_BUDGET_MIN ?? "");
   const win = weekWindow(Date.now(), process.env.WEEKLY_WEEK);
   console.log(`[weekly] review week ${win.start} → ${win.end} (ts ${new Date(win.startMs).toISOString()} .. ${new Date(win.endMs).toISOString()})`);
 
@@ -525,6 +537,7 @@ async function main() {
     insights: weekInsights,
     promotions: weekPromotions,
     overrides: { active: activeOverrides, autoReverts },
+    runtime: { jobSec: null as number | null, studiesSec: null as number | null },
   };
   console.log(
     `[weekly] week rollup: ${trades.length} trades · ${sentN} cards sent · ${vetoedTotal} vetoed · ` +
@@ -554,10 +567,19 @@ async function main() {
 
   const studies: StudyResult[] = [];
   const ranExperimentIds: number[] = [];
+  let overBudget: string[] = [];
   for (const q of queue) {
     const withReport = supportsReportJson(q.script);
     const run = runStudy(q, tmpDir, withReport);
-    const base = { name: q.name, cli: [q.script, ...q.args].join(" "), exit: run.exit, report: null as Record<string, unknown> | null };
+    const budgetMin = budgetFor(budgets, q.script);
+    const base = {
+      name: q.name,
+      cli: [q.script, ...q.args].join(" "),
+      exit: run.exit,
+      report: null as Record<string, unknown> | null,
+      durationSec: run.durationSec,
+      budgetMin,
+    };
     let result: StudyResult;
     if (!run.ok) {
       result = { ...base, verdict: "error", reasons: [`study failed (exit ${run.exit})`], logTail: run.logTail };
@@ -582,16 +604,29 @@ async function main() {
         console.log(`[weekly] contract: ${q.name} → ${v.verdict}${v.reasons.length ? ` (${v.reasons.join("; ")})` : ""}`);
       }
     }
+    // Phase 4: advisory runtime budget (warm-cache baseline × ~5) — an
+    // over-budget run smells like a cold cache or a code regression.
+    if (budgetMin !== null && run.durationSec > budgetMin * 60) {
+      overBudget.push(`${q.name} ${(run.durationSec / 60).toFixed(1)}/${budgetMin} min`);
+      console.warn(`[weekly] ⏱ ${q.name} took ${(run.durationSec / 60).toFixed(1)} min — over the ${budgetMin} min budget (cold cache? regression?)`);
+    }
     studies.push(result);
     if (q.experimentId !== undefined) {
       await sql`
         update weekly_experiments
-        set status = 'ran', ran_at = now(), result = ${sql.json(JSON.parse(JSON.stringify({ verdict: result.verdict, reasons: result.reasons, exit: result.exit })))}
+        set status = 'ran', ran_at = now(), result = ${sql.json(JSON.parse(JSON.stringify({ verdict: result.verdict, reasons: result.reasons, exit: result.exit, durationSec: Math.round(run.durationSec), budgetMin })))}
         where id = ${q.experimentId}`;
       ranExperimentIds.push(q.experimentId);
     }
   }
   if (queue.length === 0) console.log("[weekly] WEEKLY_STUDIES=none — rollup + narrative only");
+
+  const studiesSec = studies.reduce((s, st) => s + (st.durationSec ?? 0), 0);
+  summary.runtime.studiesSec = Math.round(studiesSec);
+  console.log(
+    `[weekly] study runtime: ${(studiesSec / 60).toFixed(1)} min total` +
+      (overBudget.length ? ` · OVER BUDGET: ${overBudget.join(", ")}` : " · within budgets"),
+  );
 
   /* ---- D. LLM narrative (proposes; never decides) — the response also
    *      carries the structured next-week hypotheses (Phase 3) ---- */
@@ -603,6 +638,7 @@ async function main() {
 
   /* ---- E. persist (sql.json = real jsonb values; the stringify→parse
    *      roundtrip normalizes Dates and satisfies the JSONValue type) ---- */
+  summary.runtime.jobSec = Math.round((Date.now() - jobStart) / 1000);
   const [reviewRow] = await sql`
     insert into weekly_reviews (week_start, week_end, generated_at, sha, stats, studies, narrative, narrative_source, telegram_sent)
     values (${win.start}, ${win.end}, now(), ${sha()}, ${sql.json(JSON.parse(JSON.stringify(summary)))}, ${sql.json(JSON.parse(JSON.stringify(studies)))}, ${parsed.narrative}, ${narrativeSource}, false)
@@ -750,6 +786,14 @@ function telegramText(summary: unknown, studies: StudyResult[]): string {
   }
   if (studies.length) {
     L.push("Studies: " + studies.map((st) => `${st.name}=${st.verdict}`).join(", "));
+    const over = studies.filter((st) => st.budgetMin !== null && st.durationSec !== null && st.durationSec > st.budgetMin * 60);
+    if (over.length) {
+      L.push(
+        "⏱ over runtime budget: " +
+          over.map((st) => `${st.name} ${(st.durationSec! / 60).toFixed(1)}/${st.budgetMin} min`).join(", ") +
+          " (cold cache or regression?)",
+      );
+    }
   }
   return L.join("\n");
 }

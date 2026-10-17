@@ -79,6 +79,8 @@ type Study = {
   reasons: string[];
   logTail: string;
   report: StudyReport | null;
+  durationSec: number | null;
+  budgetMin: number | null;
 };
 
 type ReviewStats = {
@@ -90,6 +92,7 @@ type ReviewStats = {
   insights: Array<Record<string, unknown>>;
   promotions: Array<Record<string, unknown>>;
   overrides: { active: Array<Record<string, unknown>>; autoReverts: Array<Record<string, unknown>> };
+  runtime: { jobSec: number | null; studiesSec: number | null };
 };
 
 type WeekSummary = {
@@ -317,7 +320,10 @@ export function WeeklyBoard() {
             {data.review.studies.filter((st) => st.verdict === "passed").length} passed ·{" "}
             <span className="text-red-400">{data.review.studies.filter((st) => st.verdict !== "passed").length}</span> not
           </p>
-          <p className="mt-1 font-mono text-[10px] text-zinc-600">fail-closed: a rejected study writes nothing</p>
+          <p className="mt-1 font-mono text-[10px] text-zinc-600">
+            fail-closed: a rejected study writes nothing
+            {s?.runtime.studiesSec ? ` · ⏱ ${(s.runtime.studiesSec / 60).toFixed(1)} min of studies` : ""}
+          </p>
         </div>
         <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
           <p className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">narrative</p>
@@ -388,9 +394,18 @@ export function WeeklyBoard() {
                         {r.gate} → {JSON.stringify(r.value)} on {r.family}
                       </span>
                     )}
-                    <span className="ml-auto font-mono text-[10px] text-zinc-600">{new Date().toLocaleDateString()} · exit {st.exit}</span>
+                    <span className="ml-auto font-mono text-[10px] text-zinc-600">
+                      exit {st.exit}
+                      {st.durationSec !== null ? ` · ⏱ ${(st.durationSec / 60).toFixed(1)} min` : ""}
+                      {st.budgetMin !== null ? ` / ${st.budgetMin} min budget` : ""}
+                    </span>
                   </summary>
                   <div className="space-y-3 border-t border-zinc-800/60 px-3 py-3 text-xs">
+                    {st.budgetMin !== null && st.durationSec !== null && st.durationSec > st.budgetMin * 60 && (
+                      <p className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 font-mono text-[11px] text-amber-400">
+                        ⏱ {(st.durationSec / 60).toFixed(1)} min — over the {st.budgetMin} min budget (cold cache or regression?)
+                      </p>
+                    )}
                     {st.reasons.length > 0 && (
                       <ul className="list-inside list-disc space-y-0.5 text-zinc-400">
                         {st.reasons.map((r_, i) => (

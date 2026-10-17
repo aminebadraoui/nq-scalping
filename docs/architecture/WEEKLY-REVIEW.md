@@ -65,7 +65,27 @@ picks the target week. New promotable studies join the queue by adding a
 | `WEEKLY_MAX` | sessions cap appended to every study | unset (full archive) |
 | `WEEKLY_PROMOTE` | `` / `1` / `now` | dry-run |
 | `WEEKLY_GRID_DSR`, `WEEKLY_GRID_PBO` | validate_sweep.py numbers | unset |
+| `WEEKLY_BUDGET_MIN` | `name=min,name=min` overrides | see below |
 | `WEEKLY_TG` | `0` disables the Telegram card | card on |
+
+## Runtime budgets (Phase 4)
+
+Every study's runtime is recorded (`durationSec` in the review row +
+experiment results) and checked against an advisory budget — defaults
+derived from the first measured VPS warm-cache pass (2026-10-17,
+~7 min total, countFrac ~4 min · sideVeto ~3 min), set ~5× above so a
+cold cache or a code regression is what trips them:
+
+| Study | Budget (min) |
+|---|---|
+| `countFracGateStudy` | 20 |
+| `sideVetoStudy` | 15 |
+| `hourExpectancyStudy` | 15 |
+
+An over-budget run logs an alarm, flags the study on `/review` (amber
+chip) and in the Telegram card, and stores the timings — it never kills
+the study (the hard kill stays the 60-min subprocess timeout).
+`WEEKLY_BUDGET_MIN="countFracGateStudy=30"` overrides.
 
 ## The experiment queue (Phase 3)
 
@@ -99,14 +119,13 @@ have the session inventory and the weekly summary card goes out.
 
 ## Roadmap
 
-1. ~~**Phase 2 — `/review` surface**~~ ✅ shipped 2026-10-17: week recap
-   panels, the study table with full cohort reports (baseline /
-   candidate / vetoed), approve/reject buttons reusing the
-   `/api/insights` actions, edge monitor + auto-revert visibility.
-2. ~~**Phase 3 — experiment queue**~~ ✅ shipped 2026-10-17: structured
-   LLM hypotheses → sanitized `weekly_experiments` rows → queue on
-   `/review` → next Saturday's job runs the queued set.
-3. **Phase 4 — cadence tuning**: per-family weekly study budgets once
-   runtime is measured on the VPS warm cache.
+1. ~~**Phase 2 — `/review` surface**~~ ✅ shipped 2026-10-17
+2. ~~**Phase 3 — experiment queue**~~ ✅ shipped 2026-10-17
+3. ~~**Phase 4 — runtime budgets**~~ ✅ shipped 2026-10-17: per-study
+   timing telemetry + advisory budgets (~5× the measured warm-cache
+   baseline), over-budget alarms in the log, the review row, the UI,
+   and the Telegram card. All four phases complete — the loop is
+   operational: Saturday 09:15 ET cron live on `nq-jobs` since
+   2026-10-17.
 
 *Educational research only — not financial advice.*

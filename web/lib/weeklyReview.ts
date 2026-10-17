@@ -68,6 +68,37 @@ export const STUDY_CATALOG: Array<{ study: string; gates: string; flags: string;
 
 const CATALOG_BY_STUDY = new Map(STUDY_CATALOG.map((c) => [c.study, c]));
 
+/** Phase 4 — per-study runtime budgets (minutes, advisory alarms; the
+ *  hard kill stays the 60-min subprocess timeout). Derived from the
+ *  first measured VPS warm-cache run (2026-10-17, ~7 min total):
+ *  countFrac ~4 min · sideVeto ~3 min — budgets sit ~5× above that so a
+ *  cold cache or a code regression is what trips them. */
+export const DEFAULT_STUDY_BUDGETS: Record<string, number> = {
+  countFracGateStudy: 20,
+  sideVetoStudy: 15,
+  hourExpectancyStudy: 15,
+};
+
+/** Merge WEEKLY_BUDGET_MIN ("name=min,name=min") over the defaults.
+ *  Invalid entries are ignored — never throws. */
+export function parseBudgetEnv(env: string): Record<string, number> {
+  const out = { ...DEFAULT_STUDY_BUDGETS };
+  for (const kv of env.split(",")) {
+    const [k, v] = kv.split("=");
+    const name = (k ?? "").trim();
+    const n = Number(v);
+    if (name && Number.isFinite(n) && n > 0 && n <= 60) out[name] = n;
+  }
+  return out;
+}
+
+/** budget in minutes for a study script path ("scripts/x.ts" → basename). */
+export function budgetFor(budgets: Record<string, number>, script: string): number | null {
+  const base = script.split("/").pop() ?? "";
+  const name = base.endsWith(".ts") ? base.slice(0, -3) : base;
+  return budgets[name] ?? null;
+}
+
 /** flags a hypothesis may never carry (the job manages these itself) */
 const FORBIDDEN_ARG_PREFIXES = ["--report-json", "--apply", "--now", "--dump", "--warm", "--sweep-out"];
 const MAX_ARGS = 10;
