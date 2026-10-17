@@ -25,7 +25,7 @@
  * Pure + client-safe. Unit-tested in tests/kelly.test.ts.
  * ------------------------------------------------------------------ */
 
-import { momentumSize, RAPID_EOD_50K, type PropRules } from "./propRules";
+import { momentumSize, type PropRules } from "./propRules";
 import type { DollarizedTrade } from "./propAccount";
 
 /** decided-trade evidence for one family (wins + losses; zero-pnl trades
@@ -64,9 +64,12 @@ export type KellyConfig = {
 };
 
 export const KELLY_DEFAULTS: KellyConfig = {
-  kellyMult: 1,
+  /** owner-measured default (kelly-fraction-sweep-2026-10-17): half-Kelly
+   *  is the all-round sweet spot; marginal families need ≤ 0.35 */
+  kellyMult: 0.5,
   flatRisk: 100,
-  maxRisk: 150,
+  /** $100 = the studied safe cap ("cap100" in the sweep) */
+  maxRisk: 100,
   minRisk: 25,
   maxFrac: 0.5,
   prior: { wins: 8, losses: 3, winR: 1, lossR: 1 },
@@ -166,7 +169,9 @@ export type KellyConfigFn = (family: string) => KellyConfig;
 export function dollarizeKelly(
   trades: KellyTrade[],
   cfg: Partial<KellyConfig> | KellyConfigFn = {},
-  rules: Pick<PropRules, "maxMicro" | "pointValue"> = RAPID_EOD_50K,
+  /* owner μ10 rule (2026-10-17): Kelly-sized cards never exceed 10 micros;
+   * positive sub-micro sizes floor to 1 contract inside momentumSize */
+  rules: Pick<PropRules, "maxMicro" | "pointValue"> = { maxMicro: 10, pointValue: 2 },
 ): DollarizedTrade[] {
   const shared: KellyConfig = { ...KELLY_DEFAULTS, ...(typeof cfg === "function" ? {} : cfg) };
   const configFor = (fam: string): KellyConfig => (typeof cfg === "function" ? cfg(fam) : shared);

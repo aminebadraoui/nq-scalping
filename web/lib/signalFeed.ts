@@ -1637,7 +1637,8 @@ class SignalFeed {
       const size = await this.applyDayTier(
         fixed > 0
           ? { contracts: fixed, dollarRisk: fixed * riskPts * 2, capped: false }
-          : momentumSize(riskPts, kellyRisk),
+          : /* owner μ10 rule: Kelly-sized cards cap at 10 micros (flat keeps the plan rules) */
+            momentumSize(riskPts, kellyRisk, kellySizes(kelly) ? { maxMicro: 10, pointValue: 2 } : undefined),
         riskPts,
       );
 
@@ -2440,7 +2441,8 @@ class SignalFeed {
       const contracts =
         fixed > 0
           ? cappedContracts(fixed, riskPts, cap)
-          : momentumSize(riskPts, kellyRisk).contracts;
+          : /* owner μ10 rule: Kelly-sized cards cap at 10 micros */
+            momentumSize(riskPts, kellyRisk, kellySizes(kelly) ? { maxMicro: 10, pointValue: 2 } : undefined).contracts;
       const size = await this.applyDayTier(
         { contracts, dollarRisk: contracts * riskPts * 2, capped: fixed > 0 && cap > 0 && fixed > contracts },
         riskPts,
