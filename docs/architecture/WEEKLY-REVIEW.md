@@ -67,6 +67,20 @@ picks the target week. New promotable studies join the queue by adding a
 | `WEEKLY_GRID_DSR`, `WEEKLY_GRID_PBO` | validate_sweep.py numbers | unset |
 | `WEEKLY_TG` | `0` disables the Telegram card | card on |
 
+## The experiment queue (Phase 3)
+
+The LLM answers with JSON `{ narrative, hypotheses }`; hypotheses are
+sanitized by `lib/weeklyReview.ts` (catalog-only studies, no
+`--report-json/--apply/--now/--warm/--sweep-out/--dump`, bounded args)
+and stored as `weekly_experiments` rows (`status='proposed'`, deduped by
+week + study + title). The user queues them on `/review`
+(`POST /api/weekly-review {action:"queue"|"unqueue"|"skip"}`). On the
+next Saturday run the **queued set replaces the default queue**
+(`WEEKLY_STUDIES` still wins) and each row is marked `ran` with its
+verdict/reasons, linked to that week's review. Studies without a
+`--report-json` emitter run research-only — recorded, never promoted; the
+promotion contract stays the only path into `strategy_overrides`.
+
 ## Proposed cron (needs owner approval — Coolify `nq-jobs` change)
 
 ```
@@ -81,12 +95,13 @@ adding it is part of the same approval.
 
 ## Roadmap
 
-1. **Phase 2 — `/review` surface**: renders `weekly_reviews` (week recap
-   panels, the study table with T0/T1/T4 + verdict per
-   BACKTEST-REPORT-STANDARD.md, approve/reject/apply buttons reusing the
-   `/api/insights` actions, auto-revert history next to applied rows).
-2. **Phase 3 — experiment queue**: the LLM's next-week hypotheses become
-   rows the user can queue for the following Saturday.
+1. ~~**Phase 2 — `/review` surface**~~ ✅ shipped 2026-10-17: week recap
+   panels, the study table with full cohort reports (baseline /
+   candidate / vetoed), approve/reject buttons reusing the
+   `/api/insights` actions, edge monitor + auto-revert visibility.
+2. ~~**Phase 3 — experiment queue**~~ ✅ shipped 2026-10-17: structured
+   LLM hypotheses → sanitized `weekly_experiments` rows → queue on
+   `/review` → next Saturday's job runs the queued set.
 3. **Phase 4 — cadence tuning**: per-family weekly study budgets once
    runtime is measured on the VPS warm cache.
 

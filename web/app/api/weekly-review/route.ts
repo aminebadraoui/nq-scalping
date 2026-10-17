@@ -13,9 +13,12 @@ function parseJson<T>(v: unknown): T | null {
   }
 }
 
-/** Weekly reviews + the backtest-source proposals the surface can act on.
- *  GET /api/weekly-review            → latest week's full review + the week list
- *  GET /api/weekly-review?week=…     → that week's full review */
+/** Weekly reviews + the next-week experiment queue + the backtest-source
+ *  proposals the surface can act on.
+ *  GET /api/weekly-review            → latest week's full review + experiments
+ *  GET /api/weekly-review?week=…     → that week's full review
+ *  POST {action:"queue"|"unqueue"|"skip", id} → experiment state changes
+ *  (the proposal apply/reject actions stay on POST /api/insights). */
 export async function GET(req: Request) {
   if (!dbEnabled()) return Response.json({ ok: false, reason: "no DATABASE_URL" });
   const db = getDb();
@@ -52,6 +55,19 @@ export async function GET(req: Request) {
       }
     }
 
+    // the next-week experiment queue: proposed (LLM hypotheses), queued
+    // (waiting for the next Saturday), recently ran/skipped.
+    let experiments: Row[] = [];
+    try {
+      experiments = (await db`
+        select id, created_at, week_start::text as week_start, title, study, args, rationale, status, source, ran_at, result
+        from weekly_experiments
+        where status in ('proposed', 'queued') or (status in ('ran', 'skipped') and created_at > now() - interval '28 days')
+        order by case status when 'queued' then 0 when 'proposed' then 1 else 2 end, id desc`) as Row[];
+    } catch {
+      /* table may not exist yet (pre-Phase-3 deploy or fresh DB) */
+    }
+
     // backtest-source proposals (promoteFromBacktest / the weekly job write
     // these) — the apply/reject actions reuse POST /api/insights.
     const insightRows = (await db`
@@ -68,12 +84,62 @@ export async function GET(req: Request) {
         net: Number(w.net),
       })),
       review,
+      experiments: experiments.map((r) => ({
+        id: Number(r.id),
+        created_at: String(r.created_at),
+        week_start: String(r.week_start),
+        title: String(r.title),
+        study: String(r.study),
+        args: parseJson<string[]>(r.args) ?? [],
+        rationale: String(r.rationale ?? ""),
+        status: String(r.status),
+        source: String(r.source ?? "llm"),
+        ran_at: r.ran_at ? String(r.ran_at) : null,
+        result: parseJson(r.result),
+      })),
       insights: insightRows.map((r) => ({
         ...r,
         evidence: parseJson(r.evidence) ?? {},
         proposedAction: parseJson(r.proposed_action),
       })),
     });
+  } catch (e) {
+    return Response.json({ ok: false, reason: String(e) });
+  }
+}
+
+export async function POST(req: Request) {
+  if (!dbEnabled()) return Response.json({ ok: false, reason: "no DATABASE_URL" });
+  const db = getDb();
+  let body: { action?: string; id?: number } = {};
+  try {
+    body = await req.json();
+  } catch {
+    return Response.json({ ok: false, reason: "invalid JSON" });
+  }
+  const { action, id } = body;
+  if (!id) return Response.json({ ok: false, reason: "id is required" });
+
+  try {
+    if (action === "queue") {
+      const r = await db`
+        update weekly_experiments set status = 'queued' where id = ${id} and status = 'proposed' returning id`;
+      if (r.length === 0) return Response.json({ ok: false, reason: "experiment not found or not proposed" });
+      return Response.json({ ok: true });
+    }
+    if (action === "unqueue") {
+      const r = await db`
+        update weekly_experiments set status = 'proposed' where id = ${id} and status = 'queued' returning id`;
+      if (r.length === 0) return Response.json({ ok: false, reason: "experiment not found or not queued" });
+      return Response.json({ ok: true });
+    }
+    if (action === "skip") {
+      const r = await db`
+        update weekly_experiments set status = 'skipped' where id = ${id} and status in ('proposed', 'queued') returning id`;
+      if (r.length === 0) return Response.json({ ok: false, reason: "experiment not found or not skippable" });
+      return Response.json({ ok: true });
+    }
+    return Response.json({ ok: false, reason: `unknown action "${action ?? ""}"` });
   } catch (e) {
     return Response.json({ ok: false, reason: String(e) });
   }

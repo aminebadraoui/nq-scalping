@@ -38,6 +38,16 @@
  *                            grid-discipline rule — honest, by design)
  *   WEEKLY_TG=0               skip the Telegram summary card
  *
+ * Phase 3 — the next-week experiment queue:
+ *   · the LLM answers with JSON { narrative, hypotheses }; hypotheses are
+ *     sanitized (lib/weeklyReview.ts: catalog-only studies, no forbidden
+ *     flags) and stored as weekly_experiments rows (status 'proposed');
+ *   · the user queues experiments on /review (status 'queued');
+ *   · on the next Saturday run the queued set REPLACES the default queue
+ *     (WEEKLY_STUDIES still wins); studies without a --report-json
+ *     emitter run research-only — recorded, never promoted;
+ *   · each run updates the row: status 'ran' + verdict/reasons.
+ *
  * Run (from web/):
  *   node --import ../scripts/ts-loader.mjs ./scripts/weeklyReview.ts
  * The Saturday cron wrapper is scripts/weekly.sh (repo root).
@@ -56,6 +66,7 @@ import { edgeStatuses, type EdgeStatus } from "../lib/edgeMonitor";
 import { etParts } from "../lib/marketHours";
 import { coreStats, propViability, renderT1, renderT4, renderVerdict } from "../lib/backtestEngine";
 import { sendTelegram } from "../lib/notify";
+import { catalogPromptText, parseLlmPayload, type ExperimentRow, type Hypothesis } from "../lib/weeklyReview";
 
 /** repo paths anchored to this file — immune to the caller's cwd */
 const WEB_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // web/
@@ -114,6 +125,24 @@ create table if not exists promotion_runs (
   note text not null default '',
   applied boolean not null default false
 );
+-- next-week experiment queue (Phase 3): the LLM proposes hypotheses →
+-- weekly_experiments (status 'proposed'); the user queues them on /review;
+-- the next Saturday job runs the queued set in place of the default queue.
+create table if not exists weekly_experiments (
+  id bigint generated always as identity primary key,
+  created_at timestamptz not null default now(),
+  week_start date not null,                 -- the review week that proposed it
+  title text not null,
+  study text not null,
+  args jsonb not null default '[]'::jsonb,
+  rationale text not null default '',
+  status text not null default 'proposed' check (status in ('proposed', 'queued', 'ran', 'skipped')),
+  source text not null default 'llm',
+  ran_at timestamptz,
+  review_id bigint,
+  result jsonb
+);
+create index if not exists weekly_experiments_status_idx on weekly_experiments (status, id);
 `;
 
 /* ---------------- week window (New York calendar) ---------------- */
@@ -248,18 +277,33 @@ type StudyResult = {
   name: string;
   cli: string;
   exit: number | null;
-  verdict: "passed" | "rejected" | "error";
+  verdict: "passed" | "rejected" | "error" | "research";
   reasons: string[];
   logTail: string;
   report: Record<string, unknown> | null;
 };
 
+/** does this study script emit --report-json? (research-only studies run
+ *  without it and are recorded, never promoted) */
+const reportSupport = new Map<string, boolean>();
+function supportsReportJson(script: string): boolean {
+  const cached = reportSupport.get(script);
+  if (cached !== undefined) return cached;
+  try {
+    const src = readFileSync(path.join(WEB_DIR, script), "utf8");
+    reportSupport.set(script, src.includes("--report-json"));
+  } catch {
+    reportSupport.set(script, false);
+  }
+  return reportSupport.get(script)!;
+}
+
 /** Run one study (subprocess, offline) → report-json file. Never throws. */
-function runStudy(q: QueuedStudy, tmpDir: string): { ok: boolean; exit: number | null; logTail: string } {
+function runStudy(q: QueuedStudy, tmpDir: string, withReport: boolean): { ok: boolean; exit: number | null; logTail: string } {
   const reportPath = path.join(tmpDir, `${q.name}.json`);
   const args = [...q.args];
   if (process.env.WEEKLY_MAX) args.push("--max", process.env.WEEKLY_MAX);
-  args.push("--report-json", reportPath);
+  if (withReport) args.push("--report-json", reportPath);
   const cli = [q.script, ...args].join(" ");
   console.log(`[weekly] study ${cli}`);
   const t0 = Date.now();
@@ -366,6 +410,55 @@ async function loadTrades(start: string, end: string): Promise<EnrichedTrade[]> 
   return out;
 }
 
+/** Phase 3: the experiments the user queued on /review — these replace
+ *  the default study queue on the next Saturday run. */
+async function loadQueuedExperiments(): Promise<ExperimentRow[]> {
+  try {
+    const rows = (await sql`
+      select id, created_at, week_start::text as week_start, title, study, args, rationale, status, source, ran_at, result
+      from weekly_experiments where status = 'queued' order by id asc`) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      created_at: String(r.created_at),
+      week_start: String(r.week_start),
+      title: String(r.title),
+      study: String(r.study),
+      args: parseJson<string[]>(r.args) ?? [],
+      rationale: String(r.rationale ?? ""),
+      status: String(r.status) as ExperimentRow["status"],
+      source: String(r.source ?? "llm"),
+      ran_at: r.ran_at ? String(r.ran_at) : null,
+      result: parseJson<ExperimentRow["result"]>(r.result),
+    }));
+  } catch (e) {
+    console.warn(`[weekly] weekly_experiments unavailable (${String(e)})`);
+    return [];
+  }
+}
+
+/** Phase 3: persist the LLM's next-week hypotheses as 'proposed' rows
+ *  (deduped by week + study + title — re-runs are idempotent). */
+async function storeHypotheses(weekStart: string, hypotheses: Hypothesis[], source: string): Promise<number> {
+  if (hypotheses.length === 0) return 0;
+  const existing = (await sql`
+    select study, title from weekly_experiments where week_start = ${weekStart} and source = ${source}`) as Array<{
+    study: string;
+    title: string;
+  }>;
+  const keys = new Set(existing.map((r) => `${r.study}|${r.title}`));
+  let stored = 0;
+  for (const h of hypotheses) {
+    const key = `${h.study}|${h.title}`;
+    if (keys.has(key)) continue;
+    keys.add(key);
+    await sql`
+      insert into weekly_experiments (week_start, title, study, args, rationale, status, source)
+      values (${weekStart}, ${h.title}, ${h.study}, ${sql.json(JSON.parse(JSON.stringify(h.args)))}, ${h.rationale}, 'proposed', ${source})`;
+    stored++;
+  }
+  return stored;
+}
+
 async function main() {
   await sql.unsafe(SCHEMA_SQL);
   const win = weekWindow(Date.now(), process.env.WEEKLY_WEEK);
@@ -445,46 +538,82 @@ async function main() {
   }
   const promoteMode = promote === "1" || promote === "now" ? promote : "";
   const gridPatch = { dsr: process.env.WEEKLY_GRID_DSR, pbo: process.env.WEEKLY_GRID_PBO };
-  const queue = pickQueue();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "weekly-review-"));
+
+  /* ---- Phase 3: the user's queued experiments replace the default
+   *      queue (WEEKLY_STUDIES still wins over everything) ---- */
+  const queuedExperiments = await loadQueuedExperiments();
+  const overrideEnv = process.env.WEEKLY_STUDIES;
+  let queue: Array<QueuedStudy & { experimentId?: number }> = pickQueue();
+  if (queuedExperiments.length > 0 && !overrideEnv) {
+    queue = queuedExperiments.map((e) => ({ name: `exp-${e.id}`, script: e.study, args: e.args, experimentId: e.id }));
+    console.log(`[weekly] ${queuedExperiments.length} queued experiment(s) replace the default queue`);
+  } else if (queuedExperiments.length > 0) {
+    console.log(`[weekly] WEEKLY_STUDIES override set — ${queuedExperiments.length} queued experiment(s) wait for the next run`);
+  }
+
   const studies: StudyResult[] = [];
+  const ranExperimentIds: number[] = [];
   for (const q of queue) {
-    const run = runStudy(q, tmpDir);
+    const withReport = supportsReportJson(q.script);
+    const run = runStudy(q, tmpDir, withReport);
     const base = { name: q.name, cli: [q.script, ...q.args].join(" "), exit: run.exit, report: null as Record<string, unknown> | null };
+    let result: StudyResult;
     if (!run.ok) {
-      studies.push({ ...base, verdict: "error", reasons: [`study failed (exit ${run.exit})`], logTail: run.logTail });
-      continue;
+      result = { ...base, verdict: "error", reasons: [`study failed (exit ${run.exit})`], logTail: run.logTail };
+    } else if (!withReport) {
+      // research-only study: recorded, never promoted — the promotion
+      // contract remains the only path into strategy_overrides.
+      result = { ...base, verdict: "research", reasons: [], logTail: run.logTail };
+      console.log(`[weekly] research: ${q.name} done (no promotion — no report-json emitter)`);
+    } else {
+      const reportPath = path.join(tmpDir, `${q.name}.json`);
+      let report: Record<string, unknown> | null = null;
+      try {
+        report = JSON.parse(fs.readFileSync(reportPath, "utf8")) as Record<string, unknown>;
+      } catch {
+        /* study wrote no report */
+      }
+      if (!report) {
+        result = { ...base, verdict: "error", reasons: ["study exited 0 but wrote no report-json"], logTail: run.logTail };
+      } else {
+        const v = contractCheck(reportPath, promoteMode, gridPatch);
+        result = { ...base, verdict: v.verdict, reasons: v.reasons, logTail: run.logTail, report };
+        console.log(`[weekly] contract: ${q.name} → ${v.verdict}${v.reasons.length ? ` (${v.reasons.join("; ")})` : ""}`);
+      }
     }
-    const reportPath = path.join(tmpDir, `${q.name}.json`);
-    let report: Record<string, unknown> | null = null;
-    try {
-      report = JSON.parse(fs.readFileSync(reportPath, "utf8")) as Record<string, unknown>;
-    } catch {
-      /* study wrote no report */
+    studies.push(result);
+    if (q.experimentId !== undefined) {
+      await sql`
+        update weekly_experiments
+        set status = 'ran', ran_at = now(), result = ${sql.json(JSON.parse(JSON.stringify({ verdict: result.verdict, reasons: result.reasons, exit: result.exit })))}
+        where id = ${q.experimentId}`;
+      ranExperimentIds.push(q.experimentId);
     }
-    if (!report) {
-      studies.push({ ...base, verdict: "error", reasons: ["study exited 0 but wrote no report-json"], logTail: run.logTail });
-      continue;
-    }
-    const v = contractCheck(reportPath, promoteMode, gridPatch);
-    studies.push({ ...base, verdict: v.verdict, reasons: v.reasons, logTail: run.logTail, report });
-    console.log(`[weekly] contract: ${q.name} → ${v.verdict}${v.reasons.length ? ` (${v.reasons.join("; ")})` : ""}`);
   }
   if (queue.length === 0) console.log("[weekly] WEEKLY_STUDIES=none — rollup + narrative only");
 
-  /* ---- D. LLM narrative (proposes; never decides) ---- */
-  const narrative = await llmNarrative(summary, studies);
-  const narrativeSource = narrative.from;
+  /* ---- D. LLM narrative (proposes; never decides) — the response also
+   *      carries the structured next-week hypotheses (Phase 3) ---- */
+  const rawNarrative = await llmNarrative(summary, studies);
+  const parsed = parseLlmPayload(rawNarrative.text);
+  const narrativeSource = rawNarrative.from;
+  const storedHypotheses = await storeHypotheses(win.start, parsed.hypotheses, narrativeSource);
+  if (storedHypotheses > 0) console.log(`[weekly] stored ${storedHypotheses} new experiment hypothesis(es) for next week`);
 
   /* ---- E. persist (sql.json = real jsonb values; the stringify→parse
    *      roundtrip normalizes Dates and satisfies the JSONValue type) ---- */
-  await sql`
+  const [reviewRow] = await sql`
     insert into weekly_reviews (week_start, week_end, generated_at, sha, stats, studies, narrative, narrative_source, telegram_sent)
-    values (${win.start}, ${win.end}, now(), ${sha()}, ${sql.json(JSON.parse(JSON.stringify(summary)))}, ${sql.json(JSON.parse(JSON.stringify(studies)))}, ${narrative.text}, ${narrativeSource}, false)
+    values (${win.start}, ${win.end}, now(), ${sha()}, ${sql.json(JSON.parse(JSON.stringify(summary)))}, ${sql.json(JSON.parse(JSON.stringify(studies)))}, ${parsed.narrative}, ${narrativeSource}, false)
     on conflict (week_start) do update
     set week_end = excluded.week_end, generated_at = now(), sha = excluded.sha,
         stats = excluded.stats, studies = excluded.studies,
-        narrative = excluded.narrative, narrative_source = excluded.narrative_source`;
+        narrative = excluded.narrative, narrative_source = excluded.narrative_source
+    returning id`;
+  if (ranExperimentIds.length > 0) {
+    await sql`update weekly_experiments set review_id = ${Number(reviewRow.id)} where id = any(${ranExperimentIds})`;
+  }
   console.log(`[weekly] weekly_reviews row upserted for ${win.start}`);
 
   /* ---- F. Telegram summary (best-effort; WEEKLY_TG=0 skips) ---- */
@@ -546,11 +675,15 @@ async function llmNarrative(summary: unknown, studies: StudyResult[]): Promise<{
           "You review the trading week that just closed (the window is stated in the data) plus the " +
           "promotion-contract study verdicts. Rules: state the week window explicitly in every verdict; " +
           "state sample sizes (n) for every claim; separate real P&L from vetoed/unfilled would-be numbers; " +
-          "a short verdict per strategy family; the ONE highest-leverage improvement per strategy; " +
-          "then propose up to three concrete experiments for NEXT week, each varying exactly ONE layer " +
-          "against the frozen production stack (a gate, filter, or execution change — never several at once). " +
+          "a short verdict per strategy family; the ONE highest-leverage improvement per strategy. " +
           "You never decide production changes — the promotion contract does; a rejected study is a rejected " +
-          "study, not an invitation to hand-wave. Be skeptical of small samples. Concise markdown, no disclaimers.",
+          "study, not an invitation to hand-wave. Be skeptical of small samples. Concise markdown, no disclaimers.\n" +
+          "RESPOND WITH A SINGLE JSON OBJECT AND NOTHING ELSE:\n" +
+          '{"narrative": "<your markdown review>", "hypotheses": [{"title": "<short name>", "study": "<catalog path>", "args": ["<flag>", "..."], "rationale": "<why, one varying layer>"}]}\n' +
+          "Propose 0–3 hypotheses for NEXT week's experiments. Every hypothesis must use ONLY a study from this catalog " +
+          "and ONLY its documented flags — each experiment varies exactly ONE layer against the frozen production stack:\n" +
+          catalogPromptText() +
+          "\nIf no hypothesis is worth running, return an empty hypotheses array.",
       },
       {
         role: "user",

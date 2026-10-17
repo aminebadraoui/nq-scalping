@@ -178,3 +178,26 @@ create table if not exists weekly_reviews (
   telegram_sent    boolean not null default false
 );
 create index if not exists weekly_reviews_generated_idx on weekly_reviews (generated_at desc);
+
+-- Weekly experiment queue (2026-10-17, Phase 3): the Saturday job's LLM
+-- proposes next-week hypotheses → rows with status 'proposed'; the user
+-- queues them on /review ('queued'); the next Saturday job runs the
+-- queued set in place of the default study queue and records the result
+-- ('ran' + verdict). Studies without a --report-json emitter run
+-- research-only — the promotion contract stays the only path into
+-- strategy_overrides.
+create table if not exists weekly_experiments (
+  id         bigint generated always as identity primary key,
+  created_at timestamptz not null default now(),
+  week_start date not null,                 -- the review week that proposed it
+  title      text not null,
+  study      text not null,
+  args       jsonb not null default '[]'::jsonb,
+  rationale  text not null default '',
+  status     text not null default 'proposed' check (status in ('proposed', 'queued', 'ran', 'skipped')),
+  source     text not null default 'llm',
+  ran_at     timestamptz,
+  review_id  bigint,
+  result     jsonb
+);
+create index if not exists weekly_experiments_status_idx on weekly_experiments (status, id);

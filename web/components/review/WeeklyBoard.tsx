@@ -75,7 +75,7 @@ type Study = {
   name: string;
   cli: string;
   exit: number | null;
-  verdict: "passed" | "rejected" | "error";
+  verdict: "passed" | "rejected" | "error" | "research";
   reasons: string[];
   logTail: string;
   report: StudyReport | null;
@@ -98,6 +98,20 @@ type WeekSummary = {
   generated_at: string;
   trades: number;
   net: number;
+};
+
+type ExperimentRow = {
+  id: number;
+  created_at: string;
+  week_start: string;
+  title: string;
+  study: string;
+  args: string[];
+  rationale: string;
+  status: "proposed" | "queued" | "ran" | "skipped";
+  source: string;
+  ran_at: string | null;
+  result: { verdict: "passed" | "rejected" | "error" | "research"; reasons: string[]; exit: number | null } | null;
 };
 
 type InsightRow = {
@@ -130,6 +144,7 @@ type Payload = {
     narrative_source: string;
     telegram_sent: boolean;
   } | null;
+  experiments: ExperimentRow[];
   insights: InsightRow[];
 };
 
@@ -137,6 +152,7 @@ const VERDICT_CHIP: Record<Study["verdict"], { label: string; cls: string }> = {
   passed: { label: "✓ contract clean", cls: "bg-long/15 text-long border-long/40" },
   rejected: { label: "✗ rejected", cls: "bg-red-500/10 text-red-400 border-red-500/30" },
   error: { label: "⚠ study failed", cls: "bg-amber-500/10 text-amber-400 border-amber-500/30" },
+  research: { label: "research only", cls: "bg-zinc-800/60 text-zinc-400 border-zinc-700" },
 };
 
 const EDGE_CHIP: Record<Edge["status"], { label: string; cls: string }> = {
@@ -195,6 +211,23 @@ export function WeeklyBoard() {
     setBusy(id);
     try {
       const r = await fetch("/api/insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, id }),
+      });
+      if (!r.ok) throw new Error(`http ${r.status}`);
+      void load(week);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const actExperiment = async (id: number, action: "queue" | "unqueue" | "skip") => {
+    setBusy(id);
+    try {
+      const r = await fetch("/api/weekly-review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, id }),
@@ -471,6 +504,103 @@ export function WeeklyBoard() {
                 )}
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      {/* next week's experiments — Phase 3: queue the LLM's hypotheses */}
+      <section>
+        <h2 className="mb-1 font-mono text-xs uppercase tracking-widest text-zinc-500">next week&apos;s experiments</h2>
+        <p className="mb-3 text-xs text-zinc-500">
+          the AI&apos;s hypotheses for next Saturday — each varies exactly one layer. Queue the ones you want; the
+          Saturday job runs the queued set in place of the default studies. Research-only studies are recorded, never
+          promoted.
+        </p>
+        {data.experiments.length === 0 ? (
+          <p className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 text-xs text-zinc-500">
+            no experiments yet — they appear here when the Saturday job&apos;s AI review proposes hypotheses.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {data.experiments.map((e) => {
+              const queued = e.status === "queued";
+              return (
+                <div
+                  key={e.id}
+                  className={`flex flex-wrap items-center gap-3 rounded-lg border px-3 py-2 ${
+                    queued ? "border-long/30 bg-long/5" : "border-zinc-800 bg-zinc-900/40"
+                  }`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-zinc-200">
+                      {e.title}
+                      {e.status === "ran" && e.result ? (
+                        <span
+                          className={`ml-2 inline-block rounded border px-1.5 py-0.5 align-middle font-mono text-[10px] ${
+                            e.result.verdict === "passed"
+                              ? "border-long/40 bg-long/15 text-long"
+                              : e.result.verdict === "rejected"
+                                ? "border-red-500/30 bg-red-500/10 text-red-400"
+                                : "border-zinc-700 bg-zinc-800/60 text-zinc-500"
+                          }`}
+                        >
+                          {e.result.verdict}
+                          {e.result.reasons.length > 0 ? ` · ${e.result.reasons.length} reasons` : ""}
+                        </span>
+                      ) : null}
+                      {e.status === "skipped" && (
+                        <span className="ml-2 inline-block rounded border border-zinc-700 bg-zinc-800/60 px-1.5 py-0.5 align-middle font-mono text-[10px] text-zinc-500">
+                          skipped
+                        </span>
+                      )}
+                    </p>
+                    <p className="mt-0.5 font-mono text-[10px] text-zinc-600">
+                      {e.study}
+                      {e.args.length > 0 ? ` ${e.args.join(" ")}` : ""} · proposed {e.week_start} · {e.source}
+                      {e.ran_at ? ` · ran ${new Date(e.ran_at).toLocaleDateString()}` : ""}
+                    </p>
+                    {e.rationale && <p className="mt-1 text-xs text-zinc-500">{e.rationale}</p>}
+                    {e.status === "ran" && e.result && e.result.reasons.length > 0 && (
+                      <ul className="mt-1 list-inside list-disc space-y-0.5 text-xs text-zinc-500">
+                        {e.result.reasons.slice(0, 3).map((r, i) => (
+                          <li key={i}>{r}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  {e.status === "proposed" && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => void actExperiment(e.id, "queue")}
+                        disabled={busy !== null}
+                        className="rounded border border-long/40 bg-long/15 px-2.5 py-1 font-mono text-[11px] text-long transition-colors hover:bg-long/25 disabled:opacity-40"
+                      >
+                        queue for Saturday
+                      </button>
+                      <button
+                        onClick={() => void actExperiment(e.id, "skip")}
+                        disabled={busy !== null}
+                        className="rounded border border-zinc-700 bg-zinc-800/60 px-2.5 py-1 font-mono text-[11px] text-zinc-400 transition-colors hover:text-zinc-200 disabled:opacity-40"
+                      >
+                        skip
+                      </button>
+                    </div>
+                  )}
+                  {e.status === "queued" && (
+                    <div className="flex gap-2">
+                      <span className="self-center font-mono text-[10px] uppercase tracking-widest text-long">queued ✓</span>
+                      <button
+                        onClick={() => void actExperiment(e.id, "unqueue")}
+                        disabled={busy !== null}
+                        className="rounded border border-zinc-700 bg-zinc-800/60 px-2.5 py-1 font-mono text-[11px] text-zinc-400 transition-colors hover:text-zinc-200 disabled:opacity-40"
+                      >
+                        unqueue
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
