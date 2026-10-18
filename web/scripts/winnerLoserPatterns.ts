@@ -33,7 +33,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import postgres from "postgres";
-import { accountForDay } from "../lib/tradeLedger";
+import { isRecentAccount, resolveAccount } from "../lib/accountAttribution";
 import {
   minePatterns,
   familyBaselines,
@@ -103,7 +103,7 @@ async function loadTrades(): Promise<DbRow[]> {
            t.sig_entry, t.sig_target,
            t.entry_adverse_pts, t.held_min, t.mfe_pts, t.mae_pts,
            t.target_reached, t.recovered, t.stop_run, t.loss_label,
-           t.hour_bucket, t.first_of_day, t.features
+           t.hour_bucket, t.first_of_day, t.account, t.features
     from trades t
     where ${sql.unsafe(where.join(" and "))}
     order by t.ts asc`) as DbRow[];
@@ -113,15 +113,15 @@ function toRows(raw: DbRow[]): { rows: WinLossRow[]; skipped: number } {
   let skipped = 0;
   if (ACCOUNT !== "all") {
     for (const r of raw) {
-      const account = accountForDay(String(r.day)).account;
-      if (ACCOUNT === "new" ? !account.endsWith("007") : account.endsWith("007")) skipped++;
+      const account = resolveAccount(r.account, String(r.day)).account;
+      if (ACCOUNT === "new" ? !isRecentAccount(account) : isRecentAccount(account)) skipped++;
     }
   }
   const filtered = ACCOUNT === "all"
     ? raw
     : raw.filter((r) => {
-        const account = accountForDay(String(r.day)).account;
-        return ACCOUNT === "new" ? account.endsWith("007") : !account.endsWith("007");
+        const account = resolveAccount(r.account, String(r.day)).account;
+        return ACCOUNT === "new" ? isRecentAccount(account) : !isRecentAccount(account);
       });
   return { rows: winLossRowsFromDb(filtered), skipped };
 }

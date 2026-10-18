@@ -20,6 +20,7 @@
 import { readFileSync } from "node:fs";
 import postgres from "postgres";
 import { parseMffTrades, matchMff } from "../lib/mffImport";
+import { accountForDay } from "../lib/accountAttribution";
 
 const file = process.argv[2];
 if (!file) {
@@ -44,6 +45,8 @@ const DDL = `
 alter table trades add column if not exists source text not null default 'reconcile';
 alter table manual_trades add column if not exists pnl_net_usd numeric(12,2);
 alter table manual_trades add column if not exists fees_usd numeric(12,2);
+alter table manual_trades add column if not exists account text not null default '';
+alter table manual_trades add column if not exists account_source text not null default '';
 `;
 
 async function main() {
@@ -122,16 +125,19 @@ async function main() {
 
   let manualNet = 0;
   for (const m of manual) {
+    // MFF exports carry no account name — stamp the known switch timeline
+    // (lib/accountAttribution.ts) at import time so the row is self-contained
+    const acct = accountForDay(m.day);
     await sql`
       insert into manual_trades
-        (key, day, symbol, direction, qty, entry_price, exit_price, pnl_usd, pnl_net_usd, fees_usd, entry_at, exit_at, matched_signal)
+        (key, day, symbol, direction, qty, entry_price, exit_price, pnl_usd, pnl_net_usd, fees_usd, entry_at, exit_at, matched_signal, account, account_source)
       values
         (${"mff|" + m.key}, ${m.day}, ${m.symbol}, ${m.direction}, ${m.splitQty},
          ${m.entryPrice}, ${m.exitPrice}, ${(m.splitNet + m.splitFees).toFixed(2)}, ${m.splitNet.toFixed(2)}, ${m.splitFees.toFixed(2)},
-         ${new Date(m.entryAt)}, ${new Date(m.exitAt)}, null)
+         ${new Date(m.entryAt)}, ${new Date(m.exitAt)}, null, ${acct}, 'timeline')
       on conflict (key) do update set
         pnl_usd = excluded.pnl_usd, pnl_net_usd = excluded.pnl_net_usd, fees_usd = excluded.fees_usd,
-        qty = excluded.qty, matched_signal = null`;
+        qty = excluded.qty, matched_signal = null, account = excluded.account, account_source = excluded.account_source`;
     manualNet += m.splitNet;
   }
   manualNet = Math.round(manualNet * 100) / 100;

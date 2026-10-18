@@ -18,7 +18,7 @@
 
 import type { NextRequest } from "next/server";
 import { dbEnabled, getDb } from "@/lib/gcdb";
-import { accountForDay } from "@/lib/tradeLedger";
+import { isRecentAccount, resolveAccount } from "@/lib/accountAttribution";
 import { familyOf } from "@/lib/tradeStats";
 import {
   minePatterns,
@@ -84,7 +84,7 @@ async function runAnalysis(sp: URLSearchParams): Promise<RunInput & { runAt: str
              t.result, t.hour_bucket, t.first_of_day,
              t.entry_adverse_pts, t.held_min, t.mfe_pts, t.mae_pts,
              t.target_reached, t.recovered, t.stop_run, t.loss_label,
-             t.features
+             t.account, t.features
       from trades t
       where t.result in ('win','loss')
         ${since ? db`and t.day >= ${since}` : db``}
@@ -94,8 +94,8 @@ async function runAnalysis(sp: URLSearchParams): Promise<RunInput & { runAt: str
       account === "all"
         ? raw
         : raw.filter((r) => {
-            const a = accountForDay(String(r.day)).account;
-            return account === "new" ? a.endsWith("007") : !a.endsWith("007");
+            const a = resolveAccount(r.account, String(r.day)).account;
+            return account === "new" ? isRecentAccount(a) : !isRecentAccount(a);
           });
     rows = winLossRowsFromDb(filtered);
   }

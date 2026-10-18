@@ -39,6 +39,8 @@ if (!DB_URL) {
   console.error("importTradovateTrades: need DATABASE_URL");
   process.exit(1);
 }
+// the account the exported fills belong to — stamped on every imported row
+const CT_ACCOUNT = (process.env.CROSSTRADE_ACCOUNT ?? "").trim();
 
 const DDL = `
 create table if not exists manual_trades (
@@ -56,6 +58,8 @@ create table if not exists manual_trades (
   matched_signal text,                     -- signal_key when it corrected a bot trade
   imported_at timestamptz not null default now()
 );
+alter table manual_trades add column if not exists account text not null default '';
+alter table manual_trades add column if not exists account_source text not null default '';
 create index if not exists manual_trades_day_idx on manual_trades (day);
 `;
 
@@ -122,12 +126,13 @@ async function main() {
     const sig = byKey.get(t.key) ?? null;
     await sql`
       insert into manual_trades
-        (key, day, symbol, direction, qty, entry_price, exit_price, pnl_usd, entry_at, exit_at, matched_signal)
+        (key, day, symbol, direction, qty, entry_price, exit_price, pnl_usd, entry_at, exit_at, matched_signal, account, account_source)
       values
         (${t.key}, ${t.day}, ${t.symbol}, ${t.direction}, ${t.qty}, ${t.entryPrice}, ${t.exitPrice}, ${t.pnlUsd.toFixed(2)},
-         ${new Date(t.entryAt)}, ${new Date(t.exitAt)}, ${sig})
+         ${new Date(t.entryAt)}, ${new Date(t.exitAt)}, ${sig}, ${CT_ACCOUNT || ""}, ${CT_ACCOUNT ? "fire-time" : ""})
       on conflict (key) do update set
-        day = excluded.day, pnl_usd = excluded.pnl_usd, matched_signal = excluded.matched_signal`;
+        day = excluded.day, pnl_usd = excluded.pnl_usd, matched_signal = excluded.matched_signal,
+        account = excluded.account, account_source = excluded.account_source`;
     inserted++;
   }
 

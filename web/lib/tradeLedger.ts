@@ -22,6 +22,7 @@
 
 import { familyOf } from "./tradeStats";
 import type { DaybookRecord } from "./daybook";
+import { accountForDay, resolveAccount, type AccountSource } from "./accountAttribution";
 
 export type LedgerRow = {
   key: string;
@@ -29,7 +30,7 @@ export type LedgerRow = {
   timeET: string;
   ts: number;
   account: string;
-  accountSource: "fire-time" | "date-boundary" | "";
+  accountSource: AccountSource;
   variationId: string | null;
   buildSha: string | null;
   side: string;
@@ -68,21 +69,9 @@ export type LedgerVariable = { key: string; count: number };
 
 /* ---- account attribution -------------------------------------------- */
 
-/** The 2026-10-05 reset boundary: `MFFUEVREOD706880006` blew up that day
- *  and every CROSSTRADE_ACCOUNT reference was re-pointed at
- *  `MFFUEVREOD706880007` (deploy/STATE.md). Rows before the first full
- *  day of the new account belong to the old one. Env override lets the
- *  exact boundary move without a redeploy. */
-export const ACCOUNT_SPLIT_DAY = "2026-10-06";
-
-export const ACCOUNT_OLD = "MFFUEVREOD706880006";
-export const ACCOUNT_NEW = "MFFUEVREOD706880007";
-
-export function accountForDay(day: string, splitDay = ACCOUNT_SPLIT_DAY): { account: string; source: LedgerRow["accountSource"] } {
-  return day >= splitDay
-    ? { account: ACCOUNT_NEW, source: "date-boundary" }
-    : { account: ACCOUNT_OLD, source: "date-boundary" };
-}
+/* The ONE attribution source is lib/accountAttribution.ts: the
+ * fire-time stamp on the row wins; legacy rows fall back to the known
+ * account-switch timeline. Nothing here keeps its own constants. */
 
 /* ---- feature flattening ---------------------------------------------- */
 
@@ -142,7 +131,7 @@ type DbTradeRow = Record<string, unknown>;
 /** Map a `trades` row (joined with its signal) to a ledger row. */
 export function buildRowFromDb(r: DbTradeRow, index = 0): LedgerRow {
   const day = String(r.day ?? "");
-  const acct = accountForDay(day);
+  const acct = resolveAccount(r.account, day);
   const featuresRaw = r.features ?? null;
   let features: Record<string, unknown> | null = null;
   if (featuresRaw !== null && featuresRaw !== undefined) {
@@ -250,8 +239,8 @@ export function buildRowsFromDaybook(packs: DaybookDayPack[]): LedgerRow[] {
         day,
         timeET: timeET || (sig?.timeET ?? ""),
         ts: Number.isFinite(ts) ? ts : 0,
-        account: acct.account,
-        accountSource: acct.source,
+        account: acct,
+        accountSource: "timeline",
         variationId: null,
         buildSha: null,
         side,
@@ -294,8 +283,8 @@ export function buildRowsFromDaybook(packs: DaybookDayPack[]): LedgerRow[] {
         day,
         timeET: s.timeET,
         ts: s.at,
-        account: acct.account,
-        accountSource: acct.source,
+        account: acct,
+        accountSource: "timeline",
         variationId: null,
         buildSha: null,
         side: s.side,

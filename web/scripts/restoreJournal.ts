@@ -112,6 +112,8 @@ create table if not exists trades (
   result text not null default '',
   features jsonb,
   source text not null default 'reconcile',
+  account text not null default '',
+  account_source text not null default '',
   matched_at timestamptz not null default now()
 );
 create index if not exists trades_ts_idx on trades (ts desc);
@@ -133,6 +135,8 @@ create table if not exists manual_trades (
   entry_at timestamptz not null,
   exit_at timestamptz not null,
   matched_signal text,
+  account text not null default '',
+  account_source text not null default '',
   imported_at timestamptz not null default now()
 );
 create index if not exists manual_trades_day_idx on manual_trades (day);

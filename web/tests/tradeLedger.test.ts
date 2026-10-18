@@ -1,25 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  accountForDay,
   attachVariations,
   buildRowFromDb,
   buildRowsFromDaybook,
   distinctVariables,
   flattenFeatures,
   ledgerCsv,
-  ACCOUNT_OLD,
-  ACCOUNT_NEW,
   type LedgerRow,
 } from "../lib/tradeLedger";
+import { accountForDay } from "../lib/accountAttribution";
 
 const row = (over: Partial<LedgerRow>): LedgerRow => ({
   key: "k",
   day: "2026-10-07",
   timeET: "09:35",
   ts: 1_700_000_000_000,
-  account: ACCOUNT_NEW,
-  accountSource: "date-boundary",
+  account: "DEMO2323960",
+  accountSource: "timeline",
   variationId: null,
   buildSha: null,
   side: "long",
@@ -54,11 +52,12 @@ const row = (over: Partial<LedgerRow>): LedgerRow => ({
   ...over,
 });
 
-test("accountForDay: reset boundary splits old vs new account", () => {
-  assert.equal(accountForDay("2026-10-05").account, ACCOUNT_OLD);
-  assert.equal(accountForDay("2026-10-06").account, ACCOUNT_NEW);
-  assert.equal(accountForDay("2026-10-07", "2026-10-10").account, ACCOUNT_OLD);
-  assert.equal(accountForDay("2026-10-05").source, "date-boundary");
+test("accountForDay: the known switch timeline (deploy/STATE.md)", () => {
+  assert.equal(accountForDay("2026-10-05"), "MFFUSFREOD706880008");
+  assert.equal(accountForDay("2026-10-14"), "MFFUSFREOD706880008");
+  assert.equal(accountForDay("2026-10-15"), "MFFUEVREOD706880009");
+  assert.equal(accountForDay("2026-10-16"), "DEMO2323960");
+  assert.equal(accountForDay("2026-10-18"), "DEMO2323960");
 });
 
 test("flattenFeatures: nested objects become dotted leaves, arrays stringified", () => {
@@ -147,7 +146,7 @@ test("buildRowsFromDaybook: duplicate signal lines dedupe, newest dayend wins", 
   assert.equal(rows[0].features?.flushFrac, 0.5);
 });
 
-test("buildRowFromDb: maps the reconciled row, parses features, splits account", () => {
+test("buildRowFromDb: maps the reconciled row, parses features, attributes account", () => {
   const r = buildRowFromDb({
     signal_key: "sig1",
     day: "2026-10-04",
@@ -179,7 +178,8 @@ test("buildRowFromDb: maps the reconciled row, parses features, splits account",
     sig_source: "live",
     sig_sent: true,
   });
-  assert.equal(r.account, ACCOUNT_OLD, "before the reset boundary");
+  assert.equal(r.account, "MFFUSFREOD706880008", "timeline fallback for a legacy row");
+  assert.equal(r.accountSource, "timeline");
   assert.equal(r.family, "momentum_expansion");
   assert.equal(r.features?.flushFrac, 0.7);
   assert.equal(r.stopRun, true);
@@ -187,6 +187,26 @@ test("buildRowFromDb: maps the reconciled row, parses features, splits account",
   assert.equal(r.drift, 0.25);
   assert.equal(r.size, "9 MNQ");
   assert.equal(r.sent, true);
+});
+
+test("buildRowFromDb: fire-time account stamp wins over the timeline", () => {
+  const r = buildRowFromDb({
+    signal_key: "sig2",
+    day: "2026-10-04",
+    time_et: "10:15",
+    ts: 1000,
+    side: "short",
+    contracts: 9,
+    verdict: "RTH …",
+    headline: "h",
+    status: "matched",
+    result: "loss",
+    account: "MFFUEVREOD706880006",
+    gross_usd: "10",
+    net_usd: "8",
+  });
+  assert.equal(r.account, "MFFUEVREOD706880006");
+  assert.equal(r.accountSource, "fire-time");
 });
 
 test("buildRowsFromDaybook: pairs summary trades to signals, leftovers become no-fill", () => {
@@ -215,5 +235,5 @@ test("buildRowsFromDaybook: pairs summary trades to signals, leftovers become no
   assert.equal(win.contracts, 9);
   assert.equal(noFill.side, "short");
   assert.equal(noFill.reason, "news veto");
-  assert.equal(noFill.account, ACCOUNT_NEW);
+  assert.equal(noFill.account, "MFFUSFREOD706880008", "timeline attribution for the DB-less path");
 });

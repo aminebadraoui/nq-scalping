@@ -10,12 +10,55 @@ import ExecLogPanel from "@/components/ExecLogPanel";
 import { AccountLine, useAccount } from "@/components/AccountStrip";
 
 /* ------------------------------------------------------------------ *
- * Trade journal — the dedicated surface for the self-improving loop:
- * every traded signal, its execution anatomy, the win/loss aggregates,
- * the AI strategy review, and the proposal → gate → live-feed loop.
- * Data: /api/trades (reconciliation + analysis) and /api/insights
- * (mined findings + overrides). Read-only unless you approve a gate.
+ * Trade journal — ONE source of truth for every trade.
+ *
+ * The unified record: /api/trades returns `entries` — one row per trade,
+ * bot AND manual, each with an explicit `origin` and an explicit
+ * `account` (fire-time stamp wins, known switch timeline fills legacy
+ * rows — lib/accountAttribution.ts). Live intraday rows (execution
+ * ledger + manual detector) sit on top for today and are deduped
+ * against the nightly record by signal identity.
+ *
+ * Everything money-related on this page is account-scoped: the account
+ * chips filter /api/trades server-side, so the headline, per-day P&L,
+ * equity, ledger and scoreboard never blend accounts.
  * ------------------------------------------------------------------ */
+
+/** one unified journal row (lib/journalEntries.ts, via /api/trades) */
+type JournalEntry = {
+  key: string;
+  origin: "bot" | "manual";
+  day: string;
+  timeET: string;
+  ts: number;
+  account: string;
+  accountSource: "fire-time" | "timeline" | "";
+  side: "long" | "short";
+  contracts: number;
+  family: string;
+  symbol: string;
+  status: "matched" | "unexecuted" | "partial";
+  result: "" | "win" | "loss" | "flat";
+  fillEntry: number | null;
+  exitAvg: number | null;
+  grossUsd: number;
+  feesUsd: number;
+  netUsd: number;
+  audit: { label: string; reason: string; nearestSignal: string | null } | null;
+};
+
+type JournalEntryLive = JournalEntry & { live: true };
+
+type AccountRollupRow = {
+  account: string;
+  botN: number;
+  manualN: number;
+  botNet: number;
+  manualNet: number;
+  net: number;
+  firstDay: string;
+  lastDay: string;
+};
 
 type TradeRow = {
   signal_key: string;
@@ -25,25 +68,9 @@ type TradeRow = {
   contracts: number;
   verdict: string;
   status: "matched" | "unexecuted" | "partial";
-  sig_entry: number | null;
-  sig_stop: number | null;
-  sig_target: number | null;
-  fill_entry: number | null;
-  exit_avg: number | null;
+  result: "win" | "loss" | "flat" | "";
   gross_usd: number;
   net_usd: number;
-  result: "win" | "loss" | "flat" | "";
-  family: string;
-  hour_bucket: string;
-  first_of_day: boolean;
-  entry_adverse_pts: number | null;
-  held_min: number | null;
-  mfe_pts: number | null;
-  mae_pts: number | null;
-  target_reached: boolean;
-  recovered: boolean;
-  stop_run: boolean;
-  loss_label: string;
 };
 
 /** one live execution-ledger row (lib/execTracker.ts, via /api/executions) */
@@ -73,44 +100,24 @@ type LiveExecRow = {
   result: "" | "win" | "loss" | "flat";
 };
 
-/** live ledger row → the reconciled-trades table shape (⚡ rows) */
-function liveExecToTrade(e: LiveExecRow): TradeRow {
-  const dirSign = e.side === "long" ? 1 : -1;
-  const drift =
-    e.fillEntry !== null && Number.isFinite(e.sigEntry)
-      ? Math.round((e.fillEntry - e.sigEntry) * dirSign * 100) / 100
-      : null;
-  const lastExit = e.exitFills.length ? e.exitFills[e.exitFills.length - 1].ts : null;
-  const heldMin = e.fillEntryAt !== null && lastExit !== null ? (lastExit - e.fillEntryAt) / 60_000 : null;
-  return {
-    signal_key: e.key,
-    day: e.day,
-    time_et: e.timeET,
-    side: e.side,
-    contracts: e.contracts,
-    verdict: e.label,
-    status: e.status === "closed" ? "matched" : "partial",
-    sig_entry: Number.isFinite(e.sigEntry) ? e.sigEntry : null,
-    sig_stop: Number.isFinite(e.sigStop) ? e.sigStop : null,
-    sig_target: Number.isFinite(e.sigTarget) ? e.sigTarget : null,
-    fill_entry: e.fillEntry,
-    exit_avg: e.exitAvg,
-    gross_usd: e.grossUsd,
-    net_usd: e.netUsd,
-    result: e.status === "closed" ? e.result : "",
-    family: e.family,
-    hour_bucket: "",
-    first_of_day: false,
-    entry_adverse_pts: drift,
-    held_min: heldMin,
-    mfe_pts: null,
-    mae_pts: null,
-    target_reached: false,
-    recovered: false,
-    stop_run: false,
-    loss_label: "",
-  };
-}
+/** one live manual-action row (lib/manualDetect.ts, via /api/manual) */
+type LiveManualRow = {
+  key: string;
+  kind: string;
+  at: number;
+  day: string;
+  timeET: string;
+  side: "long" | "short" | "";
+  qty: number;
+  entryPrice: number | null;
+  exitPrice: number | null;
+  pnlUsd: number | null;
+  orderId: string;
+  fills: Array<{ ts: number; action: string; qty: number; price: number }>;
+  closed: boolean;
+  note: string;
+  updatedAt: number;
+};
 
 type StatRow = {
   group: string;
@@ -212,6 +219,7 @@ type EquityPoint = { at: string; net: number; realized: number | null };
 
 type LedgerRow = {
   at: string;
+  account: string;
   net: number;
   delta: number | null;
   botNet: number;
@@ -220,39 +228,11 @@ type LedgerRow = {
   manualGrossUsd: number | null;
 };
 
-type ManualRow = {
-  key: string;
-  day: string;
-  symbol: string;
-  direction: "long" | "short";
-  qty: number;
-  entry_price: number;
-  exit_price: number;
-  pnl_usd: number;
-  pnl_net_usd: number | null;
-  fees_usd: number | null;
-  entry_at: string;
-  exit_at: string;
-  /** audit label: bot | bot-suspect | ambiguous | manual (lib/manualAudit.ts) */
-  label?: string;
-  evidence?: {
-    reason: string;
-    nearestSignal: string | null;
-    dtMin: number | null;
-    dPx: number | null;
-    dQty: number | null;
-    strictCandidates: number;
-  } | null;
-};
-
-type ManualDay = { day: string; n: number; net: number; gross: number };
-
-type ManualSummary = Record<string, number>;
-
 type AccountHead = {
   net: number;
   realized: number | null;
   at: string;
+  account: string;
   startBalance: number;
   pnl: number;
   pct: number;
@@ -325,41 +305,27 @@ const RESULT_STYLE: Record<string, string> = {
   flat: "text-zinc-500",
 };
 
-const MANUAL_LABEL_STYLE: Record<string, string> = {
-  bot: "border-long/50 bg-long/10 text-long",
-  "bot-suspect": "border-warn/50 bg-warn/10 text-warn",
-  ambiguous: "border-info/50 bg-info/10 text-info",
-  manual: "border-zinc-700 bg-zinc-800/40 text-zinc-500",
-};
-
-const manualEvidenceTitle = (m: ManualRow): string => {
-  const e = m.evidence;
-  if (!e) return m.label ?? "";
-  const parts = [e.reason];
-  if (e.nearestSignal) parts.push(`signal ${e.nearestSignal}`);
-  if (e.dtMin !== null) parts.push(`Δt ${e.dtMin}m`);
-  if (e.dPx !== null) parts.push(`Δpx ${e.dPx >= 0 ? "+" : ""}${e.dPx}`);
-  if (e.dQty !== null) parts.push(`Δqty ${e.dQty}`);
-  return parts.join(" · ");
-};
-
 const fmtUsd = (n: number | null) => {
   if (n === null || !Number.isFinite(n)) return "—";
   const v = Math.round(n);
   return `${v >= 0 ? "+" : "−"}$${Math.abs(v).toLocaleString("en-US")}`;
+};
+const fmtUsdSigned = (n: number | null) => {
+  if (n === null || !Number.isFinite(n)) return "—";
+  const v = Math.round(n * 100) / 100;
+  return `${v >= 0 ? "+" : "−"}$${Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 const fmtPts = (n: number | null) => {
   if (n === null || !Number.isFinite(n)) return "—";
   return `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(1)}`;
 };
 const fmtPx = (n: number | null) => (n === null || !Number.isFinite(n) ? "—" : n.toFixed(2));
-/** points + ticks: MNQ tick = 0.25 pt → 4 ticks per point */
-const ptsTicks = (pts: number | null) => {
-  if (pts === null || !Number.isFinite(pts)) return "—";
-  return `${pts.toFixed(1)}p (${Math.round(pts * 4)}t)`;
-};
 const pct = (n: number | null) => (n === null ? "—" : `${(n * 100).toFixed(0)}%`);
 const pf = (n: number | null) => (n === null ? "—" : n === Infinity ? "∞" : n.toFixed(2));
+const shortAcct = (a: string) => (a ? `…${a.slice(-4)}` : "—");
+
+const etToday = () =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
 
 function renderBold(s: string): React.ReactNode {
   const parts = s.split(/\*\*(.+?)\*\*/g);
@@ -489,11 +455,67 @@ function EquityCurve({ points }: { points: EquityPoint[] }) {
   );
 }
 
+/** live execution-ledger row → unified journal entry (origin bot, live) */
+function liveExecToEntry(e: LiveExecRow, acct: string): JournalEntryLive {
+  return {
+    key: e.signalId || e.key,
+    origin: "bot",
+    day: e.day,
+    timeET: e.timeET,
+    ts: e.ts,
+    account: acct,
+    accountSource: "fire-time",
+    side: e.side,
+    contracts: e.contracts,
+    family: e.family,
+    symbol: "",
+    status: e.status === "closed" ? "matched" : "partial",
+    result: e.status === "closed" ? e.result : "",
+    fillEntry: e.fillEntry,
+    exitAvg: e.exitAvg,
+    grossUsd: e.grossUsd,
+    feesUsd: e.feesUsd,
+    netUsd: e.status === "closed" ? e.netUsd : 0,
+    audit: null,
+    live: true,
+  };
+}
+
+/** live manual-action row → unified journal entry (origin manual, live) */
+function liveManualToEntry(m: LiveManualRow, acct: string): JournalEntryLive {
+  const pnl = m.pnlUsd ?? 0;
+  return {
+    key: m.key,
+    origin: "manual",
+    day: m.day,
+    timeET: m.timeET,
+    ts: m.at,
+    account: acct,
+    accountSource: "fire-time",
+    side: m.side === "short" ? "short" : "long",
+    contracts: m.qty,
+    family: "",
+    symbol: "MNQ",
+    status: "matched",
+    result: m.closed ? (pnl > 0.5 ? "win" : pnl < -0.5 ? "loss" : "flat") : "",
+    fillEntry: m.entryPrice,
+    exitAvg: m.exitPrice,
+    grossUsd: pnl,
+    feesUsd: 0,
+    netUsd: pnl,
+    audit: m.closed ? null : { label: "manual", reason: "live detector — position still open", nearestSignal: null },
+    live: true,
+  };
+}
+
 export default function JournalPage() {
   const liveAccount = useAccount();
   const [run, setRun] = useState<RunRow | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [trades, setTrades] = useState<TradeRow[]>([]);
+  const [entries, setEntries] = useState<JournalEntry[]>([]);
+  const [accounts, setAccounts] = useState<AccountRollupRow[]>([]);
+  const [accountList, setAccountList] = useState<string[]>([]);
   const [scoreboard, setScoreboard] = useState<ScoreRow[]>([]);
   const [scoreSort, setScoreSort] = useState<"net" | "expR" | "freq">("net");
   const [scoreRange, setScoreRange] = useState<"7" | "30" | "90" | "all">("30");
@@ -501,10 +523,7 @@ export default function JournalPage() {
   const [dayRows, setDayRows] = useState<DayRow[]>([]);
   const [equity, setEquity] = useState<EquityPoint[]>([]);
   const [ledger, setLedger] = useState<LedgerRow[]>([]);
-  const [manual, setManual] = useState<ManualRow[]>([]);
-  const [manualDays, setManualDays] = useState<ManualDay[]>([]);
   const [manualTotal, setManualTotal] = useState<number | null>(null);
-  const [manualSummary, setManualSummary] = useState<ManualSummary | null>(null);
   const [account, setAccount] = useState<AccountHead | null>(null);
   const [streaks, setStreaks] = useState<StreakRow[]>([]);
   const [drawdowns, setDrawdowns] = useState<DrawdownRow[]>([]);
@@ -516,7 +535,7 @@ export default function JournalPage() {
   const [deepVars, setDeepVars] = useState<LedgerVariable[]>([]);
   const [deepSource, setDeepSource] = useState<string>("");
   const [liveExecs, setLiveExecs] = useState<LiveExecRow[]>([]);
-  const [manualLive, setManualLive] = useState<{ count: number; netUsd: number } | null>(null);
+  const [liveManualRows, setLiveManualRows] = useState<LiveManualRow[]>([]);
   const [showAllVars, setShowAllVars] = useState(false);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [acctFilter, setAcctFilter] = useState<string>("all");
@@ -525,7 +544,7 @@ export default function JournalPage() {
 
   const load = () => {
     Promise.all([
-      fetch(`/api/trades?range=${scoreRange}`).then((r) => r.json()),
+      fetch(`/api/trades?range=${scoreRange}&account=${acctFilter}`).then((r) => r.json()),
       fetch("/api/insights").then((r) => r.json()),
       fetch("/api/trades/table").then((r) => r.json()),
       fetch("/api/executions", { cache: "no-store" }).then((r) => r.json()),
@@ -535,15 +554,15 @@ export default function JournalPage() {
         setRun(t.runs?.[0] ?? null);
         setAnalysis(t.analysis ?? null);
         setTrades(t.trades ?? []);
+        setEntries(t.entries ?? []);
+        setAccounts(t.accounts ?? []);
+        setAccountList(t.accountList ?? []);
         setScoreboard(t.scoreboard ?? []);
         setHeadline(t.headline ?? null);
         setDayRows(t.days ?? []);
         setEquity(t.equity ?? []);
         setLedger(t.ledger ?? []);
-        setManual(t.manual ?? []);
-        setManualDays(t.manualDays ?? []);
         setManualTotal(typeof t.manualTotal === "number" ? t.manualTotal : null);
-        setManualSummary(t.manualSummary ?? null);
         setAccount(t.account ?? null);
         setStreaks(t.streaks ?? []);
         setDrawdowns(t.drawdowns ?? []);
@@ -555,13 +574,7 @@ export default function JournalPage() {
         setDeepVars(l.variables ?? []);
         setDeepSource(l.source ?? "");
         setLiveExecs(Array.isArray(e.rows) ? e.rows : []);
-        if (Array.isArray(m.rows)) {
-          const today = m.rows.filter((r: { day: string }) => r.day === new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date()));
-          setManualLive({
-            count: today.length,
-            netUsd: Math.round(today.filter((r: { closed: boolean }) => r.closed).reduce((s: number, r: { pnlUsd: number | null }) => s + (r.pnlUsd ?? 0), 0) * 100) / 100,
-          });
-        }
+        setLiveManualRows(Array.isArray(m.rows) ? m.rows.filter((r: { kind: string }) => r.kind === "manual_trade") : []);
         setLoaded(true);
       })
       .catch(() => {});
@@ -573,7 +586,8 @@ export default function JournalPage() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [scoreRange]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scoreRange, acctFilter]);
 
   const post = (body: Record<string, unknown>) => {
     fetch("/api/insights", {
@@ -599,18 +613,43 @@ export default function JournalPage() {
     insights.find((i) => i.kind === "narrative") ?? null;
   const nonNarrative = insights.filter((i) => i.kind !== "narrative");
   const activeOverrides = overrides.filter((o) => o.active);
-  // ⚡ today's live execution ledger rows sit on top of the nightly
-  // reconcile rows — the journal updates intraday instead of waiting
-  // for the evening jobs container run
-  const liveTradeRows = liveExecs.map(liveExecToTrade);
-  const liveKeys = new Set(liveTradeRows.map((r) => r.signal_key));
-  const liveTodayNet = Math.round(liveTradeRows.reduce((s, t) => s + (t.status === "matched" ? t.net_usd : 0), 0) * 100) / 100;
-  const newestFirst = [...liveTradeRows, ...[...trades].reverse()];
-  const maxAbsDay = Math.max(1, ...dayRows.map((d) => Math.abs(d.netUsd)));
 
-  /* ---- all-variables trade table ---- */
+  /* ---- the unified journal: ONE list, bot + manual ----
+   * today's live rows (execution ledger + manual detector) sit on top of
+   * the nightly reconcile rows; identity rules dedupe the overlap:
+   *   · a live bot row whose signal already has a nightly row is dropped
+   *     EXCEPT for today, where the live row wins and the nightly row is
+   *     suppressed (the reconcile only runs at night);
+   *   · live manual rows for today suppress today's nightly manual rows.
+   */
+  const today = etToday();
+  const liveAcctName = liveAccount?.account?.name ?? "";
+  const liveBotEntries: JournalEntryLive[] = liveExecs
+    .filter((e) => {
+      const id = e.signalId || e.key;
+      const nightlyHas = entries.some((n) => n.origin === "bot" && n.key === id);
+      return !(e.day < today && nightlyHas);
+    })
+    .map((e) => liveExecToEntry(e, liveAcctName));
+  const liveBotIds = new Set(liveBotEntries.map((e) => e.key));
+  const liveManualEntries: JournalEntryLive[] = liveManualRows
+    .filter((m) => m.day === today)
+    .map((m) => liveManualToEntry(m, liveAcctName));
+  const nightly = entries.filter((e) => {
+    if (e.origin === "bot" && e.day === today && liveBotIds.has(e.key)) return false;
+    if (e.origin === "manual" && e.day === today && liveManualEntries.length > 0) return false;
+    return true;
+  });
+  const journalRows: (JournalEntry | JournalEntryLive)[] = [...liveBotEntries, ...liveManualEntries, ...nightly].sort((a, b) => b.ts - a.ts || a.key.localeCompare(b.key));
+  const nBotRows = journalRows.filter((r) => r.origin === "bot").length;
+  const nManualRows = journalRows.filter((r) => r.origin === "manual").length;
+  const nLiveRows = journalRows.filter((r) => "live" in r).length;
+  const liveTodayNet = Math.round(
+    liveBotEntries.filter((r) => r.status === "matched").reduce((s, r) => s + r.netUsd, 0) * 100,
+  ) / 100;
+
+  /* ---- all-variables bot study table ---- */
   const deepFiltered = deepTrades.filter((r) => acctFilter === "all" || r.account === acctFilter);
-  const deepAccounts = [...new Set(deepTrades.map((r) => r.account))].sort();
   const varCell = (v: unknown): string => {
     if (v === null || v === undefined) return "";
     if (typeof v === "number") return String(Math.round(v * 10000) / 10000);
@@ -634,7 +673,7 @@ export default function JournalPage() {
         <div>
           <h1 className="font-mono text-lg font-bold tracking-widest text-zinc-100">TRADE JOURNAL</h1>
           <p className="font-mono text-[11px] text-zinc-500">
-            signals → fills → anatomy → insights → gates · the self-improving loop
+            one record per trade — explicit origin (bot · manual) · explicit account · signals → fills → anatomy → insights → gates
           </p>
         </div>
         <div className="flex flex-wrap gap-2 font-mono text-[10px] text-zinc-500">
@@ -646,8 +685,9 @@ export default function JournalPage() {
         </div>
       </div>
 
-      {/* headline — the glance layer */}
+      {/* range + ACCOUNT scope — every money number below respects both */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-600">range</span>
         {(["7", "30", "90", "all"] as const).map((r) => (
           <button
             key={r}
@@ -661,10 +701,42 @@ export default function JournalPage() {
             {r === "all" ? "ALL" : `${r}D`}
           </button>
         ))}
+        <span className="mx-2 h-4 w-px bg-zinc-800" />
+        <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-600">account</span>
+        <button
+          onClick={() => setAcctFilter("all")}
+          title="every account, blended — the per-account strip below breaks it out"
+          className={`rounded border px-2 py-0.5 font-mono text-[10px] ${
+            acctFilter === "all"
+              ? "border-info/60 bg-info/10 text-info"
+              : "border-zinc-800 text-zinc-500 hover:text-zinc-200"
+          }`}
+        >
+          ALL
+        </button>
+        {accountList.map((a) => {
+          const roll = accounts.find((x) => x.account === a);
+          return (
+            <button
+              key={a}
+              onClick={() => setAcctFilter(a === acctFilter ? "all" : a)}
+              title={`${a} · bot ${fmtUsd(roll?.botNet ?? null)} · manual ${fmtUsd(roll?.manualNet ?? null)} · all-time`}
+              className={`rounded border px-2 py-0.5 font-mono text-[10px] ${
+                acctFilter === a
+                  ? "border-info/60 bg-info/10 text-info"
+                  : "border-zinc-800 text-zinc-500 hover:text-zinc-200"
+              }`}
+            >
+              {shortAcct(a)} {roll && <span className={roll.net >= 0 ? "text-long" : "text-short"}>{fmtUsd(roll.net)}</span>}
+            </button>
+          );
+        })}
         <span className="ml-auto font-mono text-[10px] text-zinc-600">
-          {scoreRange === "all" ? "all time" : `rolling ${scoreRange} days`} · bot strategies only
+          {scoreRange === "all" ? "all time" : `rolling ${scoreRange} days`} ·{" "}
+          {acctFilter === "all" ? "every account" : `account ${shortAcct(acctFilter)} only`}
         </span>
       </div>
+
       {/* LIVE account — the number every tab shares (/api/account, the
           CrossTrade snapshot). This is the account's true current state;
           the reconcile block below is history. */}
@@ -699,102 +771,111 @@ export default function JournalPage() {
           </div>
         </div>
       </div>
+
       {/* the reconcile snapshot — HISTORY (written by the nightly jobs
-          container; the live numbers above are the ones every tab shares) */}
+          container; the live numbers above are the ones every tab shares).
+          Scoped to the selected account — a switch can never pollute it. */}
       {account && (
         <div className="mb-5 rounded-md border border-zinc-800 bg-panel px-4 py-3 opacity-80">
           <div className="flex flex-wrap items-baseline justify-between gap-3">
             <div>
-              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">Last reconcile snapshot · net liquidation value</p>
+              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">
+                Last reconcile snapshot · netLiq · {acctFilter === "all" ? account.account : shortAcct(account.account)}
+              </p>
               <p className="font-mono text-3xl font-bold text-zinc-50">
                 ${account.net.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
             </div>
             <div className="text-right">
-              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">net profit / loss (vs start)</p>
+              <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-zinc-500">net profit / loss (vs {account.startBalance.toLocaleString("en-US")} start)</p>
               <p className={`font-mono text-2xl font-bold ${account.pnl >= 0 ? "text-long" : "text-short"}`}>
                 {fmtUsd(account.pnl)}{" "}
                 <span className="text-base">({account.pct >= 0 ? "+" : ""}{account.pct.toFixed(2)}%)</span>
               </p>
             </div>
             <div className="text-right font-mono text-[10px] text-zinc-500">
-              start ${account.startBalance.toLocaleString("en-US")}
-              <br />
+              {acctFilter !== "all" && <>{account.account}<br /></>}
               snapshot {account.at.slice(0, 16).replace("T", " ")}Z
             </div>
           </div>
         </div>
       )}
+
+      {/* per-account strip — the all-time money per account, from the
+          unified record; the headline cards below are the selected range */}
+      {accounts.length > 1 && (
+        <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+          {accounts.map((a) => (
+            <button
+              key={a.account}
+              onClick={() => setAcctFilter(a.account === acctFilter ? "all" : a.account)}
+              className={`rounded-md border bg-panel px-3 py-2 text-left ${acctFilter === a.account ? "border-info/60" : "border-zinc-800 hover:border-zinc-600"}`}
+            >
+              <p className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">{a.account}</p>
+              <p className={`font-mono text-lg font-bold ${a.net >= 0 ? "text-long" : "text-short"}`}>{fmtUsdSigned(a.net)}</p>
+              <p className="font-mono text-[9px] text-zinc-600">
+                bot {fmtUsd(a.botNet)} · manual {fmtUsd(a.manualNet)} · {a.firstDay.slice(5)} → {a.lastDay.slice(5)}
+              </p>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* headline — the glance layer (selected range × account) */}
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
         <GlanceCard
-          label="BOT NET (after fees)"
+          label={`BOT NET${acctFilter !== "all" ? ` · ${shortAcct(acctFilter)}` : ""}`}
           value={fmtUsd(headline?.netUsd ?? null)}
           tone={(headline?.netUsd ?? 0) >= 0 ? "long" : "short"}
-          sub={`gross ${fmtUsd(headline?.grossUsd ?? null)} · fees ${fmtUsd(headline ? -headline.commissions : null)}`}
+          sub={`gross ${fmtUsd(headline?.grossUsd ?? null)} · fees ${fmtUsd(headline ? -headline.commissions : null)} · ${headline?.matched ?? 0} matched`}
         />
-        {liveTradeRows.length > 0 && (
+        {liveBotEntries.length > 0 && (
           <GlanceCard
-            label="TODAY · LIVE ⚡"
+            label="TODAY · BOT LIVE ⚡"
             value={fmtUsd(liveTodayNet)}
             tone={liveTodayNet >= 0 ? "long" : "short"}
-            sub={`${liveTradeRows.filter((r) => r.status === "matched").length} closed · live ledger (updates intraday)`}
+            sub={`${liveBotEntries.filter((r) => r.status === "matched").length} closed · live execution ledger`}
           />
         )}
         <GlanceCard
-          label="BOT GROSS"
-          value={fmtUsd(headline?.grossUsd ?? null)}
-          tone={(headline?.grossUsd ?? 0) >= 0 ? "long" : "short"}
-          sub={`${headline?.matched ?? 0} matched trades`}
-        />
-        <GlanceCard
-          label="MANUAL P&L"
+          label={`MANUAL NET${acctFilter !== "all" ? ` · ${shortAcct(acctFilter)}` : ""}`}
           value={manualTotal === null ? "—" : fmtUsd(manualTotal)}
           tone={(manualTotal ?? 0) >= 0 ? "long" : "short"}
-          sub={`${manual.length} trips · net (fees included)`}
-        />
-        <GlanceCard
-          label="WIN RATE"
-          value={headline?.winRate != null ? `${(headline.winRate * 100).toFixed(0)}%` : "—"}
-          tone={headline?.winRate != null && headline.winRate >= 0.5 ? "long" : "none"}
-          sub={`${headline?.wins ?? 0}W / ${headline?.losses ?? 0}L / ${headline?.flats ?? 0}F`}
-        />
-        <GlanceCard
-          label="EXPECTANCY"
-          value={headline?.expectancy != null ? fmtUsd(headline.expectancy) : "—"}
-          tone={(headline?.expectancy ?? 0) >= 0 ? "long" : "short"}
-          sub="net per trade"
+          sub="broker round trips no signal explains · net"
         />
         <GlanceCard
           label="BOT + MANUAL"
           value={headline && manualTotal !== null ? fmtUsd(headline.netUsd + manualTotal) : "—"}
           tone={(headline?.netUsd ?? 0) + (manualTotal ?? 0) >= 0 ? "long" : "short"}
-          sub="net — ties to account P&L"
+          sub="this range × account · net"
+        />
+        <GlanceCard
+          label="WIN RATE"
+          value={headline?.winRate != null ? `${(headline.winRate * 100).toFixed(0)}%` : "—"}
+          tone={headline?.winRate != null && headline.winRate >= 0.5 ? "long" : "none"}
+          sub={`${headline?.wins ?? 0}W / ${headline?.losses ?? 0}L / ${headline?.flats ?? 0}F · bot only`}
+        />
+        <GlanceCard
+          label="EXPECTANCY"
+          value={headline?.expectancy != null ? fmtUsd(headline.expectancy) : "—"}
+          tone={(headline?.expectancy ?? 0) >= 0 ? "long" : "short"}
+          sub="net per bot trade"
         />
       </div>
-      {headline && manualTotal !== null && (
-        <p className="mb-5 -mt-3 font-mono text-[10px] text-zinc-500">
-          reconciliation: bot net {fmtUsd(headline.netUsd)} + manual {fmtUsd(manualTotal)} = {fmtUsd(headline.netUsd + manualTotal)}
-          {account ? (
-            <>
-              {" "}· account P&L {fmtUsd(account.pnl)}{" "}
-              {Math.abs(account.pnl - (headline.netUsd + manualTotal)) > 1 && (
-                <span className="text-warn">
-                  — gap {fmtUsd(account.pnl - (headline.netUsd + manualTotal))} = trading before the journal&apos;s data begins + manual fees (not in the fill export)
-                </span>
-              )}
-            </>
-          ) : null}
-        </p>
-      )}
+      <p className="mb-5 -mt-3 font-mono text-[10px] text-zinc-500">
+        bot and manual nets are scoped to the selected range and account — the per-account strip above is the all-time rollup from the same unified record.
+      </p>
 
-      {/* equity curve + per-day breakdown */}
+      {/* equity curve + per-day breakdown (account-scoped) */}
       <div className="mb-5 grid grid-cols-1 gap-5 xl:grid-cols-5">
         <section className="rounded-md border border-zinc-800 bg-panel p-4 xl:col-span-3">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Account equity</h2>
             <span className="font-mono text-[10px] text-zinc-600">
               {equity.length
-                ? `${equity[0].at.slice(0, 10)} → ${equity[equity.length - 1].at.slice(0, 10)} · netLiq snapshot per reconcile run`
+                ? `${equity[0].at.slice(0, 10)} → ${equity[equity.length - 1].at.slice(0, 10)} · netLiq snapshot per reconcile run · ${
+                    acctFilter === "all" ? "ALL" : shortAcct(acctFilter)
+                  }`
                 : "no snapshots yet — reconcile runs nightly"}
             </span>
           </div>
@@ -821,9 +902,11 @@ export default function JournalPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {ledger.slice(1).map((l, i) => (
+                    {ledger.slice(1).map((l) => (
                       <tr key={l.at} className="text-zinc-400">
-                        <td className="py-1 pr-2 whitespace-nowrap text-zinc-500">{l.at.slice(0, 16).replace("T", " ")}Z</td>
+                        <td className="py-1 pr-2 whitespace-nowrap text-zinc-500">
+                          {l.at.slice(0, 16).replace("T", " ")}Z{acctFilter === "all" && l.account ? ` ${shortAcct(l.account)}` : ""}
+                        </td>
                         <td className="px-2 py-1 text-right">{fmtUsd(l.net)}</td>
                         <td className={`px-2 py-1 text-right ${(l.delta ?? 0) >= 0 ? "text-long" : "text-short"}`}>{l.delta === null ? "—" : fmtUsd(l.delta)}</td>
                         <td className={`px-2 py-1 text-right ${l.botNet >= 0 ? "text-long" : "text-short"}`}>{fmtUsd(l.botNet)}</td>
@@ -837,14 +920,15 @@ export default function JournalPage() {
                 </table>
               </div>
               <p className="mt-1 font-mono text-[9px] leading-snug text-zinc-600">
-                Δ acct = bot net + manual residual — the residual is the true manual bucket (manual trades, non-bot fees, deposits); it comes from the account snapshot,
-                not from fill pairing. manualGross (computed pairing) is in the run notes when orders were available.
+                Δ acct = bot net + manual residual — the residual is the true manual bucket (manual trades, non-bot fees, deposits); it comes from the
+                account snapshot, not from fill pairing. Snapshots are scoped to {acctFilter === "all" ? "each account" : shortAcct(acctFilter)} so a
+                switch never pollutes the deltas.
               </p>
             </>
           )}
         </section>
         <section className="rounded-md border border-zinc-800 bg-panel p-4 xl:col-span-2">
-          <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Per-day P&L</h2>
+          <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Per-day P&L · bot</h2>
           {dayRows.length ? (
             <div className="max-h-[260px] space-y-1 overflow-y-auto pr-1">
               {dayRows.map((d) => (
@@ -860,8 +944,8 @@ export default function JournalPage() {
                     <span
                       className={`absolute inset-y-0 ${d.netUsd >= 0 ? "bg-long/50" : "bg-short/50"}`}
                       style={{
-                        left: d.netUsd >= 0 ? "50%" : `${50 - Math.min(50, (Math.abs(d.netUsd) / maxAbsDay) * 50)}%`,
-                        width: `${Math.min(50, (Math.abs(d.netUsd) / maxAbsDay) * 50)}%`,
+                        left: d.netUsd >= 0 ? "50%" : `${50 - Math.min(50, (Math.abs(d.netUsd) / Math.max(1, Math.max(...dayRows.map((x) => Math.abs(x.netUsd))))) * 50)}%`,
+                        width: `${Math.min(50, (Math.abs(d.netUsd) / Math.max(1, Math.max(...dayRows.map((x) => Math.abs(x.netUsd))))) * 50)}%`,
                       }}
                     />
                   </span>
@@ -869,7 +953,7 @@ export default function JournalPage() {
               ))}
             </div>
           ) : (
-            <p className="py-8 text-center font-mono text-xs text-zinc-600">no matched trades in this range</p>
+            <p className="py-8 text-center font-mono text-xs text-zinc-600">no matched bot trades in this range</p>
           )}
         </section>
       </div>
@@ -1007,27 +1091,12 @@ export default function JournalPage() {
           </section>
         </div>
 
-        {/* right column: scoreboard + stats + trades */}
+        {/* right column: scoreboard + stats + the unified journal */}
         <div className="space-y-5 xl:col-span-3">
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Strategy scoreboard</h2>
               <span className="flex items-center gap-2">
-                <span className="flex gap-1">
-                  {(["7", "30", "90", "all"] as const).map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => setScoreRange(r)}
-                      className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${
-                        scoreRange === r
-                          ? "border-long/50 bg-long/10 text-long"
-                          : "border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
-                      }`}
-                    >
-                      {r === "all" ? "ALL" : `${r}D`}
-                    </button>
-                  ))}
-                </span>
                 <span className="flex gap-1">
                   {([
                     ["net", "net $"],
@@ -1131,6 +1200,7 @@ export default function JournalPage() {
             </div>
             <p className="mt-2 font-mono text-[9px] leading-snug text-zinc-600">
               accumulates over the selected range (7D / 30D / 90D / ALL — never resets; trades and cards persist forever) ·
+              scoped to {acctFilter === "all" ? "every account" : `account ${shortAcct(acctFilter)}`} ·
               sort: net $ = account contribution · expR = mean gross R/trade (replay baseline until a family has ≥8 fills) · frequency = fills, then cards ·
               hyp WR = hypothetical first-touch win rate over EVERY recorded card (unfilled included) — signal quality, not money; a gap vs live expR measures what the gates + fills filter ·
               live n is small — treat ranks as provisional · skips = cards recorded but not filled (gates, retrace expiries, refusals) ·
@@ -1146,6 +1216,7 @@ export default function JournalPage() {
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
             <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">Strategy performance</h2>
             <StatsTable rows={familyStats} />
+            <p className="mt-1 font-mono text-[9px] text-zinc-600">study view from the nightly analysis — all accounts blended (bot trades only)</p>
           </section>
 
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
@@ -1293,115 +1364,128 @@ export default function JournalPage() {
             )}
           </section>
 
-          <section className="rounded-md border border-zinc-800 bg-panel p-4">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Manual trades</h2>
-              <div className="flex gap-2 font-mono text-[10px]">
-                <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-400">{manual.length} trips</span>
-                {manualLive && manualLive.count > 0 && (
-                  <span
-                    className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn"
-                    title="live manual-action detector — fills/orders the bot cannot account for today"
-                  >
-                    ⚡ live: {manualLive.count} today · {manualLive.netUsd >= 0 ? "+" : "−"}${Math.abs(manualLive.netUsd).toFixed(2)}
-                  </span>
-                )}
-                <span className={`rounded border px-1.5 py-0.5 ${(manualTotal ?? 0) >= 0 ? "border-long/40 text-long" : "border-short/40 text-short"}`}>
-                  {manualTotal === null ? "—" : fmtUsd(manualTotal)} gross
-                </span>
-                <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-400">{manualDays.length} days</span>
-                {manualSummary && (
-                  <>
-                    <span className="rounded border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-warn" title="trips a signal matches strictly (time+qty+price) but was never paired — likely bot trades that lost their card">
-                      {manualSummary["bot-suspect"] ?? 0} suspect
-                    </span>
-                    <span className="rounded border border-info/50 bg-info/10 px-1.5 py-0.5 text-info" title="a same-side signal sits within 15 min but outside strict tolerances">
-                      {manualSummary.ambiguous ?? 0} ambiguous
-                    </span>
-                    <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-400" title="no same-side signal within 15 min">
-                      {manualSummary.manual ?? 0} manual
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="max-h-[240px] overflow-y-auto">
-              <table className="w-full border-collapse font-mono text-[10px]">
-                <thead className="sticky top-0 bg-panel">
-                  <tr className="text-left text-zinc-500">
-                    <th className="border-b border-zinc-800 py-1 pr-2 font-normal">time</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">sym</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">dir</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">entry → exit</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">P&L</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 font-normal" title="cross-referenced against every recorded signal — see the hover evidence">label</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {manual.map((m) => (
-                    <tr key={m.key} className="text-zinc-400">
-                      <td className="py-0.5 pr-2 whitespace-nowrap text-zinc-500">
-                        {m.day.slice(5)} {new Date(m.entry_at).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false }).slice(0, 5)}
-                      </td>
-                      <td className="px-2 py-0.5 whitespace-nowrap">{m.symbol.replace("MNQ", "NQ").replace("MES", "ES")}</td>
-                      <td className={`px-2 py-0.5 font-semibold ${m.direction === "long" ? "text-long" : "text-short"}`}>
-                        {m.direction === "long" ? "L" : "S"}
-                      </td>
-                      <td className="px-2 py-0.5 text-right">{m.qty}</td>
-                      <td className="px-2 py-0.5 text-right whitespace-nowrap">
-                        {Number(m.entry_price).toFixed(2)} → {Number(m.exit_price).toFixed(2)}
-                      </td>
-                      <td className={`px-2 py-0.5 text-right ${(Number(m.pnl_net_usd ?? m.pnl_usd)) >= 0 ? "text-long" : "text-short"}`}>
-                        {fmtUsd(Number(m.pnl_net_usd ?? m.pnl_usd))}
-                      </td>
-                      <td className="px-2 py-0.5">
-                        {m.label && m.label !== "manual" ? (
-                          <span className={`rounded border px-1 py-0.5 text-[8px] uppercase ${MANUAL_LABEL_STYLE[m.label] ?? MANUAL_LABEL_STYLE.manual}`} title={manualEvidenceTitle(m)}>
-                            {m.label}
-                          </span>
-                        ) : (
-                          <span className="text-zinc-600" title={manualEvidenceTitle(m)}>manual</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {manual.length === 0 && <p className="py-2 font-mono text-xs text-zinc-600">no manual trades imported — run scripts/importTradovateTrades.ts with the Tradovate fills export</p>}
-            </div>
-            <p className="mt-1 font-mono text-[9px] text-zinc-600">
-              source: MFF/Tradovate fills export (round trips no signal explains) · P&L shown NET (commissions included, $0.95/side/contract) ·
-              labels cross-referenced against every recorded signal (bot-suspect = strict time+qty+price match, never paired · ambiguous = signal within 15 min) — hover a label for the evidence
-            </p>
-          </section>
-
+          {/* ---- THE unified journal: every trade, one list ----
+               origin is explicit on every row; accounts are explicit;
+               today's live rows are merged in and deduped by identity. */}
           <section className="rounded-md border border-zinc-800 bg-panel p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">
-                All trades · every variable
+                Journal — every trade{" "}
+                <span className="font-mono text-[10px] font-normal text-zinc-500">
+                  {journalRows.length} rows · {nBotRows} bot · {nManualRows} manual{nLiveRows > 0 ? ` · ${nLiveRows} live today ⚡` : ""}
+                </span>
+              </h2>
+              <span className="flex items-center gap-2 font-mono text-[9px] text-zinc-600">
+                <span className="rounded border border-info/40 px-1 py-0.5 text-info" title="a trade backed by a signal card (nightly reconcile row or live execution ledger)">BOT</span>
+                <span className="rounded border border-zinc-700 px-1 py-0.5 text-zinc-400" title="a broker round trip no signal explains (MFF/Tradovate import or the live manual detector) — hover for audit evidence">MANUAL</span>
+                <span className="rounded border border-warn/50 px-1 py-0.5 text-warn" title="today's intraday row — the nightly reconcile has not run yet">⚡ live</span>
+              </span>
+            </div>
+            {run?.notes && <p className="mb-2 font-mono text-[10px] text-warn">{run.notes}</p>}
+            <div className="max-h-[640px] overflow-auto">
+              <table className="w-full border-collapse font-mono text-[10px]">
+                <thead className="sticky top-0 z-10 bg-panel">
+                  <tr className="text-left text-zinc-500">
+                    <th className="border-b border-zinc-800 py-1 pr-2 font-normal">day · time</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">origin</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal" title="fire-time stamp from the fill record · ∂ = timeline fallback">acct</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">strategy / symbol</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">dir</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">fill → exit</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="gross / net after fees">gross / net</th>
+                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {journalRows.map((r) => {
+                    const isLive = "live" in r;
+                    const manualTip = r.origin === "manual" && r.audit
+                      ? `${r.audit.reason}${r.audit.nearestSignal ? ` · signal ${r.audit.nearestSignal}` : ""}`
+                      : "";
+                    return (
+                      <tr key={`${r.origin}|${r.key}|${isLive ? "live" : "nightly"}`} className={`align-top text-zinc-400 ${isLive ? "bg-zinc-900/40" : "hover:bg-zinc-900/50"}`}>
+                        <td className="py-1 pr-2 whitespace-nowrap">
+                          {r.day.slice(5)} {r.timeET || "—"}
+                          {isLive && <span className="ml-1 text-warn" title="today's intraday row — the nightly reconcile has not run yet">⚡</span>}
+                        </td>
+                        <td className="px-2 py-1">
+                          {r.origin === "bot" ? (
+                            <span
+                              className="rounded border border-info/40 bg-info/10 px-1 py-0.5 text-[8px] uppercase text-info"
+                              title={`signal-backed${r.family ? ` · ${familyName(r.family)}` : ""}`}
+                            >
+                              bot
+                            </span>
+                          ) : (
+                            <span
+                              className="rounded border border-zinc-700 bg-zinc-800/40 px-1 py-0.5 text-[8px] uppercase text-zinc-400"
+                              title={manualTip || "a broker round trip no signal explains — hover for audit evidence when labeled"}
+                            >
+                              manual
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1 whitespace-nowrap text-zinc-500" title={r.account}>
+                          {shortAcct(r.account)}
+                          {r.accountSource === "timeline" ? "·∂" : ""}
+                        </td>
+                        <td className="px-2 py-1 whitespace-nowrap">
+                          {r.origin === "bot" ? familyName(r.family) : r.symbol.replace("MNQ", "NQ")}
+                        </td>
+                        <td className={`px-2 py-1 font-semibold ${r.side === "long" ? "text-long" : "text-short"}`}>
+                          {r.side.toUpperCase().slice(0, 1)}
+                        </td>
+                        <td className="px-2 py-1 text-right">{r.contracts || "—"}</td>
+                        <td className="px-2 py-1 text-right whitespace-nowrap">
+                          {r.status === "unexecuted" || (r.fillEntry === null && r.exitAvg === null && !isLive) ? (
+                            <span className="rounded border border-warn/50 bg-warn/10 px-1 py-0.5 text-[8px] text-warn">NO FILL</span>
+                          ) : (
+                            `${fmtPx(r.fillEntry)} → ${fmtPx(r.exitAvg)}`
+                          )}
+                        </td>
+                        <td className="px-2 py-1 text-right whitespace-nowrap" title={`fees ${fmtUsd(r.feesUsd)}`}>
+                          {r.status === "matched" || isLive ? (
+                            <>
+                              {fmtUsd(r.grossUsd)} / <span className={(r.netUsd ?? 0) >= 0 ? "text-long" : "text-short"}>{fmtUsd(r.netUsd)}</span>
+                            </>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="px-2 py-1 whitespace-nowrap">
+                          {r.status === "unexecuted" ? (
+                            <span className="text-zinc-600">unexecuted</span>
+                          ) : isLive && r.result === "" ? (
+                            <span className="text-warn" title="live — still open or not yet closed">open ⚡</span>
+                          ) : (
+                            <span className={`font-semibold ${RESULT_STYLE[r.result] ?? ""}`}>{r.result?.toUpperCase() || "—"}</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {loaded && journalRows.length === 0 && <p className="py-2 font-mono text-xs text-zinc-600">no trades in the unified record yet</p>}
+            </div>
+            <p className="mt-2 font-mono text-[9px] leading-snug text-zinc-600">
+              one list for the whole journal: bot rows are signal-backed (nightly reconcile + today's live execution ledger); manual rows are broker
+              round trips no signal explains (MFF/Tradovate import + today's live detector) — hover a manual row for the audit evidence · ∂ = account
+              inferred from the switch timeline (no fire-time stamp) · ⚡ = today's intraday row (the reconcile only runs at night) · money is NET
+              (fees included) everywhere on this page
+            </p>
+          </section>
+
+          {/* ---- all-variables BOT study table (the training-dataset view) ---- */}
+          <section className="rounded-md border border-zinc-800 bg-panel p-4">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">
+                All bot trades · every variable
               </h2>
               <div className="flex flex-wrap items-center gap-2 font-mono text-[10px]">
                 <span className="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-500">
-                  {deepTrades.length} rows · source {deepSource || "—"} · {deepVars.length} variables
-                </span>
-                <span className="flex overflow-hidden rounded border border-zinc-800">
-                  <button
-                    onClick={() => setAcctFilter("all")}
-                    className={`px-1.5 py-0.5 ${acctFilter === "all" ? "bg-info/10 text-info" : "text-zinc-500 hover:text-zinc-200"}`}
-                  >
-                    ALL
-                  </button>
-                  {deepAccounts.map((a) => (
-                    <button
-                      key={a}
-                      onClick={() => setAcctFilter(a)}
-                      title={a}
-                      className={`px-1.5 py-0.5 ${acctFilter === a ? "bg-info/10 text-info" : "text-zinc-500 hover:text-zinc-200"}`}
-                    >
-                      …{a.slice(-4)}
-                    </button>
-                  ))}
+                  {deepFiltered.length} rows · source {deepSource || "—"} · {deepVars.length} variables · bot only
                 </span>
                 <button
                   onClick={() => setShowAllVars(!showAllVars)}
@@ -1453,8 +1537,8 @@ export default function JournalPage() {
                             {r.day.slice(5)} {r.timeET || "—"}
                           </td>
                           <td className="px-2 py-1 whitespace-nowrap text-zinc-500" title={r.account}>
-                            …{r.account.slice(-4)}
-                            {r.accountSource === "date-boundary" ? "·∂" : ""}
+                            {shortAcct(r.account)}
+                            {r.accountSource === "timeline" ? "·∂" : ""}
                           </td>
                           <td className={`px-2 py-1 font-semibold ${r.side === "long" ? "text-long" : "text-short"}`}>
                             {r.side.toUpperCase().slice(0, 1)}
@@ -1596,94 +1680,9 @@ export default function JournalPage() {
               )}
             </div>
             <p className="mt-2 font-mono text-[9px] text-zinc-600">
-              click a row for the full variable dump · VARS ON appends every distinct signal-time variable as a column · ↓ CSV exports the
-              flat training table (core + all variables) · ∂ = account inferred from the 2026-10-05 reset boundary · variables include
+              bot study view — click a row for the full variable dump · VARS ON appends every distinct signal-time variable as a column · ↓ CSV exports the
+              flat training table (core + all variables) · ∂ = account inferred from the switch timeline · variables include
               context that does not participate in the signal (dom, walls, ES/seasonal/round-number context, kelly, gates)
-            </p>
-          </section>
-
-          <section className="rounded-md border border-zinc-800 bg-panel p-4">
-            <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-zinc-400">
-              Trades{" "}
-              {liveTradeRows.length > 0 && (
-                <span className="font-mono text-[10px] font-normal text-info">
-                  · {liveTradeRows.length} live today ⚡ (intraday ledger — the rest is the nightly reconcile)
-                </span>
-              )}
-            </h2>
-            {run?.notes && <p className="mb-2 font-mono text-[10px] text-warn">{run.notes}</p>}
-            <div className="max-h-[640px] overflow-auto">
-              <table className="w-full border-collapse font-mono text-[10px]">
-                <thead className="sticky top-0 bg-panel">
-                  <tr className="text-left text-zinc-500">
-                    <th className="border-b border-zinc-800 py-1 pr-2 font-normal">time</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">dir</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">n</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">strategy</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">signal</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="stop distance from the signal (points / ticks, 1 pt = 4 ticks)">risk</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal" title="target distance from the signal (points / ticks)">target</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">fill → exit</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">drift</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">MFE/MAE</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">held</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 text-right font-normal">gross / net</th>
-                    <th className="border-b border-zinc-800 px-2 py-1 font-normal">result</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {newestFirst.map((t) => (
-                    <tr key={t.signal_key} className="align-top text-zinc-400">
-                      <td className="py-1 pr-2 whitespace-nowrap">
-                        {t.day.slice(5)} {t.time_et || "—"}
-                        {t.first_of_day ? " ★" : ""}
-                        {liveKeys.has(t.signal_key) && (
-                          <span className="ml-1 text-info" title="today's live execution ledger — updates intraday (before the nightly reconcile)">
-                            ⚡
-                          </span>
-                        )}
-                      </td>
-                      <td className={`px-2 py-1 font-semibold ${t.side === "long" ? "text-long" : "text-short"}`}>
-                        {t.side.toUpperCase().slice(0, 1)}
-                      </td>
-                      <td className="px-2 py-1 text-right">{t.contracts}</td>
-                      <td className="px-2 py-1 whitespace-nowrap">{familyName(t.family)}</td>
-                      <td className="px-2 py-1 text-right">{fmtPx(Number(t.sig_entry))}</td>
-                      <td className="px-2 py-1 text-right whitespace-nowrap">
-                        {t.sig_entry !== null && t.sig_stop !== null ? ptsTicks(Math.abs(Number(t.sig_entry) - Number(t.sig_stop))) : "—"}
-                      </td>
-                      <td className="px-2 py-1 text-right whitespace-nowrap">
-                        {t.sig_entry !== null && t.sig_target !== null ? ptsTicks(Math.abs(Number(t.sig_target) - Number(t.sig_entry))) : "—"}
-                      </td>
-                      <td className="px-2 py-1 text-right whitespace-nowrap">
-                        {t.status === "matched" ? `${fmtPx(Number(t.fill_entry))} → ${fmtPx(Number(t.exit_avg))}` : "—"}
-                      </td>
-                      <td className="px-2 py-1 text-right">{fmtPts(Number(t.entry_adverse_pts))}</td>
-                      <td className="px-2 py-1 text-right whitespace-nowrap">{fmtPts(Number(t.mfe_pts))}/{fmtPts(Number(t.mae_pts))}</td>
-                      <td className="px-2 py-1 text-right">{t.held_min !== null ? `${Math.round(Number(t.held_min))}m` : "—"}</td>
-                      <td className="px-2 py-1 text-right whitespace-nowrap">
-                        {t.status === "matched" ? `${fmtUsd(Number(t.gross_usd))} / ${fmtUsd(Number(t.net_usd))}` : "—"}
-                      </td>
-                      <td className="px-2 py-1 whitespace-nowrap">
-                        {t.status !== "matched" ? (
-                          <span className="rounded border border-warn/50 bg-warn/10 px-1 py-0.5 text-[8px] text-warn">NO FILL</span>
-                        ) : (
-                          <span className="flex items-center gap-1">
-                            <span className={`font-semibold ${RESULT_STYLE[t.result] ?? ""}`}>{t.result?.toUpperCase()}</span>
-                            {t.stop_run && <span title="stop-run">⛔</span>}
-                            {t.target_reached && <span title="target was in range">🎯</span>}
-                            {t.recovered && <span title="price recovered after exit">↩</span>}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {loaded && trades.length === 0 && <p className="py-2 font-mono text-xs text-zinc-600">no reconciled trades yet</p>}
-            </div>
-            <p className="mt-2 font-mono text-[9px] text-zinc-600">
-              ⚡ today's live execution ledger (signal → Tradovate fill → $ net, refreshes with the page) · ★ first of day · ⛔ stop-run · 🎯 target in range before exit · ↩ price crossed back through entry ≤15 min after exit · drift positive = filled worse than signal
             </p>
           </section>
         </div>

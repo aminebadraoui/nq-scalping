@@ -135,7 +135,7 @@ const numOr = (v: unknown, fallback = 0): number => {
 /**
  * Merge the week's matched trades and reconcile_runs into one row per
  * account. Reconcile runs are deduped by (window, account) keeping the
- * LAST run of each window; `realizedUsd` is the max account-reported
+ * FIRST run of each window; `realizedUsd` is the max account-reported
  * realized P&L for the week (the post-reset re-run reports 0 — the max
  * preserves the number the broker portal showed). Pure — unit-tested.
  */

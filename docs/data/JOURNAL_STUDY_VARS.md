@@ -47,7 +47,7 @@ Facts to keep straight when studying:
 |---|---|---|
 | `day` | SYSTEM | session day (New York calendar, `YYYY-MM-DD`) |
 | `timeET` | SYSTEM | card fire time, `HH:mm` ET |
-| `account` / `accountSource` | SYSTEM | MFF account the trade belongs to; `fire-time` or `date-boundary` (2026-10-05 reset) |
+| `account` / `accountSource` | SYSTEM | account the trade belongs to (lib/accountAttribution.ts — the ONE attribution source): the fire-time stamp written by the reconcile wins; legacy rows fall back to the known switch timeline (≤2026-10-14 `MFFUSFREOD706880008` · 2026-10-15 `MFFUEVREOD706880009` · ≥2026-10-16 `DEMO2323960`). `accountSource` ∈ `fire-time` \| `timeline` |
 | `family` | SYSTEM | strategy family: `momentum_flush` · `momentum_expansion` · `rth` · `open_drive` · `open_pullback` · `open_sniper` (`lib/tradeStats.ts familyOf`) |
 | `side` | INPUT | `long` / `short` |
 | `contracts` | INPUT | sized MNQ contracts at fire (`floor(100 ÷ risk pts × $2)`, 30-micro cap) |

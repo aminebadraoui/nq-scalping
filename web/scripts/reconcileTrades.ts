@@ -234,6 +234,7 @@ create table if not exists trades (
 alter table trades add column if not exists features jsonb;
 alter table trades add column if not exists source text not null default 'reconcile';
 alter table trades add column if not exists account text not null default '';
+alter table trades add column if not exists account_source text not null default '';
 alter table reconcile_runs add column if not exists account text not null default '';
 create index if not exists trades_ts_idx on trades (ts desc);
 create table if not exists reconcile_runs (
@@ -653,7 +654,7 @@ async function main() {
       insert into trades
         (signal_key, day, time_et, ts, side, contracts, verdict, headline,
          sig_entry, sig_stop, sig_target, status, fill_entry, fill_entry_at,
-         exit_avg, exit_fills, gross_pts, gross_usd, commissions, net_usd, result, features, matched_at, account)
+         exit_avg, exit_fills, gross_pts, gross_usd, commissions, net_usd, result, features, matched_at, account, account_source)
       values
         (${s.key}, ${sessionDayOf(s.ts)}, ${s.timeET}, ${s.ts}, ${s.side}, ${s.contracts}, ${s.verdict}, ${s.headline},
          ${s.entry}, ${s.stop}, ${s.target}, ${t.status},
@@ -661,7 +662,7 @@ async function main() {
          ${t.exitAvg ?? null}, ${t.exitFills ? JSON.stringify(t.exitFills) : null},
          ${t.grossPts.toFixed(2)}, ${t.grossUsd.toFixed(2)}, ${t.commissions.toFixed(2)},
          ${(t.grossUsd - t.commissions).toFixed(2)}, ${t.result}, ${s.features ? JSON.stringify(s.features) : null}, now(),
-         ${t.account || CT_ACCOUNT})
+         ${t.account || CT_ACCOUNT}, 'fire-time')
       on conflict (signal_key) do update set
         day = excluded.day,
         status = excluded.status,
@@ -676,6 +677,7 @@ async function main() {
         result = excluded.result,
         features = excluded.features,
         account = excluded.account,
+        account_source = excluded.account_source,
         matched_at = now()
       where (trades.status = 'unexecuted' or excluded.status = 'matched') and trades.source <> 'mff'`;
   }

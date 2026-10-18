@@ -8,9 +8,43 @@ import {
   auditSummary,
   type ManualTrip,
   type SignalRef,
+  type TripEvidence,
 } from "@/lib/manualAudit";
+import { resolveAccount, startBalanceFor } from "@/lib/accountAttribution";
+import {
+  buildEntries,
+  accountRollup,
+  entryAccounts,
+  manualNetUsd,
+  type JournalEntry,
+} from "@/lib/journalEntries";
 
 export const dynamic = "force-dynamic";
+
+/* ------------------------------------------------------------------ *
+ * ONE source of truth for the journal's money and identity:
+ *
+ *   · every trade carries an explicit account — the fire-time stamp on
+ *     the row wins, the known switch timeline fills legacy rows
+ *     (lib/accountAttribution.ts);
+ *   · every trade carries an explicit origin — bot (a signal card) or
+ *     manual (a broker round trip no signal explains)
+ *     (lib/journalEntries.ts);
+ *   · this route returns BOTH views: the per-account aggregates and the
+ *     unified `entries` list the journal renders. `?account=` filters
+ *     every aggregate; absent (or "all") keeps the blended view but
+ *     still ships the per-account rollup so no surface has to guess.
+ * ------------------------------------------------------------------ */
+
+type RawRow = Record<string, unknown>;
+
+/** resolve + stamp the account on a row; returns null when filtered out */
+function withAccount(row: RawRow, filter: string): RawRow | null {
+  const day = String(row.day ?? "");
+  const acct = resolveAccount(row.account, day);
+  if (filter && acct.account !== filter) return null;
+  return { ...row, account: acct.account, account_source: acct.source };
+}
 
 /** DB-less fallback (2026-10-07): when Neon is unreachable the journal is
  *  served from the daybook consolidation summaries (local volume ∪ R2
@@ -64,12 +98,21 @@ async function daybookPayload() {
     result: t.result,
     status: "matched",
     source: "daybook",
+    account: resolveAccount(null, t.day).account,
+    account_source: "timeline",
   }));
+  // the unified list in DB-less mode: bot entries only (the daybook
+  // summaries never carry broker round trips)
+  const entries = buildEntries(trades as RawRow[], []);
   return {
     ok: true,
     source: "daybook",
     runs: [],
     trades,
+    entries,
+    accounts: accountRollup(entries),
+    accountList: entryAccounts(entries),
+    accountFilter: "all",
     headline: {
       netUsd,
       grossUsd,
@@ -94,6 +137,7 @@ async function daybookPayload() {
     manual: [],
     manualDays: [],
     manualTotal: null,
+    manualSummary: null,
     scoreboard: [],
     scoreRange: "daybook",
     analysis: null,
@@ -114,16 +158,21 @@ export async function GET(request: Request) {
   }
   const db = getDb();
   try {
-    const runs = await db`select * from reconcile_runs order by run_at desc limit 5`;
+    const runs = await db`select * from reconcile_runs order by run_at desc limit 50`;
     const RANGE_DAYS: Record<string, number> = { "7": 7, "30": 30, "90": 90, all: 0 };
-    const rangeParam = new URL(request.url).searchParams.get("range") ?? "30";
+    const url = new URL(request.url);
+    const rangeParam = url.searchParams.get("range") ?? "30";
     const rangeDays = RANGE_DAYS[rangeParam] ?? 30;
     const w0 = rangeDays > 0 ? Date.now() - rangeDays * 86_400_000 : 0;
+    const accountFilter = (url.searchParams.get("account") ?? "").trim();
 
     // trade rows for the selected range (was: latest run's window only —
     // the day view and the trades list must agree with the scoreboard)
-    const rangeTrades = (await db`select * from trades where ts >= ${w0} order by ts desc limit 1000`) as Array<Record<string, unknown>>;
-    const trades = [...rangeTrades].reverse();
+    const rangeTradesAll = (await db`select * from trades where ts >= ${w0} order by ts desc limit 1000`) as RawRow[];
+    const filtered = rangeTradesAll
+      .map((t) => withAccount(t, accountFilter))
+      .filter((t): t is RawRow => t !== null);
+    const trades = [...filtered].reverse();
 
     // ---- headline + per-day aggregation (matched trades only) ----
     type DayAgg = { day: string; n: number; wins: number; losses: number; grossUsd: number; netUsd: number; commissions: number };
@@ -141,7 +190,7 @@ export async function GET(request: Request) {
       bestDayNet: null as number | null,
       worstDayNet: null as number | null,
     };
-    for (const t of rangeTrades) {
+    for (const t of filtered) {
       if (String(t.status ?? "") !== "matched") continue;
       headline.matched++;
       const r = String(t.result ?? "");
@@ -172,11 +221,15 @@ export async function GET(request: Request) {
       headline.worstDayNet = Math.min(...nets);
     }
 
-    // ---- account equity curve (one snapshot per reconcile run) ----
-    const eqRuns = (await db`
-      select run_at, account_net, account_realized, manual_fills, manual_gross_usd from reconcile_runs
+    // ---- account equity curve (one snapshot per reconcile run, scoped
+    //      to the selected account so the curve never crosses a switch) ----
+    const eqRunsAll = (await db`
+      select run_at, window_start, account_net, account_realized, manual_fills, manual_gross_usd, account from reconcile_runs
       where run_at >= ${new Date(w0).toISOString()}
-      order by run_at asc`) as Array<Record<string, unknown>>;
+      order by run_at asc`) as RawRow[];
+    const eqRuns = eqRunsAll
+      .map((r) => withAccount({ ...r, day: String(r.window_start ?? r.run_at ?? "").slice(0, 10) }, accountFilter))
+      .filter((r): r is RawRow => r !== null);
     const equity = eqRuns
       .filter((r) => r.account_net !== null && r.account_net !== undefined)
       .map((r) => ({
@@ -186,24 +239,32 @@ export async function GET(request: Request) {
       }));
 
     // ---- balance ledger: account Δ = bot net + manual residual ----
-    // netLiq deltas between consecutive snapshots are the TRUE total P&L
-    // (bot + manual + anything else). The residual vs the bot's own net
-    // is the manual bucket — ground truth, no pairing needed.
+    // netLiq deltas between consecutive snapshots of the SAME account are
+    // the true total P&L (bot + manual + anything else). The residual vs
+    // the bot's own net is the manual bucket — ground truth, no pairing.
+    // Deltas NEVER cross accounts: each snapshot compares against the
+    // previous snapshot of ITS OWN account, even in the ALL view.
+    const prevByAcct = new Map<string, RawRow>();
     const ledger = eqRuns
       .filter((r) => r.account_net !== null && r.account_net !== undefined)
-      .map((r, i, arr) => {
+      .map((r) => {
         const at = Date.parse(String(r.run_at));
-        const prevAt = i > 0 ? Date.parse(String(arr[i - 1].run_at)) : 0;
+        const acct = String(r.account ?? "");
+        const prev = prevByAcct.get(acct) ?? null;
         let botNet = 0;
-        for (const t of rangeTrades) {
+        for (const t of filtered) {
           const ts = Number(t.ts ?? 0);
-          if (i === 0 ? ts < at : ts >= prevAt && ts < at) botNet += Number(t.net_usd ?? 0);
+          if (prev === null ? ts < at : ts >= Date.parse(String(prev.run_at)) && ts < at) {
+            botNet += Number(t.net_usd ?? 0);
+          }
         }
         const net = Number(r.account_net);
-        const delta = i > 0 ? net - Number(arr[i - 1].account_net) : null;
+        const delta = prev !== null ? net - Number(prev.account_net) : null;
         const residual = delta !== null ? Math.round((delta - botNet) * 100) / 100 : null;
+        prevByAcct.set(acct, r);
         return {
           at: String(r.run_at),
+          account: acct,
           net,
           delta,
           botNet: Math.round(botNet * 100) / 100,
@@ -214,7 +275,7 @@ export async function GET(request: Request) {
       });
 
     // ---- dedicated metric tables (pure, unit-tested shapes) ----
-    const metricRows = rangeTrades
+    const metricRows = filtered
       .filter((t) => String(t.status ?? "") === "matched")
       .map((t) => ({
         ts: Number(t.ts ?? 0),
@@ -229,46 +290,69 @@ export async function GET(request: Request) {
     const matrix = hourMatrix(metricRows);
     const hours = hourTable(metricRows);
 
-    // ---- account headline: the FINAL number (netLiq vs start balance) ----
-    // MFF Rapid EOD 50k eval starts at $50,000; ACCOUNT_START_BALANCE
-    // overrides when the account tier changes (funded/payout resets).
-    const START_BALANCE = Number(process.env.ACCOUNT_START_BALANCE ?? "50000");
+    // ---- account headline: the FINAL number (netLiq vs start balance)
+    //      for the SELECTED account (MFF eval accounts start at $50k;
+    //      ACCOUNT_START_BALANCE overrides when the tier changes) ----
     const lastEq = equity.length ? equity[equity.length - 1] : null;
     const account = lastEq
-      ? {
-          net: lastEq.net,
-          realized: lastEq.realized,
-          at: lastEq.at,
-          startBalance: START_BALANCE,
-          pnl: Math.round((lastEq.net - START_BALANCE) * 100) / 100,
-          pct: Math.round(((lastEq.net - START_BALANCE) / START_BALANCE) * 10000) / 100,
-        }
+      ? (() => {
+          const acct = accountFilter || "all";
+          const startBalance = accountFilter ? startBalanceFor(accountFilter) : Number(process.env.ACCOUNT_START_BALANCE ?? "50000");
+          return {
+            net: lastEq.net,
+            realized: lastEq.realized,
+            at: lastEq.at,
+            account: acct,
+            startBalance,
+            pnl: Math.round((lastEq.net - startBalance) * 100) / 100,
+            pct: Math.round(((lastEq.net - startBalance) / startBalance) * 10000) / 100,
+          };
+        })()
       : null;
 
-    // ---- manual bucket (MFF/Tradovate round trips no signal explains) ----
+    // ---- manual bucket (broker round trips no signal explains) ----
     // every trip is cross-referenced with ALL recorded signals and
     // labeled (bot / bot-suspect / ambiguous / manual) with evidence —
-    // lib/manualAudit.ts, the same engine as scripts/manualTradeAudit.ts
+    // lib/manualAudit.ts, the same engine as scripts/manualTradeAudit.ts.
+    // The label is AUDIT context (hover detail) — the entry's identity
+    // is origin=manual, full stop.
     const dayFloor = new Date(w0).toISOString().slice(0, 10);
-    const manualRows = (await db`
+    const manualRowsAll = (await db`
       select * from manual_trades
       where matched_signal is null and day >= ${dayFloor}
       order by entry_at desc, id desc
-      limit 500`) as Array<Record<string, unknown>>;
-    const manualDays = (await db`
-      select day, count(*)::int as n,
-             sum(coalesce(pnl_net_usd, pnl_usd))::numeric(12,2) as net,
-             sum(pnl_usd)::numeric(12,2) as gross
-      from manual_trades where matched_signal is null and day >= ${dayFloor}
-      group by day order by day desc`) as Array<Record<string, unknown>>;
+      limit 500`) as RawRow[];
+    const manualFiltered = manualRowsAll
+      .map((r) => withAccount(r, accountFilter))
+      .filter((r): r is RawRow => r !== null);
+    // per-day manual totals computed from the ACCOUNT-FILTERED rows
+    // (manual_trades rows may predate the account stamp — attribution is
+    // resolved here, not in SQL)
+    const mdMap = new Map<string, { day: string; n: number; net: number; gross: number }>();
+    for (const r of manualFiltered) {
+      const day = String(r.day ?? "");
+      const agg = mdMap.get(day) ?? { day, n: 0, net: 0, gross: 0 };
+      agg.n++;
+      agg.net += manualNetUsd(r);
+      agg.gross += Number(r.pnl_usd ?? 0);
+      mdMap.set(day, agg);
+    }
+    const manualDays = [...mdMap.values()]
+      .map((d) => ({
+        day: d.day,
+        n: d.n,
+        net: Math.round(d.net * 100) / 100,
+        gross: Math.round(d.gross * 100) / 100,
+      }))
+      .sort((a, b) => (a.day < b.day ? 1 : -1));
     const manualTotal = manualDays.length
-      ? Math.round(manualDays.reduce((s, d) => s + Number(d.net ?? 0), 0) * 100) / 100
+      ? Math.round(manualDays.reduce((s, d) => s + d.net, 0) * 100) / 100
       : 0;
 
     // ---- manual-trade audit labels (cross-reference with signals) ----
     const sigRefs = (await db`
       select key, ts, day, side, size, entry from signals
-      where day >= ${dayFloor}`) as Array<Record<string, unknown>>;
+      where day >= ${dayFloor}`) as RawRow[];
     const signalList: SignalRef[] = sigRefs.map((s) => ({
       key: String(s.key),
       day: String(s.day),
@@ -277,7 +361,7 @@ export async function GET(request: Request) {
       contracts: Number(String(s.size ?? "").match(/^(\d+)\s*MNQ/)?.[1] ?? 0),
       entry: Number(s.entry) || null,
     }));
-    const trips: ManualTrip[] = manualRows.map((r) => ({
+    const trips: ManualTrip[] = manualFiltered.map((r) => ({
       key: String(r.key),
       day: String(r.day),
       direction: String(r.direction) === "long" ? "long" : "short",
@@ -288,18 +372,54 @@ export async function GET(request: Request) {
       matchedSignal: null,
     }));
     const audit = auditManualTrips(trips, signalList);
-    const manualLabeled = manualRows.map((r, i) => ({ ...r, label: audit[i]?.evidence.label ?? "manual", evidence: audit[i]?.evidence ?? null }));
+    const manualLabeled: RawRow[] = manualFiltered.map((r, i) => ({
+      ...r,
+      label: audit[i]?.evidence.label ?? "manual",
+      evidence: audit[i]?.evidence ?? null,
+    }));
     const manualSummary = auditSummary(audit);
 
     const analysis = await db`select * from trade_analysis order by run_at desc limit 1`;
     const a = analysis[0] as (typeof analysis)[number] | undefined;
 
+    // ---- unified entries (ONE list: bot + manual, explicit origin) ----
+    const entries: JournalEntry[] = buildEntries(filtered, manualFiltered);
+    const auditByKey = new Map(manualLabeled.map((m) => [String(m.key), m]));
+    for (const e of entries) {
+      if (e.origin !== "manual") continue;
+      const audited = auditByKey.get(e.key);
+      const ev = audited?.evidence as TripEvidence | null | undefined;
+      if (ev) {
+        e.audit = {
+          label: String(ev.label),
+          reason: String(ev.reason),
+          nearestSignal: ev.nearestSignal ? String(ev.nearestSignal) : null,
+        };
+      }
+    }
+
+    // ---- per-account rollup over ALL time (stable filter chips; the
+    //      headline cards above describe the selected range) ----
+    const allTrades = (await db`select signal_key, day, account, status, net_usd, gross_usd, commissions, result from trades`) as RawRow[];
+    const allManual = (await db`
+      select key, day, account, pnl_usd, pnl_net_usd, fees_usd from manual_trades
+      where matched_signal is null`) as RawRow[];
+    const allEntries = buildEntries(allTrades, allManual);
+    const accounts = accountRollup(allEntries);
+    const accountList = entryAccounts(allEntries);
+
     // ---- strategy scoreboard: frequency + live vs replay performance ----
     // Accumulates over the selected rolling window (never reset by the
     // reconcile runs — the trades/signals tables are the record).
     let scoreboard: unknown[] = [];
-    if (rangeTrades.length) {
-      const sigs = await db`select ts, verdict, outcome from signals where ts >= ${w0}`;
+    if (filtered.length) {
+      const sigs = await db`select ts, key, verdict, outcome from signals where ts >= ${w0}`;
+      // when an account filter is active, only cards that produced a
+      // trade on that account count toward its scoreboard
+      const tradeKeys = new Set(filtered.map((t) => String(t.signal_key ?? "")));
+      const scopedSigs = (sigs as RawRow[]).filter(
+        (s) => !accountFilter || tradeKeys.has(String(s.key ?? "")),
+      );
       type Bucket = {
         signals: number;
         fills: number;
@@ -317,13 +437,13 @@ export async function GET(request: Request) {
         }
         return b;
       };
-      for (const s of sigs as Array<Record<string, unknown>>) {
+      for (const s of scopedSigs) {
         ensure(familyOf(String(s.verdict ?? ""))).signals++;
       }
       // minimal rows for the edge monitor: family, result, contracts,
       // grossUsd, riskPts (from the signal stop distance)
       const enriched: Array<{ family: string; result: string; contracts: number; grossUsd: number; riskPts: number }> = [];
-      for (const t of rangeTrades) {
+      for (const t of filtered) {
         const family = familyOf(String(t.verdict ?? ""));
         const b = ensure(family);
         if (String(t.status ?? "") !== "matched") continue;
@@ -349,7 +469,7 @@ export async function GET(request: Request) {
       // the all-signals hypothetical win rate per family (replay outcomes
       // of every recorded card — the signal-quality complement to fills)
       const hypByFamily = hypWrByFamily(
-        sigs as unknown as Array<{ verdict: string; outcome: string }>,
+        scopedSigs as unknown as Array<{ verdict: string; outcome: string }>,
       );
       scoreboard = [...buckets.entries()].map(([family, b]) => {
         const st = statusByFamily.get(family);
@@ -409,6 +529,10 @@ export async function GET(request: Request) {
       ok: true,
       runs,
       trades,
+      entries,
+      accounts,
+      accountList,
+      accountFilter: accountFilter || "all",
       headline,
       days: dayList,
       equity,
