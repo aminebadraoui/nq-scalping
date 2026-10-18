@@ -38,6 +38,27 @@ export const dynamic = "force-dynamic";
 
 type RawRow = Record<string, unknown>;
 
+/* The account columns on manual_trades were added by the 2026-10-18
+ * migration (scripts/backfillAccountAttribution.ts). Ensure them lazily
+ * so the unified read path never depends on the migration having run —
+ * same pattern as lib/execTracker.ensureTable. Never blocks the route:
+ * a DDL failure just means the queries below throw and the daybook
+ * fallback serves, exactly as before the columns existed. */
+const JOURNAL_COLUMNS_SQL = `
+alter table manual_trades add column if not exists account text not null default '';
+alter table manual_trades add column if not exists account_source text not null default '';
+`;
+let journalColumnsReady = false;
+async function ensureJournalColumns(db: ReturnType<typeof getDb>): Promise<void> {
+  if (journalColumnsReady) return;
+  try {
+    await db.unsafe(JOURNAL_COLUMNS_SQL);
+    journalColumnsReady = true;
+  } catch {
+    /* best-effort — the daybook fallback covers the failure */
+  }
+}
+
 /** resolve + stamp the account on a row; returns null when filtered out */
 function withAccount(row: RawRow, filter: string): RawRow | null {
   const day = String(row.day ?? "");
@@ -158,6 +179,7 @@ export async function GET(request: Request) {
   }
   const db = getDb();
   try {
+    await ensureJournalColumns(db);
     const runs = await db`select * from reconcile_runs order by run_at desc limit 50`;
     const RANGE_DAYS: Record<string, number> = { "7": 7, "30": 30, "90": 90, all: 0 };
     const url = new URL(request.url);
