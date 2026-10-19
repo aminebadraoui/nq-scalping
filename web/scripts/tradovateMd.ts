@@ -23,7 +23,7 @@
  * It is not live-execution code and never places orders.
  * ------------------------------------------------------------------ */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import {
   errorTextOf,
@@ -96,10 +96,22 @@ function readTokenFile(path: string): string {
 function writeTokenFile(path: string, token: string): void {
   try {
     writeFileSync(path, JSON.stringify({ token, renewedAt: new Date().toISOString() }, null, 2));
+    // record our own write so the hot-swap watcher ignores it
+    try {
+      tokenFileMtime = statSync(path).mtimeMs;
+    } catch {
+      /* ignore */
+    }
   } catch (e) {
     logErr(`could not persist token to ${path}: ${String(e)}`);
   }
 }
+
+/** mtime of the token file after the last write WE made — an external
+ *  write (a pasted token via POST /api/tvmd) bumps it past this value
+ *  and the collector exits cleanly so its restart loop picks up the
+ *  new session. */
+let tokenFileMtime = 0;
 
 function loadConfig(): Config | null {
   const env = process.env.TVMD_ENV === "demo" ? "demo" : "live";
@@ -711,6 +723,29 @@ const renewTimer = setInterval(() => {
   if (cfg.transport === "ws" && !state.shuttingDown) void renewToken();
 }, RENEW_EVERY_MS);
 if (typeof renewTimer.unref === "function") renewTimer.unref();
+
+// hot-swap watch: an external write to the token file (a token pasted
+// in the frontend) restarts the collector so it boots with the new
+// session. Own writes (boot bootstrap + renewals) update the baseline.
+try {
+  tokenFileMtime = existsSync(cfg.tokenFile) ? statSync(cfg.tokenFile).mtimeMs : 0;
+} catch {
+  tokenFileMtime = 0;
+}
+const tokenWatch = setInterval(() => {
+  if (state.shuttingDown) return;
+  try {
+    if (!existsSync(cfg.tokenFile)) return;
+    const m = statSync(cfg.tokenFile).mtimeMs;
+    if (tokenFileMtime !== 0 && m > tokenFileMtime + 500) {
+      log("token file changed externally (new session pasted) — restarting to pick it up");
+      process.exit(0); // the container entrypoint loop restarts us immediately
+    }
+  } catch {
+    /* ignore */
+  }
+}, 10_000);
+if (typeof tokenWatch.unref === "function") tokenWatch.unref();
 
 if (cfg.summaryMs > 0) {
   const summaryTimer = setInterval(() => {

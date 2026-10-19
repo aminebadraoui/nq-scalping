@@ -119,10 +119,38 @@ export default function TvmdPage() {
   const [snap, setSnap] = useState<TvmdSnapshot | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [gc, setGc] = useState<GcState | null>(null);
+  const [newToken, setNewToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [tokenMsg, setTokenMsg] = useState<string | null>(null);
   const inFlight = useRef(false);
   const gcRef = useRef<GcState | null>(null);
   const samplesRef = useRef<DeltaSample[]>([]);
   const [samples, setSamples] = useState<DeltaSample[]>([]);
+
+  async function applyToken() {
+    const t = newToken.trim();
+    if (!t || saving) return;
+    setSaving(true);
+    setTokenMsg(null);
+    try {
+      const res = await fetch("/api/tvmd", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: t }),
+      });
+      const j = (await res.json()) as { ok: boolean; error?: string };
+      if (res.ok && j.ok) {
+        setNewToken("");
+        setTokenMsg("saved — collector hot-restarts with the new session (~10s)");
+      } else {
+        setTokenMsg(j.error ?? `api ${res.status}`);
+      }
+    } catch (e) {
+      setTokenMsg(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   // GoCharting DOM book over SSE (~1/s)
   useEffect(() => {
@@ -252,6 +280,39 @@ export default function TvmdPage() {
           )}
         </div>
       ) : (
+        <>
+          {/* session bar: swap in a fresh token (new demo account / dead chain) */}
+          <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-zinc-800 bg-panel px-4 py-2 font-mono text-xs">
+            <span className="text-zinc-500">session</span>
+            <span className="text-zinc-300">
+              {snap.token ? (
+                <>
+                  <span className="text-long">{snap.token.prefix}</span>
+                  {snap.token.renewedAt ? (
+                    <span className="text-zinc-500"> · renewed {Math.round((Date.now() - Date.parse(snap.token.renewedAt)) / 60000)}m ago</span>
+                  ) : null}
+                </>
+              ) : (
+                <span className="text-warn">no token file</span>
+              )}
+            </span>
+            <input
+              value={newToken}
+              onChange={(e) => setNewToken(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void applyToken()}
+              placeholder="paste new session token (JWT from the authorize frame)"
+              className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
+            />
+            <button
+              onClick={() => void applyToken()}
+              disabled={saving || !newToken.trim()}
+              className="rounded bg-long/15 px-3 py-1 text-long disabled:opacity-40"
+            >
+              {saving ? "saving…" : "Apply"}
+            </button>
+            {tokenMsg && <span className={tokenMsg.startsWith("saved") ? "text-long" : "text-warn"}>{tokenMsg}</span>}
+          </div>
+
         <div className="grid grid-cols-12 gap-3">
           {/* footprint */}
           <div className="col-span-12 overflow-x-auto rounded-lg border border-zinc-800 bg-panel lg:col-span-8">
@@ -297,6 +358,7 @@ export default function TvmdPage() {
             <Profile snap={snap} />
           </div>
         </div>
+        </>
       )}
 
       {snap && snap.stats.frames > 0 && (

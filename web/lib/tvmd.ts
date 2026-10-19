@@ -15,7 +15,7 @@
  * are deduped by tick id so reconnects don't double-count.
  * ------------------------------------------------------------------ */
 
-import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 
 const TICK_SIZE = Number(process.env.TVMD_TICK_SIZE ?? 0.25); // MNQ
 const BUCKET_MS = 15_000; // footprint column width
@@ -266,6 +266,43 @@ export interface TvmdSnapshot {
   footprint: { price: number; cells: ({ bv: number; av: number } | null)[] }[];
   tape: { t: number; price: number; size: number; side: "buy" | "sell" }[];
   stats: { frames: number; ticks: number; lastFrame: string | null };
+  /** masked info about the session token the collector is using */
+  token: { prefix: string; renewedAt: string | null } | null;
+}
+
+/* -------------------- session token persistence -------------------- */
+/* Shared with the collector via the volume: the API writes a fresh
+ * pasted token here, the collector watches the file's mtime and
+ * hot-restarts with it (see scripts/tradovateMd.ts). */
+
+function tokenFilePath(): string {
+  return process.env.TVMD_TOKEN_FILE ?? "./data/.tradovate-md-token.json";
+}
+
+export interface TvmdTokenInfo {
+  prefix: string;
+  renewedAt: string | null;
+}
+
+export function tokenInfo(): TvmdTokenInfo | null {
+  try {
+    const raw = JSON.parse(readFileSync(tokenFilePath(), "utf8")) as { token?: unknown; renewedAt?: unknown };
+    if (typeof raw.token !== "string" || !raw.token) return null;
+    return {
+      prefix: `${raw.token.slice(0, 8)}…`,
+      renewedAt: typeof raw.renewedAt === "string" ? raw.renewedAt : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Persist a freshly pasted session token. Returns false when the
+ *  string doesn't look like a Tradovate SSO JWT. */
+export function persistToken(token: string): boolean {
+  if (!/^eyJ[^.]+\.eyJ[^.]+\./.test(token) || token.length < 80 || token.length > 8000) return false;
+  writeFileSync(tokenFilePath(), JSON.stringify({ token, renewedAt: new Date().toISOString() }, null, 2));
+  return true;
 }
 
 export function getSnapshot(): TvmdSnapshot {
@@ -318,5 +355,6 @@ export function getSnapshot(): TvmdSnapshot {
     footprint,
     tape,
     stats: { frames: state.frameCount, ticks: state.tickCount, lastFrame: state.lastFrameTs },
+    token: tokenInfo(),
   };
 }

@@ -163,8 +163,16 @@ Expected flow: `authorized ok` → one `ok:` line per subscription with
 
 **Token finally dead (session dropped through expiry)?** Re-capture via
 Route A (the platform page's authorize frame — reload the page to mint a
-fresh one), set `TVMD_TOKEN` in `web/.env.local`, restart. With the 20-min
-renewal loop running, this should be rare.
+fresh one), then paste the new JWT into the **session bar on `/tvmd`** and
+hit Apply. The API persists it to the shared token file and the collector
+hot-restarts with it within ~10s — no env edits, no redeploy, works the
+same on the VPS (volume) and the Mac. `TVMD_TOKEN` env is bootstrap-only:
+after the first renewal the volume file wins.
+
+**New demo account?** Same flow, one paste: capture the new account's JWT
+from its authorize frame and paste it in the `/tvmd` session bar.
+Everything else (hosts, env, symbols) is unchanged — and a fresh account
+restarts the 2-week real-time trial window.
 
 ## Browser relay mode (fallback)
 
