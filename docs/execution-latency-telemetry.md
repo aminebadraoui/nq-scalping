@@ -13,7 +13,7 @@ stages the execution tab shows:
 |---|---|---|
 | `getData` | the feed-freshness probe (connected, ≥5 live mins, last tick <5 min). Since 2026-10-12 the heavy snapshot (computeSignal) moved to a 30s display cadence and no longer rides the dispatch tick — it feeds only the reversal card (OFF) and the /api/signal dashboard | `signalFeed.tick()` → `probeFreshness()` |
 | `feedCheck` | tape-gate freshness check — is the just-completed bar candle-confirmed? | timed wrapper around `tapeGateHolds` |
-| `compute` | the seven detector/gate checks (momentum, RTH, open drive, …) with a per-check breakdown | `signalFeed.tick()` check loop |
+| `compute` | the seven detector/gate checks (failed-flush, huge-bar, Session Continuation, open drive, …) with a per-check breakdown | `signalFeed.tick()` check loop |
 | `dispatch` | send the order to CrossTrade + wait for the placement ack. Since 2026-10-12 the guard (snapshot REST + guard-state hydration) and the flat gate (positions REST) run CONCURRENTLY before the POST — the stage wall clock covers both pre-flights plus the place | `executor.placeOrder/placeScaleOut` (single choke point) |
 | `cross trade execute` | submit → broker fill, from the broker's own fill timestamp | `crossTrade` submit registry + `execWatch` fill match |
 

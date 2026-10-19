@@ -49,7 +49,7 @@ deploy window.
 | Study | Gate | Notes |
 |---|---|---|
 | `countFracGateStudy.ts --offline --theta 0.65` | `min_count_frac` | re-validates the 2026-10-17 promotion. Its report always carries `grid.variants=5`, so contract rule 6 needs `WEEKLY_GRID_DSR`/`WEEKLY_GRID_PBO` from `gcdata/validate_sweep.py` — without both it rejects honestly |
-| `sideVetoStudy.ts --family momentum_expansion --veto {"side":"short","hours":[15]} --offline` | `side_veto` | pre-registered candidate A (RESEARCH-LOOP §5b) |
+| `sideVetoStudy.ts --family huge_bar_expansion --veto {"side":"short","hours":[15]} --offline` | `side_veto` | pre-registered candidate A (RESEARCH-LOOP §5b) |
 
 `WEEKLY_STUDIES=name1,name2` overrides, `none` = rollup + narrative only,
 `WEEKLY_MAX=N` appends `--max N` for smoke runs, `WEEKLY_WEEK=YYYY-MM-DD`

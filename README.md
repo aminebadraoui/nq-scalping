@@ -29,9 +29,10 @@ first two sections of `deploy/STATE.md`.
   auto-deployed on every push to `main`)
 - **Feed toggles (deployed VPS, verified via `/api/gc?action=health`):**
   `FEED_MOMENTUM=1` · `FEED_RTH=1` · `FEED_OPEN_DRIVE=1` · `FEED_OPEN=1` ·
-  everything else OFF — unusual-volume alerts, pullback watch, feed-gap
-  alerts, reversal, sweep-reclaim, pullback-ticket, open-pullback,
-  open-sniper (Telegram gets the trade-signal cards only)
+  `FEED_OPEN_PULLBACK=1` (live since 2026-10-16) — everything else OFF:
+  unusual-volume alerts, pullback watch, feed-gap alerts, LVN reversal,
+  sweep-reclaim, pullback-ticket, open-sniper (Telegram gets the
+  trade-signal cards only)
 - **Execution:** the VPS is the single live executor (`EXECUTE_LIVE=1` only
   there; the Mac keeps `EXECUTE_LIVE=0`)
 - **Nightly pipeline:** runs on the VPS (`nq-jobs` Coolify app, cron 17:45 ET
@@ -101,7 +102,7 @@ gcdata/              Python collectors (GoCharting footprint/OHLC/DOM), protobuf
 scripts/             ops: nightly.sh (the pipeline), r2_sync.py, es_r2_sync.py,
                      repair_data.py, backfill_contracts.sh, es_finish.sh
 deploy/              STATE.md (canonical ops record) · setup.sh
-docs/strategy/       signal design docs (momentum, RTH, open, reversal, boxes)
+docs/strategy/       signal design docs (Failed-Flush/Huge-Bar, Session Continuation, open, LVN reversal, boxes)
 docs/research/       empirical studies + trade reviews (the measured results)
 docs/data/           data-source audits + macro/PIT methodology + the dashboard
                      macro-panels research (DASHBOARD_MACRO_PANELS.md)

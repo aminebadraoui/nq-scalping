@@ -106,7 +106,7 @@ The manual step 5 stays for detector/env/risk changes. For the
 The first candidate run (side-veto scan, 2026-10-16) was rejected by the
 contract — the direct path fails closed by construction. The first
 contract PASS (2026-10-17): `min_count_frac` {min: 0.60, on: "count"} on
-`momentum_expansion` (countFracGateStudy + validate_sweep DSR 1.000 /
+`huge_bar_expansion` (countFracGateStudy + validate_sweep DSR 1.000 /
 PBO 0.108) — proposal written via `promoteFromBacktest --apply`,
 activation gated on the live tape supplying trigger-bar trade counts.
 

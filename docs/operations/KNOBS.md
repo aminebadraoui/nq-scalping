@@ -27,7 +27,7 @@
 
 | Knob | Default | Effect |
 |---|---|---|
-| `CROSSTRADE_LIMIT_ENTRIES` | unset (= limits ON) | momentum flush cards rest a limit AT the signal close (9 min TTL); expansion retrace rests 1 pt behind (5 min). The marketable chase is OFF. | `0` restores the chase (NOT recommended — momentum entry-mechanics study: chase PF 0.64 vs flushLimit 1.27/1.55) |
+| `CROSSTRADE_LIMIT_ENTRIES` | unset (= limits ON) | Failed-Flush Breakout cards rest a limit AT the signal close (9 min TTL); expansion retrace rests 1 pt behind (5 min). The marketable chase is OFF. | `0` restores the chase (NOT recommended — momentum entry-mechanics study: chase PF 0.64 vs flushLimit 1.27/1.55) |
 | `EXP_RETRACE` | unset (= ON) | expansion retrace limit entry | `0` = marketable expansion entry |
 | `CROSSTRADE_SCALEOUT` | unset (= OFF) | scale-out pairs keep the market path | `1` = bank+runner ladder |
 
@@ -36,12 +36,12 @@
 | Knob | Default | Effect |
 |---|---|---|
 | `FEED_MOMENTUM` / `FEED_RTH` / `FEED_OPEN` / `FEED_OPEN_DRIVE` | ON | family on/off toggles | `0` disables a family |
-| `FEED_OPEN_PULLBACK` | ON since 2026-10-16 (was off) | open-pullback card (69.8% WR, +5.2 pts/trade, ~4 days in 5) | `0` = off |
+| `FEED_OPEN_PULLBACK` | ON since 2026-10-16 (was off) | Morning Pullback card (69.8% WR, +5.2 pts/trade, ~4 days in 5) | `0` = off |
 | `FEED_BIGBAR` | ON since 2026-10-15 | first ≥100-pt bar continuation (57.0% WR limit arm, PF 1.42) | `0` = off |
 | `SIGNAL_EVENT_TICK` | unset (OFF) | event-driven bar-advance tick (zero-latency detection) | `1` = enable |
-| `RTH_LIMIT_ENTRIES` | unset (OFF) | RTH resting-limit entries | `1` = enable (validated: rthLimitValidation) |
+| `RTH_LIMIT_ENTRIES` | unset (OFF) | Session Continuation resting-limit entries | `1` = enable (validated: rthLimitValidation) |
 | `RTH_LIMIT_STOP_MULT` / `RTH_LIMIT_TARGET_R` / `RTH_LIMIT_TTL_MS` | 0.5 / 2.5 / 9 min | RTH limit bracket | with RTH_LIMIT_ENTRIES=1 |
-| `RTH_LIMIT_APPROACH_GATE_PTS` | unset (OFF) | RTH crossed-limit approach gate (rthLimitFillDriftStudy gateX2) | `2` = the validated setting |
+| `RTH_LIMIT_APPROACH_GATE_PTS` | unset (OFF) | Session Continuation crossed-limit approach gate (rthLimitFillDriftStudy gateX2) | `2` = the validated setting |
 | `FLATTEN_AT_LOSS` / `FLATTEN_AT_PROFIT` | set (loss arm active) | once-per-day flatten arm | `0` = off |
 | `MOM_STOP_MULT` / `MOM_TARGET_R` / `MOM_SIZE_MULT` | profile defaults | momentum bracket/size | profile knobs |
 | `KELLY_MODE` / `KELLY_LIVE_USE` | OFF | kelly sizing chip | `1` = on |

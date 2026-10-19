@@ -119,7 +119,7 @@ whole answer. A QQQ option strike is $1 wide, and NQ ≈ 41× QQQ, so **one stri
 is ~40 NQ points**: a "call wall at 31,160" is really a ~40-point band, several
 scalps wide (the playbook's median risk is ~4 points). Concretely:
 
-- They feed the reversal checklist's **location** ingredient as *partial*
+- They feed the LVN reversal checklist's **location** ingredient as *partial*
   location (`WALL_NEAR = 20` pts in `web/lib/mechanism.ts`) — a real level that
   can reject price, but too coarse to earn the tick-precise "yes" an LVN edge
   does. The ingredient now names which: *"near call wall (dealer resistance)"*.

@@ -16,7 +16,7 @@ Verify any time via
 
 ---
 
-## ⚡ THE MOMENTUM CARD — the one trade signal
+## ⚡ THE MOMENTUM CARDS — Failed-Flush Breakout + Huge-Bar Expansion (the one trade signal)
 
 Two triggers, one ticket. Entry at the trigger bar's close; stop under that
 bar's low − 0.5, widened to entry ∓ 3.5 when tighter (the widen floor); target 1R; Globex hours only
@@ -173,7 +173,7 @@ separately.
   TP15/SL35, +8.3/+11.6 pts gross. The fakeout (extreme without delta
   backing) is NOT traded — fading it measured negative.
 
-### 🔔 OPEN PULLBACK (`PULLBACK_PROD`) — **live since 2026-10-16**
+### 🔔 MORNING PULLBACK (`PULLBACK_PROD`) — **live since 2026-10-16**
 
 - Window: 9:30–10:30 (scans from bar 9:46).
 - **TREND** — the trailing 15-bar cumulative delta is positive (mirror:
@@ -187,7 +187,7 @@ separately.
   target 1R; risk ≤ 25; ≥5-bar gap.
 - Validation: 440 trades, **69.8% WR, +5.2 pts net**, ~77% of days.
 
-### 🔔 OPEN SNIPER (`SNIPER_PROD`) — the 9:36:01 trade
+### 🔔 9:36 SNIPER (`SNIPER_PROD`) — the 9:36:01 trade
 
 - Opening range = the first **6 minutes** (9:30–9:35); anchor = its low/high.
 - **FLUSH** within 9:36–9:45: volume ≥ max(300, 1.5 × 15-bar median),
@@ -201,7 +201,10 @@ separately.
 
 ---
 
-## 🟦 THE RTH CARD — footprint-proven continuation (`FEED_RTH=1`, live)
+## 🟦 SESSION CONTINUATION — footprint-proven continuation (`FEED_RTH=1`, live)
+
+> 2026-10-19 rename: the RTH card is now **Session Continuation** (cash
+> hours 9:30–16:00 ET; the `RTH_*` env knobs keep their names).
 
 The strategy the thick two-way RTH tape (9:30–16:00 ET) actually rewards —
 found by the footprint × candle-impact interaction research
@@ -280,7 +283,7 @@ real sequences through the account sim):
 The live plan, measured in `docs/research/ap-full-pool-2026-10-05.md`
 (`web/scripts/apPlanSweep.ts --pool all`, 650 sessions, exact MFF gates):
 
-- **All live strategies, regular + A+** — momentum, expansion, RTH, open
+- **All live strategies, regular + A+** — Failed-Flush Breakout, Huge-Bar Expansion, Session Continuation, open
   drive; no A+-only filter (A+ stays a card label, not a gate).
 - **$100 risk/trade** → `contracts = floor(100 ÷ (risk pts × $2))`, min 1,
   30-micro cap. Structural stops; momentum 1R · RTH 0.75R · open TP15/SL35.
@@ -312,21 +315,21 @@ The live plan, measured in `docs/research/ap-full-pool-2026-10-05.md`
     backtest rejected the placement rule for now (widen = generic stop-
     widening: more winners, smaller edge) — re-test when historical gamma
     walls exist. `docs/research/wall-aware-stop-proxy-2026-10-03.md`.
-- Momentum + RTH cards size **9 contracts** by default (median day +$347;
+- Momentum + Session Continuation cards size **9 contracts** by default (median day +$347;
   worst real day −$619; 0% annual breach); `FIXED_CONTRACTS` env overrides.
 - The open family keeps the $170-budget sizing (2 MNQ on the drive's 35-pt
   stop) — scaling it breaches.
 - **$200-per-trade minimum is incompatible** with these scalps at ≤9
   contracts (a win is $80–120; $200 needs 2R targets that kill the WR).
   The goal that survives contact with the data is **$500–900 per DAY via
-  2+ trades** — which the RTH card delivers at 83%/56% or 76%/60%.
+  2+ trades** — which Session Continuation delivers at 83%/56% or 76%/60%.
 
 ---
 
 ## ARCHIVED / OFF
 
-- **LVN reversal** — `docs/strategy/STRATEGY.md` (the original playbook; `FEED_REVERSAL=0`).
-- **Sweep-reclaim** — session-extreme fade; `FEED_SWEEP_RECLAIM=0` (it fired
+- **LVN Reversal Box** — `docs/strategy/STRATEGY.md` (the original playbook; `FEED_REVERSAL=0`).
+- **Sweep-Reclaim Fade** — session-extreme fade; `FEED_SWEEP_RECLAIM=0` (it fired
   shorts into one-sided runs — retired).
 - **Pullback-exhausted ticket** — `FEED_PULLBACK_TICKET=0`.
 - **Open daily rule** (9:30 bar's delta sign, TP15/SL35 — 79% hit, every
@@ -351,6 +354,11 @@ MyFundedFutures **Rapid EOD 50k** (`web/lib/propRules.ts`,
   starting balance.
 - Eval: $3,000 target, 4 trading days, **30% consistency** — checked per run.
 - Funded: $2,100 first-payout buffer, +$500 per payout, 90/10 — computed per run.
+- **Kelly mode (OFF, journal-only):** `KELLY_MODE=1` prints a self-updating
+  Kelly chip on the momentum + Session Continuation cards (`KELLY 41t 79% → $112 (journal)`);
+  sizing stays flat $100 unless `KELLY_LIVE_USE=1` (never enabled — rule-4
+  env approval). Design + 652-session validation:
+  `docs/research/kelly-mode-2026-10-07.md`.
 - Sizing sanity: 20 consecutive momentum losers ≈ $2,000 = MLL; the 21st
   breaches — the budget is set with that line in view (plus the −$250
   daily floor and the dd600→half rule, which cut the streak before it

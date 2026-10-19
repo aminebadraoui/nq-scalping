@@ -119,7 +119,7 @@ PLAYBOOK gates. Per family:
 | `distVwapPts` | close vs VWAP — the second session-trend veto |
 | `atr14` / `riskPts` | risk 3.5–15 after the floor-widen |
 
-### RTH soft-continuation (`SOFT_PROD`, `family: "rth"`)
+### Session Continuation (`SOFT_PROD`, `family: "session_continuation"` — legacy rows: `"rth"`)
 
 | Key | Backs the gate |
 |---|---|
@@ -130,7 +130,7 @@ PLAYBOOK gates. Per family:
 | `domClusters` | **dominant cluster rows on the trade side (≥ 3 lots, ≥ 2:1)** — the footprint proof, added 2026-10-08 (previously computed for the gate but discarded) |
 
 Most other `signalFeatures` keys are filled with placeholder values for the
-RTH card (`breakStack: "none"`, `respProof: 0`, …) — see
+Session Continuation card (`breakStack: "none"`, `respProof: 0`, …) — see
 `web/lib/softMomentum.ts`.
 
 ### Open drive (`OPEN_PROD`, `family: "open_drive"`)

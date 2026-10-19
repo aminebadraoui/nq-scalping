@@ -34,7 +34,7 @@ three older, better-documented ideas this repo already uses:
    per-timeframe swing range instead of a volume profile.
 2. **Range mean-reversion.** Buying the lower half and selling the upper half of
    a range is the definition of fading a range. Our own research (`data.ts`,
-   VWAP-reversion and sweep/reclaim) already shows this only works **with a
+   VWAP-reversion and sweep-reclaim) already shows this only works **with a
    location filter and a trigger** — never as a standalone entry.
 3. **Multi-timeframe context.** The higher timeframe sets the bias (which side of
    *its* range we are on), the lower timeframe times the entry. Alignment across

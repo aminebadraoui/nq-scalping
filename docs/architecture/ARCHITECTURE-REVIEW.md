@@ -100,7 +100,7 @@ GoCharting tick feed ──► lib/live.ts (bars built from ticks)
    expansion `EXP_PROD`, RTH `SOFT_PROD`, open drive/pullback/sniper):
    pure functions over minutes, parameterized by config objects.
    `web/lib/momentum.ts`, `softMomentum.ts`, `openDrive.ts`.
-2. **The box pipeline** (reversal family, OFF): order-flow / price-action /
+2. **The box pipeline** (LVN reversal family, OFF): order-flow / price-action /
    options boxes → `composeSignals()` → `cardGateOpen()` (3 required
    ingredients + 4/6 confirmation + 2 footprint filters).
    `web/lib/signals.ts:96-174`, `signalEngine.ts`, `mechanism.ts`,
@@ -176,7 +176,7 @@ A gate = any boolean veto that can stop a card or an order:
 | 7 | **`strategy_overrides`** (enable, hour_veto, trend_filter, min_break_frac/range, max_risk, first_only) | `signalFeed.ts:981-1020` → `strategyOverrides.ts:90-165` | **DB-driven, no deploy** |
 | 8 | Ticket expectancy veto | `ticketVeto.ts:33-55` | env `TICKET_MIN_EXP_PTS` |
 | 9 | RTH counter-signal gate · RTH daily cap | `signalFeed.ts:1636-1704` | env (`RTH_COUNTER_GATE_*`, `RTH_MAX_CARDS_PER_DAY`) |
-| 10 | Card gate (reversal box pipeline only) | `signals.ts:161-174` | hardcoded |
+| 10 | Card gate (LVN reversal box pipeline only) | `signals.ts:161-174` | hardcoded |
 | 11 | **Account guard** (entry choke before every placement: floor/target/consistency/daily-floor/profit-arm/give-back/dd-half) | `crossGuard.ts:100-124` → `accountGuard.ts:385-501` | env-overridable defaults |
 | 12 | Kill switch | `tradingHalt.ts` · `crossTrade.ts:565` | operator file, password-gated resume |
 | 13 | Crossed-stop / crossed-limit at dispatch (1 pt) | `crossTrade.ts:579-597` (+ feed + re-send copies) | hardcoded |
@@ -386,9 +386,9 @@ risk interpretation.
 ### 4.1 Strategy identity chain
 
 ```
-FAMILY         momentum · rth · open · reversal · …        (familyNames.ts)
-  └─ STRATEGY  momentum_flush · momentum_expansion ·
-               rth · open_drive · open_pullback · open_sniper
+FAMILY         failed_flush_breakout · huge_bar_expansion · session_continuation · open · lvn_reversal · …        (familyNames.ts)
+  └─ STRATEGY  failed_flush_breakout · huge_bar_expansion ·
+               session_continuation · open_drive · open_pullback · open_sniper
       └─ CONFIG  MOM_PROD · EXP_PROD · SOFT_PROD · OPEN_PROD · …
           └─ PLAN  entry mode (market / retrace-limit / resting-limit),
                    brackets (structural / profile / fixed), time exit, size
@@ -511,7 +511,7 @@ New `web/lib/strategies/registry.ts` — pure, typed, no I/O:
 ```ts
 type StrategyDeclaration = {
   family: Family;            // familyNames.ts
-  id: StrategyId;            // "momentum_flush" | "rth" | …
+  id: StrategyId;            // "failed_flush_breakout" | "session_continuation" | …
   config: MomConfig | …;     // the existing *_PROD objects — by reference, not copy
   plan: Plan;                // entry mode, brackets, time exit, size, retrace
   feedFlag: string;          // "FEED_MOMENTUM"
@@ -649,7 +649,7 @@ and the only live-linking is prose.
 ### 7.2 The target: one lineage per strategy
 
 ```
-/strategies/momentum_flush
+/strategies/failed_flush_breakout
    ├─ Definition     ← rendered from the registry declaration (config object
    │                   as a table: every threshold, its value, its doc string)
    ├─ Live state     ← FEED_* flag, effective overrides, guard state,

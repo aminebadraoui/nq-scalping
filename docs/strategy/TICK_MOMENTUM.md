@@ -80,7 +80,7 @@ timestamps and ships them to the browser over the existing `/api/live` SSE.
 `TickMomentumPanel` (`web/components/TickMomentumPanel.tsx`) computes
 everything client-side from that buffer — no new socket, no new
 subscription, no server change. It sits in the strategy rail between the
-sweep-reclaim and DOM panels, labeled "study aid — not an entry signal",
+sweep-reclaim-fade and DOM panels, labeled "study aid — not an entry signal",
 same discipline as the DOM panel.
 
 ## Open questions (what would graduate this to a signal)

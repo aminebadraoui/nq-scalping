@@ -35,7 +35,7 @@ Surfaces (full list; see `components/Nav.tsx`):
   expectancy math, and every source. Anchor links: `/docs#evidence`,
   `/docs#tools`, `/docs#strategies`, `/docs#checklist`, `/docs#sources`.
 - **`/studies` — the study archive**: all `docs/research/` studies catalogued
-  by family (momentum · RTH · bias/calendar · reversal-retired · risk/sizing ·
+  by family (momentum · Session Continuation · bias/calendar · LVN-reversal-retired · risk/sizing ·
   validation · ops), each with its question, regenerating script, and the
   exact CLI; scripts tagged **standard ✓** print the consolidated report
   (T1/T2/T4 + five-slot verdict per `docs/BACKTEST-REPORT-STANDARD.md`,
@@ -94,7 +94,7 @@ inherits full holidays and early closes). MyFundedFutures rejects entries
 after 16:00 ET, so outside the window the feed is silent and the local
 executor (`db/local_executor.ts`) idles.
 
-1. **REVERSAL card** — the LVN-reversal scalp (the full strategy). **PAUSED by
+1. **LVN REVERSAL BOX card** — the LVN-reversal scalp (the full strategy). **PAUSED by
    default** (`FEED_REVERSAL=0`): the owner is building on the volume-footprint
    alerts first. When enabled: price at/inside an LVN, `present ≥ 4` of the 6
    checklist ingredients, every directional box aligned, the last footprint
@@ -102,7 +102,7 @@ executor (`db/local_executor.ts`) idles.
    (7-pt scalp stop) / TARGET (nearest POC) / SIZE (`risk ÷ (7 × $20)`) plus
    the full 6-point reasoning. Backtested lookahead-free over 683 sessions:
    ~7.5 signals/day, 37% win, PF 2.16 (`docs/research/FOOTPRINT_REVERSAL_RESEARCH.md`).
-2. **Sweep-reclaim card** (`FEED_SWEEP_RECLAIM=1`) — a failed break of the
+2. **Sweep-Reclaim Fade card** (`FEED_SWEEP_RECLAIM=0` — retired) — a failed break of the
    session extreme reclaimed one-sidedly (≥65% on the entry side,
    session-median volume): a 1R ticket with stop 0.5 pt beyond the swept
    extreme. Fires once per distinct reclaim bar (`lib/reclaimSetup.ts`).

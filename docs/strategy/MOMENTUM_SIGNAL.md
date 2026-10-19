@@ -1,10 +1,14 @@
-# The momentum signal — join the one-sided run
+# The Momentum strategies — Failed-Flush Breakout + Huge-Bar Expansion
+
+> 2026-10-19 rename: the momentum card is now TWO named strategies — the
+> **Failed-Flush Breakout** (flush trigger) and the **Huge-Bar Expansion**
+> (huge-bar trigger). Both still share `FEED_MOMENTUM` and `lib/momentum.ts`.
 
 > **Status: THE single active strategy** — `FEED_MOMENTUM=1` is the only
 > TRADE signal (2026-09-30). Telegram carries the trade-signal cards ONLY
 > (owner rule, 2026-10-05): the unusual-volume heads-up (`FEED_UNUSUAL_VOLUME=0`),
 > its pullback watch, and the feed-gap alert (`FEED_GAP_ALERTS=0`) are silent.
-> The reversal, sweep-reclaim and pullback-ticket cards are off (`FEED_* = 0`
+> The LVN reversal, sweep-reclaim and pullback-ticket cards are off (`FEED_* = 0`
 > in `web/lib/signalFeed.ts`). The card has **two triggers, one ticket**:
 > the failed-flush breakout and the huge-bar expansion scalp. Validation:
 > **4,822 trades, 77.5% win, PF 2.98**, positive in every full year of the
@@ -18,7 +22,7 @@ and measured by `web/scripts/momentumStudy.ts` over the full R2 archive.
 
 ## The problem it solves
 
-The reversal and sweep-reclaim products only *fade* — they fire shorts into
+The LVN reversal and sweep-reclaim products only *fade* — they fire shorts into
 failed highs and longs into failed lows. On 2026-09-30 the tape printed a
 classic one-sided bullish run (18:10 flush → 18:16 breakout → +58 pts), and
 the feed fired two shorts into it. A momentum system must instead **join

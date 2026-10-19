@@ -32,13 +32,13 @@
 
 | Strategy | Status (code defaults in `web/lib/signalFeed.ts`, confirmed by `deploy/STATE.md`) | Thesis in one line | Measured (568/683-session replay) |
 |---|---|---|---|
-| **Momentum card** (`MOM_PROD` + `EXP_PROD`) | ✅ **LIVE** (`FEED_MOMENTUM=1`) | Fade a failed flush then ride the one-sided breakout back; or ride a huge-bar expansion (≥1.6×ATR, ≥75% one-sided, cluster stack). Globex only (9:30–16:00 ET excluded). Stop under the trigger bar, 1R target, ≥5-bar gap. | 4,822 trades · 77.5% WR · PF 2.98 · +11,680 pts · positive every full year |
-| **RTH soft card** (`SOFT_PROD`) | ✅ **LIVE** (`FEED_RTH=1` — code default on; still labelled experimental, journaled separately) | RTH continuation: ≥60% one-sided bar + ≥3 dominant footprint clusters + ≥1.0×ATR, 0.75R target. | 10,325 trades · 82.2% WR · PF 3.47 |
-| **Open drive** (`OPEN_PROD`) | ✅ **LIVE** (`FEED_OPEN=1` + `FEED_OPEN_DRIVE=1`) | 9:30–9:59 opening-range break backed by cum-delta ≥300 and ≥55% one-sided bar; fixed TP +15 / SL −35. | 493 trades · 96% hit TP10/SL30; scaling it breaches the account |
-| **Open pullback / sniper** | ❌ off (`FEED_OPEN_PULLBACK=0`, `FEED_OPEN_SNIPER=0`) | 9:30–10:30 pullback exhaustion; 9:36 resting-limit sniper. | 69.8% / 55.8% WR |
+| **Failed-Flush Breakout + Huge-Bar Expansion** (`MOM_PROD` + `EXP_PROD`) | ✅ **LIVE** (`FEED_MOMENTUM=1`) | Fade a failed flush then ride the one-sided breakout back; or ride a huge-bar expansion (≥1.6×ATR, ≥75% one-sided, cluster stack). Globex only (9:30–16:00 ET excluded). Stop under the trigger bar, 1R target, ≥5-bar gap. | 4,822 trades · 77.5% WR · PF 2.98 · +11,680 pts · positive every full year |
+| **Session Continuation** (`SOFT_PROD`) | ✅ **LIVE** (`FEED_RTH=1` — code default on; still labelled experimental, journaled separately) | Session continuation: ≥60% one-sided bar + ≥3 dominant footprint clusters + ≥1.0×ATR, 0.75R target. | 10,325 trades · 82.2% WR · PF 3.47 |
+| **Open Drive** (`OPEN_PROD`) | ✅ **LIVE** (`FEED_OPEN=1` + `FEED_OPEN_DRIVE=1`) | 9:30–9:59 opening-range break backed by cum-delta ≥300 and ≥55% one-sided bar; fixed TP +15 / SL −35. | 493 trades · 96% hit TP10/SL30; scaling it breaches the account |
+| **Morning Pullback / 9:36 Sniper** | pullback ✅ live 2026-10-16 (`FEED_OPEN_PULLBACK=1`) · sniper ❌ off (`FEED_OPEN_SNIPER=0`) | 9:30–10:30 pullback exhaustion; 9:36 resting-limit sniper. | 69.8% / 55.8% WR |
 | **Unusual-volume alert** | ❌ off (`FEED_UNUSUAL_VOLUME=0` — Telegram gets trade-signal cards only, 2026-10-05) | Volume ≥2× hourly norm + ≥70% one-sided = "go look", not a trade; arms the failed-flush watch. | — |
 | **LVN reversal** | ❌ off (`FEED_REVERSAL=0`, retired) | Fade failed break at an LVN back to POC. | was PF 2.16 (see `docs/strategy/STRATEGY.md`) |
-| **Sweep-reclaim / pullback ticket** | ❌ off (`FEED_SWEEP_RECLAIM=0`, `FEED_PULLBACK_TICKET=0`) | Session-extreme fade; pullback-exhausted 1R. | fired shorts into one-sided runs — retired |
+| **Sweep-Reclaim Fade / pullback ticket** | ❌ off (`FEED_SWEEP_RECLAIM=0`, `FEED_PULLBACK_TICKET=0`) | Session-extreme fade; pullback-exhausted 1R. | fired shorts into one-sided runs — retired |
 | **Context boxes** | live | Options/GEX regime (CHOP vs TREND), price-action discount/premium across 6 TF, news stand-aside veto (hardcoded 8:30/10:00/14:00 ±5 min). | GEX gate is a **hypothesis** — never backtested (no historical options data) |
 
 Everything is **footprint-native**: flush = aggressor buy/sell fraction of a
@@ -191,7 +191,7 @@ minutes away and treat it like a news window.
 
 - federalreserve.gov events page + district-bank calendars, scraped nightly:
   **scheduled** speech date/time is known ahead (point-in-time safe). Times
-  matter: 13:00–16:00 ET speeches land in the RTH card's window; late ones
+  matter: 13:00–16:00 ET speeches land in the Session Continuation card's window; late ones
   hit Globex. Treat like the news windows: **stand aside, don't trade the
   speech.**
 - **Citi Economic Surprise Index** — daily CSV (G10 + US) from Citi's public

@@ -46,14 +46,14 @@ by the consolidated engine `web/lib/backtestEngine.ts`).
 
 | File | Status | What it holds |
 |---|---|---|
-| `PLAYBOOK.md` (root) | **active** | Every strategy + risk rule in one place. Momentum card (flush + expansion), unusual-volume alert, open family, RTH card, measured risk balance, sizing & prop rules. All numbers from 568–649 session replays. |
+| `PLAYBOOK.md` (root) | **active** | Every strategy + risk rule in one place. Failed-Flush Breakout + Huge-Bar Expansion, unusual-volume alert, open family, Session Continuation, measured risk balance, sizing & prop rules. All numbers from 568–649 session replays. |
 | `docs/strategy/MOMENTUM_SIGNAL.md` | **active** (gates/sizing now live in PLAYBOOK) | The momentum card's design narrative: trigger specs, the fire-point ladder (why flush-alone = 29.5% WR / PF 0.26), per-year validation, account sim. Best read for *why* the gates are what they are. |
 | `docs/strategy/OPTIONS_SIGNAL.md` | **active** | Gamma/dealer-positioning regime box (CBOE QQQ chain). Context only, never a trigger — explicitly an unvalidated hypothesis. |
 | `docs/strategy/PRICE_ACTION_SIGNAL.md` | **active** | Discount/premium location filter across 6 timeframes; exact weights and thresholds; also explicitly unvalidated. |
 | `docs/strategy/TICK_MOMENTUM.md` | **active** (study aid, not a signal) | The objective decode of "the candle is pushing more up than down": velocity/leg/arrival/impact/rejection-speed metrics from the live tick tape (`web/lib/tickMomentum.ts` → dashboard panel). A path property the footprint cannot see; forward logging + MBO are the backtest paths. |
-| `docs/strategy/STRATEGY.md` | **superseded** (archived) | The retired LVN-reversal playbook (its own banner says RETIRED). Archived reference for the reversal family. |
+| `docs/strategy/STRATEGY.md` | **superseded** (archived) | The retired LVN Reversal Box playbook (its own banner says RETIRED). Archived reference for the LVN reversal family. |
 | `docs/strategy/NQ_ALERT_SYSTEM_DESIGN.md` | **superseded** (appendices still useful) | v1 screening design (P0–P5 profiles, LVN/CVD/absorption). Appendices 0–0v hold the engine's numerical audit + ten-fixed-defects log — unique infra history. |
-| `docs/strategy/scalping-reversal-strategies-report.md` | **historical** | Third-party per-setup playbooks (sweep, Wyckoff, VWAP, absorption…) + the 18-step desk checklist. Background for the reversal family. |
+| `docs/strategy/scalping-reversal-strategies-report.md` | **historical** | Third-party per-setup playbooks (sweep, Wyckoff, VWAP, absorption…) + the 18-step desk checklist. Background for the LVN reversal family. |
 
 ---
 
@@ -151,12 +151,12 @@ by the consolidated engine `web/lib/backtestEngine.ts`).
 
 | Strategy | Feeds | Design | Validation | Headline |
 |---|---|---|---|---|
-| Momentum flush + expansion | `FEED_MOMENTUM=1` **LIVE** | `docs/strategy/MOMENTUM_SIGNAL.md`, `PLAYBOOK.md` | `docs/research/FOOTPRINT_CANDLE_RESEARCH.md`, `docs/research/quality-filter-sweep-2026-10-02.md`, `docs/research/signal-frequency-sweep-2026-10-16.md` | flush 5,296 (74.0% WR, PF 2.49) + expansion 9,375 (75.9%, 2.74) — 2026-10-16 calibration |
-| RTH breakout card | `FEED_RTH=1` **LIVE** | `PLAYBOOK.md` | `PLAYBOOK.md` (rthImpact) | 10,325 trades · 82.2% WR · PF 3.47 · +3.13 pts/trade |
+| Failed-Flush Breakout + Huge-Bar Expansion | `FEED_MOMENTUM=1` **LIVE** | `docs/strategy/MOMENTUM_SIGNAL.md`, `PLAYBOOK.md` | `docs/research/FOOTPRINT_CANDLE_RESEARCH.md`, `docs/research/quality-filter-sweep-2026-10-02.md`, `docs/research/signal-frequency-sweep-2026-10-16.md` | flush 5,296 (74.0% WR, PF 2.49) + expansion 9,375 (75.9%, 2.74) — 2026-10-16 calibration |
+| Session Continuation | `FEED_RTH=1` **LIVE** | `PLAYBOOK.md` | `PLAYBOOK.md` (rthImpact) | 10,325 trades · 82.2% WR · PF 3.47 · +3.13 pts/trade |
 | Open drive | `FEED_OPEN=1` · `FEED_OPEN_DRIVE=1` **LIVE** | `PLAYBOOK.md` | `PLAYBOOK.md` | 493 trades (87% of days) · 96% hit TP10/SL30 |
-| Open pullback / sniper | pullback **LIVE 2026-10-16** · sniper OFF | `PLAYBOOK.md` | `PLAYBOOK.md` | 69.8% WR +5.2 pts / 55.8% +6.5 pts (small n) |
+| Morning Pullback / 9:36 Sniper | pullback **LIVE 2026-10-16** · sniper OFF | `PLAYBOOK.md` | `PLAYBOOK.md` | 69.8% WR +5.2 pts / 55.8% +6.5 pts (small n) |
 | Unusual-volume alert | OFF (`FEED_UNUSUAL_VOLUME=0` — Telegram = trade signals only) | `PLAYBOOK.md`, `web/README.md` | — | never a trade signal |
-| Reversal (LVN) | `FEED_REVERSAL=0` retired | `docs/strategy/STRATEGY.md` (archive) | `docs/research/FOOTPRINT_REVERSAL_RESEARCH.md` | 5,104 signals · 37% WR · PF 2.16 · +27,424 pts (had ~2-bar lookahead) |
+| LVN Reversal Box | `FEED_REVERSAL=0` retired | `docs/strategy/STRATEGY.md` (archive) | `docs/research/FOOTPRINT_REVERSAL_RESEARCH.md` | 5,104 signals · 37% WR · PF 2.16 · +27,424 pts (had ~2-bar lookahead) |
 | Sweep-reclaim | retired | code + `PLAYBOOK.md` archive | `docs/research/sweep-reclaim-v2-atr-confirmation-2026-10-03.md` | 80/80 variants breach — closed |
 | Pullback-exhausted ticket | OFF | `PLAYBOOK.md` | — | off by default |
 

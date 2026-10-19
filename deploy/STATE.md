@@ -1,5 +1,27 @@
 # Deploy state (last verified 2026-10-15)
 
+## Strategy rename (2026-10-19)
+
+All eight strategies renamed to names that say what they do
+(`docs/architecture/STRATEGY-RENAME-INVESTIGATION-2026-10-19.md`):
+
+| Old id | New id | Label |
+|---|---|---|
+| `momentum_flush` | `failed_flush_breakout` | Failed-Flush Breakout |
+| `momentum_expansion` | `huge_bar_expansion` | Huge-Bar Expansion |
+| `rth` | `session_continuation` | Session Continuation |
+| `open_drive` | `open_drive` | Open Drive |
+| `open_pullback` | `open_pullback` | Morning Pullback |
+| `open_sniper` | `open_sniper` | 9:36 Sniper |
+| `sweep_reclaim` | `sweep_reclaim` | Sweep-Reclaim Fade |
+| `reversal` | `lvn_reversal` | LVN Reversal Box |
+
+Untouched by design: every `FEED_*`/`RTH_*`/`MOM_*`/`OPEN_*`/`EXP_*` env
+var, study ids, the RTH/ETH session vocabulary, dedupe/exec-log key
+prefixes (`mom|`, `rth|`, …). Historical rows (Neon, daybook, R2) resolve
+through `web/lib/strategies/aliases.ts`; Neon values migrated by
+`web/scripts/migrateStrategyNames.ts`.
+
 ## Silent-failure loop fixes (2026-10-15, commit `3a23291`, deployed 2026-10-16)
 
 Evening diagnosis of "no signals" (10-15) — the pipeline was healthy and
