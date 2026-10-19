@@ -20,6 +20,7 @@
 
 import { dbEnabled, getDb } from "./gcdb";
 import { withTimeout } from "./asyncTimeout";
+import { canonicalFamily } from "./strategies/aliases";
 
 export type Override = {
   id: number;
@@ -98,7 +99,10 @@ const numOf = (v: unknown, fallback: number | null = null): number | null => {
  */
 export function decideSignal(ovs: Override[], ctx: GateContext): GateDecision {
   const reasons: string[] = [];
-  const match = (fam: string) => ovs.filter((o) => o.family === fam);
+  // 2026-10-19 rename bridge: override rows written before the rename
+  // hold legacy family slugs — canonicalize both sides so an active
+  // override keeps matching its strategy through the rename.
+  const match = (fam: string) => ovs.filter((o) => canonicalFamily(o.family) === canonicalFamily(fam));
 
   // family enable/disable (most specific family wins)
   for (const fam of ctx.families) {

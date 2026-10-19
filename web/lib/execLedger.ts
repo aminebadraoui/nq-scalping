@@ -17,6 +17,8 @@
  * no gate, no mutation: the route only reads Neon.
  * ------------------------------------------------------------------ */
 
+import { canonicalFamily } from "./strategies/aliases";
+
 export type LedgerSignal = {
   key: string;
   ts: number;
@@ -124,7 +126,9 @@ export function execMatchesSignalFallback(e: LedgerExec, s: LedgerSignal): boole
   if (e.signal_id === s.key) return true;
   if (e.day !== s.day || e.time_et !== s.time_et || e.side !== s.side) return false;
   const fam = familyFromVerdict(s.verdict);
-  return fam !== "" && e.family === fam;
+  // 2026-10-19 rename bridge: canonicalize both sides (historical exec
+  // rows hold legacy slugs; the verdict parser may emit either).
+  return fam !== "" && canonicalFamily(e.family) === canonicalFamily(fam);
 }
 
 export function mergeExecLedger(

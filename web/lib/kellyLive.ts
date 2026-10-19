@@ -17,6 +17,7 @@
 
 import { dbEnabled, getDb } from "./gcdb";
 import { withTimeout } from "./asyncTimeout";
+import { canonicalFamily, familyMatchList } from "./strategies/aliases";
 import {
   KELLY_DEFAULTS,
   KELLY_PRIORS,
@@ -56,9 +57,13 @@ export async function kellyLiveChip(
 ): Promise<KellyChip | null> {
   if (!dbEnabled()) return null;
   const window = Math.max(10, Number(process.env.KELLY_WINDOW) || 60);
-  const prior = KELLY_PRIORS[family] ?? KELLY_PRIORS.default;
+  const prior = KELLY_PRIORS[canonicalFamily(family)] ?? KELLY_PRIORS.default;
   const cfg: KellyConfig = { ...KELLY_DEFAULTS, ...kellyEnvOverrides(), ...cfgOver, prior };
   try {
+    // 2026-10-19 rename bridge: rows written before the rename carry
+    // legacy family slugs — match the canonical slug and its legacy
+    // aliases so the live estimate never loses history.
+    const matchList = familyMatchList(family);
     const rows = (await withTimeout(
       getDb()`
       select side, entry, stop, exit_price, outcome
@@ -66,7 +71,7 @@ export async function kellyLiveChip(
       where source = 'live' and test = false
         and outcome in ('win','loss','time')
         and exit_price is not null
-        and features->>'family' = ${family}
+        and features->>'family' in ${getDb()(matchList)}
       order by ts desc
       limit ${window}
     `,
