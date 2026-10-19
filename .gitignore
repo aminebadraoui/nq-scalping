@@ -3,6 +3,7 @@ gcdata/.env
 web/.env
 web/.env.local
 web/.env.*.local
+web/.tradovate-md-token.json
 
 # live deploy credentials live in this skill (Coolify token, Neon API key)
 .agents/skills/coolify-deploy/
@@ -13,6 +14,7 @@ web/.executor-guard.json
 # ---- collected feed data (regenerable; Neon Postgres is the store) ----
 gcdata/data/
 gcdata/ingest_log.txt
+web/data/
 
 # ---- environments & caches ----
 gcdata/.venv/
