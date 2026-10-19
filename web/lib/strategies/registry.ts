@@ -145,12 +145,12 @@ export const STRATEGIES: StrategyDeclaration[] = [
       "by a ≥75% one-sided breakout through the reference high (range ≥ 1.0 × ATR14). THE core live edge — validated " +
       "1,828 trades / 76.1% WR / PF 2.76 (structural 1R).",
     fields: MOM_FIELDS,
-    studies: ["momentum-study", "quality-filter-sweep", "winner-loser-atlas", "hour-expectancy-study", "es-features-study", "entry-quality-study", "side-filter-study", "context-veto-stoprun", "htf-short-pullback", "counter-bias-veto", "full-gates-replay", "live-stack-exact"],
+    studies: ["momentum-study", "quality-filter-sweep", "winner-loser-atlas", "hour-expectancy-study", "es-features-study", "entry-quality-study", "side-filter-study", "context-veto-stoprun", "htf-short-pullback", "counter-bias-veto", "full-gates-replay", "live-stack-exact", "live-stack-no-rth"],
     liveKnobs: "FEED_MOMENTUM · EXP_RETRACE (limit mode on expansion) · WALL_STOP · KELLY_MODE (label only) · strategy_overrides",
   },
   {
-    id: "momentum_expansion",
-    family: "momentum_expansion",
+    id: "huge_bar_expansion",
+    family: "huge_bar_expansion",
     status: "live",
     feedFlag: "FEED_MOMENTUM",
     feedDefault: true,
@@ -164,12 +164,12 @@ export const STRATEGIES: StrategyDeclaration[] = [
       "The huge-bar expansion: range ≥ 1.6 × ATR14, |delta| ÷ volume ≥ 0.5, direction-matching cluster stack (≥3 rows, " +
       "≥3 lots, ≥2:1), volume gate max(15, min(0.5 × med60, 250)). Validated 4,152 sequential trades / 78.4% WR / PF 3.14.",
     fields: EXP_FIELDS,
-    studies: ["expansion-study", "all-strategies-study", "retrace-slippage", "entry-quality-study", "winner-loser-atlas", "live-stack-exact"],
+    studies: ["expansion-study", "all-strategies-study", "retrace-slippage", "entry-quality-study", "winner-loser-atlas", "live-stack-exact", "live-stack-no-rth"],
     liveKnobs: "FEED_MOMENTUM · EXP_RETRACE (default ON) · EXP_RETRACE_PTS/BARS (signalFeed.ts) · strategy_overrides",
   },
   {
-    id: "rth",
-    family: "rth",
+    id: "session_continuation",
+    family: "session_continuation",
     status: "live",
     feedFlag: "FEED_RTH",
     feedDefault: true,
@@ -204,7 +204,7 @@ export const STRATEGIES: StrategyDeclaration[] = [
       "The open drive scan: first new opening extreme backed by cumulative delta. Validation: 493 trades (87% of days), " +
       "96% hit at TP10/SL30, 93% at TP15/SL35, +8.3/+11.6 pts gross.",
     fields: OPEN_FIELDS,
-    studies: ["gap-only-validation", "all-strategies-study", "ap-full-pool", "live-stack-exact"],
+    studies: ["gap-only-validation", "all-strategies-study", "ap-full-pool", "live-stack-exact", "live-stack-no-rth"],
     liveKnobs: "FEED_OPEN · FEED_OPEN_DRIVE · OPEN_RISK_CAP",
   },
   {
