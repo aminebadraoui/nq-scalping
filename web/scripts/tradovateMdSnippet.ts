@@ -38,7 +38,18 @@ const HOSTS = {
   demo: { md: "wss://md-demo.tradovateapi.com/v1/websocket", trade: "wss://demo.tradovateapi.com/v1/websocket" },
 } as const;
 
-const token = (process.env.TVMD_TOKEN ?? "").trim();
+// freshest token first: the collector persists renewals to the token
+// file; TVMD_TOKEN env is only the bootstrap fallback
+function tokenFromFile(): string {
+  try {
+    const raw = JSON.parse(readFileSync("./data/.tradovate-md-token.json", "utf8")) as { token?: unknown };
+    return typeof raw.token === "string" ? raw.token : "";
+  } catch {
+    return "";
+  }
+}
+
+const token = tokenFromFile() || (process.env.TVMD_TOKEN ?? "").trim();
 const symbols = (process.env.TVMD_SYMBOLS ?? "MNQZ6").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
 const mdHost = process.env.TVMD_MD_HOST ?? HOSTS[env].md;
 const tradeHost = process.env.TVMD_TRADE_HOST ?? HOSTS[env].trade;

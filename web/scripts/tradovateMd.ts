@@ -104,9 +104,13 @@ function writeTokenFile(path: string, token: string): void {
 function loadConfig(): Config | null {
   const env = process.env.TVMD_ENV === "demo" ? "demo" : "live";
   const defaults = DEFAULT_HOSTS[env];
-  const tokenFile = process.env.TVMD_TOKEN_FILE ?? "./.tradovate-md-token.json";
+  // default lives under ./data so it lands on the container's /app/data
+  // volume (VPS: survives redeploys; Mac: gitignored web/data/)
+  const tokenFile = process.env.TVMD_TOKEN_FILE ?? "./data/.tradovate-md-token.json";
   const envToken = (process.env.TVMD_TOKEN ?? "").trim();
-  const token = envToken || readTokenFile(tokenFile);
+  // persisted token (fresher — renewed every 20 min) beats the env token;
+  // TVMD_TOKEN is only the bootstrap on a fresh volume
+  const token = readTokenFile(tokenFile) || envToken;
 
   const subsRaw = (process.env.TVMD_SUBS ?? "quote,dom,hist,chart").toLowerCase();
   const subs = { quote: false, dom: false, hist: false, chart: false };
@@ -152,7 +156,7 @@ env:
   TVMD_SUBS           quote,dom,hist,chart             (default all)
   TVMD_CHART_ELEMENTS  tick-history elements           (default 10)
   TVMD_OUT            JSONL output dir                 (default ./data/tradovate-md)
-  TVMD_TOKEN_FILE     token persistence file           (default ./.tradovate-md-token.json)
+  TVMD_TOKEN_FILE     token persistence file           (default ./data/.tradovate-md-token.json)
   TVMD_SUMMARY_MS     console summary cadence, 0=off   (default 10000)
   TVMD_QUIET          1 = errors only
   TVMD_DEBUG          1 = echo raw frames to console
