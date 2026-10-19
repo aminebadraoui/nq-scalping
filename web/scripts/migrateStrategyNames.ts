@@ -24,6 +24,7 @@ const ALIASES: Record<string, string> = {
 };
 
 const CASE_EXPR = (col: string): string =>
+  "case " +
   Object.entries(ALIASES)
     .map(([legacy, canon]) => `when ${col} = '${legacy}' then '${canon}'`)
     .join(" ") + ` else ${col} end`;
@@ -39,6 +40,9 @@ async function main(): Promise<void> {
     const rows = (await sql.unsafe(q)) as Array<{ n: number }>;
     return rows.length ? Number(rows[0].n) : 0;
   };
+  /** UPDATE wrapped in a CTE — RETURNING cannot aggregate, so count via `select`. */
+  const updateN = (body: string, where: string): Promise<number> =>
+    changed(`with u as (${body} ${where} returning 1) select count(*) as n from u`);
 
   console.log("# Strategy-name migration — 2026-10-19 rename\n");
   console.log("before:");
@@ -47,25 +51,25 @@ async function main(): Promise<void> {
 
   const results: Array<[string, number]> = [];
 
-  results.push(["strategy_overrides.family", await changed(`update strategy_overrides set family = ${CASE_EXPR("family")} where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")}) returning count(*) n`)]);
+  results.push(["strategy_overrides.family", await updateN(`update strategy_overrides set family = ${CASE_EXPR("family")}`, `where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")})`)]);
 
-  results.push(["trades.family", await changed(`update trades set family = ${CASE_EXPR("family")} where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")}) returning count(*) n`)]);
+  results.push(["trades.family", await updateN(`update trades set family = ${CASE_EXPR("family")}`, `where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")})`)]);
 
-  results.push(["exec_trades.family", await changed(`update exec_trades set family = ${CASE_EXPR("family")} where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")}) returning count(*) n`)]);
+  results.push(["exec_trades.family", await updateN(`update exec_trades set family = ${CASE_EXPR("family")}`, `where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")})`)]);
 
-  results.push(["pattern_runs.family", await changed(`update pattern_runs set family = ${CASE_EXPR("family")} where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")}) returning count(*) n`)]);
+  results.push(["pattern_runs.family", await updateN(`update pattern_runs set family = ${CASE_EXPR("family")}`, `where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")})`)]);
 
-  results.push(["promotion_runs.family", await changed(`update promotion_runs set family = ${CASE_EXPR("family")} where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")}) returning count(*) n`)]);
+  results.push(["promotion_runs.family", await updateN(`update promotion_runs set family = ${CASE_EXPR("family")}`, `where family in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")})`)]);
 
-  results.push(["insights.strategy", await changed(`update insights set strategy = ${CASE_EXPR("strategy")} where strategy in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")}) returning count(*) n`)]);
+  results.push(["insights.strategy", await updateN(`update insights set strategy = ${CASE_EXPR("strategy")}`, `where strategy in (${Object.keys(ALIASES).map((k) => `'${k}'`).join(",")})`)]);
 
   // signals.features jsonb: the feed stamps the family under BOTH keys —
   // `family` (momentum / session-continuation cards) and `kind` (open cards).
   for (const key of ["family", "kind"]) {
     for (const [legacy, canon] of Object.entries(ALIASES)) {
-      const n = await changed(
-        `update signals set features = jsonb_set(features, '{${key}}', '"${canon}"'::jsonb)
-         where features->>'${key}' = '${legacy}' returning count(*) n`,
+      const n = await updateN(
+        `update signals set features = jsonb_set(features, '{${key}}', '"${canon}"'::jsonb)`,
+        `where features->>'${key}' = '${legacy}'`,
       );
       if (n > 0) results.push([`signals.features->>${key} (${legacy}→${canon})`, n]);
     }
