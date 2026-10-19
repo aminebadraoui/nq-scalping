@@ -6,7 +6,7 @@ import MinuteNavigator from "@/components/MinuteNavigator";
 import SweepReclaimPanel from "@/components/SweepReclaimPanel";
 import PriceActionPanel from "@/components/PriceActionPanel";
 import SignalHistory, { type HistoryEntry as SignalEntry } from "@/components/SignalHistory";
-import LiveSignalPanel from "@/components/LiveSignalPanel";
+import LiveSignalBoard from "@/components/LiveSignalBoard";
 import DomIcebergPanel from "@/components/DomIcebergPanel";
 import TickMomentumPanel from "@/components/TickMomentumPanel";
 import ExecStatusBar from "@/components/ExecStatusBar";
@@ -376,10 +376,11 @@ export default function DashboardPage() {
           </section>
         </div>
 
-        {/* right: the strategy — the LIVE signal (every box, full detail)
-            sits FIRST, then the signal history (click → trade on chart) */}
+        {/* right: the strategy — the LIVE signal board (every strategy's
+            read, one tab each) sits FIRST, then the signal history
+            (click → trade on chart) */}
         <aside className="space-y-4">
-          <LiveSignalPanel />
+          <LiveSignalBoard />
           <SignalHistory onInspect={inspectSignal} />
           <PriceActionPanel
             read={pa}

@@ -2,30 +2,42 @@ import type { NextRequest } from "next/server";
 import { getSignalFeed, FEED_REVERSAL, FEED_SWEEP_RECLAIM, FEED_UNUSUAL_VOLUME, FEED_PULLBACK_TICKET, FEED_MOMENTUM, FEED_OPEN, FEED_OPEN_DRIVE, FEED_OPEN_PULLBACK, FEED_OPEN_SNIPER, FEED_RTH, FEED_GAP_ALERTS } from "@/lib/signalFeed";
 import { cardGateOpen } from "@/lib/signals";
 import { getSignalHistory } from "@/lib/signalHistory";
+import { computeLiveReads } from "@/lib/liveReads";
 
 export const dynamic = "force-dynamic";
 
 /** Live signal + feed status + the history of every Telegram push — the
- *  dashboard's "signal history" panel reads this. */
+ *  dashboard's "signal history" panel reads this. The `reads` field adds
+ *  the per-strategy live reads (lib/liveReads.ts) that feed the live
+ *  signal board — display-only, computed here on request, never on the
+ *  dispatch tick. */
 export async function GET() {
   const feed = getSignalFeed();
   const s = feed.lastSnapshot;
   const history = await getSignalHistory(100);
+  const feeds = {
+    reversal: FEED_REVERSAL,
+    sweepReclaim: FEED_SWEEP_RECLAIM,
+    unusualVolume: FEED_UNUSUAL_VOLUME,
+    pullbackTicket: FEED_PULLBACK_TICKET,
+    momentum: FEED_MOMENTUM,
+    open: FEED_OPEN,
+    openDrive: FEED_OPEN_DRIVE,
+    openPullback: FEED_OPEN_PULLBACK,
+    openSniper: FEED_OPEN_SNIPER,
+    rth: FEED_RTH,
+    gapAlerts: FEED_GAP_ALERTS,
+  };
+  // display-only read — a failure here must never take the endpoint down
+  let reads = null;
+  try {
+    reads = await computeLiveReads({ feed, history, feeds });
+  } catch (e) {
+    console.error("[signal] live reads failed (display-only):", e);
+  }
   return Response.json({
     ok: true,
-    feeds: {
-      reversal: FEED_REVERSAL,
-      sweepReclaim: FEED_SWEEP_RECLAIM,
-      unusualVolume: FEED_UNUSUAL_VOLUME,
-      pullbackTicket: FEED_PULLBACK_TICKET,
-      momentum: FEED_MOMENTUM,
-      open: FEED_OPEN,
-      openDrive: FEED_OPEN_DRIVE,
-      openPullback: FEED_OPEN_PULLBACK,
-      openSniper: FEED_OPEN_SNIPER,
-      rth: FEED_RTH,
-      gapAlerts: FEED_GAP_ALERTS,
-    },
+    feeds,
     lastRun: feed.lastRun,
     lastError: feed.lastError,
     live: feed.liveOk,
@@ -61,6 +73,7 @@ export async function GET() {
       // study-only context) — the grouped view in SignalHistory reads this
       features: h.features ?? null,
     })),
+    reads,
     signal: s
       ? {
           side: s.signal.side,

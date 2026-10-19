@@ -1,19 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-
 /* ------------------------------------------------------------------ *
- * LiveSignalPanel — the reversal read, live and in full.
+ * ReversalReadView — the reversal composer read, live and in full.
  *
- * Renders the /api/signal snapshot (the server's lastSignal, refreshed
- * every cycle) with EVERY box in complete detail: vote, tone, conviction
- * score, verdict text, the order-flow ingredient checklist (yes/partial/
- * no + the full why), the card-gate verdict that decides whether the
- * card is pushed to Telegram, and the trade ticket lines. Nothing is
- * truncated — long verdicts wrap instead of being cut.
+ * Presentational only: receives the /api/signal payload and renders
+ * EVERY box in complete detail: vote, tone, conviction score, verdict
+ * text, the order-flow ingredient checklist (yes/partial/no + the full
+ * why), the card-gate verdict that decides whether the card is pushed
+ * to Telegram, and the trade ticket lines. Nothing is truncated — long
+ * verdicts wrap instead of being cut.
+ *
+ * Rendered as the REVERSAL tab of the live signal board
+ * (LiveSignalBoard) and usable standalone.
  * ------------------------------------------------------------------ */
 
-type BoxRead = {
+export type BoxRead = {
   id: string;
   name: string;
   side: "long" | "short" | null;
@@ -24,7 +25,7 @@ type BoxRead = {
   label: string | null;
 };
 
-type IngredientRead = {
+export type IngredientRead = {
   key: string;
   n: string;
   name: string;
@@ -35,7 +36,7 @@ type IngredientRead = {
   why: string;
 };
 
-type SignalRead = {
+export type SignalRead = {
   side: "long" | "short" | null;
   tone: "long" | "short" | "neutral" | "forming";
   agree: boolean;
@@ -59,10 +60,7 @@ type SignalRead = {
   options: string | null;
 };
 
-type SignalResponse = {
-  ok: boolean;
-  live: boolean;
-  note: string | null;
+export type ReversalReadProps = {
   feeds: Record<string, boolean> | null;
   signal: SignalRead | null;
 };
@@ -92,42 +90,12 @@ const ROLE_STYLE: Record<string, string> = {
   filter: "border-zinc-700 bg-zinc-800/40 text-zinc-400",
 };
 
-export default function LiveSignalPanel() {
-  const [data, setData] = useState<SignalResponse | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      fetch("/api/signal", { cache: "no-store" })
-        .then((r) => r.json())
-        .then((j: SignalResponse) => {
-          if (!cancelled && j.ok) setData(j);
-        })
-        .catch(() => {});
-    };
-    tick();
-    timerRef.current = setInterval(tick, 15000);
-    return () => {
-      cancelled = true;
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
-
-  const sig = data?.signal ?? null;
-
+export default function ReversalReadView({ feeds, signal: sig }: ReversalReadProps) {
   return (
-    <section className="rounded-md border border-zinc-800 bg-panel p-3">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-bold uppercase tracking-wider text-zinc-400">Live signal · reversal read</h2>
-        <span className={`font-mono text-[10px] ${data?.live ? "text-long" : "text-zinc-500"}`}>
-          {data === null ? "…" : data.live ? "feed live" : "feed idle"}
-        </span>
-      </div>
-
+    <div className="space-y-2">
       {!sig && (
         <p className="font-mono text-[10px] leading-snug text-zinc-500">
-          no live snapshot yet — the feed computes one every cycle from the live tape
+          no live snapshot yet — the composer computes one every cycle from the live tape
         </p>
       )}
 
@@ -157,7 +125,7 @@ export default function LiveSignalPanel() {
                 {sig.gate.ok ? "✓ CARD GATE OPEN" : "⛔ CARD GATE CLOSED"} — Telegram push {sig.gate.ok ? "allowed" : "blocked"}
               </span>
               <span className="text-zinc-500">
-                · reversal feed {data?.feeds?.reversal ? "ON" : "OFF (paused — owner rule)"}
+                · reversal feed {feeds?.reversal ? "ON" : "OFF (paused — owner rule)"}
               </span>
             </div>
             <p className="mt-0.5 break-words font-mono text-[10px] leading-snug text-zinc-300">{sig.gate.reason}</p>
@@ -236,6 +204,6 @@ export default function LiveSignalPanel() {
           </p>
         </div>
       )}
-    </section>
+    </div>
   );
 }

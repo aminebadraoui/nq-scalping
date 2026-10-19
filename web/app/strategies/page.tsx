@@ -114,6 +114,10 @@ export default function StrategiesPage() {
             : error
               ? `feed status: ${error}`
               : "feed status: loading…"}
+          {" · "}the per-strategy live reads (one tab per strategy) are on the{" "}
+          <Link href="/#live-board" className="text-long hover:underline">
+            dashboard&apos;s live signal board
+          </Link>{" "}
           {" · "}the full research lives on the{" "}
           <Link href="/docs" className="text-long hover:underline">
             docs page
