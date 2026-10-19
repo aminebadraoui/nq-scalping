@@ -65,11 +65,11 @@ test("families aggregate with per-family wr and pts", () => {
     ],
     new Set(),
   );
-  const rth = c.byFamily.find((f) => f.family === "rth")!;
+  const rth = c.byFamily.find((f) => f.family === "session_continuation")!;
   assert.equal(rth.n, 2);
   assert.equal(rth.wr, 0.5);
   assert.equal(rth.wouldBePts, 0);
-  const exp = c.byFamily.find((f) => f.family === "momentum_expansion")!;
+  const exp = c.byFamily.find((f) => f.family === "huge_bar_expansion")!;
   assert.equal(exp.losses, 1);
   assert.equal(exp.wouldBePts, -5);
 });

@@ -73,7 +73,9 @@ export function commissionPerSide(env: Record<string, string | undefined> = proc
   return Number.isFinite(n) ? n : 0.95;
 }
 
-/** strategy family from the watcher label's leading token. */
+/** strategy family from the watcher label's leading token. Accepts the
+ *  new expressive label tokens AND the pre-2026-10-19 ones (historical
+ *  exec_trades.label rows keep their old leading tokens). */
 export function familyOfLabel(label: string): string {
   const first = (label ?? "").trim().split(/\s+/)[0] ?? "";
   const known: Record<string, string> = {
@@ -84,13 +86,14 @@ export function familyOfLabel(label: string): string {
     "open-pullback": "open_pullback",
     "open-sniper": "open_sniper",
     "gap-alert": "gap_alerts",
+    "session-continuation": "session_continuation",
   };
   const lower = first.toLowerCase();
   if (known[lower]) return known[lower];
   if (["momentum", "mom"].includes(lower)) return "momentum";
-  if (lower === "rth") return "rth";
+  if (lower === "rth") return "session_continuation";
   if (["open", "drive", "sniper", "pullback"].includes(lower)) return lower === "drive" ? "open_drive" : lower === "sniper" ? "open_sniper" : lower === "pullback" ? "open_pullback" : "open";
-  if (lower === "reversal") return "reversal";
+  if (lower === "reversal") return "lvn_reversal";
   if (lower === "reclaim") return "sweep_reclaim";
   return lower || "other";
 }

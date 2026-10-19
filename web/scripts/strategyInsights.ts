@@ -302,7 +302,7 @@ async function llmNarrative(
         role: "system",
         content:
           "You are the AI strategy analyst for an automated NQ (MNQ) scalping system. " +
-          "Strategies: momentum failed-flush breakout (momentum_flush), momentum huge-bar expansion (momentum_expansion), " +
+          "Strategies: momentum failed-flush breakout (failed_flush_breakout), momentum huge-bar expansion (huge_bar_expansion), " +
           "RTH soft-continuation (rth), open drive/pullback/sniper, sweep-reclaim. " +
           "Write a trading review from the data. IMPORTANT: the dataset is a ROLLING 30-DAY window ending now — " +
           "always state the window explicitly as a date range and separate TODAY's session numbers from the rolling-window " +

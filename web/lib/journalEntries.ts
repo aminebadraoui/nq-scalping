@@ -18,6 +18,7 @@
 
 import { resolveAccount, type AccountSource } from "./accountAttribution";
 import { familyOf } from "./tradeStats";
+import { canonicalFamily } from "./strategies/aliases";
 
 export type JournalOrigin = "bot" | "manual";
 
@@ -96,7 +97,7 @@ export function botEntry(r: Record<string, unknown>): JournalEntry {
     accountSource: acct.source,
     side: sideOf(r.side),
     contracts: num(r.contracts),
-    family: String(r.family ?? "") || familyOf(String(r.verdict ?? "")),
+    family: canonicalFamily(String(r.family ?? "") || familyOf(String(r.verdict ?? ""))),
     symbol: "",
     status: status === "matched" ? "matched" : status === "partial" ? "partial" : "unexecuted",
     result: (["win", "loss", "flat"].includes(String(r.result ?? "")) ? String(r.result) : "") as JournalEntry["result"],

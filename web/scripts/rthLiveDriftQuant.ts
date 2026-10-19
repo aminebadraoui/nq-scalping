@@ -30,7 +30,7 @@ async function main() {
            gross_pts::float8 gross_pts, entry_adverse_pts::float8 entry_adverse_pts,
            held_min::float8 held_min, result
     from trades
-    where family = 'rth' and fill_entry is not null and sig_stop is not null
+    where family in ('session_continuation','rth') and fill_entry is not null and sig_stop is not null
     order by ts`) as Row[];
 
   console.log("day | time | side | planned stopDist | drift (adverse+) | effective stopDist | compression % | stop slip | result | held_min");

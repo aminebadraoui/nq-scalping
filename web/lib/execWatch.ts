@@ -469,7 +469,7 @@ async function pollRthExit(): Promise<void> {
       realFees,
     });
     const pts = (exitAvg - pos.entryPrice) * (pos.dir === "long" ? 1 : -1);
-    if (pts > 0 && pos.label.startsWith("rth ")) {
+    if (pts > 0 && (pos.label.startsWith("session-continuation ") || pos.label.startsWith("rth "))) {
       noteRthExit(pos.dir, exitAvg, Date.now());
       console.log(`[rth-exit] ${pos.dir.toUpperCase()} winner logged — exit ${exitAvg.toFixed(2)} (+${pts.toFixed(1)} pts from signal ${pos.entryPrice.toFixed(2)})`);
     }

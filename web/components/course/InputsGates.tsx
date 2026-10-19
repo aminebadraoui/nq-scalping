@@ -293,9 +293,9 @@ const LABELS_FAMILY: GlossGroup = {
       k: "family",
       what: (
         <>
-          the strategy family: <span className="font-mono text-xs">momentum_flush · momentum_expansion · rth ·
-          open_drive · open_pullback · open_sniper · sweep_reclaim · reversal</span>. The UI shows friendlier
-          names (MOM·flush, RTH, OPEN DRIVE…).
+          the strategy family: <span className="font-mono text-xs">failed_flush_breakout · huge_bar_expansion ·
+          session_continuation · open_drive · open_pullback · open_sniper · sweep_reclaim · lvn_reversal</span>.
+          The UI shows friendlier names (Failed-Flush Breakout, Session Continuation, Open Drive…).
         </>
       ),
       used: <>every override, stat table and review is keyed by this.</>,
@@ -417,32 +417,32 @@ const ANATOMY: GlossGroup = {
 
 const STRATEGY_GATES: Array<{ name: string; gates: string; recorded: string }> = [
   {
-    name: "MOM·flush",
+    name: "Failed-Flush Breakout",
     gates: "flushFrac ≤0.30 · flushVol floor · failDepth (no new extreme) · ≤10 bars · breakFrac ≥0.75 · breakVol floor · refDist >0 · breakRangeR ≥1.0× · hourET Globex · risk 3.5–30 · gap ≥5",
     recorded: "flushRange · respProof · progressPts · breakVwapPos · cumDelta · deltaFromFlush · trail* · domClusters · deltaFrac · distVwapPts",
   },
   {
-    name: "MOM·expansion",
+    name: "Huge-Bar Expansion",
     gates: "breakRangeR ≥1.6× · deltaFrac ≥0.5 · breakStack = trade side · breakVol floor · hourET Globex · risk 3.5–15 · gap ≥5 · live: 1-pt limit ≤5 bars",
     recorded: "breakFrac · breakVwapPos · flushRangeR · cumDelta · domClusters",
   },
   {
-    name: "RTH",
+    name: "Session Continuation",
     gates: "hourET 9:30–16 · breakFrac ≥0.60 · domClusters ≥3 · breakRangeR ≥1.0× · breakVol ≥0.5×med60 · risk 3–15 · gap ≥5 · A+ label at ≥0.65",
     recorded: "breakStack · deltaFrac · flushRangeR · distVwapPts",
   },
   {
-    name: "OPEN DRIVE",
+    name: "Open Drive",
     gates: "hourET 9:30–9:59 · new window extreme · cumDelta ≥+300 · breakFrac ≥0.55 · fixed TP+15 / SL−35",
     recorded: "medVol · atr14",
   },
   {
-    name: "OPEN PULLBACK",
+    name: "Morning Pullback",
     gates: "15-bar cumDelta trend · pullback holds 5-bar low ±0.25 · counter-delta shrank · reclaim close + trend-side delta · risk ≤25 · gap ≥5",
     recorded: "—",
   },
   {
-    name: "OPEN SNIPER",
+    name: "9:36 Sniper",
     gates: "9:36–9:45 · vol ≥max(300, 1.5×15-bar med) · ≥55% toward anchor · |delta| ≥60 · anchor holds ±1 · limit anchor ±9.5 · stop ∓10 · target = flush extreme",
     recorded: "—",
   },

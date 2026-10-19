@@ -9,7 +9,7 @@ const run = (over: Partial<PromotionRunRow> & { id: number; script: string }): P
   run_at: "2026-10-17T00:00:00Z",
   cli: "",
   sha: "abc",
-  family: "momentum_expansion",
+  family: "huge_bar_expansion",
   gate: "side_veto",
   value: null,
   verdict: "rejected",

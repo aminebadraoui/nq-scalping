@@ -128,7 +128,7 @@ test("winLossRowsFromDb maps a trades row: features parsed, pre-trade keys injec
   assert.equal(rows[0].flat.side, "long", "side injected when absent from features");
   assert.equal(rows[0].flat.contracts, 3);
   assert.equal(rows[0].flat.hourET, 13);
-  assert.equal(rows[0].anatomy.family, "rth");
+  assert.equal(rows[0].anatomy.family, "session_continuation");
   assert.equal(rows[0].anatomy.mfe, 2.5);
 });
 
@@ -200,12 +200,12 @@ test("signalsToWinLossRows: hypothetical outcomes decide, time/open skipped", ()
   assert.equal(rows.length, 2);
   assert.equal(rows[0].result, "win");
   assert.equal(rows[0].flat.breakFrac, 0.7);
-  assert.equal(rows[0].anatomy.family, "rth");
+  assert.equal(rows[0].anatomy.family, "session_continuation");
   assert.equal(rows[0].flat.side, "long");
   assert.equal(rows[0].flat.contracts, 9);
   assert.equal(rows[0].flat.hourBucket, "rth");
   assert.equal(rows[1].result, "loss");
-  assert.equal(rows[1].anatomy.family, "momentum_expansion");
+  assert.equal(rows[1].anatomy.family, "huge_bar_expansion");
 });
 
 test("minePatterns: a clean consistent variable is significant and ranks first", () => {

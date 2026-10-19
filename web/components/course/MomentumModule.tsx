@@ -103,7 +103,7 @@ export function FlushStoryLesson() {
       </Callout>
 
       <h3 className="pt-2 text-base font-bold text-zinc-50">
-        Trigger A — the failed-flush breakout <span className="font-mono text-xs text-zinc-500">MOM·flush</span>
+        Trigger A — the failed-flush breakout <span className="font-mono text-xs text-zinc-500">Failed-Flush Breakout</span>
       </h3>
       <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
         A four-act story, told for a <b className="text-zinc-200">long</b>. Shorts are the exact mirror (≥70%
@@ -235,7 +235,7 @@ export function ExpansionLabelsLesson() {
   return (
     <div className="space-y-4">
       <h3 className="pt-2 text-base font-bold text-zinc-50">
-        Trigger B — the huge-bar expansion <span className="font-mono text-xs text-zinc-500">MOM·expansion</span>
+        Trigger B — the huge-bar expansion <span className="font-mono text-xs text-zinc-500">Huge-Bar Expansion</span>
       </h3>
       <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
         No flush needed — a single bar so big and so one-sided that it is an event on its own. Same Globex

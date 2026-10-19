@@ -71,7 +71,7 @@ const CHEAT_SHEETS: Array<{ title: string; items: string[] }> = [
   {
     title: "Pre-trade — every strategy, every time",
     items: [
-      "Read the clock first: Globex → momentum · 9:30–16:00 → RTH · 9:30–10:30 → open family",
+      "Read the clock first: Globex → Failed-Flush / Huge-Bar · 9:30–16:00 → Session Continuation · 9:30–10:30 → open family",
       "News check: inside a release window, stand down (the feed's blackout would have eaten the card)",
       "Overrides: read the active gates snapshot — family on, hour vetoes, risk caps",
       "Gap check: ≥5 bars since the last signal of the family",
@@ -84,12 +84,12 @@ const CHEAT_SHEETS: Array<{ title: string; items: string[] }> = [
   {
     title: "Gate cheat sheet — one line per strategy",
     items: [
-      "MOM·flush — ≥70% one-sided flush · no new extreme · ≤10 bars · ≥75% breakout through the reference · ≥1.0×ATR · Globex",
-      "MOM·expansion — ≥1.6×ATR · |delta|÷vol ≥0.5 · cluster stack on the trade side · Globex · limit 1 pt behind close ≤5 bars",
-      "RTH — ≥60% one-sided · ≥3 dominant clusters · ≥1.0×ATR · ≥0.5×med60 volume · 9:30–16:00 · 0.75R (A+ at ≥65%)",
-      "OPEN DRIVE — 9:30–9:59 · new window extreme · cumD ≥±300 · ≥55% one-sided · fixed TP15/SL35",
-      "OPEN PULLBACK — 15-bar cumD trend · pullback holds 5-bar low ±0.25 · counter-delta shrank · reclaim close · risk ≤25",
-      "OPEN SNIPER — flush ≥max(300, 1.5×15-bar med) · ≥55% toward anchor · |delta| ≥60 · anchor holds · limit anchor ±9.5",
+      "Failed-Flush Breakout — ≥70% one-sided flush · no new extreme · ≤10 bars · ≥75% breakout through the reference · ≥1.0×ATR · Globex",
+      "Huge-Bar Expansion — ≥1.6×ATR · |delta|÷vol ≥0.5 · cluster stack on the trade side · Globex · limit 1 pt behind close ≤5 bars",
+      "Session Continuation — ≥60% one-sided · ≥3 dominant clusters · ≥1.0×ATR · ≥0.5×med60 volume · 9:30–16:00 · 0.75R (A+ at ≥65%)",
+      "Open Drive — 9:30–9:59 · new window extreme · cumD ≥±300 · ≥55% one-sided · fixed TP15/SL35",
+      "Morning Pullback — 15-bar cumD trend · pullback holds 5-bar low ±0.25 · counter-delta shrank · reclaim close · risk ≤25",
+      "9:36 Sniper — flush ≥max(300, 1.5×15-bar med) · ≥55% toward anchor · |delta| ≥60 · anchor holds · limit anchor ±9.5",
     ],
   },
   {
@@ -116,10 +116,10 @@ const CHEAT_SHEETS: Array<{ title: string; items: string[] }> = [
 const NUMBERS: Array<[string, string]> = [
   ["0.30 / 0.70", "flush one-sidedness (long / short)"],
   ["0.75", "breakout one-sidedness (momentum)"],
-  ["1.0× ATR14", "candle-size gate (momentum + RTH)"],
+  ["1.0× ATR14", "candle-size gate (Failed-Flush / Huge-Bar + Session Continuation)"],
   ["1.6× ATR14 · 0.5", "expansion: range gate · |delta|÷vol gate"],
-  ["0.60 · 3", "RTH: one-sidedness · dominant clusters"],
-  ["0.75R", "RTH target (research bracket)"],
+  ["0.60 · 3", "Session Continuation: one-sidedness · dominant clusters"],
+  ["0.75R", "Session Continuation target (research bracket)"],
   ["300 · 0.55", "open drive: cum-delta floor · one-sidedness"],
   ["+15 / −35", "open drive: fixed target / stop"],
   ["3.5 pts", "the stop widen floor"],

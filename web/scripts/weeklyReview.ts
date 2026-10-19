@@ -253,7 +253,7 @@ const DEFAULT_QUEUE: QueuedStudy[] = [
     // pre-registered side-veto candidate A (RESEARCH-LOOP §5b first scan)
     name: "sideVetoStudy",
     script: "./scripts/sideVetoStudy.ts",
-    args: ["--family", "momentum_expansion", "--veto", '{"side":"short","hours":[15]}', "--offline"],
+    args: ["--family", "huge_bar_expansion", "--veto", '{"side":"short","hours":[15]}', "--offline"],
   },
 ];
 

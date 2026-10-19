@@ -71,7 +71,7 @@ export async function getOverrides(): Promise<Override[]> {
 }
 
 export type GateContext = {
-  /** family labels to match, specific → general (e.g. ["momentum_expansion","momentum","all"]) */
+  /** family labels to match, specific → general (e.g. ["huge_bar_expansion","momentum","all"]) */
   families: string[];
   hourET: number; // 0-23 New York
   side: "long" | "short";

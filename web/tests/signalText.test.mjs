@@ -71,8 +71,8 @@ test("long card includes the trade ticket and the full reasoning", () => {
   assert.match(html, /✗ <code>5 Footprint/);
   assert.match(html, /dealers net LONG gamma — chop/);
   // strategy name + measured win rate are part of the card
-  assert.match(html, /NQ SCALP SIGNAL · REVERSAL/);
-  assert.match(html, /REVERSAL · 37% win · PF 2\.16 · 683 sessions/);
+  assert.match(html, /NQ SCALP SIGNAL · LVN REVERSAL/);
+  assert.match(html, /LVN REVERSAL · 37% win · PF 2\.16 · 683 sessions/);
 });
 
 test("escapes HTML in dynamic values", () => {
@@ -115,7 +115,7 @@ test("sweep-reclaim card carries its name and lab win rate", () => {
     { symbol: "NQZ26", price: 100.0, timeET: "10:45", source: "live" },
     "9 MNQ · $18",
   );
-  assert.match(html, /NQ SWEEP-RECLAIM · 🟢 LONG/);
+  assert.match(html, /NQ SWEEP-RECLAIM FADE · 🟢 LONG/);
   assert.match(html, /67% lab win @ 1R/);
   assert.match(html, /9 MNQ/);
 });

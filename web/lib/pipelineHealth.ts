@@ -135,7 +135,7 @@ const secFmt = (ms: number | null) => (ms === null ? "—" : `${(ms / 1000).toFi
 const FEED_NAMES: Record<string, string> = {
   momentum: "MOM",
   bigbar: "BIG",
-  rth: "RTH",
+  rth: "SES",
   openDrive: "DRV",
   open: "OPN",
   openPullback: "OPB",
@@ -295,12 +295,12 @@ function detectStage(h: PipelineHealthInput): PipelineStage {
 
   const cands = det.momentumFlush + det.momentumExpansion + det.rth;
   details.push({ label: "bars scanned", value: String(det.bars) });
-  details.push({ label: "mom flush", value: String(det.momentumFlush) });
-  details.push({ label: "mom expansion", value: String(det.momentumExpansion) });
-  details.push({ label: "rth soft-mom", value: String(det.rth) });
+  details.push({ label: "failed-flush", value: String(det.momentumFlush) });
+  details.push({ label: "huge-bar", value: String(det.momentumExpansion) });
+  details.push({ label: "session cont", value: String(det.rth) });
   details.push({ label: "feeds on", value: feeds ? `${on.length}/${Object.keys(feeds).length} · ${on.join(" ") || "none"}` : "—" });
   if (off.length > 0) details.push({ label: "paused", value: off.join(" "), tone: coreOff.length > 0 ? "warn" : undefined });
-  return { id: "detect", name: "detect", icon: "⌖", level, headline, metric: `mom ${det.momentumFlush}/${det.momentumExpansion} · rth ${det.rth} · ${cands} cands`, details };
+  return { id: "detect", name: "detect", icon: "⌖", level, headline, metric: `ffb ${det.momentumFlush}/${det.momentumExpansion} · ses ${det.rth} · ${cands} cands`, details };
 }
 
 function cardStage(h: PipelineHealthInput, now: number): PipelineStage {

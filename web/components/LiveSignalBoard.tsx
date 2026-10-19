@@ -39,12 +39,12 @@ type BoardResponse = {
   reads: LiveReads | null;
 };
 
-type TabId = "flush" | "exp" | "rth" | "open" | "rev" | "gates";
+type TabId = "flush" | "exp" | "ses" | "open" | "rev" | "gates";
 
 const TABS: { id: TabId; label: string; detectorId?: string }[] = [
-  { id: "flush", label: "FLUSH", detectorId: "momentum_flush" },
-  { id: "exp", label: "EXP", detectorId: "momentum_expansion" },
-  { id: "rth", label: "RTH", detectorId: "rth" },
+  { id: "flush", label: "FLUSH", detectorId: "failed_flush_breakout" },
+  { id: "exp", label: "EXP", detectorId: "huge_bar_expansion" },
+  { id: "ses", label: "CONT", detectorId: "session_continuation" },
   { id: "open", label: "OPEN", detectorId: "open_drive" },
   { id: "rev", label: "REV" },
   { id: "gates", label: "GATES" },

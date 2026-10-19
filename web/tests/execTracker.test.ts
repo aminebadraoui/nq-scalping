@@ -23,7 +23,8 @@ process.env.DATABASE_URL = "";
 test("familyOfLabel maps the watcher label prefixes", () => {
   assert.equal(familyOfLabel("sweep-reclaim long"), "sweep_reclaim");
   assert.equal(familyOfLabel("momentum short"), "momentum");
-  assert.equal(familyOfLabel("rth short"), "rth");
+  assert.equal(familyOfLabel("rth short"), "session_continuation"); // legacy label token
+  assert.equal(familyOfLabel("session-continuation short"), "session_continuation");
   assert.equal(familyOfLabel("open-drive long"), "open_drive");
   assert.equal(familyOfLabel("pullback-ticket short"), "pullback_ticket");
   assert.equal(familyOfLabel("unknown-thing long"), "unknown-thing");

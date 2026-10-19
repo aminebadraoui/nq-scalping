@@ -57,7 +57,7 @@ test("botEntry: explicit origin bot, fire-time account, matched anatomy", () => 
   assert.equal(e.status, "matched");
   assert.equal(e.netUsd, 162.9);
   assert.equal(e.feesUsd, 17.1);
-  assert.equal(e.family, "rth");
+  assert.equal(e.family, "session_continuation");
   assert.equal(e.symbol, "");
 });
 

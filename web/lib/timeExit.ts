@@ -84,7 +84,7 @@ export async function checkTimeExits(): Promise<void> {
     const ok = res.ok;
     void sendTelegram(
       ok
-        ? `⏱ <b>TIME EXIT</b> — <code>${e.label}</code> closed ${qty} MNQ at +${Math.round((now - e.exitAtMs) / 60000)} min past the ${e.label.includes("rth") ? "45" : "60"}-bar window · ${res.reason}`
+        ? `⏱ <b>TIME EXIT</b> — <code>${e.label}</code> closed ${qty} MNQ at +${Math.round((now - e.exitAtMs) / 60000)} min past the ${e.label.includes("session-continuation") || e.label.includes("rth") ? "45" : "60"}-bar window · ${res.reason}`
         : `🚨 <b>TIME EXIT FAILED</b> — <code>${e.label}</code> · ${res.reason} — position still open, close manually`,
       { parseMode: "HTML" },
     ).catch(() => {});

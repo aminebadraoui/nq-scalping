@@ -32,6 +32,7 @@ import fs from "node:fs";
 import { execSync } from "node:child_process";
 import postgres from "postgres";
 import { checkPromotion, type StudyReport } from "../lib/promotionGate";
+import { canonicalFamily } from "../lib/strategies/aliases";
 
 function fail(msg: string): never {
   console.error(`promoteFromBacktest: ${msg}`);
@@ -74,6 +75,9 @@ async function main(): Promise<void> {
   if (valueJson) patch.value = JSON.parse(valueJson);
   if (gridJson) patch.grid = JSON.parse(gridJson);
   Object.assign(report, patch);
+  // 2026-10-19 rename bridge: --family flags and older report files may
+  // still carry legacy family slugs — canonicalize before the DB writes.
+  report.family = canonicalFamily(report.family);
   if (!report.sha || report.sha === "unknown") report.sha = sha();
 
   console.log(`report: ${report.script} ${report.cli}`);

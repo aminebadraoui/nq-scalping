@@ -28,14 +28,14 @@ import { FAMILY_LABEL } from "../familyNames";
 /* ---------------- types ---------------- */
 
 export type StrategyId =
-  | "momentum_flush"
-  | "momentum_expansion"
-  | "rth"
+  | "failed_flush_breakout"
+  | "huge_bar_expansion"
+  | "session_continuation"
   | "open_drive"
   | "open_pullback"
   | "open_sniper"
   | "sweep_reclaim"
-  | "reversal";
+  | "lvn_reversal";
 
 export type StrategyStatus = "live" | "off" | "retired";
 
@@ -129,8 +129,8 @@ const OPEN_FIELDS: FieldDoc[] = [
 
 export const STRATEGIES: StrategyDeclaration[] = [
   {
-    id: "momentum_flush",
-    family: "momentum_flush",
+    id: "failed_flush_breakout",
+    family: "failed_flush_breakout",
     status: "live",
     feedFlag: "FEED_MOMENTUM",
     feedDefault: true,
@@ -181,9 +181,9 @@ export const STRATEGIES: StrategyDeclaration[] = [
       "live-style. ≥5-bar gap · daily card cap (RTH_MAX_CARDS_PER_DAY) · counter-signal gate (RTH_COUNTER_GATE_*) · " +
       "crossed-stop/crossed-limit dispatch gates + approach gate (RTH_LIMIT_APPROACH_GATE_PTS=2, live 2026-10-13).",
     doc:
-      "RTH soft-continuation (9:30–16:00 ET): buy-frac ≥ 0.60, ≥3 dominant cluster rows, range ≥ 1.0 × ATR14, " +
-      "volume ≥ 0.5 × 60-bar median. Validated 10,325 trades / 82.2% WR / PF 3.47 at 0.75R; account sim never breaches. " +
-      "The A+ tier (≥65% one-sided) prints a label, not a separate gate.",
+      "Session Continuation — one-sided continuation during cash hours (9:30–16:00 ET): buy-frac ≥ 0.60, ≥3 dominant cluster " +
+      "rows, range ≥ 1.0 × ATR14, volume ≥ 0.5 × 60-bar median. Validated 10,325 trades / 82.2% WR / PF 3.47 at 0.75R; " +
+      "account sim never breaches. The A+ tier (≥65% one-sided) prints a label, not a separate gate.",
     fields: RTH_FIELDS,
     studies: ["rth-optimizer", "rth-limit-redesign", "rth-counter-gate", "walk-forward", "gap-only-validation", "live-stack-exact"],
     liveKnobs: "FEED_RTH · RTH_LIMIT_ENTRIES · RTH_LIMIT_APPROACH_GATE_PTS · RTH_MAX_CARDS_PER_DAY · RTH_COUNTER_GATE_MIN/_PTS · RTH_PROFILE · RTH_RISK_CAP",
@@ -262,8 +262,8 @@ export const STRATEGIES: StrategyDeclaration[] = [
     liveKnobs: "FEED_SWEEP_RECLAIM (OFF)",
   },
   {
-    id: "reversal",
-    family: "reversal",
+    id: "lvn_reversal",
+    family: "lvn_reversal",
     status: "retired",
     feedFlag: "FEED_REVERSAL",
     feedDefault: false,
@@ -273,7 +273,7 @@ export const STRATEGIES: StrategyDeclaration[] = [
       "The box pipeline: order-flow (location → absorption → divergence → reclaim) + price-action (premium/discount) " +
       "boxes must agree; card gate = all 3 required ingredients + ≥4/6 present + 2 footprint filters. Retired live.",
     doc:
-      "The LVN reversal card — the original playbook strategy (docs/strategy/STRATEGY.md). The composer " +
+      "The LVN Reversal Box — the original playbook strategy (docs/strategy/STRATEGY.md). The composer " +
       "(composeSignals / cardGateOpen) still runs for the dashboard read; no order path (FEED_REVERSAL=0).",
     fields: [],
     studies: ["reversal-vs-fakeout", "footprint-reversal"],

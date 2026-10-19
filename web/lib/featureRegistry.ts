@@ -71,7 +71,7 @@ export const FEATURE_REGISTRY: RegistryEntry[] = [
   /* ---- CARD LABELS & GATES ---- */
   E("aPlus", "CARD LABELS & GATES", "input", "flag", "the ≥65% one-sided A+ label (a LABEL — the day plan trades all cards)"),
   E("firstToday", "CARD LABELS & GATES", "input", "flag", "the day's first momentum card"),
-  E("family", "CARD LABELS & GATES", "input", "categorical", "strategy family: momentum_flush | momentum_expansion | rth | open_drive | …"),
+  E("family", "CARD LABELS & GATES", "input", "categorical", "strategy family: failed_flush_breakout | huge_bar_expansion | session_continuation | open_drive | …"),
   E("gates", "CARD LABELS & GATES", "input", "presence", "active override snapshot at decision time (family.gate list)"),
   E("rejectedBy", "CARD LABELS & GATES", "input", "presence", "veto reasons when a candidate was recorded without firing"),
   E("newsBlocked", "CARD LABELS & GATES", "input", "presence", "news blackout reason when the card was skipped"),

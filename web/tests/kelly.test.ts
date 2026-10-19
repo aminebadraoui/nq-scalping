@@ -48,7 +48,7 @@ test("kellyEstimate: shrinkage pulls a hot streak back toward the prior", () => 
   // 10W/3L raw = 76.9% — the prior (77.5%-ish for momentum) keeps the
   // shrunk estimate inside the anchor band instead of letting one streak
   // double the size
-  const prior: KellyPrior = KELLY_PRIORS.momentum_flush;
+  const prior: KellyPrior = KELLY_PRIORS.failed_flush_breakout;
   const est = kellyEstimate(st(10, 3), cfg({ kellyMult: 1, prior }));
   assert.ok(est.p < 0.775 + 1e-9 && est.p > 0.7, `shrunk p ${est.p} stays near the prior`);
   assert.ok(est.risk >= 90 && est.risk <= 110, `risk ${est.risk} stays near flat`);
@@ -155,9 +155,9 @@ test("owner defaults (2026-10-17 sweep): half-Kelly, $100 cap", () => {
 test("owner μ10 rule: Kelly-sized cards cap at 10 micros and floor sub-micro at 1", () => {
   const prior: KellyPrior = { wins: 31, losses: 9, winR: 1, lossR: 1 };
   const trades = [
-    { date: "2026-01-02", pnlPts: 5, riskPts: 5, family: "momentum_flush" },
-    { date: "2026-01-03", pnlPts: -5, riskPts: 5, family: "momentum_flush" },
-    { date: "2026-01-06", pnlPts: 5, riskPts: 5, family: "momentum_flush" },
+    { date: "2026-01-02", pnlPts: 5, riskPts: 5, family: "failed_flush_breakout" },
+    { date: "2026-01-03", pnlPts: -5, riskPts: 5, family: "failed_flush_breakout" },
+    { date: "2026-01-06", pnlPts: 5, riskPts: 5, family: "failed_flush_breakout" },
   ];
   // huge risk budget → the μ10 cap binds (floor(5000/10) = 500 → 10)
   const big = dollarizeKelly(trades, { kellyMult: 1, maxRisk: 5000, flatRisk: 5000, prior });

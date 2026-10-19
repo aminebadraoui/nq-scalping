@@ -20,16 +20,16 @@ test("stat lines match the measured live-bracket baselines", () => {
   assert.equal(STATS.momentum.aPlus, "78.9% WR (research bracket)");
   assert.equal(STATS.momentum.firstOfDay, "77.2% WR · PF 3.15 (research bracket)");
   assert.equal(STATS.momentum.expRetrace, "WR 68% · PF 1.29 · 649-session entryQuality redesign");
-  assert.equal(STATS.rth.stat, "WR 37.7% · PF 1.49 · 9,009 replay trades · 2.5R limit bracket");
-  assert.equal(STATS.rth.aPlus, "80.1% WR · PF 3.07 (0.75R research)");
+  assert.equal(STATS.sessionContinuation.stat, "WR 37.7% · PF 1.49 · 9,009 replay trades · 2.5R limit bracket");
+  assert.equal(STATS.sessionContinuation.aPlus, "80.1% WR · PF 3.07 (0.75R research)");
   assert.equal(STATS.openDrive.stat, "93% hit @ TP15/SL35 · 87% of days");
   assert.equal(STATS.openPullback.stat, "69.8% WR · +5.2 pts net · 440 trades");
   assert.equal(STATS.openSniper.stat, "55.8% WR · +6.5 pts net (longs)");
-  assert.equal(STATS.reversal.stat, "37% win · PF 2.16 · 683 sessions");
+  assert.equal(STATS.lvnReversal.stat, "37% win · PF 2.16 · 683 sessions");
   assert.equal(STATS.sweepReclaim.stat, "67% lab win @ 1R");
 });
 
 test("heads-up summary lists every active strategy with its win rate", () => {
   const line = headsUpWrLine();
-  assert.match(line, /WR: momentum 68% · RTH 37\.7% · drive 93% · pullback 69\.8% · sniper 55\.8%/);
+  assert.match(line, /WR: momentum 68% · session 37\.7% · drive 93% · pullback 69\.8% · sniper 55\.8%/);
 });

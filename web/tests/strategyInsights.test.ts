@@ -30,7 +30,7 @@ function mk(over: Partial<AnalyzedTrade> = {}): AnalyzedTrade {
     netUsd: 81,
     commissions: 9,
     result: "win",
-    family: "momentum_expansion",
+    family: "momentum_expansion", // legacy slug — canonicalized inside the miner
     hourBucket: "globex_core",
     firstOfDay: false,
     riskPts: 5,
@@ -77,7 +77,7 @@ test("losing hour bucket with enough evidence → hour veto proposal", () => {
   const ins = mineInsights(rows);
   const veto = ins.find((i) => i.kind === "rule_proposal" && i.proposedAction?.gate === "hour_veto");
   assert.ok(veto, "expected an hour_veto proposal");
-  assert.equal(veto!.proposedAction!.family, "momentum_expansion");
+  assert.equal(veto!.proposedAction!.family, "huge_bar_expansion");
   assert.deepEqual(veto!.proposedAction!.value, { hours: [0, 1, 2], bucket: "globex_late" });
   assert.equal(veto!.autoApply, false); // n < 10
 });
@@ -90,7 +90,7 @@ test("weak expansion family → trend filter proposal", () => {
   const ins = mineInsights(rows);
   const tf = ins.find((i) => i.kind === "rule_proposal" && i.proposedAction?.gate === "trend_filter");
   assert.ok(tf, "expected a trend_filter proposal");
-  assert.equal(tf!.proposedAction!.family, "momentum_expansion");
+  assert.equal(tf!.proposedAction!.family, "huge_bar_expansion");
 });
 
 test("all-losses-are-stop-runs family → observation", () => {
@@ -118,7 +118,7 @@ test("deterministic narrative covers the dataset even with no proposals", () => 
   const rows = [mk(), loss()];
   const txt = renderDeterministicNarrative(rows, mineInsights(rows));
   assert.ok(txt.includes("2 traded signals"));
-  assert.ok(txt.includes("momentum_expansion"));
+  assert.ok(txt.includes("huge_bar_expansion"));
 });
 
 test("walk-forward: a veto proposal must also lose on the newest third", () => {

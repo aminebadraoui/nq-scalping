@@ -71,13 +71,13 @@ async function main() {
   // 1. replay the production detectors
   const cards: Card[] = [];
   for (const s of detectMomentum(minutes, MOM_PROD).filter((x) => x.kind === "flush")) {
-    cards.push({ timeET: cdtToET(s.t) ?? s.t, family: "momentum_flush", side: s.dir, entry: s.entry });
+    cards.push({ timeET: cdtToET(s.t) ?? s.t, family: "failed_flush_breakout", side: s.dir, entry: s.entry });
   }
   for (const s of detectExpansionScalp(minutes, EXP_PROD)) {
-    cards.push({ timeET: cdtToET(s.t) ?? s.t, family: "momentum_expansion", side: s.dir, entry: s.entry });
+    cards.push({ timeET: cdtToET(s.t) ?? s.t, family: "huge_bar_expansion", side: s.dir, entry: s.entry });
   }
   for (const s of detectSoftMomentum(minutes, SOFT_PROD)) {
-    cards.push({ timeET: cdtToET(s.t) ?? s.t, family: "rth", side: s.dir, entry: s.entry });
+    cards.push({ timeET: cdtToET(s.t) ?? s.t, family: "session_continuation", side: s.dir, entry: s.entry });
   }
   console.log(`[canary] ${day}: replay found ${cards.length} cards (${cards.map((c) => c.family).join(",") || "none"})`);
 
@@ -96,15 +96,16 @@ async function main() {
   }
 
   // 3. diff: a replay card with no live row at the same ET minute (same
-  //    side) is a missed signal. Tolerate the RTH family less strictly:
-  //    live RTH cards carry cluster/stack gates the archive replay can't
-  //    fully reproduce, so report them but the ALARM weight is momentum.
+  //    side) is a missed signal. Tolerate Session Continuation less
+  //    strictly: its live cards carry cluster/stack gates the archive
+  //    replay can't fully reproduce, so report them but the ALARM weight
+  //    is momentum.
   const missed: Card[] = [];
   for (const c of cards) {
     const hit = live.some((r) => r.time_et === c.timeET && (r.side === c.side || r.side === ""));
     if (!hit) missed.push(c);
   }
-  const momMissed = missed.filter((c) => c.family !== "rth");
+  const momMissed = missed.filter((c) => c.family !== "session_continuation");
   if (missed.length > 0) {
     appendDaybook({ t: "canary", at: Date.now(), day, missed: missed.length, momMissed: momMissed.length, detail: missed.map((c) => `${c.timeET} ${c.family} ${c.side}`).join(" · ") });
   }

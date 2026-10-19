@@ -180,7 +180,7 @@ test("buildRowFromDb: maps the reconciled row, parses features, attributes accou
   });
   assert.equal(r.account, "MFFUSFREOD706880008", "timeline fallback for a legacy row");
   assert.equal(r.accountSource, "timeline");
-  assert.equal(r.family, "momentum_expansion");
+  assert.equal(r.family, "huge_bar_expansion");
   assert.equal(r.features?.flushFrac, 0.7);
   assert.equal(r.stopRun, true);
   assert.equal(r.sigEntry, 31500);

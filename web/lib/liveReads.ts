@@ -55,6 +55,7 @@ import { tradingHalted } from "./tradingHalt";
 import { getOverrides } from "./strategyOverrides";
 import { cdtToET } from "./times";
 import { strategyById, labelFor } from "./strategies/registry";
+import { canonicalFamily } from "./strategies/aliases";
 
 /* ------------------------------ types ------------------------------ */
 
@@ -515,20 +516,20 @@ export function firedNow(fired: MomentumSignal[], fp: FootprintMinute[]): Detect
 /* --------------------------- history mapping --------------------------- */
 
 const FAMILY_KEYS: Record<string, string[]> = {
-  momentum_flush: ["momentum_flush", "momentum_bigbar"],
-  momentum_expansion: ["momentum_expansion"],
-  rth: ["rth"],
+  failed_flush_breakout: ["failed_flush_breakout", "momentum_flush", "momentum_bigbar"],
+  huge_bar_expansion: ["huge_bar_expansion", "momentum_expansion"],
+  session_continuation: ["session_continuation", "rth"],
   open_drive: ["open_drive", "open_pullback", "open_sniper"],
 };
 
 function familyOf(h: SignalHistoryEntry): string | null {
   const f = h.features as { family?: string } | null;
-  if (f?.family) return f.family;
+  if (f?.family) return canonicalFamily(f.family);
   // fallback for rows recorded before the family stamp
   const v = h.verdict;
-  if (v.includes("rth")) return "rth";
-  if (v.includes("huge-bar expansion")) return "momentum_expansion";
-  if (v.includes("failed-flush") || v.includes("big-bar")) return "momentum_flush";
+  if (v.includes("session continuation") || v.includes("rth")) return "session_continuation";
+  if (v.includes("huge-bar expansion")) return "huge_bar_expansion";
+  if (v.includes("failed-flush") || v.includes("big-bar") || v.includes("momentum")) return "failed_flush_breakout";
   if (v.includes("open")) return "open_drive";
   return null;
 }
@@ -597,7 +598,7 @@ export async function computeLiveReads(args: BuildArgs): Promise<LiveReads> {
   const byTab = (tab: ArmedNote["tab"]) => armed.filter((a) => a.tab === tab);
 
   const detector = (
-    id: "momentum_flush" | "momentum_expansion" | "rth" | "open_drive",
+    id: "failed_flush_breakout" | "huge_bar_expansion" | "session_continuation" | "open_drive",
     sigs: MomentumSignal[],
     gauges: LiveGauge[],
     window: { open: boolean; note: string },
@@ -623,20 +624,20 @@ export async function computeLiveReads(args: BuildArgs): Promise<LiveReads> {
       lastFire: hist.lastFire,
       gapBars: gapSince(sigs, n - 1),
       gauges,
-      armed: byTab(id === "momentum_expansion" ? "expansion" : id === "momentum_flush" ? "flush" : id === "rth" ? "rth" : "open"),
+      armed: byTab(id === "huge_bar_expansion" ? "expansion" : id === "failed_flush_breakout" ? "flush" : id === "session_continuation" ? "rth" : "open"),
     };
   };
 
   const detectors: DetectorRead[] = [
-    detector("momentum_flush", flushSigs, g ? flushGauges(fp, g, flushSigs) : [], {
+    detector("failed_flush_breakout", flushSigs, g ? flushGauges(fp, g, flushSigs) : [], {
       open: !inRTH(tail.t),
       note: inRTH(tail.t) ? "RTH hours — flush detector inert (its tape is globex)" : "globex window open",
     }, feeds.momentum === true),
-    detector("momentum_expansion", expSigs, g ? expansionGauges(fp, g, expSigs) : [], {
+    detector("huge_bar_expansion", expSigs, g ? expansionGauges(fp, g, expSigs) : [], {
       open: !inRTH(tail.t),
       note: inRTH(tail.t) ? "RTH hours — expansion detector inert (its tape is globex)" : "globex window open",
     }, feeds.momentum === true),
-    detector("rth", rthSigs, g ? rthGauges(fp, g, rthSigs) : [], {
+    detector("session_continuation", rthSigs, g ? rthGauges(fp, g, rthSigs) : [], {
       open: inRTH(tail.t),
       note: inRTH(tail.t) ? "inside 9:30–16:00 ET" : "outside RTH — detector inert",
     }, feeds.rth === true),

@@ -20,14 +20,14 @@
  * ------------------------------------------------------------------ */
 
 export type TicketCtx = {
-  family: string; // momentum_flush | momentum_expansion | rth
+  family: string; // failed_flush_breakout | huge_bar_expansion | session_continuation
   hourBucket: string; // the tradeStats hourBucketOf value
   dir?: "long" | "short"; // side-specific cells override the bucket cell
 };
 
 /** expected pts/trade per family × hour bucket (0.5 pt cost, 60-bar exit) */
 export const TICKET_EXPECTANCY: Record<string, Record<string, number>> = {
-  momentum_flush: {
+  failed_flush_breakout: {
     globex_early: 2.22,
     globex_core: 1.91,
     globex_late: 2.14,
@@ -35,7 +35,7 @@ export const TICKET_EXPECTANCY: Record<string, Record<string, number>> = {
     premkt: 2.17,
     close: 2.23,
   },
-  momentum_expansion: {
+  huge_bar_expansion: {
     globex_early: 2.38,
     globex_core: 2.52,
     globex_late: 2.52,
@@ -43,15 +43,15 @@ export const TICKET_EXPECTANCY: Record<string, Record<string, number>> = {
     premkt: 2.75,
     close: 1.42,
   },
-  rth: {
+  session_continuation: {
     rth: 3.86,
   },
 };
 
 /** side-specific overrides: "<family>/<bucket>/<dir>" → expected pts */
 export const TICKET_EXPECTANCY_SIDES: Record<string, number> = {
-  "momentum_expansion/close/long": 2.13,
-  "momentum_expansion/close/short": 0.75,
+  "huge_bar_expansion/close/long": 2.13,
+  "huge_bar_expansion/close/short": 0.75,
 };
 
 /** the active bar in pts/trade; 0 or unset = gate OFF */

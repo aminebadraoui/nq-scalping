@@ -65,8 +65,8 @@ export const CURRICULUM: CourseModule[] = [
   {
     id: "rth",
     emoji: "🟦",
-    title: "The RTH card",
-    lessons: [{ id: "rth", title: "The daytime continuation card", minutes: 6, Content: RthLesson }],
+    title: "Session Continuation",
+    lessons: [{ id: "rth", title: "Session Continuation — the daytime continuation card", minutes: 6, Content: RthLesson }],
   },
   {
     id: "open",

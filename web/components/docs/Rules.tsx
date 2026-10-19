@@ -23,8 +23,8 @@ const SESSION = [
 ] as const;
 
 const CARD = [
-  ["RTH daily cap", "max 3 RTH cards per session day — later setups are skipped and journaled to the daybook", "rth family"],
-  ["RTH counter-gate", "skip an RTH card within 5 pts of an opposite-side RTH card's WINNING exit in the last 15 min (RTH_COUNTER_GATE_MIN/PTS — owner-approved, full-archive validated)", "rth family"],
+  ["Session Continuation daily cap", "max 3 Session Continuation cards per session day — later setups are skipped and journaled to the daybook", "session_continuation family"],
+  ["Session Continuation counter-gate", "skip a Session Continuation card within 5 pts of an opposite-side winner's exit in the last 15 min (RTH_COUNTER_GATE_MIN/PTS — owner-approved, full-archive validated)", "session_continuation family"],
   ["Flat requirement", "an entry is refused unless the MNQ book is flat — no stacking on a recent entry or an open position", "all orders"],
   ["Cost-adjusted ticket veto", "TICKET_MIN_EXP_PTS — skip tickets whose expectancy can't clear costs (off by default)", "ticket family"],
   ["Strategy overrides", "lab-approved insights can veto a family (strategyInsights → strategy_overrides)", "per family"],

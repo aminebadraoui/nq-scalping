@@ -75,7 +75,7 @@ test("one day, one family: totals, wr, pf, per-day series", () => {
       ]),
     },
   ]);
-  const rth = a.families.find((f) => f.family === "rth")!;
+  const rth = a.families.find((f) => f.family === "session_continuation")!;
   assert.equal(a.lastDay, "2026-10-06");
   assert.equal(a.sessions, 1);
   assert.equal(rth.n, 3);
@@ -104,7 +104,7 @@ test("multiple days accumulate in ascending order", () => {
     { day: "2026-10-08", summary: summary([trade({ family: "rth", netUsd: 5, grossUsd: 8, result: "win" })]) },
     { day: "2026-10-06", summary: summary([trade({ family: "rth", netUsd: 3, grossUsd: 6, result: "win" })]) },
   ]);
-  const rth = a.families.find((f) => f.family === "rth")!;
+  const rth = a.families.find((f) => f.family === "session_continuation")!;
   assert.equal(rth.n, 2);
   assert.deepEqual(rth.byDay.map((d) => d.day), ["2026-10-06", "2026-10-08"]);
   assert.equal(rth.firstDay, "2026-10-06");
@@ -132,8 +132,8 @@ test("liveEdgeStatus thresholds mirror the edge monitor", () => {
 });
 
 test("liveFamilyOf: consolidation label wins, verdict maps, unknown → other", () => {
-  assert.equal(liveFamilyOf({ family: "rth", verdict: "momentum whatever" }), "rth");
-  assert.equal(liveFamilyOf({ family: "other", verdict: "huge-bar expansion card" }), "momentum_expansion");
+  assert.equal(liveFamilyOf({ family: "rth", verdict: "momentum whatever" }), "session_continuation"); // legacy daybook family
+  assert.equal(liveFamilyOf({ family: "other", verdict: "huge-bar expansion card" }), "huge_bar_expansion");
   assert.equal(liveFamilyOf({ family: "other", verdict: "" }), "other");
   assert.equal(liveFamilyOf({ family: "", verdict: "OPEN DRIVE scan" }), "open_drive");
 });
@@ -159,7 +159,7 @@ test("mean expR aggregates only trades with derivable risk", () => {
       ]),
     },
   ]);
-  const rth = a.families.find((f) => f.family === "rth")!;
+  const rth = a.families.find((f) => f.family === "session_continuation")!;
   assert.equal(rth.meanExpR, 2);
   assert.equal(rth.baselineExpR, 0.44);
 });
@@ -173,8 +173,8 @@ test("default baseline falls back to other for unknown families", () => {
 });
 
 test("custom baselines override the defaults", () => {
-  const a = aggregateLiveArchive([], { rth: 0.99 });
-  const rth = a.families.find((f) => f.family === "rth")!;
+  const a = aggregateLiveArchive([], { rth: 0.99 }); // legacy baseline key canonicalizes
+  const rth = a.families.find((f) => f.family === "session_continuation")!;
   assert.equal(rth.baselineExpR, 0.99);
 });
 
@@ -193,7 +193,7 @@ test("malformed numeric fields never throw and read as zero", () => {
       ]),
     },
   ]);
-  const rth = a.families.find((f) => f.family === "rth")!;
+  const rth = a.families.find((f) => f.family === "session_continuation")!;
   assert.equal(rth.n, 1);
   assert.equal(rth.grossUsd, 0);
   assert.equal(rth.netUsd, 0);
@@ -210,7 +210,7 @@ test("wins-only family has no PF; losses-only family has no WR", () => {
       ]),
     },
   ]);
-  const rth = a.families.find((f) => f.family === "rth")!;
+  const rth = a.families.find((f) => f.family === "session_continuation")!;
   const sniper = a.families.find((f) => f.family === "open_sniper")!;
   assert.equal(rth.pf, null, "no losses → no PF");
   assert.equal(rth.wr, 1);
@@ -233,7 +233,7 @@ test("family row shape is stable for the UI (byDay sorted, money rounded)", () =
       summary: summary([trade({ family: "rth", netUsd: 1.234, grossUsd: 2.345, result: "win" })]),
     },
   ]);
-  const rth: LiveFamily = a.families.find((f) => f.family === "rth")!;
+  const rth: LiveFamily = a.families.find((f) => f.family === "session_continuation")!;
   assert.equal(rth.netUsd, 1.23);
   assert.equal(rth.grossUsd, 2.35);
   assert.equal(rth.byDay[0].netUsd, 1.23);

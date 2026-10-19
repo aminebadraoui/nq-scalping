@@ -27,9 +27,9 @@ test("ids are unique", () => {
 });
 
 test("config objects are referenced, not copied (identity with the trading code)", () => {
-  assert.equal(strategyById("momentum_flush")!.config, MOM_PROD as unknown as Record<string, unknown>);
-  assert.equal(strategyById("momentum_expansion")!.config, EXP_PROD as unknown as Record<string, unknown>);
-  assert.equal(strategyById("rth")!.config, SOFT_PROD as unknown as Record<string, unknown>);
+  assert.equal(strategyById("failed_flush_breakout")!.config, MOM_PROD as unknown as Record<string, unknown>);
+  assert.equal(strategyById("huge_bar_expansion")!.config, EXP_PROD as unknown as Record<string, unknown>);
+  assert.equal(strategyById("session_continuation")!.config, SOFT_PROD as unknown as Record<string, unknown>);
   assert.equal(strategyById("open_drive")!.config, OPEN_PROD as unknown as Record<string, unknown>);
   assert.equal(strategyById("open_pullback")!.config, PULLBACK_PROD as unknown as Record<string, unknown>);
   assert.equal(strategyById("open_sniper")!.config, SNIPER_PROD as unknown as Record<string, unknown>);
@@ -51,11 +51,11 @@ test("every family key has a label", () => {
 
 test("live status matches the live feed defaults (FEED_MOMENTUM/FEED_RTH/FEED_OPEN_DRIVE on)", () => {
   const live = liveStrategies().map((s) => s.id).sort();
-  assert.deepEqual(live, ["momentum_expansion", "momentum_flush", "open_drive", "rth"]);
+  assert.deepEqual(live, ["failed_flush_breakout", "huge_bar_expansion", "open_drive", "session_continuation"]);
 });
 
 test("fieldRows renders values from the live object", () => {
-  const mom = strategyById("momentum_flush")!;
+  const mom = strategyById("failed_flush_breakout")!;
   const rows = fieldRows(mom);
   const breakFrac = rows.find((r) => r.key === "breakFrac");
   assert.ok(breakFrac);
@@ -65,7 +65,7 @@ test("fieldRows renders values from the live object", () => {
 
 test("strategiesForStudy reverse index works both directions", () => {
   const forMomentum = strategiesForStudy("momentum-study");
-  assert.ok(forMomentum.some((s) => s.id === "momentum_flush"));
+  assert.ok(forMomentum.some((s) => s.id === "failed_flush_breakout"));
   for (const s of forMomentum) assert.ok(s.studies.includes("momentum-study"));
 });
 

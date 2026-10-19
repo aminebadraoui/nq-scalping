@@ -25,9 +25,9 @@ test("snapshot resolves every declared strategy's feed from env + default", () =
   const env = { FEED_MOMENTUM: "1", FEED_RTH: "0", FEED_OPEN: "1", FEED_OPEN_DRIVE: "1" };
   const cfg = effectiveConfigSnapshot(env);
   const byId = new Map(cfg.strategies.map((s) => [s.id, s]));
-  assert.equal(byId.get("momentum_flush")!.feedEnabled, true);
-  assert.equal(byId.get("momentum_expansion")!.feedEnabled, true);
-  assert.equal(byId.get("rth")!.feedEnabled, false, "env 0 wins over default true");
+  assert.equal(byId.get("failed_flush_breakout")!.feedEnabled, true);
+  assert.equal(byId.get("huge_bar_expansion")!.feedEnabled, true);
+  assert.equal(byId.get("session_continuation")!.feedEnabled, false, "env 0 wins over default true");
   assert.equal(byId.get("open_drive")!.feedEnabled, true);
   assert.equal(byId.get("open_pullback")!.feedEnabled, false);
   assert.equal(byId.get("sweep_reclaim")!.feedEnabled, false);

@@ -32,13 +32,13 @@ export const STATS = {
      *  from the fill (entryQuality study, 649 sessions, train+test) */
     expRetrace: "WR 68% · PF 1.29 · 649-session entryQuality redesign",
   },
-  rth: {
-    name: "RTH",
+  sessionContinuation: {
+    name: "SESSION CONTINUATION",
     // the LIVE bracket is the limit-entry redesign (TTL 9 min, 0.5× stop,
     // 2.5R target) — measured on the 651-session live-style replay; the
     // 82.2% / 0.75R numbers are the market-entry RESEARCH optimum only
     stat: "WR 37.7% · PF 1.49 · 9,009 replay trades · 2.5R limit bracket",
-    wrShort: "RTH 37.7%",
+    wrShort: "session 37.7%",
     /** A+ tier: >=65% one-sided (0.75R research replay) */
     aPlus: "80.1% WR · PF 3.07 (0.75R research)",
   },
@@ -49,22 +49,22 @@ export const STATS = {
     wrShort: "drive 93%",
   },
   openPullback: {
-    name: "OPEN PULLBACK",
+    name: "MORNING PULLBACK",
     stat: "69.8% WR · +5.2 pts net · 440 trades",
     wrShort: "pullback 69.8%",
   },
   openSniper: {
-    name: "OPEN SNIPER",
+    name: "9:36 SNIPER",
     stat: "55.8% WR · +6.5 pts net (longs)",
     wrShort: "sniper 55.8%",
   },
-  reversal: {
-    name: "REVERSAL",
+  lvnReversal: {
+    name: "LVN REVERSAL",
     stat: "37% win · PF 2.16 · 683 sessions",
     wrShort: "reversal 37%",
   },
   sweepReclaim: {
-    name: "SWEEP-RECLAIM",
+    name: "SWEEP-RECLAIM FADE",
     stat: "67% lab win @ 1R",
     wrShort: "sweep-reclaim 67%",
   },
@@ -72,5 +72,5 @@ export const STATS = {
 
 /** the one-line WR summary printed on the unusual-volume heads-up card */
 export function headsUpWrLine(): string {
-  return `WR: ${STATS.momentum.wrShort} · ${STATS.rth.wrShort} · ${STATS.openDrive.wrShort} · ${STATS.openPullback.wrShort} · ${STATS.openSniper.wrShort}`;
+  return `WR: ${STATS.momentum.wrShort} · ${STATS.sessionContinuation.wrShort} · ${STATS.openDrive.wrShort} · ${STATS.openPullback.wrShort} · ${STATS.openSniper.wrShort}`;
 }

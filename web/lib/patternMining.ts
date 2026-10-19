@@ -31,6 +31,7 @@
 
 import { flattenFeatures } from "./tradeLedger";
 import { familyOf, hourBucketOf } from "./tradeStats";
+import { canonicalFamily } from "./strategies/aliases";
 import { fisherExact, mannWhitneyP, cmhP, bhFdr } from "./patternStats";
 
 export type CellStats = {
@@ -471,7 +472,7 @@ export function winLossRowsFromDb(raw: Array<Record<string, unknown>>): WinLossR
         if (v !== null && v !== undefined && v !== "") flat[k] = v;
       }
     }
-    const anatomy: Record<string, unknown> = { family: String(r.family ?? "") || familyOf(String(r.verdict ?? "")) || "other" };
+    const anatomy: Record<string, unknown> = { family: canonicalFamily(String(r.family ?? "") || familyOf(String(r.verdict ?? "")) || "other") };
     for (const [k, fn] of Object.entries(POST_HOC_KEYS)) anatomy[k] = fn(r);
     rows.push({ result: String(r.result) === "win" ? "win" : "loss", flat, anatomy });
   }

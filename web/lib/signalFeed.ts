@@ -1114,7 +1114,7 @@ class SignalFeed {
     });
   }
 
-  private signature(snap: SignalSnapshot, setup: "REVERSAL" | "PULLBACK"): string {
+  private signature(snap: SignalSnapshot, setup: "LVN REVERSAL" | "PULLBACK"): string {
     const a = snap.analysis;
     const lastRec = a?.reclaims[a.reclaims.length - 1];
     const lastAbs = a?.absorption[a.absorption.length - 1];
@@ -1250,7 +1250,7 @@ class SignalFeed {
     const lastDelta = snap.mech.lastDelta;
     if ((snap.mech.side === "long" && lastDelta <= 0) || (snap.mech.side === "short" && lastDelta >= 0)) return;
 
-    const kind = "REVERSAL" as const;
+    const kind = "LVN REVERSAL" as const;
     const read = snap.mech;
     const sig = this.signature(snap, kind);
     if (this.sent.has(sig)) return;
@@ -1444,7 +1444,7 @@ class SignalFeed {
     if (nb) {
       for (const s of sigs) {
         if (!tailOrJustClosedBar(fp, s.breakIdx)) continue;
-        const fam = s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
+        const fam = s.kind === "expansion" ? "huge_bar_expansion" : "failed_flush_breakout";
         const es = esCardChips(esCtx, nqMid, s, true);
         const seasonal = seasonalChips(s);
         const sf = sideFilterChips({ t: s.t, d: s.d, hourET: s.hourET, aln });
@@ -1462,8 +1462,8 @@ class SignalFeed {
           verdict: (s as MomentumSignal & { __bigBar?: boolean }).__bigBar
             ? "momentum (big-bar continuation)"
             : s.kind === "expansion"
-              ? "momentum (huge-bar expansion)"
-              : "momentum (failed-flush breakout)",
+              ? "huge-bar expansion"
+              : "failed-flush breakout",
           headline: `NQ ${(s as MomentumSignal & { __bigBar?: boolean }).__bigBar ? "big-bar continuation" : "momentum"} ${s.dir}`,
           reason: `news blackout — ${nb}`,
           features: signalFeatures(s as unknown as Record<string, unknown>, { family: fam, newsBlocked: nb, ...es.features, ...seasonal.features, ...sf.features, ...rn.features, ...gch.features, ...wall.features }),
@@ -1478,17 +1478,17 @@ class SignalFeed {
       const aPlus = expKeys.has(key) && momSigs.some((x) => `${x.d}|${x.dir}|${x.t}` === key);
       if (this.momentumSent.has(key)) continue;
       const isBigBar = (s as MomentumSignal & { __bigBar?: boolean }).__bigBar === true;
-      const famStr = isBigBar ? "momentum_bigbar" : s.kind === "expansion" ? "momentum_expansion" : "momentum_flush";
+      const famStr = isBigBar ? "momentum_bigbar" : s.kind === "expansion" ? "huge_bar_expansion" : "failed_flush_breakout";
       const verdictTxt = isBigBar
         ? "momentum (big-bar continuation)"
         : s.kind === "expansion"
-          ? "momentum (huge-bar expansion)"
-          : "momentum (failed-flush breakout)";
+          ? "huge-bar expansion"
+          : "failed-flush breakout";
       const verdictVetoTxt = isBigBar
         ? "momentum (big-bar continuation · ticket veto)"
         : s.kind === "expansion"
-          ? "momentum (huge-bar expansion · ticket veto)"
-          : "momentum (failed-flush breakout · ticket veto)";
+          ? "huge-bar expansion · ticket veto"
+          : "failed-flush breakout · ticket veto";
       const headlineTxt = `NQ ${isBigBar ? "big-bar continuation" : "momentum"} ${s.dir}`;
       const et = cdtToET(s.t);
       const firstToday = !this.cardedDays.has(s.d);
@@ -1734,8 +1734,8 @@ class SignalFeed {
           verdict: isBigBar
             ? "momentum (big-bar continuation · limit)"
             : s.kind === "expansion"
-              ? "momentum (huge-bar expansion · retrace limit)"
-              : "momentum (failed-flush breakout · limit)",
+              ? "huge-bar expansion · retrace limit"
+              : "failed-flush breakout · limit",
           headline: `NQ ${isBigBar ? "big-bar continuation" : "momentum"} ${s.dir}`,
           source: "live",
           test: false,
@@ -1858,7 +1858,7 @@ class SignalFeed {
         stop: stop.toFixed(2),
         target: target.toFixed(2),
         size: sizeStr,
-        verdict: s.kind === "expansion" ? "momentum (huge-bar expansion)" : "momentum (failed-flush breakout)",
+        verdict: s.kind === "expansion" ? "huge-bar expansion" : "failed-flush breakout",
         headline: `NQ momentum ${s.dir}`,
         source: "live",
         test: false,
@@ -2029,7 +2029,7 @@ class SignalFeed {
         entry: p.level,
         stop: p.sStop,
         target: p.sTarget,
-        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        verdict: "huge-bar expansion · retrace skipped",
         headline: `NQ momentum ${p.dir}`,
         reason: "session rolled before the retrace traded — skipped",
         features: { ...p.features, retrace: "void" },
@@ -2060,7 +2060,7 @@ class SignalFeed {
         stop: p.sStop.toFixed(2),
         target: p.sTarget.toFixed(2),
         size: "—",
-        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        verdict: "huge-bar expansion · retrace skipped",
         headline: `NQ momentum ${p.dir}`,
         source: "live",
         test: false,
@@ -2101,7 +2101,7 @@ class SignalFeed {
         stop: stop.toFixed(2),
         target: target.toFixed(2),
         size: "—",
-        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        verdict: "huge-bar expansion · retrace skipped",
         headline: `NQ momentum ${p.dir}`,
         source: "live",
         test: false,
@@ -2157,7 +2157,7 @@ class SignalFeed {
         stop: stop.toFixed(2),
         target: target.toFixed(2),
         size: sizeStr,
-        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        verdict: "huge-bar expansion · retrace skipped",
         headline: `NQ momentum ${p.dir}`,
         source: "live",
         test: false,
@@ -2179,7 +2179,7 @@ class SignalFeed {
         stop: stop.toFixed(2),
         target: target.toFixed(2),
         size: sizeStr,
-        verdict: "momentum (huge-bar expansion · retrace skipped)",
+        verdict: "huge-bar expansion · retrace skipped",
         headline: `NQ momentum ${p.dir}`,
         source: "live",
         test: false,
@@ -2215,7 +2215,7 @@ class SignalFeed {
       stop: stop.toFixed(2),
       target: target.toFixed(2),
       size: sizeStr,
-      verdict: "momentum (huge-bar expansion · retrace)",
+      verdict: "huge-bar expansion · retrace",
       headline: `NQ momentum ${p.dir}`,
       source: "live",
       test: false,
@@ -2269,7 +2269,7 @@ class SignalFeed {
     const live = getLive().state;
     if (!live.connected || live.minutes.length < 30) return;
     const fp = cachedFootprint(live.minutes, live.barsRevision);
-    if (this.tapeGateHolds(fp, "rth")) return;
+    if (this.tapeGateHolds(fp, "session_continuation")) return;
     const { es: esCtx, nqMid, gaps } = this.tickChips(fp);
     if (nb) console.log(`[news] ${nb} blackout — skipping RTH cards (candidates recorded)`);
     for (const s of detectSoftMomentumMemo(fp, SOFT_PROD, live.barsRevision)) {
@@ -2287,10 +2287,10 @@ class SignalFeed {
           entry: s.entry,
           stop: s.stop,
           target: s.target,
-          verdict: "rth soft-continuation (experimental)",
-          headline: `NQ RTH ${s.dir}`,
+          verdict: "session continuation (experimental)",
+          headline: `NQ Session Continuation ${s.dir}`,
           reason: `news blackout — ${nb}`,
-          features: signalFeatures(s as unknown as Record<string, unknown>, { family: "rth", newsBlocked: nb, ...es.features, ...rn.features, ...gch.features, ...wall.features }),
+          features: signalFeatures(s as unknown as Record<string, unknown>, { family: "session_continuation", newsBlocked: nb, ...es.features, ...rn.features, ...gch.features, ...wall.features }),
         });
         continue;
       }
@@ -2298,7 +2298,7 @@ class SignalFeed {
       if (this.rthSent.has(key)) continue;
       const ov = await getOverrides();
       const dec = decideSignal(ov, {
-        families: ["rth", "all"],
+        families: ["session_continuation", "all"],
         hourET: s.hourET,
         side: s.dir,
         breakFrac: s.breakFrac,
@@ -2313,7 +2313,7 @@ class SignalFeed {
         const rn = roundNumberChips(s);
         const gch = gapChips(fp, s, gaps);
         const wall = wallProxChips(this.wallReadFor(live.snapshot?.ltp ?? s.entry), s);
-        console.log(`[overrides] rth ${s.dir} SKIPPED — ${dec.reasons.join("; ")}`);
+        console.log(`[overrides] session-continuation ${s.dir} SKIPPED — ${dec.reasons.join("; ")}`);
         await this.recordSkip({
           timeET: cdtToET(s.t),
           day: s.d,
@@ -2322,11 +2322,11 @@ class SignalFeed {
           entry: s.entry,
           stop: s.stop,
           target: s.target,
-          verdict: "rth soft-continuation (experimental)",
-          headline: `NQ RTH ${s.dir}`,
+          verdict: "session continuation (experimental)",
+          headline: `NQ Session Continuation ${s.dir}`,
           reason: `overrides: ${dec.reasons.join("; ")}`,
           features: signalFeatures(s as unknown as Record<string, unknown>, {
-            family: "rth",
+            family: "session_continuation",
             rejectedBy: dec.reasons,
             gates: this.gateSnapshot(ov),
             ...es.features,
@@ -2364,11 +2364,11 @@ class SignalFeed {
             entry: s.entry,
             stop: s.stop,
             target: s.target,
-            verdict: "rth soft-continuation (experimental)",
-            headline: `NQ RTH ${s.dir}`,
+            verdict: "session continuation (experimental)",
+            headline: `NQ Session Continuation ${s.dir}`,
             reason: `counter-gate (opposite ${g.winner.dir} winner ${mins}m ago within ${gate.pts} pts)`,
             features: signalFeatures(s as unknown as Record<string, unknown>, {
-              family: "rth",
+              family: "session_continuation",
               rejectedBy: [
                 `counter-gate min=${process.env.RTH_COUNTER_GATE_MIN ?? "0"} pts=${process.env.RTH_COUNTER_GATE_PTS ?? "0"}`,
               ],
@@ -2398,11 +2398,11 @@ class SignalFeed {
             entry: s.entry,
             stop: s.stop,
             target: s.target,
-            verdict: "rth soft-continuation (experimental)",
-            headline: `NQ RTH ${s.dir}`,
+            verdict: "session continuation (experimental)",
+            headline: `NQ Session Continuation ${s.dir}`,
             reason: `daily card cap ${rthCap}`,
             features: signalFeatures(s as unknown as Record<string, unknown>, {
-              family: "rth",
+              family: "session_continuation",
               rejectedBy: [`daily card cap ${rthCap}`],
               ...es.features,
               ...rn.features,
@@ -2435,7 +2435,7 @@ class SignalFeed {
       const target = profBracket ? profBracket.target : s.target;
       const riskPts = profBracket ? profBracket.riskPts : s.risk;
       const budget = (cap > 0 ? Math.min(riskBudget, cap) : riskBudget) * (bracket.enabled ? bracket.sizeMult : 1);
-      const kelly = await kellyCardChip("rth", budget);
+      const kelly = await kellyCardChip("session_continuation", budget);
       const kellyTxt = kelly ? `${kellyChipLabel(kelly)} (journal) · ` : "";
       const kellyRisk = kellySizes(kelly) && kelly ? kelly.risk : budget;
       const contracts =
@@ -2499,11 +2499,11 @@ class SignalFeed {
           entry: s.entry,
           stop,
           target,
-          verdict: "rth soft-continuation (experimental)",
-          headline: `NQ RTH ${s.dir}`,
+          verdict: "session continuation (experimental)",
+          headline: `NQ Session Continuation ${s.dir}`,
           reason: `${gateName} gate — ${gateWhy}`,
           features: signalFeatures(s as unknown as Record<string, unknown>, {
-            family: "rth",
+            family: "session_continuation",
             rejectedBy: [
               crossedStop
                 ? "crossed-stop dispatch gate"
@@ -2523,7 +2523,7 @@ class SignalFeed {
       }
 
       const et = cdtToET(s.t);
-      const label = `rth ${s.dir} ${et}${useLimitEntry ? " (limit)" : ""}`;
+      const label = `session-continuation ${s.dir} ${et}${useLimitEntry ? " (limit)" : ""}`;
       const intent: OrderIntent = {
         symbol: symbol(),
         dir: s.dir,
@@ -2542,12 +2542,12 @@ class SignalFeed {
             outcome: res.ok ? "ok" : "failed",
             reason: res.reason,
           });
-          if (!res.ok) registerSendFailure(`rth|${key}`, `rth ${s.dir} ${et}`, res.reason);
+          if (!res.ok) registerSendFailure(`rth|${key}`, `session-continuation ${s.dir} ${et}`, res.reason);
           if (res.ok && useLimitEntry && res.orderId) attachLimitOrderId(`rth|${key}`, res.orderId);
           if (res.ok && prof.enabled) {
             registerTimeExit({
               key: `rth|${key}`,
-              label: `rth ${s.dir} ${et} (${prof.timeExitBars}-bar profile)`,
+              label: `session-continuation ${s.dir} ${et} (${prof.timeExitBars}-bar profile)`,
               symbol: symbol(),
               dir: s.dir,
               exitAtMs: timeExitAt(Date.now(), prof),
@@ -2566,15 +2566,15 @@ class SignalFeed {
         ? `${[...es.labels, ...rn.labels, ...gch.labels, ...wall.labels].join(" · ")} · `
         : "";
       const text = [
-        `🟦 <b>${STATS.rth.name} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
+        `🟦 <b>${STATS.sessionContinuation.name} ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(s.entry)} · ${et} NY</b>`,
         ``,
         `<code>ENTRY   ${useLimitEntry ? "LIMIT " : ""}${fmtPx(s.entry)}</code>`,
         `<code>STOP    ${fmtPx(stop)}   ${distTxt(s.entry, stop)}</code>`,
         `<code>TARGET  ${fmtPx(target)}   ${distTxt(s.entry, target)}${profBracket ? ` (${bracket.targetR}R @ ${bracket.stopMult}× stop)` : ""}</code>`,
         `<code>SIZE    ${sizeStr}</code>`,
         ``,
-        `${aPlus ? `A+ (${STATS.rth.aPlus}) · ` : ""}${chipLine}${kellyTxt}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · RTH continuation`,
-        `<i>${STATS.rth.stat}${profBracket ? ` · ${bracket.targetR}R @ ${bracket.stopMult}× stop · ${useLimitEntry ? "limit entry (validated redesign)" : "profile"}` : " · 0.75R plan — journal separately"}</i>`,
+        `${aPlus ? `A+ (${STATS.sessionContinuation.aPlus}) · ` : ""}${chipLine}${kellyTxt}${Math.round(s.breakFrac * 100)}% one-sided · clusters ✓ · big bar · session continuation`,
+        `<i>${STATS.sessionContinuation.stat}${profBracket ? ` · ${bracket.targetR}R @ ${bracket.stopMult}× stop · ${useLimitEntry ? "limit entry (validated redesign)" : "profile"}` : " · 0.75R plan — journal separately"}</i>`,
       ].join("\n");
       const res = await this.push(text);
       if (!res.sent) this.lastError = res.reason;
@@ -2588,18 +2588,18 @@ class SignalFeed {
         stop: stop.toFixed(2),
         target: target.toFixed(2),
         size: sizeStr,
-        verdict: "rth soft-continuation (experimental)",
-        headline: `NQ RTH ${s.dir}`,
+        verdict: "session continuation (experimental)",
+        headline: `NQ Session Continuation ${s.dir}`,
         source: "live",
         test: false,
         sent: res.sent,
         reason: res.reason,
-        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, family: "rth", gates: this.gateSnapshot(ov), kelly: kelly ?? undefined, ...es.features, ...rn.features, ...gch.features, ...wall.features }),
+        features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, family: "session_continuation", gates: this.gateSnapshot(ov), kelly: kelly ?? undefined, ...es.features, ...rn.features, ...gch.features, ...wall.features }),
       });
       registerExpectation({
         key: `rth|${key}`,
         ts: Date.now(),
-        label: `rth ${s.dir}`,
+        label: `session-continuation ${s.dir}`,
         intent: {
           symbol: symbol(),
           dir: s.dir,
@@ -3079,7 +3079,7 @@ class SignalFeed {
         ["expRetrace", () => this.checkExpRetrace()],
         ["momentum", () => this.checkMomentum()],
         ["openDrive", () => this.checkOpen()],
-        ["rth", () => this.checkRth()],
+        ["session_continuation", () => this.checkRth()],
       ];
       for (const [name, fn] of checks) {
         t0 = performance.now();

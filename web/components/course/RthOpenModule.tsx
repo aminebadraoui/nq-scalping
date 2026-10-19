@@ -1,7 +1,7 @@
 import { Callout } from "@/components/ui";
 
 /* ------------------------------------------------------------------ *
- * Course modules 03–04 lessons — the RTH card and the Open family.
+ * Course modules 03–04 lessons — Session Continuation and the Open family.
  * Source of truth: PLAYBOOK.md, lib/softMomentum.ts (SOFT_PROD),
  * lib/openDrive.ts (OPEN_PROD / PULLBACK_PROD / SNIPER_PROD).
  * ------------------------------------------------------------------ */
@@ -53,7 +53,7 @@ function StatList({ stats }: { stats: Array<[string, string]> }) {
   );
 }
 
-/* ------------------------------------------------ module 03: RTH */
+/* ------------------------------------------------ module 03: Session Continuation */
 
 export function RthLesson() {
   return (
@@ -64,7 +64,7 @@ export function RthLesson() {
         proves real buyers (or sellers) were working the levels.
       </p>
 
-      <Callout tone="info" title="Why a separate card for RTH">
+      <Callout tone="info" title="Why a separate card for the day session">
         The research found this by crossing footprint depth with candle impact: in RTH, ≥60% one-sided bars
         with tick-level proof continue; the 75% Globex gates simply never fire there. Trading the momentum card
         in RTH means waiting all day for a bar that does not exist.
@@ -141,7 +141,7 @@ export function OpenDriveLesson() {
       </p>
 
       <h3 className="pt-2 text-base font-bold text-zinc-50">
-        🔔 Open drive — the 9:30 scan <span className="font-mono text-xs text-long">LIVE</span>
+        🔔 Open Drive — the 9:30 scan <span className="font-mono text-xs text-long">LIVE</span>
       </h3>
       <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
         From 9:30, watch the running opening-range high/low and the cumulative delta. The trade is the{" "}
@@ -205,7 +205,7 @@ export function PullbackSniperLesson() {
       {/* ---- pullback ---- */}
       <div className="space-y-4">
         <h3 className="text-base font-bold text-zinc-50">
-          🔔 Open pullback — the morning instinct, made objective{" "}
+          🔔 Morning Pullback — the morning instinct, made objective{" "}
           <span className="font-mono text-xs text-zinc-500">DEPLOYED · OFF</span>
         </h3>
         <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">
@@ -259,7 +259,7 @@ export function PullbackSniperLesson() {
       {/* ---- sniper ---- */}
       <div className="space-y-4">
         <h3 className="text-base font-bold text-zinc-50">
-          🔔 Open sniper — the 9:36:01 trade{" "}
+          🔔 9:36 Sniper — the 9:36:01 trade{" "}
           <span className="font-mono text-xs text-zinc-500">DEPLOYED · OFF</span>
         </h3>
         <p className="max-w-3xl text-sm leading-relaxed text-zinc-400">

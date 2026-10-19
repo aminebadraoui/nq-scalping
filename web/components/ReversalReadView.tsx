@@ -1,7 +1,7 @@
 "use client";
 
 /* ------------------------------------------------------------------ *
- * ReversalReadView — the reversal composer read, live and in full.
+ * ReversalReadView — the LVN Reversal Box composer read, live and in full.
  *
  * Presentational only: receives the /api/signal payload and renders
  * EVERY box in complete detail: vote, tone, conviction score, verdict
@@ -10,7 +10,7 @@
  * to Telegram, and the trade ticket lines. Nothing is truncated — long
  * verdicts wrap instead of being cut.
  *
- * Rendered as the REVERSAL tab of the live signal board
+ * Rendered as the LVN REVERSAL tab of the live signal board
  * (LiveSignalBoard) and usable standalone.
  * ------------------------------------------------------------------ */
 
@@ -125,7 +125,7 @@ export default function ReversalReadView({ feeds, signal: sig }: ReversalReadPro
                 {sig.gate.ok ? "✓ CARD GATE OPEN" : "⛔ CARD GATE CLOSED"} — Telegram push {sig.gate.ok ? "allowed" : "blocked"}
               </span>
               <span className="text-zinc-500">
-                · reversal feed {feeds?.reversal ? "ON" : "OFF (paused — owner rule)"}
+                · LVN reversal feed {feeds?.reversal ? "ON" : "OFF (paused — owner rule)"}
               </span>
             </div>
             <p className="mt-0.5 break-words font-mono text-[10px] leading-snug text-zinc-300">{sig.gate.reason}</p>

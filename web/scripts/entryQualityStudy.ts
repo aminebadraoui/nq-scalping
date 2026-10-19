@@ -408,7 +408,7 @@ async function main() {
 
   const flushLate = base.trades.filter((t) => t.fam === "momentum" && t.drift < -2);
   const flushLateNet = flushLate.reduce((a, t) => a + t.pnlUsd, 0);
-  console.log(`\nmomentum_flush late chases (open-fill drift < −2 pts): n=${flushLate.length} net=${fmtUsd(flushLateNet)}`);
+  console.log(`\nfailed_flush_breakout late chases (open-fill drift < −2 pts): n=${flushLate.length} net=${fmtUsd(flushLateNet)}`);
 
   /* ---- STANDARD REPORT (consolidated engine · BACKTEST-REPORT-STANDARD.md) ----
    * Engine-level stats on point-level P&L (pnlPts/riskPts — the legacy

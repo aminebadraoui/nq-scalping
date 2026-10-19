@@ -214,8 +214,8 @@ async function main() {
   console.log(`kelly sizing study · ${dates.length} sessions · cost ${cost}pt · drift ${drift} (${DRIFT_PTS}pt) · full day-plan guard stack + MFF sim`);
 
   const fams = {
-    MOM: { family: "momentum_flush", detect: detectMomentum, tR: 1 },
-    EXP: { family: "momentum_expansion", detect: detectExpansionScalp, tR: 1 },
+    MOM: { family: "failed_flush_breakout", detect: detectMomentum, tR: 1 },
+    EXP: { family: "huge_bar_expansion", detect: detectExpansionScalp, tR: 1 },
     RTH: { family: "rth", detect: detectSoftMomentum, tR: 0.75 },
   };
 
@@ -256,8 +256,8 @@ async function main() {
     const pool: Trade[] = [];
     for (const s of sessions) {
       const merged: Trade[] = [
-        ...replayStructural(s.minutes, s.sigs.MOM, "momentum_flush", 1, cost, drift),
-        ...replayStructural(s.minutes, s.sigs.EXP, "momentum_expansion", 1, cost, drift),
+        ...replayStructural(s.minutes, s.sigs.MOM, "failed_flush_breakout", 1, cost, drift),
+        ...replayStructural(s.minutes, s.sigs.EXP, "huge_bar_expansion", 1, cost, drift),
         ...replayStructural(s.minutes, s.sigs.RTH, "rth", 0.75, cost, drift),
       ].sort((a, b) => a.idx - b.idx);
       pool.push(...merged);

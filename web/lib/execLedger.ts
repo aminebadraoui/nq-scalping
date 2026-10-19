@@ -111,13 +111,19 @@ export type LedgerSummary = {
   netUsd: number;
 };
 
-/** verdict string → family slug (the exec_trades.family vocabulary) */
+/** verdict string → family slug (the exec_trades.family vocabulary).
+ *  Accepts pre- and post-2026-10-19-rename phrases; the momentum coarse
+ *  slug stays (exec rows can't distinguish flush vs expansion). */
 export function familyFromVerdict(verdict: string): string {
   const v = verdict.toLowerCase();
   if (v.includes("sweep")) return "sweep_reclaim";
-  if (v.includes("rth")) return "rth";
-  if (v.includes("big-bar") || v.includes("momentum")) return "momentum";
+  if (v.includes("session continuation") || v.includes("rth")) return "session_continuation";
+  if (v.includes("big-bar") || v.includes("momentum") || v.includes("failed-flush") || v.includes("huge-bar")) return "momentum";
+  if (v.includes("open drive")) return "open_drive";
+  if (v.includes("open pullback")) return "open_pullback";
+  if (v.includes("open sniper")) return "open_sniper";
   if (v.includes("open")) return "open";
+  if (v.includes("reversal")) return "lvn_reversal";
   return "";
 }
 

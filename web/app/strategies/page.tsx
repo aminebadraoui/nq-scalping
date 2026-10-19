@@ -35,7 +35,7 @@ const PIPELINE = [
         <b className="text-zinc-200">Direct detectors</b> — the active strategies (momentum flush + expansion, RTH, open
         drive; pullback and sniper shipped but off). Each one is a self-contained detector with its own precise conditions
         (rendered card-by-card below from the registry) that fires only on the just-completed minute bar.{" "}
-        <b className="text-zinc-200">The box pipeline</b> — the reversal card (currently OFF): three independent boxes —
+        <b className="text-zinc-200">The box pipeline</b> — the LVN Reversal Box card (currently OFF): three independent boxes —
         order flow (the location → absorption → divergence → reclaim sequence), price action (premium/discount) and
         options/gamma (context — reported, never votes). Every directional box must agree on the direction; then the card
         gate requires all 3 required ingredients (location, mechanism, trigger) plus ≥1 confirmation (4/6 ingredients

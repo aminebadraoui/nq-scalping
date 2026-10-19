@@ -43,13 +43,18 @@ const baseTrade = (over: Partial<TradeForAnalysis> = {}): TradeForAnalysis => ({
 const bar = (tsMs: number, high: number, low: number): Bar => ({ ts: tsMs, high, low });
 
 test("familyOf maps verdicts to analysis families", () => {
-  assert.equal(familyOf("momentum (failed-flush breakout)"), "momentum_flush");
-  assert.equal(familyOf("momentum (huge-bar expansion)"), "momentum_expansion");
-  assert.equal(familyOf("rth soft-continuation (experimental)"), "rth");
+  // legacy (pre-2026-10-19) verdict phrases keep mapping to the canonical families
+  assert.equal(familyOf("momentum (failed-flush breakout)"), "failed_flush_breakout");
+  assert.equal(familyOf("momentum (huge-bar expansion)"), "huge_bar_expansion");
+  assert.equal(familyOf("rth soft-continuation (experimental)"), "session_continuation");
   assert.equal(familyOf("open drive (experimental)"), "open_drive");
   assert.equal(familyOf("sweep-reclaim (one-sided)"), "sweep_reclaim");
-  assert.equal(familyOf("LONG REVERSAL MECHANISM — 3/3 required + 2 support"), "reversal");
+  assert.equal(familyOf("LONG REVERSAL MECHANISM — 3/3 required + 2 support"), "lvn_reversal");
   assert.equal(familyOf("something else"), "other");
+  // new expressive verdicts
+  assert.equal(familyOf("failed-flush breakout"), "failed_flush_breakout");
+  assert.equal(familyOf("huge-bar expansion"), "huge_bar_expansion");
+  assert.equal(familyOf("session continuation (experimental)"), "session_continuation");
 });
 
 test("hourBucketOf splits the day at the documented boundaries", () => {
@@ -85,7 +90,7 @@ test("computeFeatures: long win reaching the target zone", () => {
   assert.equal(f.stopRun, false);
   assert.equal(f.lossLabel, "");
   assert.equal(f.firstOfDay, true);
-  assert.equal(f.family, "momentum_flush");
+  assert.equal(f.family, "failed_flush_breakout");
   assert.equal(f.hourBucket, "globex_core");
 });
 
@@ -154,7 +159,7 @@ test("markFirstOfDay returns the earliest signal ts per day", () => {
 test("aggregateTrades: win rate, PF, expectancy and stop-run rate", () => {
   const mk = (over: Partial<TradeForAnalysis>, feats: Partial<EnrichedTrade>): EnrichedTrade => ({
     ...baseTrade(over),
-    family: "momentum_flush",
+    family: "failed_flush_breakout",
     hourBucket: "globex_core",
     firstOfDay: false,
     riskPts: 5,
@@ -188,7 +193,7 @@ test("aggregateTrades: win rate, PF, expectancy and stop-run rate", () => {
   assert.equal(all.expectancyUsd, 12.5);
   assert.equal(all.stopRuns, 1);
   assert.ok(Math.abs((all.stopRunRate ?? 0) - 0.5) < 1e-9);
-  const fam = stats.find((s) => s.group === "family" && s.label === "momentum_flush")!;
+  const fam = stats.find((s) => s.group === "family" && s.label === "failed_flush_breakout")!;
   assert.equal(fam.n, 4);
 });
 
@@ -203,11 +208,11 @@ test("hypWrByFamily: replay win rate over all signals, time/open excluded", () =
     { verdict: "rth soft-continuation (experimental)", outcome: "win" },
     { verdict: "sweep-reclaim scalp", outcome: "loss" },
   ]);
-  const mom = m.get("momentum_flush")!;
+  const mom = m.get("failed_flush_breakout")!;
   assert.equal(mom.n, 3);
   assert.equal(mom.wins, 1);
   assert.ok(Math.abs(mom.wr - 1 / 3) < 1e-9);
-  const rth = m.get("rth")!;
+  const rth = m.get("session_continuation")!;
   assert.equal(rth.wr, 1);
   assert.equal(m.get("sweep_reclaim")!.wr, 0);
 });

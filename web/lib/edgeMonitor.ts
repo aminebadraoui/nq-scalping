@@ -17,17 +17,17 @@
 import type { EnrichedTrade } from "./tradeStats";
 
 /** replay baselines (expR per trade, 648-session archive, Oct 2026):
- *  momentum_flush   0.44 (rr1.0 fixed-1R sweep) / 0.47 ladder
- *  momentum_expansion 0.48 (1.6×ATR + stack)
- *  rth              0.44 (82.2% @ 0.75R plan)
- *  open_drive       0.33 (93% hit @ TP15/SL35)
- *  open_pullback    0.40 (69.8% @ 1R, +5.2 pts)
- *  open_sniper      0.30 (55.8% @ 1R, +6.5 pts)
- *  sweep_reclaim    0.34 (67% @ 1R) */
+ *  failed_flush_breakout  0.44 (rr1.0 fixed-1R sweep) / 0.47 ladder
+ *  huge_bar_expansion     0.48 (1.6×ATR + stack)
+ *  session_continuation   0.44 (82.2% @ 0.75R plan)
+ *  open_drive             0.33 (93% hit @ TP15/SL35)
+ *  open_pullback          0.40 (69.8% @ 1R, +5.2 pts)
+ *  open_sniper            0.30 (55.8% @ 1R, +6.5 pts)
+ *  sweep_reclaim          0.34 (67% @ 1R) */
 export const REPLAY_EXPR_BASELINES: Record<string, number> = {
-  momentum_flush: 0.44,
-  momentum_expansion: 0.48,
-  rth: 0.44,
+  failed_flush_breakout: 0.44,
+  huge_bar_expansion: 0.48,
+  session_continuation: 0.44,
   open_drive: 0.33,
   open_pullback: 0.4,
   open_sniper: 0.3,

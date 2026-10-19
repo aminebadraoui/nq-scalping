@@ -18,6 +18,7 @@
 import { dbEnabled, getDb } from "../lib/gcdb";
 import { familyOf } from "../lib/tradeStats";
 import { REPLAY_EXPR_BASELINES } from "../lib/edgeMonitor";
+import { canonicalFamily } from "../lib/strategies/aliases";
 
 type SigRow = { ts: string | number; day: string; verdict: string; outcome: string; gross_pts: string | number | null; risk_pts: string | number | null; features: unknown | null };
 
@@ -25,9 +26,9 @@ type SigRow = { ts: string | number; day: string; verdict: string; outcome: stri
  *  the LIVE bracket numbers (37.7% / PF 1.49, resting-limit 2.5R), which
  *  is what the live cards actually trade. */
 const WR_BASELINES: Record<string, number> = {
-  momentum_flush: 77.5,
-  momentum_expansion: 78.4,
-  rth: 37.7,
+  failed_flush_breakout: 77.5,
+  huge_bar_expansion: 78.4,
+  session_continuation: 37.7,
   open_drive: 93.0, // hit rate at TP15/SL35, not WR
   open_pullback: 69.8,
   open_sniper: 55.8,
@@ -37,8 +38,9 @@ const WR_BASELINES: Record<string, number> = {
 
 function familyOfRow(r: SigRow): string {
   const f = r.features as { family?: unknown } | null;
-  if (f && typeof f.family === "string" && f.family) return f.family;
-  return familyOf(r.verdict);
+  // canonicalize: rows written before the 2026-10-19 rename keep legacy slugs
+  if (f && typeof f.family === "string" && f.family) return canonicalFamily(f.family);
+  return canonicalFamily(familyOf(r.verdict));
 }
 
 const WINDOW = 100;

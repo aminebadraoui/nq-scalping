@@ -107,7 +107,7 @@ export default function ExecStatusBar({ data }: { data: ExecHealth | null }) {
           <span className="hidden items-center gap-1 lg:flex">
             <Chip on={feeds.momentum} label="MOM" tone="long" />
             <Chip on={feeds.bigbar} label="BIGBAR" tone="long" />
-            <Chip on={feeds.rth} label="RTH" tone="long" />
+            <Chip on={feeds.rth} label="CONT" tone="long" />
             <Chip on={feeds.openDrive} label="DRIVE" tone="long" />
             <Chip on={feeds.open} label="OPEN" tone="long" />
           </span>

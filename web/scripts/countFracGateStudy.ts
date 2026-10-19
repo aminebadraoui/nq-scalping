@@ -16,7 +16,7 @@
  *
  *   node --env-file=.env.local --import ../scripts/ts-loader.mjs \
  *     scripts/countFracGateStudy.ts --offline [--max N] \
- *     [--family momentum_expansion] [--theta 0.65 --report-json out.json]
+ *     [--family huge_bar_expansion] [--theta 0.65 --report-json out.json]
  * ------------------------------------------------------------------ */
 
 import { promises as fs } from "node:fs";
@@ -26,7 +26,8 @@ import { loadSessionMinutes, archiveDates, cacheDir } from "../lib/archive";
 import { detectMomentum, detectExpansionScalp, MOM_PROD, EXP_PROD, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { dollarize, simulateAccount } from "../lib/propAccount";
 import { scoreTrade, scoreSequential, coreStats, propViability, renderT1, renderT2, renderT4, renderVerdict, PRODUCTION_STACK } from "../lib/backtestEngine";
-import { buildReport, cohortOf, type CohortStats } from "../lib/promotionGate";const SPLIT = "2026-01-01";
+import { buildReport, cohortOf, type CohortStats } from "../lib/promotionGate";
+import { canonicalFamily } from "../lib/strategies/aliases";const SPLIT = "2026-01-01";
 const COST = 0.5;
 const HOLD = 60;
 const THETAS = [0.55, 0.6, 0.65, 0.7, 0.75];
@@ -84,14 +85,14 @@ async function main() {
     const i = argv.indexOf(n);
     return i >= 0 ? argv[i + 1] : undefined;
   };
-  const family = grab("--family") ?? "momentum_expansion";
+  const family = canonicalFamily(grab("--family") ?? "huge_bar_expansion");
   const thetaArg = grab("--theta");
   const reportJson = grab("--report-json");
   const sweepOut = grab("--sweep-out");
   const offline = argv.includes("--offline");
   const maxArg = grab("--max");
   const max = maxArg !== undefined ? Number(maxArg) : undefined;
-  const detect = family === "momentum_expansion" ? (m: MomMinute[]) => detectExpansionScalp(m, EXP_PROD) : (m: MomMinute[]) => detectMomentum(m, MOM_PROD);
+  const detect = family === "huge_bar_expansion" ? (m: MomMinute[]) => detectExpansionScalp(m, EXP_PROD) : (m: MomMinute[]) => detectMomentum(m, MOM_PROD);
 
   let dates = await archiveDates(offline ? { source: "manifest" } : {});
   if (!dates.length) {

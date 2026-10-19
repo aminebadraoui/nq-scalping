@@ -74,9 +74,13 @@ const netTone = (n: number): string => (n > 0 ? "text-long" : n < 0 ? "text-shor
 
 const FAMILY_BADGE: Record<string, { label: string; cls: string }> = {
   momentum: { label: "MOM", cls: "border-info/40 bg-info/10 text-info" },
-  rth: { label: "RTH", cls: "border-violet-500/40 bg-violet-500/10 text-violet-300" },
+  failed_flush_breakout: { label: "FFB", cls: "border-info/40 bg-info/10 text-info" },
+  huge_bar_expansion: { label: "HBE", cls: "border-info/40 bg-info/10 text-info" },
+  session_continuation: { label: "CONT", cls: "border-violet-500/40 bg-violet-500/10 text-violet-300" },
+  rth: { label: "CONT", cls: "border-violet-500/40 bg-violet-500/10 text-violet-300" },
   open: { label: "OPEN", cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" },
   sweep_reclaim: { label: "SWP", cls: "border-zinc-600 bg-zinc-800/40 text-zinc-300" },
+  lvn_reversal: { label: "LVN", cls: "border-zinc-600 bg-zinc-800/40 text-zinc-300" },
 };
 
 const STATUS_STYLE: Record<string, string> = {

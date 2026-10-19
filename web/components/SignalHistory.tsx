@@ -6,6 +6,7 @@ import { cdtToET } from "@/lib/times";
 import { flattenFeatures } from "@/lib/tradeLedger";
 import { groupFeatures } from "@/lib/featureGroups";
 import { familyName } from "@/lib/familyNames";
+import { canonicalFamily } from "@/lib/strategies/aliases";
 
 type CompactCandidate = {
   side: "bid" | "ask";
@@ -265,8 +266,9 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
           const exec = execFor(e);
           // the strategy family: featureRegistry.ts records it inside the
           // features vector; the feed may also pass it top-level
-          const familyId =
-            typeof e.features?.family === "string" ? e.features.family : typeof e.family === "string" ? e.family : "";
+          const familyId = canonicalFamily(
+            typeof e.features?.family === "string" ? e.features.family : typeof e.family === "string" ? e.family : "",
+          );
           return (
             <div
               key={id}

@@ -55,17 +55,20 @@ export const MINUTE = 60_000;
 
 /* ---- strategy family ---------------------------------------------- */
 
-/** Map a signal verdict to the strategy family the analysis groups by. */
+/** Map a signal verdict to the strategy family the analysis groups by.
+ *  Accepts BOTH the pre-2026-10-19 rename phrases ("momentum (huge-bar
+ *  expansion)", "rth soft-continuation", …) and the new expressive ones —
+ *  historical rows must keep bucketing correctly forever. */
 export function familyOf(verdict: string): string {
   const v = verdict.toLowerCase();
-  if (v.includes("huge-bar expansion")) return "momentum_expansion";
-  if (v.includes("momentum")) return "momentum_flush";
-  if (v.includes("rth")) return "rth";
+  if (v.includes("huge-bar expansion")) return "huge_bar_expansion";
+  if (v.includes("failed-flush") || v.includes("big-bar") || v.includes("momentum")) return "failed_flush_breakout";
+  if (v.includes("session continuation") || v.includes("rth")) return "session_continuation";
   if (v.includes("open drive")) return "open_drive";
   if (v.includes("open pullback")) return "open_pullback";
   if (v.includes("open sniper")) return "open_sniper";
   if (v.includes("sweep-reclaim")) return "sweep_reclaim";
-  if (v.includes("reversal")) return "reversal"; // the paused LVN reversal card
+  if (v.includes("reversal")) return "lvn_reversal"; // the retired LVN reversal box
   return "other";
 }
 
@@ -294,7 +297,7 @@ export function aggregateTrades(rows: EnrichedTrade[]): StatRow[] {
 
   for (const [family, g] of groupBy(rows, (r) => r.family)) {
     out.push(build("family", family, g));
-    if (family === "momentum_flush" || family === "momentum_expansion") {
+    if (family === "failed_flush_breakout" || family === "huge_bar_expansion") {
       // momentum sub-group already covered by family rows above
     }
   }

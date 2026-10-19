@@ -94,7 +94,7 @@ export async function GET() {
           })),
           contextNotes: s.signal.contextNotes,
           // the card gate's verdict on THIS snapshot — why Telegram would or
-          // would not receive the reversal card right now
+          // would not receive the LVN reversal card right now
           gate: cardGateOpen(s.signal, s.mech),
           // the full ingredient checklist inside the order-flow box
           ingredients: s.mech.ingredients.map((i) => ({

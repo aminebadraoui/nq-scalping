@@ -24,6 +24,7 @@
  * ------------------------------------------------------------------ */
 
 import type { EnrichedTrade } from "./tradeStats";
+import { canonicalFamily } from "./strategies/aliases";
 
 export type GateName =
   | "enable"
@@ -153,6 +154,10 @@ export function mineInsights(rows: AnalyzedTrade[], opts: MineOpts = {}): Insigh
   const out: Insight[] = [];
   if (rows.length < 4) return out;
 
+  // 2026-10-19 rename bridge: rows from before the rename carry legacy
+  // family slugs — canonicalize once so every bucket/filter agrees.
+  rows = rows.map((r) => ({ ...r, family: canonicalFamily(r.family) }));
+
   /** walk-forward check: the proposal must hold on the newest third of
    *  the bucket's trades (test wr <= veto+10pp AND test net < 0), or it
    *  is downgraded to an observation. */
@@ -243,7 +248,7 @@ export function mineInsights(rows: AnalyzedTrade[], opts: MineOpts = {}): Insigh
   }
 
   // ---- 2. expansion trigger: if weak overall → trend filter proposal
-  const exp = rows.filter((r) => r.family === "momentum_expansion");
+  const exp = rows.filter((r) => r.family === "huge_bar_expansion");
   if (exp.length >= MIN_N_GATE) {
     const b = bucket(exp);
     if (b.wr !== null && b.wr <= 0.3) {
@@ -265,7 +270,7 @@ export function mineInsights(rows: AnalyzedTrade[], opts: MineOpts = {}): Insigh
       out.push(
         validate(
           {
-            strategy: "momentum_expansion",
+            strategy: "huge_bar_expansion",
             kind: "rule_proposal",
             severity: "warn",
             title: "momentum expansion needs a session-trend filter",
@@ -276,7 +281,7 @@ export function mineInsights(rows: AnalyzedTrade[], opts: MineOpts = {}): Insigh
             }. The huge-bar trigger keeps firing against one-sided session runs.`,
             evidence,
             proposedAction: {
-              family: "momentum_expansion",
+              family: "huge_bar_expansion",
               gate: "trend_filter",
               value: { required: true, on: "cumDelta" },
               note: "only take expansion entries in the session cumulative-delta direction",
@@ -460,7 +465,7 @@ function hoursInBucket(bucketKey: string): number[] {
 /** deterministic narrative used when no LLM is configured */
 export function renderDeterministicNarrative(rows: AnalyzedTrade[], insights: Insight[]): string {
   const overall = bucket(rows);
-  const byFamily = bucketStats(rows, (r) => r.family);
+  const byFamily = bucketStats(rows, (r) => canonicalFamily(r.family));
   const L: string[] = [];
   L.push(
     `Dataset: ${rows.length} traded signals — ${overall.wins}W/${overall.losses}L (${pct(overall.wr)}), ` +

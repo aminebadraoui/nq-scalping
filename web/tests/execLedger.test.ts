@@ -49,10 +49,12 @@ const exec = (p: Partial<LedgerExec>): LedgerExec => ({
 });
 
 test("familyFromVerdict maps the verdict vocabulary", () => {
-  assert.equal(familyFromVerdict("rth soft-continuation (experimental)"), "rth");
+  assert.equal(familyFromVerdict("rth soft-continuation (experimental)"), "session_continuation");
   assert.equal(familyFromVerdict("momentum (failed-flush breakout)"), "momentum");
+  assert.equal(familyFromVerdict("failed-flush breakout"), "momentum");
+  assert.equal(familyFromVerdict("session continuation (experimental)"), "session_continuation");
   assert.equal(familyFromVerdict("momentum (big-bar continuation · limit)"), "momentum");
-  assert.equal(familyFromVerdict("open drive (experimental)"), "open");
+  assert.equal(familyFromVerdict("open drive (experimental)"), "open_drive");
   assert.equal(familyFromVerdict("sweep-reclaim (one-sided)"), "sweep_reclaim");
   assert.equal(familyFromVerdict("unknown"), "");
 });

@@ -15,6 +15,7 @@ import type { DaybookDaySummary, DaybookTradeSummary } from "./daybook";
 import { familyOf } from "./tradeStats";
 import { FAMILY_LABEL } from "./familyNames";
 import { REPLAY_EXPR_BASELINES } from "./edgeMonitor";
+import { canonicalFamily } from "./strategies/aliases";
 
 export type LiveEdgeStatus = "ok" | "watch" | "breach" | "insufficient";
 
@@ -67,22 +68,23 @@ export type LiveArchive = {
 
 /** canonical display order; unknowns found in the data are appended */
 export const CANONICAL_FAMILIES = [
-  "momentum_flush",
-  "momentum_expansion",
-  "rth",
+  "failed_flush_breakout",
+  "huge_bar_expansion",
+  "session_continuation",
   "open_drive",
   "open_pullback",
   "open_sniper",
   "sweep_reclaim",
-  "reversal",
+  "lvn_reversal",
   "other",
 ] as const;
 
 /** the trade's family: the consolidation's label wins, a verdict that
- *  maps to a real family is the fallback, anything else is "other" */
+ *  maps to a real family is the fallback, anything else is "other".
+ *  Legacy daybook rows keep pre-rename slugs — canonicalize both paths. */
 export function liveFamilyOf(t: Pick<DaybookTradeSummary, "family" | "verdict">): string {
-  if (t.family && t.family !== "other") return t.family;
-  return familyOf(t.verdict || "");
+  if (t.family && t.family !== "other") return canonicalFamily(t.family);
+  return canonicalFamily(familyOf(t.verdict || ""));
 }
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -119,6 +121,10 @@ export function aggregateLiveArchive(
   days: SourceDay[],
   baselines: Record<string, number> = REPLAY_EXPR_BASELINES,
 ): LiveArchive {
+  // 2026-10-19 rename bridge: custom baseline keys may still use legacy
+  // family slugs — canonicalize the keys once.
+  const base: Record<string, number> = {};
+  for (const [k, v] of Object.entries(baselines)) base[canonicalFamily(k)] = v;
   const known: string[] = [...CANONICAL_FAMILIES];
   const seen = new Set<string>();
 
@@ -202,7 +208,7 @@ export function aggregateLiveArchive(
     const b = buckets.get(family)!;
     const decided = b.wins + b.losses;
     const meanExpR = b.exps.length ? b.exps.reduce((s, x) => s + x, 0) / b.exps.length : null;
-    const baseline = baselines[family] ?? baselines.other ?? 0.2;
+    const baseline = base[family] ?? base.other ?? 0.2;
     return {
       family,
       label: FAMILY_LABEL[family] ?? family,

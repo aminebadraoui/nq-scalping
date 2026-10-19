@@ -52,7 +52,7 @@ export function formatSignalHtml(
   pa: PriceActionRead,
   opt: OptionsRead | null,
   ctx: SignalContext,
-  setup: string = "REVERSAL",
+  setup: string = "LVN REVERSAL",
 ): string {
   const L: string[] = [];
 
@@ -128,7 +128,7 @@ export function formatSignalHtml(
   L.push(
     setup === "PULLBACK"
       ? `<i>${STATS.sweepReclaim.name.toLowerCase()} family · ${STATS.sweepReclaim.stat}</i>`
-      : `<i>${STATS.reversal.name} · ${STATS.reversal.stat}</i>`,
+      : `<i>${STATS.lvnReversal.name} · ${STATS.lvnReversal.stat}</i>`,
   );
 
   // ---- footer ----
@@ -144,7 +144,7 @@ export function formatSignalHtml(
 export function formatReclaimSetupHtml(setup: ReclaimSetup, ctx: SignalContext, size?: string): string {
   const L: string[] = [];
   const side = setup.dir === "long" ? "🟢 LONG" : "🔴 SHORT";
-  L.push(`🔔 <b>NQ SWEEP-RECLAIM · ${side}</b>`);
+  L.push(`🔔 <b>NQ SWEEP-RECLAIM FADE · ${side}</b>`);
   L.push(`<code>${escHtml(ctx.symbol)}  ${fmt(ctx.price)}  ${escHtml(ctx.timeET)} NY</code>`);
   L.push("");
   L.push(`<b>ENTRY</b>  ${fmt(setup.entry)}  <i>(reclaim-bar close)</i>`);
@@ -156,6 +156,6 @@ export function formatReclaimSetupHtml(setup: ReclaimSetup, ctx: SignalContext, 
   L.push("");
   L.push(`<i>${STATS.sweepReclaim.stat} — forward-test, journal every trade.</i>`);
   L.push("");
-  L.push(`<i>${escHtml(ctx.source)} · sweep-reclaim reversal.</i>`);
+  L.push(`<i>${escHtml(ctx.source)} · sweep-reclaim fade reversal.</i>`);
   return L.join("\n");
 }

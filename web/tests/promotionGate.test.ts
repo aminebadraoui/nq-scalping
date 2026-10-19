@@ -14,7 +14,7 @@ const passing = (): StudyReport =>
     sha: "deadbeef",
     splitDate: "2026-01-01",
     stack: "signals *_PROD (registry) · gates default set · risk challengeRules+guardCore · fill 0.5pt/close-entry",
-    family: "momentum_flush",
+    family: "failed_flush_breakout",
     gate: "hour_veto",
     value: { hours: [16] },
     note: "measured hour veto",

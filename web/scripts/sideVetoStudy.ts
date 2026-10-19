@@ -10,7 +10,7 @@
  * gate applies it — post-detection, before scoring, fail-open.
  *
  * Pre-registered candidates (2026-10-16, from measured cells):
- *   A. momentum_expansion { side: "short", hours: [15] }
+ *   A. huge_bar_expansion { side: "short", hours: [15] }
  *      — the ticketVeto close-bucket cell (short +0.75 vs long +2.13
  *        pts/trade), below the ~1.0–1.25 pt live cost bar.
  *
@@ -21,7 +21,7 @@
  *   prop sim PASS train + test · (no grid → no DSR/PBO needed)
  *
  *   node --env-file=.env.local --import ../scripts/ts-loader.mjs \
- *     scripts/sideVetoStudy.ts --family momentum_expansion \
+ *     scripts/sideVetoStudy.ts --family huge_bar_expansion \
  *     --veto '{"side":"short","hours":[15]}' [--report-json out.json] \
  *     [--offline] [--max N]
  * ------------------------------------------------------------------ */
@@ -33,6 +33,7 @@ import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
 import { dollarize, simulateAccount } from "../lib/propAccount";
 import { scoreTrade, scoreSequential, coreStats, propViability, renderT1, renderT2, renderT4, renderVerdict, PRODUCTION_STACK } from "../lib/backtestEngine";
 import { buildReport, cohortOf, type CohortStats } from "../lib/promotionGate";
+import { canonicalFamily } from "../lib/strategies/aliases";
 
 const COST = 0.5;
 const HOLD_BARS = 60;
@@ -76,7 +77,7 @@ async function main() {
     const i = argv.indexOf(name);
     return i >= 0 ? argv[i + 1] : undefined;
   };
-  const family = grab("--family") ?? "momentum_expansion";
+  const family = canonicalFamily(grab("--family") ?? "huge_bar_expansion");
   const vetoRaw = grab("--veto");
   const reportJson = grab("--report-json");
   const offline = argv.includes("--offline");
@@ -92,11 +93,11 @@ async function main() {
   const vetoMatches = (s: MomentumSignal) => veto !== null && s.dir === veto.side && (vetoHours.size === 0 || vetoHours.has(s.hourET));
 
   const detect: (m: MomMinute[]) => MomentumSignal[] =
-    family === "momentum_expansion"
+    family === "huge_bar_expansion"
       ? (m) => detectExpansionScalp(m, EXP_PROD)
-      : family === "momentum_flush"
+      : family === "failed_flush_breakout"
         ? (m) => detectMomentum(m, MOM_PROD)
-        : family === "rth"
+        : family === "session_continuation"
           ? (m) => detectSoftMomentum(m, SOFT_PROD)
           : (() => {
               throw new Error(`unknown family ${family}`);

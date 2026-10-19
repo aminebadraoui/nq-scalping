@@ -21,6 +21,7 @@
  * ------------------------------------------------------------------ */
 
 import { familyOf } from "./tradeStats";
+import { canonicalFamily } from "./strategies/aliases";
 import type { DaybookRecord } from "./daybook";
 import { accountForDay, resolveAccount, type AccountSource } from "./accountAttribution";
 
@@ -152,7 +153,7 @@ export function buildRowFromDb(r: DbTradeRow, index = 0): LedgerRow {
     buildSha: null,
     side: String(r.side ?? ""),
     contracts: Number(r.contracts ?? 0),
-    family: String(r.family ?? familyOf(String(r.verdict ?? ""))),
+    family: canonicalFamily(String(r.family ?? familyOf(String(r.verdict ?? "")))),
     verdict: String(r.verdict ?? ""),
     headline: String(r.headline ?? ""),
     status: String(r.status ?? "matched"),
@@ -231,7 +232,7 @@ export function buildRowsFromDaybook(packs: DaybookDayPack[]): LedgerRow[] {
       const idx = pick(side, timeET);
       const sig = idx >= 0 ? signals[idx] : null;
       if (idx >= 0) used.add(idx);
-      const family = String(t.family ?? (sig ? familyOf(sig.verdict) : "other"));
+      const family = canonicalFamily(String(t.family ?? (sig ? familyOf(sig.verdict) : "other")));
       const verdict = String(t.verdict ?? sig?.verdict ?? "");
       const ts = sig?.at ?? Date.parse(`${day}T12:00:00-05:00`);
       out.push({

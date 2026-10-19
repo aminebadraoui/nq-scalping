@@ -75,13 +75,14 @@ export const KELLY_DEFAULTS: KellyConfig = {
   prior: { wins: 8, losses: 3, winR: 1, lossR: 1 },
 };
 
-/** family priors from the playbook (live journal anchor only) */
+/** family priors from the playbook (live journal anchor only).
+ *  2026-10-19 rename: canonical keys; kellyLive canonicalizes lookups. */
 export const KELLY_PRIORS: Record<string, KellyPrior> = {
-  // momentum flush 77.5% @ 1R · expansion 78.4% @ 1R (playbook)
-  momentum_flush: { wins: 31, losses: 9, winR: 1, lossR: 1 },
-  momentum_expansion: { wins: 31, losses: 9, winR: 1, lossR: 1 },
-  // RTH live limit bracket 37.7% @ 2.5R, 0.5× stop (rthLimitValidation)
-  rth: { wins: 15, losses: 25, winR: 1.25, lossR: 0.5 },
+  // Failed-Flush Breakout 77.5% @ 1R · Huge-Bar Expansion 78.4% @ 1R (playbook)
+  failed_flush_breakout: { wins: 31, losses: 9, winR: 1, lossR: 1 },
+  huge_bar_expansion: { wins: 31, losses: 9, winR: 1, lossR: 1 },
+  // Session Continuation live limit bracket 37.7% @ 2.5R, 0.5× stop (rthLimitValidation)
+  session_continuation: { wins: 15, losses: 25, winR: 1.25, lossR: 0.5 },
   default: { wins: 8, losses: 3, winR: 1, lossR: 1 },
 };
 

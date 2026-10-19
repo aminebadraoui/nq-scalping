@@ -20,6 +20,7 @@ import type { NextRequest } from "next/server";
 import { dbEnabled, getDb } from "@/lib/gcdb";
 import { isRecentAccount, resolveAccount } from "@/lib/accountAttribution";
 import { familyOf } from "@/lib/tradeStats";
+import { canonicalFamily } from "@/lib/strategies/aliases";
 import {
   minePatterns,
   winLossRowsFromDb,
@@ -60,7 +61,8 @@ async function runAnalysis(sp: URLSearchParams): Promise<RunInput & { runAt: str
   const db = getDb();
   await ensurePatternRunsTable(db);
   const since = (sp.get("since") ?? "").replace(/[^0-9-]/g, "");
-  const family = (sp.get("family") ?? "").replace(/[^a-z_]/g, "");
+  // 2026-10-19 rename bridge: legacy ?family= slugs keep working
+  const family = canonicalFamily((sp.get("family") ?? "").replace(/[^a-z_]/g, ""));
   const minN = Number(sp.get("minN") ?? "5") || 5;
   const account = sp.get("account") ?? "all";
   const universe = (sp.get("universe") ?? "filled") === "signals" ? ("signals" as const) : ("filled" as const);

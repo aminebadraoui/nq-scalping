@@ -114,7 +114,7 @@ test("card-path smoke: a healthy failed-flush setup passes every gate to a place
   assert.deepEqual(g, { hold: false, veto: false });
 
   // 2. the ticket veto: the momentum_flush cell must not veto this long
-  const vet = ticketVetoDecision({ family: "momentum_flush", hourBucket: "globex_early", dir: "long" }, ticketVetoBar());
+  const vet = ticketVetoDecision({ family: "failed_flush_breakout", hourBucket: "globex_early", dir: "long" }, ticketVetoBar());
   assert.equal(vet.veto, false, `ticket veto blocked a healthy card: ${vet.reason}`);
 
   // 3. sizing: the 3.5-pt risk must size inside the Rapid EOD 50k plan

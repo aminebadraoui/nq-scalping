@@ -33,7 +33,7 @@ type Strategy = {
 const STRATEGIES: Strategy[] = [
   {
     emoji: "⚡",
-    name: "MOMENTUM — the one trade signal",
+    name: "MOMENTUM — Failed-Flush Breakout + Huge-Bar Expansion",
     status: "LIVE",
     feeds: ["momentum"],
     window: "Globex only · 18:00 → 9:30 ET (RTH 9:30–16:00 excluded)",
@@ -83,12 +83,12 @@ const STRATEGIES: Strategy[] = [
   },
   {
     emoji: "🟦",
-    name: "RTH — footprint-proven continuation",
+    name: "SESSION CONTINUATION — footprint-proven continuation",
     status: "LIVE",
     feeds: ["rth"],
-    window: "RTH only · 9:30 → 16:00 ET (ends at the 16:00 closing bar)",
+    window: "cash hours only · 9:30 → 16:00 ET (ends at the 16:00 closing bar)",
     conditions: [
-      "A bar in RTH with ≥60% one-sided volume (buy-frac ≥0.60 for longs; mirror ≤0.40)",
+      "A bar in cash hours with ≥60% one-sided volume (buy-frac ≥0.60 for longs; mirror ≤0.40)",
       "≥3 dominant cluster rows on the trade side (≥3 lots, ≥2:1) — the tick-level proof",
       "Range ≥1.0× ATR14 (the candle-size gate)",
       "Volume ≥0.5× the trailing 60-bar median",
@@ -133,7 +133,7 @@ const STRATEGIES: Strategy[] = [
   },
   {
     emoji: "🔔",
-    name: "OPEN PULLBACK — the morning instinct, objective",
+    name: "MORNING PULLBACK — the morning instinct, objective",
     status: "DEPLOYED — OFF (FEED_OPEN_PULLBACK=0)",
     feeds: ["open", "openPullback"],
     window: "9:30 → 10:30 ET",
@@ -155,7 +155,7 @@ const STRATEGIES: Strategy[] = [
   },
   {
     emoji: "🔔",
-    name: "OPEN SNIPER — the 9:36:01 trade",
+    name: "9:36 SNIPER — the 9:36:01 trade",
     status: "DEPLOYED — OFF (FEED_OPEN_SNIPER=0)",
     feeds: ["open", "openSniper"],
     window: "9:36 → 9:45 ET",
@@ -184,7 +184,7 @@ const STRATEGIES: Strategy[] = [
     conditions: [
       "A completed minute with volume ≥2× its hour's median AND ≥70% one-sided",
       "Prints the volume multiple, one-sided %, and the failed-flush watch line when the bar fails to make a new extreme: “no new session low” or “no new local low (20 bars)” + the breakout reference price",
-      "Footer lists every strategy's win rate: momentum 77.5% · RTH 82.2% · drive 96% · pullback 69.8% · sniper 55.8%",
+      "Footer lists every strategy's win rate: momentum 77.5% · session continuation 37.7% · drive 96% · pullback 69.8% · sniper 55.8%",
     ],
     mechanics: { entry: "—", stop: "—", target: "—", risk: "no trade ticket attached" },
     stats: [{ label: "Status", value: "FEED_UNUSUAL_VOLUME=0 · FEED_PULLBACK_TICKET=0" }],
@@ -192,8 +192,8 @@ const STRATEGIES: Strategy[] = [
 ];
 
 const RETIRED: { name: string; note: string; feeds?: (keyof FeedFlags)[] }[] = [
-  { name: "LVN reversal", note: "the original fade playbook — docs/strategy/STRATEGY.md; the box pipeline (order flow + price action + options) with the 3-required + confirmation card gate", feeds: ["reversal"] },
-  { name: "Sweep-reclaim", note: "session-extreme fades — retired because it fired shorts into one-sided runs", feeds: ["sweepReclaim"] },
+  { name: "LVN Reversal Box", note: "the original fade playbook — docs/strategy/STRATEGY.md; the box pipeline (order flow + price action + options) with the 3-required + confirmation card gate", feeds: ["reversal"] },
+  { name: "Sweep-Reclaim Fade", note: "session-extreme fades — retired because it fired shorts into one-sided runs", feeds: ["sweepReclaim"] },
   { name: "Pullback-exhausted ticket", note: "the trade ticket inside the unusual-volume watch", feeds: ["pullbackTicket"] },
   { name: "Open daily rule + strict drive", note: "superseded config modes in lib/openDrive.ts (79% hit every day / 92% hit ~1 day in 8)" },
 ];
@@ -214,8 +214,8 @@ function statusFor(s: Strategy, feeds: FeedFlags | null): { text: string; cls: s
 
 export function LiveStrategiesSection({ feeds = null }: { feeds?: FeedFlags | null }) {
   const callout = feeds
-    ? `⚡ momentum ${feeds.momentum ? "ON" : "OFF"} · 🔷 big-bar ${feeds.bigbar ? "ON" : "OFF"} · 🟦 RTH ${feeds.rth ? "ON" : "OFF"} · 🔔 open master ${feeds.open ? "ON" : "OFF"} (drive ${feeds.openDrive ? "ON" : "OFF"}, pullback ${feeds.openPullback ? "ON" : "OFF"}, sniper ${feeds.openSniper ? "ON" : "OFF"}) · ⚠ unusual volume ${feeds.unusualVolume ? "ON" : "OFF"} · gap alerts ${feeds.gapAlerts ? "ON" : "OFF"} · reversal ${feeds.reversal ? "ON" : "OFF"} / sweep-reclaim ${feeds.sweepReclaim ? "ON" : "OFF"} / pullback ticket ${feeds.pullbackTicket ? "ON" : "OFF"} — read live from this server's environment.`
-    : "⚡ momentum ON · 🔷 big-bar ON · 🟦 RTH ON · 🔔 open master ON (drive ON, pullback/sniper OFF) · ⚠ unusual volume OFF · gap alerts OFF · reversal / sweep-reclaim / pullback ticket OFF.";
+    ? `⚡ momentum ${feeds.momentum ? "ON" : "OFF"} · 🔷 big-bar ${feeds.bigbar ? "ON" : "OFF"} · 🟦 session continuation ${feeds.rth ? "ON" : "OFF"} · 🔔 open master ${feeds.open ? "ON" : "OFF"} (drive ${feeds.openDrive ? "ON" : "OFF"}, pullback ${feeds.openPullback ? "ON" : "OFF"}, sniper ${feeds.openSniper ? "ON" : "OFF"}) · ⚠ unusual volume ${feeds.unusualVolume ? "ON" : "OFF"} · gap alerts ${feeds.gapAlerts ? "ON" : "OFF"} · reversal ${feeds.reversal ? "ON" : "OFF"} / sweep-reclaim ${feeds.sweepReclaim ? "ON" : "OFF"} / pullback ticket ${feeds.pullbackTicket ? "ON" : "OFF"} — read live from this server's environment.`
+    : "⚡ momentum ON · 🔷 big-bar ON · 🟦 session continuation ON · 🔔 open master ON (drive ON, pullback/sniper OFF) · ⚠ unusual volume OFF · gap alerts OFF · reversal / sweep-reclaim / pullback ticket OFF.";
 
   return (
     <>
@@ -303,10 +303,10 @@ export function LiveStrategiesSection({ feeds = null }: { feeds?: FeedFlags | nu
       <section className="mt-10 rounded-lg border border-zinc-800 bg-zinc-900/60 p-5">
         <h3 className="mb-4 text-xl font-bold text-zinc-50">Sizing & risk management — the measured balance</h3>
         <ul className="space-y-2 text-sm text-zinc-300">
-          <li>• Momentum + RTH size <span className="text-zinc-100">9 contracts fixed</span> (median day +$347; worst real day −$619; 0% annual breach over 20,000 simulated accounts). <span className="font-mono text-zinc-500">FIXED_CONTRACTS</span> env overrides.</li>
+          <li>• Momentum + Session Continuation size <span className="text-zinc-100">9 contracts fixed</span> (median day +$347; worst real day −$619; 0% annual breach over 20,000 simulated accounts). <span className="font-mono text-zinc-500">FIXED_CONTRACTS</span> env overrides.</li>
           <li>• The open family keeps the <span className="text-zinc-100">$170-budget sizing</span> (~2 MNQ) — the drive's 35-pt stop breaches at ≥4 contracts, so the code refuses to scale it.</li>
           <li>• <span className="text-zinc-100">Structural stops everywhere</span>: widening stops measured +0.00 pts of expectancy while multiplying exposure up to 13×. Safety comes from the 80%+ hit rates, not from stop distance.</li>
-          <li>• <span className="text-zinc-100">$200-per-trade minimum is incompatible</span> with these scalps at ≤9 contracts (a win is $80–120); the goal that survives the data is <span className="text-zinc-100">$500–900 per DAY via 2+ trades</span> — RTH at 9 contracts delivers P(≥$500)=83% and P(≥$900)=56% of days with zero breaches.</li>
+          <li>• <span className="text-zinc-100">$200-per-trade minimum is incompatible</span> with these scalps at ≤9 contracts (a win is $80–120); the goal that survives the data is <span className="text-zinc-100">$500–900 per DAY via 2+ trades</span> — Session Continuation at 9 contracts delivers P(≥$500)=83% and P(≥$900)=56% of days with zero breaches.</li>
           <li>• MFF Rapid EOD 50k on every trade: $2,000 EOD-trailing MLL with the $100 lock, 30% consistency, $2,100 buffer / $500 payout steps — simulated in every backtest.</li>
         </ul>
       </section>

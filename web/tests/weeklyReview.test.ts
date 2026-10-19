@@ -10,7 +10,7 @@ describe("sanitizeHypothesis", () => {
     const h = sanitizeHypothesis({
       title: "re-test the count-frac gate at θ=0.70",
       study: "scripts/countFracGateStudy.ts",
-      args: ["--offline", "--theta", "0.70", "--family", "momentum_flush"],
+      args: ["--offline", "--theta", "0.70", "--family", "failed_flush_breakout"],
       rationale: "the flush family was never measured at 0.70",
     });
     assert.ok(h);
