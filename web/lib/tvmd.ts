@@ -213,6 +213,15 @@ export function nearestHistoricTick(tsMs: number): { t: number; price: number } 
   return bestD <= 10_000 ? best : null;
 }
 
+/** Span of the day-history tick list (diagnostics for the audit). */
+export function historicRange(): { count: number; first: number | null; last: number | null } {
+  return {
+    count: state.historic.length,
+    first: state.historic.length ? state.historic[0].t : null,
+    last: state.historic.length ? state.historic[state.historic.length - 1].t : null,
+  };
+}
+
 function handleData(data: Record<string, unknown>): void {
   const d = (data.d ?? {}) as Record<string, unknown>;
   if (data.e === "md") {

@@ -21,7 +21,7 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { daybookDayKey, daybookFile } from "./daybook";
 import { getLive, type LiveMinute } from "./live";
-import { getSnapshot, nearestHistoricTick, nearestLiveTick, type TvTick } from "./tvmd";
+import { getSnapshot, historicRange, nearestHistoricTick, nearestLiveTick, type TvTick } from "./tvmd";
 
 export interface StampedSignal {
   at: number;
@@ -58,6 +58,12 @@ export interface SignalAudit {
     p95AbsD: number | null;
     maxAbsD: number | null;
     meanSkewMs: number | null;
+  };
+  debug: {
+    tvHist: { count: number; first: number | null; last: number | null };
+    gcBarsCount: number;
+    gcBarTail: { t: string; du: string | null; c: number; source: string | null }[];
+    probe: { at: number; timeET: string; gcTick: boolean; tvRing: boolean; tvHist: boolean; bar: string | null }[];
   };
 }
 
@@ -269,6 +275,16 @@ export function getSignalAudit(): SignalAudit {
   const stamped = state.signals.filter((s) => s.dPrice !== null);
   const abs = stamped.map((s) => Math.abs(s.dPrice!)).sort((a, b) => a - b);
   const skews = stamped.filter((s) => s.skewMs !== null).map((s) => s.skewMs!) as number[];
+  // live lookup probe per stored signal (diagnostics — cheap at ≤200 rows)
+  const bars = getLive().state.minutes;
+  const probe = state.signals.map((s) => ({
+    at: s.at,
+    timeET: s.timeET,
+    gcTick: !!nearestGcTick(s.at),
+    tvRing: !!nearestTvTick(s.at),
+    tvHist: !!nearestHistoricTick(s.at),
+    bar: minuteBarAt(s.at) ? `${minuteBarAt(s.at)!.t} du=${minuteBarAt(s.at)!.du ?? "∅"} c=${minuteBarAt(s.at)!.c}` : null,
+  }));
   return {
     ok: true,
     day: state.day,
@@ -285,5 +301,11 @@ export function getSignalAudit(): SignalAudit {
       maxAbsD: abs.length ? abs[abs.length - 1] : null,
       meanSkewMs: skews.length ? skews.reduce((a, b) => a + b, 0) / skews.length : null,
     },
+    debug: {
+      tvHist: historicRange(),
+      gcBarsCount: bars.length,
+      gcBarTail: bars.slice(-3).map((b) => ({ t: b.t, du: b.du ?? null, c: b.c, source: b.source ?? null })),
+      probe,
+    } as unknown as SignalAudit["debug"],
   };
 }
