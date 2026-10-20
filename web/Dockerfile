@@ -5,9 +5,10 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
 RUN npm run build
-# compile the Tradovate md collector to plain CJS (Node 22 runtime has no
-# TS type-stripping, and the repo's ts-loader lives outside this context)
-RUN npx tsc scripts/tradovateMd.ts lib/tradovateMdProtocol.ts \
+# compile the Tradovate md collector + recapture script to plain CJS
+# (Node 22 runtime has no TS type-stripping, and the repo's ts-loader
+# lives outside this context)
+RUN npx tsc scripts/tradovateMd.ts scripts/tvmdRecapture.ts lib/tradovateMdProtocol.ts \
     --outDir /tvmd-dist --module commonjs --moduleResolution node \
     --target es2022 --lib es2022 --esModuleInterop --skipLibCheck --noEmit false
 
@@ -15,8 +16,9 @@ RUN npx tsc scripts/tradovateMd.ts lib/tradovateMdProtocol.ts \
 FROM node:22-alpine AS run
 # Coolify runs the container healthcheck FROM INSIDE the container (GET / on
 # the exposed port) and alpine has no curl/wget by default — without this the
-# check fails every 5s and the app restarts in a loop.
-RUN apk add --no-cache curl
+# check fails every 5s and the app restarts in a loop. Chromium drives the
+# token-recapture browser (scripts/tvmdRecapture.js) headlessly.
+RUN apk add --no-cache curl chromium
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
