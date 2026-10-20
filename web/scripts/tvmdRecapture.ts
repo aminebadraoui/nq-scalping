@@ -28,13 +28,14 @@
  *      and exits. The profile (with the session) lives on the volume.
  * ------------------------------------------------------------------ */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 
 const TOKEN_FILE = process.env.TVMD_TOKEN_FILE ?? "./data/.tradovate-md-token.json";
 const PROFILE = process.env.TVMD_RECAP_PROFILE ?? "./data/tvmd-browser-profile";
 const PLATFORM = process.env.TVMD_PLATFORM_URL ?? "https://trader.tradovate.com";
 const LOGIN_MODE = process.env.TVMD_RECAP_LOGIN === "1";
+const LOGIN_LOCK = `${PROFILE}/.login-running`;
 
 const HOOK = `(() => {
   try {
@@ -175,10 +176,30 @@ async function harvest(port: number, timeoutMs: number): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  if (!LOGIN_MODE && (await tokenAlive())) {
+  if (LOGIN_MODE) {
+    try {
+      writeFileSync(LOGIN_LOCK, String(Date.now()));
+    } catch {
+      /* lock best-effort */
+    }
+  } else if (await tokenAlive()) {
     log("current token is alive — nothing to do");
     return;
   }
+  try {
+    await run();
+  } finally {
+    if (LOGIN_MODE) {
+      try {
+        unlinkSync(LOGIN_LOCK);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+async function run(): Promise<void> {
   log(LOGIN_MODE ? "login mode: launching chromium with remote debugging on 9222" : "token dead or unverifiable — launching chromium to recapture the session");
 
   const args = [

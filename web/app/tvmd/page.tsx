@@ -133,6 +133,8 @@ export default function TvmdPage() {
   const [newToken, setNewToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [tokenMsg, setTokenMsg] = useState<string | null>(null);
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const [loginBusy, setLoginBusy] = useState(false);
   const inFlight = useRef(false);
   const samplesRef = useRef<DeltaSample[]>([]);
   const [samples, setSamples] = useState<DeltaSample[]>([]);
@@ -159,6 +161,26 @@ export default function TvmdPage() {
       setTokenMsg(String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function startLogin() {
+    if (loginBusy) return;
+    setLoginBusy(true);
+    setLoginUrl(null);
+    try {
+      const res = await fetch("/api/tvmd/login", { method: "POST" });
+      const j = (await res.json()) as { ok: boolean; url?: string; error?: string; hint?: string };
+      if (res.ok && j.ok && j.url) {
+        setLoginUrl(j.url);
+        setTokenMsg(j.hint ?? "open the URL and complete the Google sign-in");
+      } else {
+        setTokenMsg(j.error ?? `api ${res.status}`);
+      }
+    } catch (e) {
+      setTokenMsg(String(e));
+    } finally {
+      setLoginBusy(false);
     }
   }
 
@@ -303,7 +325,20 @@ export default function TvmdPage() {
             >
               {saving ? "saving…" : "Apply"}
             </button>
-            {tokenMsg && <span className={tokenMsg.startsWith("saved") ? "text-long" : "text-warn"}>{tokenMsg}</span>}
+            <button
+              onClick={() => void startLogin()}
+              disabled={loginBusy}
+              className="rounded bg-info/15 px-3 py-1 text-info disabled:opacity-40"
+              title="launch the VPS browser for a one-time Google sign-in"
+            >
+              {loginBusy ? "starting…" : "Browser login"}
+            </button>
+            {loginUrl && (
+              <a href={loginUrl} target="_blank" rel="noreferrer" className="rounded bg-info/20 px-2 py-1 text-info underline">
+                open {loginUrl}
+              </a>
+            )}
+            {tokenMsg && <span className={tokenMsg.startsWith("saved") || tokenMsg.startsWith("Open") ? "text-long" : "text-warn"}>{tokenMsg}</span>}
           </div>
 
         <div className="grid grid-cols-12 gap-3">
