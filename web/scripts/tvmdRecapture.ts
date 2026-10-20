@@ -210,6 +210,8 @@ async function run(): Promise<void> {
   const args = [
     "--headless=new",
     "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--no-zygote", // alpine containers: the zygote crashes with broken-pipe and the browser dies
     "--disable-gpu",
     "--disable-dev-shm-usage",
     "--no-first-run",
