@@ -349,6 +349,7 @@ const state = {
   pending: new Map<number, PendingEntry>(),
   authorized: false,
   backoffMs: 5_000,
+  authBackoffMs: 60_000, // pre-auth kills: slow ladder — see scheduleReconnect
   lastFrameAt: 0,
   shuttingDown: false,
   giveUp: false,
@@ -510,6 +511,7 @@ async function authorize(): Promise<void> {
     state.authorized = true;
     state.authFails = 0;
     state.backoffMs = 5_000;
+    state.authBackoffMs = 60_000;
     log("authorized ok");
     await subscribeAll();
     return;
@@ -620,11 +622,18 @@ function renewViaTradeSocket(oldToken: string): Promise<string | null> {
 
 /* --------------------------- connection ---------------------------- */
 
-function scheduleReconnect(): void {
+function scheduleReconnect(wasAuthorized: boolean): void {
   if (state.shuttingDown || state.giveUp) return;
-  const wait = state.backoffMs;
-  state.backoffMs = Math.min(MAX_BACKOFF_MS, state.backoffMs * 2);
-  logWarn(`reconnecting in ${Math.round(wait / 1000)}s`);
+  // Two different worlds:
+  //  - the connection had been AUTHORIZED and the server recycled it
+  //    (routine on demo, ~40-60s cadence): reconnect fast (5s ladder).
+  //  - it died BEFORE authorize (quota kill, maintenance): hammering
+  //    only burns more device registrations — wait 60s, doubling to
+  //    10 min, and let the quota window roll.
+  const wait = wasAuthorized ? state.backoffMs : state.authBackoffMs;
+  if (wasAuthorized) state.backoffMs = Math.min(MAX_BACKOFF_MS, state.backoffMs * 2);
+  else state.authBackoffMs = Math.min(600_000, state.authBackoffMs * 2);
+  logWarn(`reconnecting in ${Math.round(wait / 1000)}s${wasAuthorized ? "" : " (pre-auth kill — slow ladder)"}`);
   // deliberately NOT unref'd: after the socket closes this timer is the
   // only thing keeping the process alive until the next connect
   setTimeout(() => connect(), wait);
@@ -679,8 +688,9 @@ function connect(): void {
       entry.reject(new Error("socket closed"));
     }
     state.pending.clear();
+    const wasAuthorized = state.authorized;
     state.authorized = false;
-    if (!state.shuttingDown) scheduleReconnect();
+    if (!state.shuttingDown) scheduleReconnect(wasAuthorized);
   };
 
   ws.onerror = () => {
