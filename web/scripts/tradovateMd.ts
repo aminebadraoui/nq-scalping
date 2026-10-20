@@ -646,7 +646,7 @@ function connect(): void {
     ws = new WebSocket(cfg!.mdHost);
   } catch (e) {
     logWarn(`connect failed: ${String(e)}`);
-    scheduleReconnect();
+    scheduleReconnect(false); // never got far enough to authorize
     return;
   }
   state.sock = ws;
