@@ -23,12 +23,13 @@ SRV=$!
   done
 ) &
 
-# token-recapture loop: self-skipping (checks token freshness before
-# launching chromium), so it costs nothing when the session is healthy
+# token-recapture loop: self-skipping (probes token validity before
+# launching chromium), so it costs nothing when the session is healthy;
+# also consumes login-request markers from the dashboard button
 (
   while true; do
     node /app/tvmd/scripts/tvmdRecapture.js || true
-    sleep 1800
+    sleep 60
   done
 ) &
 

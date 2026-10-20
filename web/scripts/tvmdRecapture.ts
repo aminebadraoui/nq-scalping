@@ -34,7 +34,11 @@ import { spawn, type ChildProcess } from "node:child_process";
 const TOKEN_FILE = process.env.TVMD_TOKEN_FILE ?? "./data/.tradovate-md-token.json";
 const PROFILE = process.env.TVMD_RECAP_PROFILE ?? "./data/tvmd-browser-profile";
 const PLATFORM = process.env.TVMD_PLATFORM_URL ?? "https://trader.tradovate.com";
-const LOGIN_MODE = process.env.TVMD_RECAP_LOGIN === "1";
+/** login mode via env flag OR a request marker written by the dashboard
+ *  button (/api/tvmd/login) — the entrypoint loop picks the marker up
+ *  within a minute */
+const LOGIN_REQUEST = `${PROFILE}/.login-request`;
+const LOGIN_MODE = process.env.TVMD_RECAP_LOGIN === "1" || existsSync(LOGIN_REQUEST);
 const LOGIN_LOCK = `${PROFILE}/.login-running`;
 
 const HOOK = `(() => {
@@ -179,8 +183,9 @@ async function main(): Promise<void> {
   if (LOGIN_MODE) {
     try {
       writeFileSync(LOGIN_LOCK, String(Date.now()));
+      unlinkSync(LOGIN_REQUEST); // consume the dashboard's request marker
     } catch {
-      /* lock best-effort */
+      /* best-effort */
     }
   } else if (await tokenAlive()) {
     log("current token is alive — nothing to do");
