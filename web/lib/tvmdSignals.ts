@@ -21,7 +21,7 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { daybookDayKey, daybookFile } from "./daybook";
 import { getLive, type LiveMinute } from "./live";
-import { nearestHistoricTick, nearestLiveTick, type TvTick } from "./tvmd";
+import { getSnapshot, nearestHistoricTick, nearestLiveTick, type TvTick } from "./tvmd";
 
 export interface StampedSignal {
   at: number;
@@ -126,34 +126,28 @@ interface DaybookRow {
   sent?: boolean;
 }
 
+/** Stamp lookup for one instant. tick mode when both feed rings still
+ *  span it; minute mode = exact TV history tick vs GC minute-bar close;
+ *  null when neither reference covers the instant yet (modules cold —
+ *  callers retry until they warm). */
+function stampAt(at: number): Pick<StampedSignal, "mode" | "gcLtp" | "tvPrice" | "dPrice" | "skewMs"> {
+  const gc = nearestGcTick(at);
+  const tv = nearestTvTick(at);
+  if (gc && tv) {
+    return { mode: "tick", gcLtp: gc.ltp, tvPrice: tv.price, dPrice: gc.ltp - tv.price, skewMs: gc.ms - tv.t };
+  }
+  const tvH = nearestHistoricTick(at);
+  const bar = minuteBarAt(at);
+  if (tvH && bar) {
+    return { mode: "minute", gcLtp: bar.c, tvPrice: tvH.price, dPrice: bar.c - tvH.price, skewMs: null };
+  }
+  return { mode: null, gcLtp: null, tvPrice: null, dPrice: null, skewMs: null };
+}
+
 function stamp(row: DaybookRow): void {
   state.total++;
   const at = row.at ?? 0;
-  const gc = nearestGcTick(at);
-  const tv = nearestTvTick(at);
-  let mode: StampedSignal["mode"] = null;
-  let gcLtp: number | null = null;
-  let tvPrice: number | null = null;
-  let dPrice: number | null = null;
-  let skewMs: number | null = null;
-  if (gc && tv) {
-    mode = "tick";
-    gcLtp = gc.ltp;
-    tvPrice = tv.price;
-    dPrice = gc.ltp - tv.price;
-    skewMs = gc.ms - tv.t;
-  } else {
-    // backfill older signals: exact TV tick from the day history,
-    // GC minute-bar close as the coarser vendor reference
-    const tvH = nearestHistoricTick(at);
-    const bar = minuteBarAt(at);
-    if (tvH && bar) {
-      mode = "minute";
-      gcLtp = bar.c;
-      tvPrice = tvH.price;
-      dPrice = bar.c - tvH.price;
-    }
-  }
+  const st = stampAt(at);
   state.signals.push({
     at,
     timeET: row.timeET ?? "",
@@ -165,16 +159,26 @@ function stamp(row: DaybookRow): void {
     verdict: row.verdict ?? "",
     source: row.source ?? "",
     sent: row.sent ?? false,
-    gcLtp,
-    tvPrice,
-    dPrice,
-    skewMs,
-    mode,
+    ...st,
   });
   if (state.signals.length > MAX_SIGNALS) state.signals = state.signals.slice(-MAX_SIGNALS);
 }
 
 function refresh(): void {
+  // re-attempt unstamped rows: the first pass can run while the TV
+  // journal / GC minutes modules are still cold — retry until they warm
+  for (const s of state.signals) {
+    if (s.mode !== null) continue;
+    const st = stampAt(s.at);
+    if (st.mode !== null) {
+      s.mode = st.mode;
+      s.gcLtp = st.gcLtp;
+      s.tvPrice = st.tvPrice;
+      s.dPrice = st.dPrice;
+      s.skewMs = st.skewMs;
+    }
+  }
+
   const day = daybookDayKey();
   const file = daybookFile(day);
   if (!existsSync(file)) {
@@ -226,6 +230,19 @@ function refresh(): void {
 function ensureStarted(): void {
   if (state.started) return;
   state.started = true;
+  // warm the references before the first stamp pass: parse the TV
+  // journal (fills the day-history tick list) and boot the GC live
+  // singleton (fills the minutes buffer) — both idempotent.
+  try {
+    getSnapshot();
+  } catch {
+    /* journal not ready */
+  }
+  try {
+    getLive();
+  } catch {
+    /* vendor feed not ready */
+  }
   refresh();
   const timer = setInterval(() => {
     try {
