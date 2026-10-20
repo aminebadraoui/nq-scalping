@@ -416,7 +416,10 @@ function ComparePanel({ snap, gc, samples }: { snap: TvmdSnapshot; gc: GcLive | 
 
   const dPrice = tvTrade?.price !== undefined && gcPrice !== null && gcPrice !== undefined ? gcPrice - tvTrade.price : null;
   const skewMs = gcTs && tvTs ? gcTs - tvTs : null;
-  const dVol = tvVol?.size !== undefined && gc?.dayVolume != null ? gc.dayVolume - tvVol.size : null;
+  // GC reports NQ (full-size) contracts; TV reports MNQ (micro) contracts.
+  // Normalize TV to NQ-equivalent (÷10) before comparing volume.
+  const tvVolNq = tvVol?.size !== undefined ? tvVol.size / 10 : null;
+  const dVol = tvVolNq !== null && gc?.dayVolume != null ? gc.dayVolume - tvVolNq : null;
 
   const absD = samples.map((s) => Math.abs(s.dPrice));
   const maxAbs = absD.length ? Math.max(...absD) : 0;
@@ -483,13 +486,13 @@ function ComparePanel({ snap, gc, samples }: { snap: TvmdSnapshot; gc: GcLive | 
                   </td>
                 </tr>
                 <tr>
-                  <td className="text-zinc-500">day volume</td>
+                  <td className="text-zinc-500">day volume (NQ-equiv)</td>
                   <td className="text-right">{gc?.dayVolume != null ? gc.dayVolume.toLocaleString() : "—"}</td>
-                  <td className="text-right">{tvVol?.size != null ? tvVol.size.toLocaleString() : "—"}</td>
+                  <td className="text-right">{tvVolNq !== null ? `${tvVolNq.toLocaleString(undefined, { maximumFractionDigits: 0 })} (raw ${tvVol?.size != null ? tvVol.size.toLocaleString() : "—"} MNQ)` : "—"}</td>
                   <td className="text-right">
                     {deltaCell(dVol, 0)}
-                    {dVol !== null && tvVol?.size != null && tvVol.size > 0 && (
-                      <span className="ml-1 text-zinc-600">({((dVol / tvVol.size) * 100).toFixed(2)}%)</span>
+                    {dVol !== null && tvVolNq !== null && tvVolNq > 0 && (
+                      <span className="ml-1 text-zinc-600">({((dVol / tvVolNq) * 100).toFixed(1)}%)</span>
                     )}
                   </td>
                 </tr>
@@ -608,10 +611,10 @@ function ComparePanel({ snap, gc, samples }: { snap: TvmdSnapshot; gc: GcLive | 
               </tbody>
             </table>
             <p className="mt-3 text-[9px] leading-4 text-zinc-600">
-              GC = GoCharting TRADE socket (the feed signals run on; NQZ26). TV = Tradovate md socket (MNQZ6; same price scale,
-              0.25 tick). Δ price is what a signal would see at that instant; skew is the print-timestamp gap between feeds
-              (GC prints vs TV exchange timestamps). GC day volume is the vendor snapshot — its tick stream undercounts ~7%,
-              so volume comparison uses the snapshot.
+              GC = GoCharting TRADE socket (the feed signals run on; NQZ26, full-size contracts). TV = Tradovate md socket (MNQZ6;
+              micro contracts — volume normalized ÷10 to NQ-equivalent). Price scales match (0.25 tick), volume units don't. Δ price is
+              what a signal would see at that instant; skew is the print-timestamp gap between feeds. A 1–3 tick Δ on latest prints is
+              normal tick noise in a moving market — judge by the rolling mean |Δprice|, not any single row.
             </p>
           </div>
         </div>
