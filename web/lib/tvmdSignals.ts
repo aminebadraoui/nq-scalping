@@ -41,6 +41,8 @@ export interface StampedSignal {
   /** tick = both feeds' tick rings; minute = TV history tick vs GC
    *  minute-bar close (older signals, coarser reference) */
   mode: "tick" | "minute" | null;
+  /** GC reference bar time "HH:mm" UTC (minute mode only) */
+  refT: string | null;
 }
 
 export interface SignalAudit {
@@ -95,19 +97,25 @@ function nearestTvTick(tsMs: number): TvTick | null {
   return nearestLiveTick(tsMs);
 }
 
-/** The GC minute bar covering tsMs (close as the price reference for
- *  older signals whose tick ring has moved on). Bars are ascending;
- *  skips zero/placeholder closes and derives a missing du from the
- *  signal instant (UTC-date wrap at midnight is irrelevant here). */
-function minuteBarAt(tsMs: number): LiveMinute | null {
+/** The GC minute bar to use as the price reference for older signals.
+ *  Prefers the bar covering tsMs; skips c=0 placeholders (the vendor
+ *  candle path gaps) and walks back up to 10 min for the last valid
+ *  close. Returns the bar and its close instant. */
+function minuteBarAt(tsMs: number): { bar: LiveMinute; closeMs: number } | null {
   const bars = getLive().state.minutes;
   const duFallback = new Date(tsMs).toISOString().slice(0, 10);
   for (let i = bars.length - 1; i >= 0; i--) {
     const b = bars[i];
-    if (typeof b.c !== "number" || b.c <= 0) continue;
     const closeMs = Date.parse(`${b.du ?? duFallback}T${b.t}:00Z`) + 60_000;
     if (!Number.isFinite(closeMs)) continue;
-    if (closeMs <= tsMs + 60_000) return closeMs >= tsMs - 60_000 ? b : null;
+    if (closeMs > tsMs + 60_000) continue; // still after the signal minute
+    if (typeof b.c !== "number" || b.c <= 0) {
+      // placeholder bar (gapped candle path) — keep walking back, but
+      // only accept a close within 10 min of the signal
+      if (closeMs < tsMs - 10 * 60_000) return null;
+      continue;
+    }
+    return closeMs >= tsMs - 10 * 60_000 ? { bar: b, closeMs } : null;
   }
   return null;
 }
@@ -140,18 +148,18 @@ interface DaybookRow {
  *  span it; minute mode = exact TV history tick vs GC minute-bar close;
  *  null when neither reference covers the instant yet (modules cold —
  *  callers retry until they warm). */
-function stampAt(at: number): Pick<StampedSignal, "mode" | "gcLtp" | "tvPrice" | "dPrice" | "skewMs"> {
+function stampAt(at: number): Pick<StampedSignal, "mode" | "gcLtp" | "tvPrice" | "dPrice" | "skewMs" | "refT"> {
   const gc = nearestGcTick(at);
   const tv = nearestTvTick(at);
   if (gc && tv) {
-    return { mode: "tick", gcLtp: gc.ltp, tvPrice: tv.price, dPrice: gc.ltp - tv.price, skewMs: gc.ms - tv.t };
+    return { mode: "tick", gcLtp: gc.ltp, tvPrice: tv.price, dPrice: gc.ltp - tv.price, skewMs: gc.ms - tv.t, refT: null };
   }
-  const tvH = nearestHistoricTick(at);
-  const bar = minuteBarAt(at);
-  if (tvH && bar) {
-    return { mode: "minute", gcLtp: bar.c, tvPrice: tvH.price, dPrice: bar.c - tvH.price, skewMs: null };
+  const tvH = nearestHistoricTick(at, 30_000);
+  const mb = minuteBarAt(at);
+  if (tvH && mb) {
+    return { mode: "minute", gcLtp: mb.bar.c, tvPrice: tvH.price, dPrice: mb.bar.c - tvH.price, skewMs: null, refT: mb.bar.t };
   }
-  return { mode: null, gcLtp: null, tvPrice: null, dPrice: null, skewMs: null };
+  return { mode: null, gcLtp: null, tvPrice: null, dPrice: null, skewMs: null, refT: null };
 }
 
 function stamp(row: DaybookRow): void {
@@ -186,6 +194,7 @@ function refresh(): void {
       s.tvPrice = st.tvPrice;
       s.dPrice = st.dPrice;
       s.skewMs = st.skewMs;
+      s.refT = st.refT;
     }
   }
 
@@ -277,14 +286,17 @@ export function getSignalAudit(): SignalAudit {
   const skews = stamped.filter((s) => s.skewMs !== null).map((s) => s.skewMs!) as number[];
   // live lookup probe per stored signal (diagnostics — cheap at ≤200 rows)
   const bars = getLive().state.minutes;
-  const probe = state.signals.map((s) => ({
-    at: s.at,
-    timeET: s.timeET,
-    gcTick: !!nearestGcTick(s.at),
-    tvRing: !!nearestTvTick(s.at),
-    tvHist: !!nearestHistoricTick(s.at),
-    bar: minuteBarAt(s.at) ? `${minuteBarAt(s.at)!.t} du=${minuteBarAt(s.at)!.du ?? "∅"} c=${minuteBarAt(s.at)!.c}` : null,
-  }));
+  const probe = state.signals.map((s) => {
+    const mb = minuteBarAt(s.at);
+    return {
+      at: s.at,
+      timeET: s.timeET,
+      gcTick: !!nearestGcTick(s.at),
+      tvRing: !!nearestTvTick(s.at),
+      tvHist: !!nearestHistoricTick(s.at, 30_000),
+      bar: mb ? `${mb.bar.t} du=${mb.bar.du ?? "∅"} c=${mb.bar.c}` : null,
+    };
+  });
   return {
     ok: true,
     day: state.day,

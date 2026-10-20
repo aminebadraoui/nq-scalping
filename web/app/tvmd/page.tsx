@@ -470,7 +470,7 @@ function SignalAuditPanel({ audit }: { audit: SignalAudit | null }) {
                     <td className={`py-[1px] pr-3 ${sg.dPrice === null ? "text-zinc-700" : sg.dPrice > 0 ? "text-long" : sg.dPrice < 0 ? "text-short" : "text-zinc-400"}`}>
                       {sg.dPrice === null
                         ? "—"
-                        : `${sg.mode === "minute" ? "~" : ""}${sg.dPrice > 0 ? "+" : ""}${sg.dPrice.toFixed(2)} (${Math.round(sg.dPrice / TICK)}t)`}
+                        : `${sg.mode === "minute" ? `~${sg.refT ? `(${sg.refT})` : ""}` : ""}${sg.dPrice > 0 ? "+" : ""}${sg.dPrice.toFixed(2)} (${Math.round(sg.dPrice / TICK)}t)`}
                     </td>
                     <td className="py-[1px] pr-3 text-info">{sg.skewMs === null ? "—" : `${Math.round(sg.skewMs)} ms`}</td>
                     <td className="py-[1px] pr-3">{sg.verdict}</td>

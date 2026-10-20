@@ -196,8 +196,8 @@ export function nearestLiveTick(tsMs: number): TvTick | null {
 }
 
 /** Tick from the full-day history closest to tsMs (null when the
- *  history doesn't span that instant or nothing is within 10s). */
-export function nearestHistoricTick(tsMs: number): { t: number; price: number } | null {
+ *  history doesn't span that instant or nothing is within windowMs). */
+export function nearestHistoricTick(tsMs: number, windowMs = 10_000): { t: number; price: number } | null {
   const list = state.historic;
   let best: { t: number; price: number } | null = null;
   let bestD = Infinity;
@@ -210,7 +210,7 @@ export function nearestHistoricTick(tsMs: number): { t: number; price: number } 
       break;
     }
   }
-  return bestD <= 10_000 ? best : null;
+  return bestD <= windowMs ? best : null;
 }
 
 /** Span of the day-history tick list (diagnostics for the audit). */
