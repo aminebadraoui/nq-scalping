@@ -21,6 +21,7 @@ const links = [
   { href: "/promotions", label: "Promotions", note: "what passed / failed the promotion contract", stage: null },
   { href: "/review", label: "Review", note: "the weekly self-improvement loop", stage: null },
   { href: "/execution", label: "Execution", note: "orders, fills, the executor", stage: true },
+  { href: "/tvmd", label: "Feeds", note: "GoCharting vs Tradovate — live comparison + signal-time audit", stage: null },
   { href: "/risk", label: "Risk", note: "account protection + sizing", stage: true },
   { href: "/journal", label: "Journal", note: "trades, win/loss analysis, AI review", stage: null },
   { href: "/docs", label: "Docs", note: "the research", stage: null },
