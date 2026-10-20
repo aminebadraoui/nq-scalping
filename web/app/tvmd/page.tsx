@@ -11,20 +11,29 @@ import type { TvmdSnapshot } from "@/lib/tvmd";
  * it never touches execution code.
  * ------------------------------------------------------------------------- */
 
-/* GoCharting DomState over /api/dom SSE (lib/dom.ts) — top-10 book per
- * symbol, throttled ~1/s. NQ and MNQ share the same price scale (0.25
- * tick), so books are directly comparable. */
-interface GcLevel {
-  p: number;
-  s: number;
+/* GoCharting TRADE feed (lib/live.ts) over /api/tvmd/gc — last print,
+ * vendor day snapshot, live minute bar, recent tick ring. This is the
+ * socket the signals run on; comparing it against the Tradovate tick
+ * stream answers "what would a signal see" at any instant. NQ and MNQ
+ * share the same price scale (0.25 tick). */
+interface GcTick {
+  ms: number;
+  ltp: number;
+  size: number;
+  side: 1 | -1;
 }
-interface GcState {
+interface GcLive {
+  ok: boolean;
   connected: boolean;
   lastMessage: number;
-  frames: number;
-  silentConnects: number;
-  lastReconnectAt: number;
-  nq: { symbol: string; book: { bids: GcLevel[]; asks: GcLevel[] } };
+  lastTradeMs: number;
+  lastVolChangeMs: number;
+  lastCandleRefreshAt: number;
+  ltp: number | null;
+  dayVolume: number | null;
+  dayDelta: number | null;
+  cur: { t: string; du: string | null; c: number; h: number; l: number; vol: number; buy: number; sell: number; source: string | null } | null;
+  ticks: GcTick[];
 }
 
 function etTime(ms: number): string {
@@ -118,12 +127,11 @@ function Profile({ snap }: { snap: TvmdSnapshot }) {
 export default function TvmdPage() {
   const [snap, setSnap] = useState<TvmdSnapshot | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [gc, setGc] = useState<GcState | null>(null);
+  const [gc, setGc] = useState<GcLive | null>(null);
   const [newToken, setNewToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [tokenMsg, setTokenMsg] = useState<string | null>(null);
   const inFlight = useRef(false);
-  const gcRef = useRef<GcState | null>(null);
   const samplesRef = useRef<DeltaSample[]>([]);
   const [samples, setSamples] = useState<DeltaSample[]>([]);
 
@@ -152,59 +160,39 @@ export default function TvmdPage() {
     }
   }
 
-  // GoCharting DOM book over SSE (~1/s)
-  useEffect(() => {
-    let es: EventSource | null = null;
-    try {
-      es = new EventSource("/api/dom");
-      es.onmessage = (ev) => {
-        try {
-          const g = JSON.parse(ev.data) as GcState;
-          gcRef.current = g;
-          setGc(g);
-        } catch {
-          /* keep last */
-        }
-      };
-    } catch {
-      /* no SSE — panel will report no feed */
-    }
-    return () => es?.close();
-  }, []);
-
   useEffect(() => {
     let alive = true;
     const poll = async () => {
       if (inFlight.current) return;
       inFlight.current = true;
       try {
-        const res = await fetch("/api/tvmd", { cache: "no-store" });
-        if (!res.ok) throw new Error(`api ${res.status}`);
-        const json = (await res.json()) as TvmdSnapshot;
+        const [tvRes, gcRes] = await Promise.all([
+          fetch("/api/tvmd", { cache: "no-store" }),
+          fetch("/api/tvmd/gc", { cache: "no-store" }),
+        ]);
+        if (!tvRes.ok) throw new Error(`api ${tvRes.status}`);
+        const json = (await tvRes.json()) as TvmdSnapshot;
+        const gcJson = gcRes.ok ? ((await gcRes.json()) as GcLive) : null;
         if (alive) {
           setSnap(json);
+          setGc(gcJson);
           setErr(null);
-          // divergence sample: TV quote vs GC book, only when both fresh
-          const g = gcRef.current;
-          if (g && g.connected && json.stats.lastFrame && g.lastMessage) {
+          // signal-time divergence sample: GC last print vs TV last trade
+          if (gcJson && json.stats.lastFrame) {
             const now = Date.now();
             const tvFresh = now - Date.parse(json.stats.lastFrame) < 30_000;
-            const gcFresh = now - g.lastMessage < 30_000;
-            if (tvFresh && gcFresh) {
-              const tvBid = json.quote?.entries.Bid as { price?: number } | undefined;
-              const tvAsk = json.quote?.entries.Offer as { price?: number } | undefined;
-              const gb = g.nq.book.bids[0];
-              const ga = g.nq.book.asks[0];
-              if (tvBid?.price !== undefined && tvAsk?.price !== undefined && gb && ga) {
-                const s: DeltaSample = {
-                  t: now,
-                  dMid: (tvBid.price + tvAsk.price) / 2 - (gb.p + ga.p) / 2,
-                  dBid: tvBid.price - gb.p,
-                  dAsk: tvAsk.price - ga.p,
-                };
-                samplesRef.current = [...samplesRef.current, s].slice(-300); // 5 min ring
-                if (alive) setSamples(samplesRef.current);
-              }
+            const gcTick = gcJson.ticks.length ? gcJson.ticks[gcJson.ticks.length - 1] : null;
+            const gcFresh = gcTick ? now - gcTick.ms < 30_000 : now - gcJson.lastTradeMs < 30_000;
+            const tvTrade = json.quote?.entries.Trade as { price?: number } | undefined;
+            const gcPrice = gcTick ? gcTick.ltp : gcJson.ltp;
+            if (tvFresh && gcFresh && tvTrade?.price !== undefined && gcPrice !== null && gcPrice !== undefined) {
+              const s: DeltaSample = {
+                t: now,
+                dPrice: gcPrice - tvTrade.price,
+                skewMs: (gcTick ? gcTick.ms : gcJson.lastTradeMs) - Date.parse(json.stats.lastFrame),
+              };
+              samplesRef.current = [...samplesRef.current, s].slice(-300); // 5 min ring
+              if (alive) setSamples(samplesRef.current);
             }
           }
         }
@@ -387,23 +375,24 @@ function FragmentRow({ row, colMax }: { row: { price: number; cells: ({ bv: numb
 
 interface DeltaSample {
   t: number;
-  dMid: number;
-  dBid: number;
-  dAsk: number;
+  /** GC last print − TV last trade (pts; positive = GC prints higher) */
+  dPrice: number;
+  /** GC last print ms − TV last frame ms (positive = GC newer) */
+  skewMs: number;
 }
 
 const TICK = 0.25;
 
-function Sparkline({ samples, field, color }: { samples: DeltaSample[]; field: "dMid" | "dBid" | "dAsk"; color: string }) {
+function Sparkline({ samples, color }: { samples: DeltaSample[]; color: string }) {
   if (samples.length < 2) return <div className="h-12 rounded bg-zinc-900/40" />;
-  const vals = samples.map((s) => s[field]);
+  const vals = samples.map((s) => s.dPrice);
   const min = Math.min(...vals, 0);
   const max = Math.max(...vals, 0);
   const span = max - min || 1;
   const w = 320;
   const h = 48;
   const y = (v: number) => h - ((v - min) / span) * h;
-  const pts = samples.map((s, i) => `${(i / (samples.length - 1)) * w},${y(s[field])}`).join(" ");
+  const pts = samples.map((s, i) => `${(i / (samples.length - 1)) * w},${y(s.dPrice)}`).join(" ");
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="h-12 w-full" preserveAspectRatio="none">
       <line x1={0} y1={y(0)} x2={w} y2={y(0)} stroke="#3f3f46" strokeDasharray="3 3" strokeWidth="1" />
@@ -412,184 +401,171 @@ function Sparkline({ samples, field, color }: { samples: DeltaSample[]; field: "
   );
 }
 
-function ComparePanel({ snap, gc, samples }: { snap: TvmdSnapshot; gc: GcState | null; samples: DeltaSample[] }) {
-  const tvBid = snap.quote?.entries.Bid as { price?: number; size?: number } | undefined;
-  const tvAsk = snap.quote?.entries.Offer as { price?: number; size?: number } | undefined;
-  const tvMid = tvBid?.price !== undefined && tvAsk?.price !== undefined ? (tvBid.price + tvAsk.price) / 2 : null;
-  const gcBid = gc?.nq.book.bids[0] ?? null;
-  const gcAsk = gc?.nq.book.asks[0] ?? null;
-  const gcMid = gcBid && gcAsk ? (gcBid.p + gcAsk.p) / 2 : null;
-  const gcFresh = gc ? Date.now() - gc.lastMessage < 30_000 : false;
-  const tvFresh = snap.stats.lastFrame ? Date.now() - Date.parse(snap.stats.lastFrame) < 30_000 : false;
+function ComparePanel({ snap, gc, samples }: { snap: TvmdSnapshot; gc: GcLive | null; samples: DeltaSample[] }) {
+  const tvTrade = snap.quote?.entries.Trade as { price?: number; size?: number } | undefined;
+  const tvVol = snap.quote?.entries.TotalTradeVolume as { size?: number } | undefined;
+  const tvTicks = snap.tape; // newest first
+  const gcTick = gc?.ticks.length ? gc.ticks[gc.ticks.length - 1] : null;
+  const gcPrice = gcTick ? gcTick.ltp : gc?.ltp ?? null;
+  const gcTs = gcTick ? gcTick.ms : gc?.lastTradeMs ?? 0;
+  const tvTs = snap.stats.lastFrame ? Date.parse(snap.stats.lastFrame) : 0;
+  const gcFresh = gc ? (gcTick ? Date.now() - gcTick.ms < 30_000 : Date.now() - gc.lastTradeMs < 30_000) : false;
+  const tvFresh = tvTs > 0 && Date.now() - tvTs < 30_000;
 
-  const dMid = tvMid !== null && gcMid !== null ? tvMid - gcMid : null;
-  const dBid = tvBid?.price !== undefined && gcBid ? tvBid.price - gcBid.p : null;
-  const dAsk = tvAsk?.price !== undefined && gcAsk ? tvAsk.price - gcAsk.p : null;
+  const dPrice = tvTrade?.price !== undefined && gcPrice !== null && gcPrice !== undefined ? gcPrice - tvTrade.price : null;
+  const skewMs = gcTs && tvTs ? gcTs - tvTs : null;
+  const dVol = tvVol?.size !== undefined && gc?.dayVolume != null ? gc.dayVolume - tvVol.size : null;
 
-  const absMids = samples.map((s) => Math.abs(s.dMid));
-  const maxAbs = absMids.length ? Math.max(...absMids) : 0;
-  const meanAbs = absMids.length ? absMids.reduce((a, b) => a + b, 0) / absMids.length : 0;
-  const maxSample = samples.reduce((a, b) => (Math.abs(b.dMid) > Math.abs(a.dMid) ? b : a), samples[0] ?? { t: 0, dMid: 0, dBid: 0, dAsk: 0 });
+  const absD = samples.map((s) => Math.abs(s.dPrice));
+  const maxAbs = absD.length ? Math.max(...absD) : 0;
+  const meanAbs = absD.length ? absD.reduce((a, b) => a + b, 0) / absD.length : 0;
+  const maxSample = samples.reduce((a, b) => (Math.abs(b.dPrice) > Math.abs(a.dPrice) ? b : a), samples[0] ?? { t: 0, dPrice: 0, skewMs: 0 });
+  const meanSkew = samples.length ? samples.reduce((a, b) => a + b.skewMs, 0) / samples.length : 0;
 
-  const tvBids = snap.dom?.bids.slice(0, 10) ?? [];
-  const tvAsks = snap.dom?.offers.slice(0, 10) ?? [];
-  const gcBids = gc?.nq.book.bids ?? [];
-  const gcAsks = gc?.nq.book.asks ?? [];
-  const cumTvBid = tvBids.reduce((a, l) => a + l.size, 0);
-  const cumTvAsk = tvAsks.reduce((a, l) => a + l.size, 0);
-  const cumGcBid = gcBids.reduce((a, l) => a + l.s, 0);
-  const cumGcAsk = gcAsks.reduce((a, l) => a + l.s, 0);
-
-  const deltaCell = (v: number | null) =>
+  const deltaCell = (v: number | null, digits = 2) =>
     v === null ? (
       <span className="text-zinc-700">—</span>
     ) : (
       <span className={Math.abs(v) < 1e-9 ? "text-zinc-500" : v > 0 ? "text-long" : "text-short"}>
         {v > 0 ? "+" : ""}
-        {v.toFixed(2)}
+        {v.toFixed(digits)}
       </span>
     );
 
   return (
     <div className="rounded-lg border border-zinc-800 bg-panel">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-zinc-800 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
-        <span>gocharting vs tradovate — live divergence</span>
+        <span>gocharting vs tradovate — signal-time price check</span>
         <span className={`rounded px-1.5 py-0.5 normal-case ${gcFresh ? "bg-long/15 text-long" : "bg-warn/15 text-warn"}`}>
           GC {gc ? (gcFresh ? "● live" : "○ stale") : "○ no feed"}
         </span>
         <span className={`rounded px-1.5 py-0.5 normal-case ${tvFresh ? "bg-long/15 text-long" : "bg-warn/15 text-warn"}`}>
           TV {tvFresh ? "● live" : "○ stale"}
         </span>
-        <span className="normal-case">NQ (GC) ≈ MNQ (TV) · tick 0.25 both · Δ = TV − GC</span>
+        <span className="normal-case">GC trade socket (NQZ26) vs Tradovate tick stream (MNQZ6) · tick 0.25 · Δ = GC − TV</span>
       </div>
 
-      {!gc || (!gcFresh && !tvFresh) ? (
+      {!gc || !tvFresh ? (
         <div className="p-4 text-center font-mono text-xs text-zinc-500">
-          {!gc ? "GoCharting DOM feed not connected (lib/dom has no frames — check GOCHARTING_* env and the vendor socket)" : "both feeds stale — check the collectors"}
+          {!gc ? "GoCharting trade feed not connected (lib/live singleton — check GOCHARTING_* env and the vendor socket)" : "tradovate feed stale — check the collector"}
         </div>
       ) : (
         <div className="grid grid-cols-12 gap-3 p-3">
-          {/* prices */}
+          {/* price + rolling divergence */}
           <div className="col-span-12 rounded border border-zinc-800 bg-zinc-900/40 p-2 font-mono text-[11px] md:col-span-4">
             <table className="w-full">
               <thead>
                 <tr className="text-zinc-500">
-                  <th className="text-left font-normal">level</th>
+                  <th className="text-left font-normal">metric</th>
                   <th className="text-right font-normal">GoCharting</th>
                   <th className="text-right font-normal">Tradovate</th>
-                  <th className="text-right font-normal">Δ pts</th>
-                  <th className="text-right font-normal">Δ ticks</th>
+                  <th className="text-right font-normal">Δ</th>
                 </tr>
               </thead>
               <tbody>
                 <tr>
-                  <td className="text-zinc-500">bid</td>
-                  <td className="text-right">{gcBid ? gcBid.p.toFixed(2) : "—"}</td>
-                  <td className="text-right">{tvBid?.price?.toFixed(2) ?? "—"}</td>
-                  <td className="text-right">{deltaCell(dBid)}</td>
-                  <td className="text-right">{dBid === null ? "—" : (dBid / TICK).toFixed(0)}</td>
-                </tr>
-                <tr>
-                  <td className="text-zinc-500">ask</td>
-                  <td className="text-right">{gcAsk ? gcAsk.p.toFixed(2) : "—"}</td>
-                  <td className="text-right">{tvAsk?.price?.toFixed(2) ?? "—"}</td>
-                  <td className="text-right">{deltaCell(dAsk)}</td>
-                  <td className="text-right">{dAsk === null ? "—" : (dAsk / TICK).toFixed(0)}</td>
-                </tr>
-                <tr>
-                  <td className="text-zinc-500">mid</td>
-                  <td className="text-right">{gcMid?.toFixed(2) ?? "—"}</td>
-                  <td className="text-right">{tvMid?.toFixed(2) ?? "—"}</td>
-                  <td className="text-right">{deltaCell(dMid)}</td>
-                  <td className="text-right">{dMid === null ? "—" : (dMid / TICK).toFixed(0)}</td>
-                </tr>
-                <tr>
-                  <td className="text-zinc-500">spread</td>
-                  <td className="text-right">{gcBid && gcAsk ? (gcAsk.p - gcBid.p).toFixed(2) : "—"}</td>
+                  <td className="text-zinc-500">last price</td>
+                  <td className="text-right">{gcPrice?.toFixed(2) ?? "—"}</td>
+                  <td className="text-right">{tvTrade?.price?.toFixed(2) ?? "—"}</td>
                   <td className="text-right">
-                    {tvBid?.price !== undefined && tvAsk?.price !== undefined ? (tvAsk.price - tvBid.price).toFixed(2) : "—"}
+                    {deltaCell(dPrice)}
+                    {dPrice !== null && <span className="ml-1 text-zinc-600">({(dPrice / TICK).toFixed(0)}t)</span>}
                   </td>
-                  <td colSpan={2} />
+                </tr>
+                <tr>
+                  <td className="text-zinc-500">last print</td>
+                  <td className="text-right">{gcTs ? etTime(gcTs) : "—"}</td>
+                  <td className="text-right">{tvTs ? etTime(tvTs) : "—"}</td>
+                  <td className="text-right">
+                    {skewMs === null ? "—" : <span className="text-info">{skewMs >= 0 ? "+" : ""}{Math.round(skewMs)} ms</span>}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="text-zinc-500">day volume</td>
+                  <td className="text-right">{gc?.dayVolume != null ? gc.dayVolume.toLocaleString() : "—"}</td>
+                  <td className="text-right">{tvVol?.size != null ? tvVol.size.toLocaleString() : "—"}</td>
+                  <td className="text-right">
+                    {deltaCell(dVol, 0)}
+                    {dVol !== null && tvVol?.size != null && tvVol.size > 0 && (
+                      <span className="ml-1 text-zinc-600">({((dVol / tvVol.size) * 100).toFixed(2)}%)</span>
+                    )}
+                  </td>
                 </tr>
               </tbody>
             </table>
 
             <div className="mt-3 border-t border-zinc-800 pt-2">
-              <p className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">rolling window ({(samples.length)}s)</p>
+              <p className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">rolling window ({samples.length}s)</p>
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <p className="text-[9px] text-zinc-500">current Δmid</p>
-                  <p className="text-sm">{deltaCell(dMid)}</p>
+                  <p className="text-[9px] text-zinc-500">current Δprice</p>
+                  <p className="text-sm">{deltaCell(dPrice)}</p>
                 </div>
                 <div>
-                  <p className="text-[9px] text-zinc-500">mean |Δmid|</p>
+                  <p className="text-[9px] text-zinc-500">mean |Δprice|</p>
                   <p className="text-sm text-zinc-200">{meanAbs.toFixed(2)}</p>
                 </div>
                 <div>
-                  <p className="text-[9px] text-zinc-500">max |Δmid|</p>
+                  <p className="text-[9px] text-zinc-500">max |Δprice|</p>
                   <p className="text-sm text-warn">{maxAbs.toFixed(2)}</p>
                 </div>
               </div>
-              <p className="mt-1 text-center text-[9px] text-zinc-600">
-                peak divergence {maxSample.dMid > 0 ? "+" : ""}
-                {maxSample.dMid.toFixed(2)} pts at {etTime(maxSample.t)}
-              </p>
-              <div className="mt-1 space-y-1">
+              <div className="mt-1 grid grid-cols-2 gap-2 text-center">
                 <div>
-                  <p className="text-[9px] text-zinc-500">Δ mid</p>
-                  <Sparkline samples={samples} field="dMid" color="#38bdf8" />
+                  <p className="text-[9px] text-zinc-500">mean skew (GC−TV)</p>
+                  <p className="text-xs text-info">{meanSkew >= 0 ? "+" : ""}{Math.round(meanSkew)} ms</p>
                 </div>
                 <div>
-                  <p className="text-[9px] text-zinc-500">Δ bid (solid) · Δ ask (dashed)</p>
-                  <Sparkline samples={samples} field="dBid" color="#34d399" />
+                  <p className="text-[9px] text-zinc-500">peak Δprice</p>
+                  <p className="text-xs text-warn">
+                    {maxSample.dPrice > 0 ? "+" : ""}
+                    {maxSample.dPrice.toFixed(2)} @ {etTime(maxSample.t).slice(3)}
+                  </p>
                 </div>
+              </div>
+              <div className="mt-1">
+                <p className="text-[9px] text-zinc-500">Δ price (GC − TV), pts</p>
+                <Sparkline samples={samples} color="#38bdf8" />
               </div>
             </div>
           </div>
 
-          {/* depth */}
-          <div className="col-span-12 overflow-x-auto rounded border border-zinc-800 bg-zinc-900/40 p-2 font-mono text-[11px] md:col-span-4">
-            <table className="w-full">
-              <thead>
-                <tr className="text-zinc-500">
-                  <th className="text-left font-normal">lv</th>
-                  <th className="text-right font-normal">GC bid</th>
-                  <th className="text-right font-normal">TV bid</th>
-                  <th className="text-right font-normal">Δbid</th>
-                  <th className="text-right font-normal">GC ask</th>
-                  <th className="text-right font-normal">TV ask</th>
-                  <th className="text-right font-normal">Δask</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Array.from({ length: 10 }, (_, i) => {
-                  const tb = tvBids[i];
-                  const ta = tvAsks[i];
-                  const gb = gcBids[i];
-                  const ga = gcAsks[i];
-                  return (
-                    <tr key={i} className={i === 0 ? "text-zinc-100" : "text-zinc-400"}>
-                      <td className="text-zinc-600">{i + 1}</td>
-                      <td className="text-right">{gb?.s ?? "—"}</td>
-                      <td className="text-right">{tb?.size ?? "—"}</td>
-                      <td className="text-right">{gb && tb ? deltaCell(tb.size - gb.s) : "—"}</td>
-                      <td className="text-right">{ga?.s ?? "—"}</td>
-                      <td className="text-right">{ta?.size ?? "—"}</td>
-                      <td className="text-right">{ga && ta ? deltaCell(ta.size - ga.s) : "—"}</td>
-                    </tr>
-                  );
-                })}
-                <tr className="border-t border-zinc-700 font-semibold text-zinc-200">
-                  <td className="text-zinc-500">Σ10</td>
-                  <td className="text-right">{cumGcBid}</td>
-                  <td className="text-right">{cumTvBid}</td>
-                  <td className="text-right">{deltaCell(cumTvBid - cumGcBid)}</td>
-                  <td className="text-right">{cumGcAsk}</td>
-                  <td className="text-right">{cumTvAsk}</td>
-                  <td className="text-right">{deltaCell(cumTvAsk - cumGcAsk)}</td>
-                </tr>
-              </tbody>
-            </table>
+          {/* recent prints side by side */}
+          <div className="col-span-12 rounded border border-zinc-800 bg-zinc-900/40 p-2 font-mono text-[11px] md:col-span-4">
+            <p className="mb-1 text-[10px] uppercase tracking-wider text-zinc-500">recent prints</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-[9px] text-zinc-600">GoCharting ticks (vendor)</p>
+                {gc.ticks.slice(-8).reverse().map((tk, i) => (
+                  <div key={i} className="flex justify-between gap-2 py-[1px]">
+                    <span className="text-zinc-600">{etTime(tk.ms).slice(3)}</span>
+                    <span className={tk.side === 1 ? "text-long" : "text-short"}>{tk.ltp.toFixed(2)}</span>
+                    <span className="text-zinc-400">{tk.size}</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <p className="text-[9px] text-zinc-600">Tradovate ticks (collected)</p>
+                {tvTicks.slice(0, 8).map((tk, i) => (
+                  <div key={i} className="flex justify-between gap-2 py-[1px]">
+                    <span className="text-zinc-600">{etTime(tk.t).slice(3)}</span>
+                    <span className={tk.side === "buy" ? "text-long" : "text-short"}>{tk.price.toFixed(2)}</span>
+                    <span className="text-zinc-400">{tk.size}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="mt-3 border-t border-zinc-800 pt-2">
+              <p className="text-[9px] text-zinc-600">GC live minute bar {gc.cur ? `(${gc.cur.t} UTC, source=${gc.cur.source ?? "?"})` : ""}</p>
+              {gc.cur && (
+                <div className="grid grid-cols-4 gap-1 text-center">
+                  <span className="text-zinc-400">c {gc.cur.c.toFixed(2)}</span>
+                  <span className="text-zinc-400">vol {gc.cur.vol}</span>
+                  <span className="text-long">buy {gc.cur.buy}</span>
+                  <span className="text-short">sell {gc.cur.sell}</span>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* feed health */}
@@ -599,43 +575,41 @@ function ComparePanel({ snap, gc, samples }: { snap: TvmdSnapshot; gc: GcState |
               <tbody>
                 <tr>
                   <td className="text-zinc-500">GC connected</td>
-                  <td className="text-right">{gc?.connected ? "yes" : "no"}</td>
+                  <td className="text-right">{gc.connected ? "yes" : "no"}</td>
                 </tr>
                 <tr>
-                  <td className="text-zinc-500">GC DOM frames</td>
-                  <td className="text-right">{gc?.frames ?? "—"}</td>
+                  <td className="text-zinc-500">GC last trade</td>
+                  <td className="text-right">{gc.lastTradeMs ? `${Math.round((Date.now() - gc.lastTradeMs) / 1000)}s ago` : "—"}</td>
                 </tr>
                 <tr>
-                  <td className="text-zinc-500">GC silent connects</td>
-                  <td className="text-right">{gc?.silentConnects ?? "—"}</td>
+                  <td className="text-zinc-500">GC last candle refresh</td>
+                  <td className="text-right">
+                    {gc.lastCandleRefreshAt ? `${Math.round((Date.now() - gc.lastCandleRefreshAt) / 1000)}s ago` : "never"}
+                  </td>
                 </tr>
                 <tr>
-                  <td className="text-zinc-500">GC last message</td>
-                  <td className="text-right">{gc ? `${Math.round((Date.now() - gc.lastMessage) / 1000)}s ago` : "—"}</td>
-                </tr>
-                <tr>
-                  <td className="text-zinc-500">GC symbol</td>
-                  <td className="text-right">{gc?.nq.symbol ?? "—"}</td>
+                  <td className="text-zinc-500">GC day delta</td>
+                  <td className="text-right">{gc.dayDelta != null ? gc.dayDelta.toLocaleString() : "—"}</td>
                 </tr>
                 <tr className="border-t border-zinc-800">
                   <td className="text-zinc-500">TV frames</td>
-                  <td className="text-right">{snap.stats.frames}</td>
+                  <td className="text-right">{snap.stats.frames.toLocaleString()}</td>
                 </tr>
                 <tr>
                   <td className="text-zinc-500">TV ticks (dedup)</td>
-                  <td className="text-right">{snap.stats.ticks}</td>
+                  <td className="text-right">{snap.stats.ticks.toLocaleString()}</td>
                 </tr>
                 <tr>
                   <td className="text-zinc-500">TV last frame</td>
-                  <td className="text-right">
-                    {snap.stats.lastFrame ? `${Math.round((Date.now() - Date.parse(snap.stats.lastFrame)) / 1000)}s ago` : "—"}
-                  </td>
+                  <td className="text-right">{tvTs ? `${Math.round((Date.now() - tvTs) / 1000)}s ago` : "—"}</td>
                 </tr>
               </tbody>
             </table>
             <p className="mt-3 text-[9px] leading-4 text-zinc-600">
-              GC = GoCharting DOM_V2 (NQ, top 10 levels, lib/dom). TV = Tradovate md socket (MNQ, quote/DOM/ticks). Per-trade timestamp
-              lag needs GC's trade socket — not currently exposed; this panel compares book, depth, and feed health only.
+              GC = GoCharting TRADE socket (the feed signals run on; NQZ26). TV = Tradovate md socket (MNQZ6; same price scale,
+              0.25 tick). Δ price is what a signal would see at that instant; skew is the print-timestamp gap between feeds
+              (GC prints vs TV exchange timestamps). GC day volume is the vendor snapshot — its tick stream undercounts ~7%,
+              so volume comparison uses the snapshot.
             </p>
           </div>
         </div>
