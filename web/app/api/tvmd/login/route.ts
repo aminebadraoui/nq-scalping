@@ -1,9 +1,14 @@
 import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
+import path from "node:path";
 
 export const dynamic = "force-dynamic";
 
-const LOCK = "/app/data/tvmd-browser-profile/.login-running";
+// runtime-composed paths: Turbopack's build tracer fails on literal
+// absolute spawn targets that only exist in the runtime image
+const PROFILE = process.env.TVMD_RECAP_PROFILE ?? path.join(process.cwd(), "data", "tvmd-browser-profile");
+const LOCK = path.join(PROFILE, ".login-running");
+const RECAP_SCRIPT = path.join(process.cwd(), "tvmd", "scripts", "tvmdRecapture.js");
 const PUBLIC_URL = process.env.TVMD_LOGIN_PUBLIC ?? "http://31.97.138.30:9222";
 
 /** Start the VPS login browser (tvmdRecapture in login mode). It binds
@@ -20,7 +25,7 @@ export async function POST() {
       /* stale lock — proceed */
     }
   }
-  const child = spawn("node", ["/app/tvmd/scripts/tvmdRecapture.js"], {
+  const child = spawn("node", [RECAP_SCRIPT], {
     detached: true,
     stdio: "inherit",
     env: { ...process.env, TVMD_RECAP_LOGIN: "1" },
