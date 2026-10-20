@@ -7,9 +7,14 @@
 # It restarts itself with a 60s backoff so a dead token, a quota event,
 # or a crash never takes the web server down with it. Token + JSONL live
 # on the mounted /app/data volume (TVMD_OUT / TVMD_TOKEN_FILE defaults).
+#
+# wait() watches ONLY the web server: if it dies the container exits and
+# Coolify restarts it. The collector loop is fire-and-forget — its own
+# lifecycle must never take the container down.
 set -e
 
 node server.js &
+SRV=$!
 
 (
   while true; do
@@ -18,4 +23,4 @@ node server.js &
   done
 ) &
 
-wait -n
+wait $SRV

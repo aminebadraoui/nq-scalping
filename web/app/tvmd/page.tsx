@@ -409,8 +409,10 @@ function ComparePanel({ snap, gc, samples }: { snap: TvmdSnapshot; gc: GcLive | 
   const gcPrice = gcTick ? gcTick.ltp : gc?.ltp ?? null;
   const gcTs = gcTick ? gcTick.ms : gc?.lastTradeMs ?? 0;
   const tvTs = snap.stats.lastFrame ? Date.parse(snap.stats.lastFrame) : 0;
-  const gcFresh = gc ? (gcTick ? Date.now() - gcTick.ms < 30_000 : Date.now() - gc.lastTradeMs < 30_000) : false;
-  const tvFresh = tvTs > 0 && Date.now() - tvTs < 30_000;
+  const gcFresh = gc ? (gcTick ? Date.now() - gcTick.ms < 60_000 : Date.now() - gc.lastTradeMs < 60_000) : false;
+  const tvAgeS = tvTs > 0 ? Math.round((Date.now() - tvTs) / 1000) : null;
+  const tvFresh = tvAgeS !== null && tvAgeS < 60;
+  const gcAgeS = gc ? Math.round((Date.now() - (gcTick ? gcTick.ms : gc.lastTradeMs)) / 1000) : null;
 
   const dPrice = tvTrade?.price !== undefined && gcPrice !== null && gcPrice !== undefined ? gcPrice - tvTrade.price : null;
   const skewMs = gcTs && tvTs ? gcTs - tvTs : null;
@@ -437,10 +439,10 @@ function ComparePanel({ snap, gc, samples }: { snap: TvmdSnapshot; gc: GcLive | 
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-zinc-800 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
         <span>gocharting vs tradovate — signal-time price check</span>
         <span className={`rounded px-1.5 py-0.5 normal-case ${gcFresh ? "bg-long/15 text-long" : "bg-warn/15 text-warn"}`}>
-          GC {gc ? (gcFresh ? "● live" : "○ stale") : "○ no feed"}
+          GC {gc ? (gcFresh ? `● live` : `○ ${gcAgeS}s`) : "○ no feed"}
         </span>
         <span className={`rounded px-1.5 py-0.5 normal-case ${tvFresh ? "bg-long/15 text-long" : "bg-warn/15 text-warn"}`}>
-          TV {tvFresh ? "● live" : "○ stale"}
+          TV {tvAgeS !== null ? (tvFresh ? `● live` : `○ ${tvAgeS}s`) : "○ no data"}
         </span>
         <span className="normal-case">GC trade socket (NQZ26) vs Tradovate tick stream (MNQZ6) · tick 0.25 · Δ = GC − TV</span>
       </div>
