@@ -513,6 +513,23 @@ async function subscribeAll(): Promise<void> {
  * same JSONL shape the reader expects, and keeps retrying the
  * WebSocket on the slow ladder in the background. */
 
+/** Repeated identical REST failures flood the container log (a dead
+ *  token errors every poll). Log each distinct error at most once per
+ *  5 minutes. */
+const restErrLog: Record<string, { at: number }> = {};
+function throttledRestErr(msg: string): void {
+  const now = Date.now();
+  const last = restErrLog[msg];
+  if (last && now - last.at < 5 * 60_000) return;
+  restErrLog[msg] = { at: now };
+  if (Object.keys(restErrLog).length > 50) {
+    for (const k of Object.keys(restErrLog)) {
+      if (now - restErrLog[k].at > 10 * 60_000) delete restErrLog[k];
+    }
+  }
+  logErr(msg);
+}
+
 async function restFetch(path: string, body: unknown): Promise<unknown | null> {
   try {
     const res = await fetch(`${cfg!.restHost}${path}`, {
@@ -523,13 +540,13 @@ async function restFetch(path: string, body: unknown): Promise<unknown | null> {
     });
     if (!res.ok) {
       const txt = (await res.text().catch(() => "")).slice(0, 140);
-      if (res.status === 401) logErr(`REST ${path} rejected (token?): ${txt}`);
-      else logWarn(`REST ${path} ${res.status}: ${txt}`);
+      if (res.status === 401) throttledRestErr(`REST ${path} rejected (token?): ${txt}`);
+      else throttledRestErr(`REST ${path} ${res.status}: ${txt}`);
       return null;
     }
     return (await res.json()) as unknown;
   } catch (e) {
-    logWarn(`REST ${path} failed: ${String(e)}`);
+    throttledRestErr(`REST ${path} failed: ${String(e)}`);
     return null;
   }
 }

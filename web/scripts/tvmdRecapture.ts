@@ -35,7 +35,6 @@ const TOKEN_FILE = process.env.TVMD_TOKEN_FILE ?? "./data/.tradovate-md-token.js
 const PROFILE = process.env.TVMD_RECAP_PROFILE ?? "./data/tvmd-browser-profile";
 const PLATFORM = process.env.TVMD_PLATFORM_URL ?? "https://trader.tradovate.com";
 const LOGIN_MODE = process.env.TVMD_RECAP_LOGIN === "1";
-const FRESH_MS = 4 * 60 * 60 * 1000;
 
 const HOOK = `(() => {
   try {
@@ -68,11 +67,23 @@ function log(msg: string): void {
   console.log(`[tvmdRecapture ${new Date().toISOString()}] ${msg}`);
 }
 
-function tokenFileFresh(): boolean {
+const REST_HOST = process.env.TVMD_REST_HOST ?? "https://demo.tradovateapi.com/v1";
+const SYMBOL = (process.env.TVMD_SYMBOLS ?? "MNQZ6").split(",")[0].trim();
+
+/** Age alone can't tell a fresh-but-dead token (tonight's died minutes
+ *  after renewal). Probe the REST engine — the same gate the collector
+ *  uses — and recapture whenever the token doesn't answer. */
+async function tokenAlive(): Promise<boolean> {
   try {
-    const raw = JSON.parse(readFileSync(TOKEN_FILE, "utf8")) as { renewedAt?: string };
-    if (!raw.renewedAt) return false;
-    return Date.now() - Date.parse(raw.renewedAt) < FRESH_MS;
+    const raw = JSON.parse(readFileSync(TOKEN_FILE, "utf8")) as { token?: string };
+    if (typeof raw.token !== "string" || !raw.token) return false;
+    const res = await fetch(`${REST_HOST}/md/getquote`, {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${raw.token}` },
+      body: JSON.stringify({ symbol: SYMBOL }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    return res.ok;
   } catch {
     return false;
   }
@@ -164,11 +175,11 @@ async function harvest(port: number, timeoutMs: number): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  if (!LOGIN_MODE && tokenFileFresh()) {
-    log("current token is fresh — nothing to do");
+  if (!LOGIN_MODE && (await tokenAlive())) {
+    log("current token is alive — nothing to do");
     return;
   }
-  log(LOGIN_MODE ? "login mode: launching chromium with remote debugging on 9222" : "launching chromium to recapture the session");
+  log(LOGIN_MODE ? "login mode: launching chromium with remote debugging on 9222" : "token dead or unverifiable — launching chromium to recapture the session");
 
   const args = [
     "--headless=new",
