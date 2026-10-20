@@ -148,13 +148,21 @@ interface DaybookRow {
  *  span it; minute mode = exact TV history tick vs GC minute-bar close;
  *  null when neither reference covers the instant yet (modules cold —
  *  callers retry until they warm). */
-function stampAt(at: number): Pick<StampedSignal, "mode" | "gcLtp" | "tvPrice" | "dPrice" | "skewMs" | "refT"> {
+/** Stamp lookup for one instant. tick mode when both feed rings still
+ *  span it; signal mode = the card's own GC price (what the signal was
+ *  computed on) vs the exact TV history tick at that instant — the
+ *  direct answer to "what did the signal see vs what TV traded"; null
+ *  when neither reference covers the instant yet. */
+function stampAt(at: number, signalPrice: number | null): Pick<StampedSignal, "mode" | "gcLtp" | "tvPrice" | "dPrice" | "skewMs" | "refT"> {
   const gc = nearestGcTick(at);
   const tv = nearestTvTick(at);
   if (gc && tv) {
     return { mode: "tick", gcLtp: gc.ltp, tvPrice: tv.price, dPrice: gc.ltp - tv.price, skewMs: gc.ms - tv.t, refT: null };
   }
   const tvH = nearestHistoricTick(at, 30_000);
+  if (tvH && signalPrice !== null) {
+    return { mode: "minute", gcLtp: signalPrice, tvPrice: tvH.price, dPrice: signalPrice - tvH.price, skewMs: null, refT: "signal" };
+  }
   const mb = minuteBarAt(at);
   if (tvH && mb) {
     return { mode: "minute", gcLtp: mb.bar.c, tvPrice: tvH.price, dPrice: mb.bar.c - tvH.price, skewMs: null, refT: mb.bar.t };
@@ -165,7 +173,8 @@ function stampAt(at: number): Pick<StampedSignal, "mode" | "gcLtp" | "tvPrice" |
 function stamp(row: DaybookRow): void {
   state.total++;
   const at = row.at ?? 0;
-  const st = stampAt(at);
+  const num = typeof row.price === "number" ? row.price : Number(row.price);
+  const st = stampAt(at, Number.isFinite(num) ? num : null);
   state.signals.push({
     at,
     timeET: row.timeET ?? "",
@@ -187,7 +196,8 @@ function refresh(): void {
   // journal / GC minutes modules are still cold — retry until they warm
   for (const s of state.signals) {
     if (s.mode !== null) continue;
-    const st = stampAt(s.at);
+    const num = typeof s.price === "number" ? s.price : Number(s.price);
+    const st = stampAt(s.at, Number.isFinite(num) ? num : null);
     if (st.mode !== null) {
       s.mode = st.mode;
       s.gcLtp = st.gcLtp;

@@ -418,7 +418,7 @@ function SignalAuditPanel({ audit }: { audit: SignalAudit | null }) {
         <span className="normal-case">
           day {audit.day} · {audit.stamped}/{audit.total} stamped (tick {s.nTick} · minute {s.nMinute})
         </span>
-        <span className="normal-case">Δ = GC − TV at emission instant (pts; ~ = minute-bar reference)</span>
+        <span className="normal-case">Δ = GC price − TV tick at emission instant (pts; tick = live rings, signal = card price vs TV history)</span>
       </div>
       {audit.signals.length === 0 ? (
         <div className="p-4 text-center font-mono text-xs text-zinc-500">no signal rows in today's daybook yet — the audit fills as cards emit</div>
