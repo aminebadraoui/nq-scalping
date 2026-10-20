@@ -105,7 +105,16 @@ async function debugPortOf(proc: ChildProcess): Promise<number> {
     if (existsSync(portFile)) {
       const line = readFileSync(portFile, "utf8").split("\n")[0].trim();
       const port = Number(line);
-      if (Number.isFinite(port) && port > 0) return port;
+      if (Number.isFinite(port) && port > 0) {
+        // the file can be stale from a dead run — only trust a port
+        // that actually answers
+        try {
+          const probe = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+          if (probe.ok) return port;
+        } catch {
+          /* not up — keep waiting */
+        }
+      }
     }
     if (proc.exitCode !== null) throw new Error(`chromium exited early (code ${proc.exitCode})`);
     await sleep(500);
@@ -120,10 +129,23 @@ interface Target {
 }
 
 async function cdp(port: number): Promise<{ ws: WebSocket; call: (m: string, p?: unknown) => Promise<Record<string, unknown>> }> {
-  const res = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent("about:blank")}`, { method: "PUT" });
-  if (!res.ok) throw new Error(`/json/new failed: ${res.status}`);
-  const target = (await res.json()) as Target;
-  const ws = new WebSocket(target.webSocketDebuggerUrl!);
+  // chromium can take a few seconds after the port file appears — retry
+  let target: Target | null = null;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent("about:blank")}`, { method: "PUT" });
+      if (res.ok) {
+        target = (await res.json()) as Target;
+        break;
+      }
+    } catch {
+      /* keep trying */
+    }
+    await sleep(1500);
+  }
+  if (!target?.webSocketDebuggerUrl) throw new Error(`chromium debug endpoint never answered on port ${port}`);
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise<void>((resolve, reject) => {
     ws.onopen = () => resolve();
     ws.onerror = () => reject(new Error("CDP websocket failed"));
@@ -242,6 +264,7 @@ async function run(): Promise<void> {
   try {
     token = await harvest(port, LOGIN_MODE ? 20 * 60_000 : 120_000);
   } catch (e) {
+    proc.kill("SIGTERM"); // never leave orphan chromium holding the port
     if (chromeErr.trim()) {
       console.error(`[tvmdRecapture] chromium stderr (first lines):\n${chromeErr.trim().split("\n").slice(0, 12).join("\n")}`);
     }
