@@ -86,6 +86,10 @@ const state = {
   hists: new Map<number, TvHist>(),
   lastContractId: null as number | null,
   ticks: [] as TvTick[],
+  /** full-day tick history ({t, price}, capped) — the ring above is
+   *  recent-only; the signal-time audit backfills older signals from
+   *  this list when the ring has moved past them. */
+  historic: [] as { t: number; price: number }[],
   seenTickIds: new Set<number>(),
   cols: [] as { t0: number; t1: number }[],
   cells: new Map<number, Map<number, FootprintCell>>(), // price -> bucketNum -> cell
@@ -102,6 +106,7 @@ function resetAll(): void {
   state.hists.clear();
   state.lastContractId = null;
   state.ticks = [];
+  state.historic = [];
   state.seenTickIds.clear();
   state.cols = [];
   state.cells.clear();
@@ -133,6 +138,8 @@ function ingestTick(tk: TvTick): void {
   state.ticks.push(tk);
   state.tickCount++;
   if (state.ticks.length > MAX_TICKS) state.ticks = state.ticks.slice(-MAX_TICKS);
+  state.historic.push({ t: tk.t, price: tk.price });
+  if (state.historic.length > 150_000) state.historic = state.historic.slice(-150_000);
 
   const bucketNum = Math.floor(tk.t / BUCKET_MS);
   let colIdx = state.cols.findIndex((c) => c.t0 === bucketNum * BUCKET_MS);
@@ -186,6 +193,24 @@ export function nearestTickIn(ticks: TvTick[], tsMs: number): TvTick | null {
  *  ring no longer spans that instant). */
 export function nearestLiveTick(tsMs: number): TvTick | null {
   return nearestTickIn(state.ticks, tsMs);
+}
+
+/** Tick from the full-day history closest to tsMs (null when the
+ *  history doesn't span that instant or nothing is within 10s). */
+export function nearestHistoricTick(tsMs: number): { t: number; price: number } | null {
+  const list = state.historic;
+  let best: { t: number; price: number } | null = null;
+  let bestD = Infinity;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const d = Math.abs(list[i].t - tsMs);
+    if (d < bestD) {
+      bestD = d;
+      best = list[i];
+    } else if (list[i].t < tsMs - bestD) {
+      break;
+    }
+  }
+  return bestD <= 10_000 ? best : null;
 }
 
 function handleData(data: Record<string, unknown>): void {

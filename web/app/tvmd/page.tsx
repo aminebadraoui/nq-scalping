@@ -416,9 +416,9 @@ function SignalAuditPanel({ audit }: { audit: SignalAudit | null }) {
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-zinc-800 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
         <span>signal-time audit — GC vs TV at each signal</span>
         <span className="normal-case">
-          day {audit.day} · {audit.stamped}/{audit.total} stamped
+          day {audit.day} · {audit.stamped}/{audit.total} stamped (tick {s.nTick} · minute {s.nMinute})
         </span>
-        <span className="normal-case">Δ = GC ltp − TV tick at emission instant (pts)</span>
+        <span className="normal-case">Δ = GC − TV at emission instant (pts; ~ = minute-bar reference)</span>
       </div>
       {audit.signals.length === 0 ? (
         <div className="p-4 text-center font-mono text-xs text-zinc-500">no signal rows in today's daybook yet — the audit fills as cards emit</div>
@@ -468,7 +468,9 @@ function SignalAuditPanel({ audit }: { audit: SignalAudit | null }) {
                     <td className="py-[1px] pr-3">{sg.price}</td>
                     <td className="py-[1px] pr-3">{sg.tvPrice !== null ? sg.tvPrice.toFixed(2) : "—"}</td>
                     <td className={`py-[1px] pr-3 ${sg.dPrice === null ? "text-zinc-700" : sg.dPrice > 0 ? "text-long" : sg.dPrice < 0 ? "text-short" : "text-zinc-400"}`}>
-                      {sg.dPrice === null ? "—" : `${sg.dPrice > 0 ? "+" : ""}${sg.dPrice.toFixed(2)} (${Math.round(sg.dPrice / TICK)}t)`}
+                      {sg.dPrice === null
+                        ? "—"
+                        : `${sg.mode === "minute" ? "~" : ""}${sg.dPrice > 0 ? "+" : ""}${sg.dPrice.toFixed(2)} (${Math.round(sg.dPrice / TICK)}t)`}
                     </td>
                     <td className="py-[1px] pr-3 text-info">{sg.skewMs === null ? "—" : `${Math.round(sg.skewMs)} ms`}</td>
                     <td className="py-[1px] pr-3">{sg.verdict}</td>

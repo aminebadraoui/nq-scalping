@@ -20,8 +20,8 @@
 
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { daybookDayKey, daybookFile } from "./daybook";
-import { getLive } from "./live";
-import { nearestLiveTick, type TvTick } from "./tvmd";
+import { getLive, type LiveMinute } from "./live";
+import { nearestHistoricTick, nearestLiveTick, type TvTick } from "./tvmd";
 
 export interface StampedSignal {
   at: number;
@@ -38,6 +38,9 @@ export interface StampedSignal {
   tvPrice: number | null;
   dPrice: number | null; // pts (GC − TV)
   skewMs: number | null;
+  /** tick = both feeds' tick rings; minute = TV history tick vs GC
+   *  minute-bar close (older signals, coarser reference) */
+  mode: "tick" | "minute" | null;
 }
 
 export interface SignalAudit {
@@ -48,6 +51,8 @@ export interface SignalAudit {
   signals: StampedSignal[]; // newest first, capped
   summary: {
     n: number;
+    nTick: number;
+    nMinute: number;
     coverage: number; // stamped / total
     medianAbsD: number | null;
     p95AbsD: number | null;
@@ -84,6 +89,19 @@ function nearestTvTick(tsMs: number): TvTick | null {
   return nearestLiveTick(tsMs);
 }
 
+/** The GC minute bar covering tsMs (close as the price reference for
+ *  older signals whose tick ring has moved on). Bars are ascending. */
+function minuteBarAt(tsMs: number): LiveMinute | null {
+  const bars = getLive().state.minutes;
+  for (let i = bars.length - 1; i >= 0; i--) {
+    const b = bars[i];
+    const closeMs = Date.parse(`${b.du ?? ""}T${b.t}:00Z`) + 60_000;
+    if (!Number.isFinite(closeMs)) continue;
+    if (closeMs <= tsMs + 60_000) return closeMs >= tsMs - 60_000 ? b : null;
+  }
+  return null;
+}
+
 const state = {
   started: false,
   day: "",
@@ -113,8 +131,29 @@ function stamp(row: DaybookRow): void {
   const at = row.at ?? 0;
   const gc = nearestGcTick(at);
   const tv = nearestTvTick(at);
-  const dPrice = gc && tv ? gc.ltp - tv.price : null;
-  const skewMs = gc && tv ? gc.ms - tv.t : null;
+  let mode: StampedSignal["mode"] = null;
+  let gcLtp: number | null = null;
+  let tvPrice: number | null = null;
+  let dPrice: number | null = null;
+  let skewMs: number | null = null;
+  if (gc && tv) {
+    mode = "tick";
+    gcLtp = gc.ltp;
+    tvPrice = tv.price;
+    dPrice = gc.ltp - tv.price;
+    skewMs = gc.ms - tv.t;
+  } else {
+    // backfill older signals: exact TV tick from the day history,
+    // GC minute-bar close as the coarser vendor reference
+    const tvH = nearestHistoricTick(at);
+    const bar = minuteBarAt(at);
+    if (tvH && bar) {
+      mode = "minute";
+      gcLtp = bar.c;
+      tvPrice = tvH.price;
+      dPrice = bar.c - tvH.price;
+    }
+  }
   state.signals.push({
     at,
     timeET: row.timeET ?? "",
@@ -126,10 +165,11 @@ function stamp(row: DaybookRow): void {
     verdict: row.verdict ?? "",
     source: row.source ?? "",
     sent: row.sent ?? false,
-    gcLtp: gc?.ltp ?? null,
-    tvPrice: tv?.price ?? null,
+    gcLtp,
+    tvPrice,
     dPrice,
     skewMs,
+    mode,
   });
   if (state.signals.length > MAX_SIGNALS) state.signals = state.signals.slice(-MAX_SIGNALS);
 }
@@ -207,7 +247,7 @@ export function getSignalAudit(): SignalAudit {
   ensureStarted();
   const stamped = state.signals.filter((s) => s.dPrice !== null);
   const abs = stamped.map((s) => Math.abs(s.dPrice!)).sort((a, b) => a - b);
-  const skews = stamped.map((s) => s.skewMs!).filter((v) => Number.isFinite(v));
+  const skews = stamped.filter((s) => s.skewMs !== null).map((s) => s.skewMs!) as number[];
   return {
     ok: true,
     day: state.day,
@@ -216,6 +256,8 @@ export function getSignalAudit(): SignalAudit {
     signals: [...state.signals].reverse().slice(0, 100),
     summary: {
       n: stamped.length,
+      nTick: stamped.filter((s) => s.mode === "tick").length,
+      nMinute: stamped.filter((s) => s.mode === "minute").length,
       coverage: state.total > 0 ? stamped.length / state.total : 1,
       medianAbsD: quantile(abs, 0.5),
       p95AbsD: quantile(abs, 0.95),
