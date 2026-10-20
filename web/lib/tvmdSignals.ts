@@ -90,12 +90,16 @@ function nearestTvTick(tsMs: number): TvTick | null {
 }
 
 /** The GC minute bar covering tsMs (close as the price reference for
- *  older signals whose tick ring has moved on). Bars are ascending. */
+ *  older signals whose tick ring has moved on). Bars are ascending;
+ *  skips zero/placeholder closes and derives a missing du from the
+ *  signal instant (UTC-date wrap at midnight is irrelevant here). */
 function minuteBarAt(tsMs: number): LiveMinute | null {
   const bars = getLive().state.minutes;
+  const duFallback = new Date(tsMs).toISOString().slice(0, 10);
   for (let i = bars.length - 1; i >= 0; i--) {
     const b = bars[i];
-    const closeMs = Date.parse(`${b.du ?? ""}T${b.t}:00Z`) + 60_000;
+    if (typeof b.c !== "number" || b.c <= 0) continue;
+    const closeMs = Date.parse(`${b.du ?? duFallback}T${b.t}:00Z`) + 60_000;
     if (!Number.isFinite(closeMs)) continue;
     if (closeMs <= tsMs + 60_000) return closeMs >= tsMs - 60_000 ? b : null;
   }
