@@ -220,8 +220,9 @@ async function run(): Promise<void> {
   else args.push("--remote-debugging-port=0");
 
   const proc = spawn("chromium", args, { stdio: ["ignore", "ignore", "pipe"] });
-  proc.stderr?.on("data", () => {
-    /* chromium is noisy; suppress */
+  let chromeErr = "";
+  proc.stderr?.on("data", (c: Buffer) => {
+    if (chromeErr.length < 4000) chromeErr += c.toString("utf8");
   });
 
   let port: number;
@@ -235,7 +236,15 @@ async function run(): Promise<void> {
     port = await debugPortOf(proc);
   }
 
-  const token = await harvest(port, LOGIN_MODE ? 20 * 60_000 : 120_000);
+  let token: string;
+  try {
+    token = await harvest(port, LOGIN_MODE ? 20 * 60_000 : 120_000);
+  } catch (e) {
+    if (chromeErr.trim()) {
+      console.error(`[tvmdRecapture] chromium stderr (first lines):\n${chromeErr.trim().split("\n").slice(0, 12).join("\n")}`);
+    }
+    throw e;
+  }
   writeFileSync(TOKEN_FILE, JSON.stringify({ token, renewedAt: new Date().toISOString() }, null, 2));
   log(`captured ${token.slice(0, 8)}… and wrote ${TOKEN_FILE} — the collector hot-swaps within ~10s`);
   proc.kill("SIGTERM");
