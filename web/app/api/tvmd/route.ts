@@ -2,11 +2,23 @@ import { getSnapshot, persistToken, tokenInfo } from "@/lib/tvmd";
 
 export const dynamic = "force-dynamic";
 
+// the platform page (trader.tradovate.com) posts captured tokens
+// cross-origin via a console snippet — allow it
+const CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET,POST,OPTIONS",
+  "access-control-allow-headers": "content-type",
+};
+
+export function OPTIONS() {
+  return new Response(null, { status: 204, headers: CORS });
+}
+
 /** Live snapshot of the Tradovate md collector journal: quote, DOM,
  *  day volume profile, footprint cells, and the recent tick tape. */
 export async function GET() {
   return Response.json(getSnapshot(), {
-    headers: { "Cache-Control": "no-store" },
+    headers: { "Cache-Control": "no-store", ...CORS },
   });
 }
 
@@ -19,8 +31,8 @@ export async function POST(req: Request) {
   if (!persistToken(token)) {
     return Response.json(
       { ok: false, error: "not a Tradovate session token — paste the JWT from the platform's authorize frame" },
-      { status: 400 },
+      { status: 400, headers: CORS },
     );
   }
-  return Response.json({ ok: true, token: tokenInfo() });
+  return Response.json({ ok: true, token: tokenInfo() }, { headers: CORS });
 }
