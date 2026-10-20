@@ -11,7 +11,7 @@ const TMP = `/tmp/tvmd-token-test-${process.pid}.json`;
 process.env.TVMD_TOKEN_FILE = TMP;
 rmSync(TMP, { force: true });
 
-const { persistToken, tokenInfo } = await import("../lib/tvmd");
+const { persistToken, tokenInfo, nearestTickIn } = await import("../lib/tvmd");
 
 test("persistToken accepts a JWT-shaped token and rejects garbage", () => {
   const jwt =
@@ -29,4 +29,17 @@ test("tokenInfo returns masked prefix + renewedAt, never the token", () => {
   assert.ok(!info!.prefix.includes(".")); // no payload leakage
   assert.ok(info!.renewedAt);
   assert.ok(!JSON.stringify(info).includes("2323960")); // sub stays masked
+});
+
+test("nearestTickIn finds the closest tick and refuses far lookups", () => {
+  const ticks = [
+    { t: 1_000, price: 10, size: 1, bid: null, ask: null, bs: null, as: null, id: 1 },
+    { t: 2_000, price: 10.25, size: 1, bid: null, ask: null, bs: null, as: null, id: 2 },
+    { t: 3_000, price: 10.5, size: 1, bid: null, ask: null, bs: null, as: null, id: 3 },
+  ];
+  assert.equal(nearestTickIn(ticks, 2_100)?.id, 2); // closer to 2000 than 3000
+  assert.equal(nearestTickIn(ticks, 2_900)?.id, 3);
+  assert.equal(nearestTickIn(ticks, 500)?.id, 1);
+  assert.equal(nearestTickIn(ticks, 100_000), null); // >60s away → refused
+  assert.equal(nearestTickIn([], 1_000), null);
 });

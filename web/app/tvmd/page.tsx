@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { TvmdSnapshot } from "@/lib/tvmd";
+import type { SignalAudit } from "@/lib/tvmdSignals";
 
 /* ---------------------------------------------------------------------------
  * Live Tradovate market-data view — the collected md feed rendered as a
@@ -128,6 +129,7 @@ export default function TvmdPage() {
   const [snap, setSnap] = useState<TvmdSnapshot | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [gc, setGc] = useState<GcLive | null>(null);
+  const [audit, setAudit] = useState<SignalAudit | null>(null);
   const [newToken, setNewToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [tokenMsg, setTokenMsg] = useState<string | null>(null);
@@ -166,16 +168,19 @@ export default function TvmdPage() {
       if (inFlight.current) return;
       inFlight.current = true;
       try {
-        const [tvRes, gcRes] = await Promise.all([
+        const [tvRes, gcRes, auditRes] = await Promise.all([
           fetch("/api/tvmd", { cache: "no-store" }),
           fetch("/api/tvmd/gc", { cache: "no-store" }),
+          fetch("/api/tvmd/signals", { cache: "no-store" }),
         ]);
         if (!tvRes.ok) throw new Error(`api ${tvRes.status}`);
         const json = (await tvRes.json()) as TvmdSnapshot;
         const gcJson = gcRes.ok ? ((await gcRes.json()) as GcLive) : null;
+        const auditJson = auditRes.ok ? ((await auditRes.json()) as SignalAudit) : null;
         if (alive) {
           setSnap(json);
           setGc(gcJson);
+          setAudit(auditJson);
           setErr(null);
           // signal-time divergence sample: GC last print vs TV last trade
           if (gcJson && json.stats.lastFrame) {
@@ -352,6 +357,7 @@ export default function TvmdPage() {
       {snap && snap.stats.frames > 0 && (
         <div className="mt-3">
           <ComparePanel snap={snap} gc={gc} samples={samples} />
+          <SignalAuditPanel audit={audit} />
         </div>
       )}
     </div>
@@ -398,6 +404,83 @@ function Sparkline({ samples, color }: { samples: DeltaSample[]; color: string }
       <line x1={0} y1={y(0)} x2={w} y2={y(0)} stroke="#3f3f46" strokeDasharray="3 3" strokeWidth="1" />
       <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
     </svg>
+  );
+}
+
+function SignalAuditPanel({ audit }: { audit: SignalAudit | null }) {
+  if (!audit) return null;
+  const s = audit.summary;
+  const fmt = (v: number | null | undefined, d = 2) => (v === null || v === undefined ? "—" : v.toFixed(d));
+  return (
+    <div className="mt-3 rounded-lg border border-zinc-800 bg-panel">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-zinc-800 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+        <span>signal-time audit — GC vs TV at each signal</span>
+        <span className="normal-case">
+          day {audit.day} · {audit.stamped}/{audit.total} stamped
+        </span>
+        <span className="normal-case">Δ = GC ltp − TV tick at emission instant (pts)</span>
+      </div>
+      {audit.signals.length === 0 ? (
+        <div className="p-4 text-center font-mono text-xs text-zinc-500">no signal rows in today's daybook yet — the audit fills as cards emit</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-5 gap-2 border-b border-zinc-800 p-3 text-center font-mono">
+            <div>
+              <p className="text-[9px] text-zinc-500">median |Δ|</p>
+              <p className="text-sm text-zinc-100">{fmt(s.medianAbsD)}</p>
+            </div>
+            <div>
+              <p className="text-[9px] text-zinc-500">p95 |Δ|</p>
+              <p className="text-sm text-info">{fmt(s.p95AbsD)}</p>
+            </div>
+            <div>
+              <p className="text-[9px] text-zinc-500">max |Δ|</p>
+              <p className="text-sm text-warn">{fmt(s.maxAbsD)}</p>
+            </div>
+            <div>
+              <p className="text-[9px] text-zinc-500">mean skew</p>
+              <p className="text-sm text-zinc-100">{s.meanSkewMs === null ? "—" : `${Math.round(s.meanSkewMs)} ms`}</p>
+            </div>
+            <div>
+              <p className="text-[9px] text-zinc-500">coverage</p>
+              <p className="text-sm text-zinc-100">{Math.round(s.coverage * 100)}%</p>
+            </div>
+          </div>
+          <div className="max-h-72 overflow-y-auto p-2 font-mono text-[11px]">
+            <table className="w-full">
+              <thead>
+                <tr className="text-left text-zinc-500">
+                  <th className="py-1 pr-3 font-normal">time</th>
+                  <th className="py-1 pr-3 font-normal">side</th>
+                  <th className="py-1 pr-3 font-normal">GC price</th>
+                  <th className="py-1 pr-3 font-normal">TV tick</th>
+                  <th className="py-1 pr-3 font-normal">Δ pts</th>
+                  <th className="py-1 pr-3 font-normal">skew</th>
+                  <th className="py-1 pr-3 font-normal">verdict</th>
+                  <th className="py-1 font-normal">source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {audit.signals.slice(0, 60).map((sg, i) => (
+                  <tr key={i} className={sg.sent ? "text-zinc-300" : "text-zinc-500"}>
+                    <td className="py-[1px] pr-3">{sg.timeET}</td>
+                    <td className={`py-[1px] pr-3 ${sg.side === "short" ? "text-short" : sg.side === "long" ? "text-long" : ""}`}>{sg.side}</td>
+                    <td className="py-[1px] pr-3">{sg.price}</td>
+                    <td className="py-[1px] pr-3">{sg.tvPrice !== null ? sg.tvPrice.toFixed(2) : "—"}</td>
+                    <td className={`py-[1px] pr-3 ${sg.dPrice === null ? "text-zinc-700" : sg.dPrice > 0 ? "text-long" : sg.dPrice < 0 ? "text-short" : "text-zinc-400"}`}>
+                      {sg.dPrice === null ? "—" : `${sg.dPrice > 0 ? "+" : ""}${sg.dPrice.toFixed(2)} (${Math.round(sg.dPrice / TICK)}t)`}
+                    </td>
+                    <td className="py-[1px] pr-3 text-info">{sg.skewMs === null ? "—" : `${Math.round(sg.skewMs)} ms`}</td>
+                    <td className="py-[1px] pr-3">{sg.verdict}</td>
+                    <td className="py-[1px]">{sg.source}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

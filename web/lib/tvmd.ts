@@ -165,6 +165,29 @@ function decodePacket(p: Packet): TvTick[] {
   }));
 }
 
+/** Tick in a (roughly ascending) list closest to tsMs — scan from the
+ *  end; rings are small (≤8k) and callers are rare (one per signal). */
+export function nearestTickIn(ticks: TvTick[], tsMs: number): TvTick | null {
+  let best: TvTick | null = null;
+  let bestD = Infinity;
+  for (let i = ticks.length - 1; i >= 0; i--) {
+    const d = Math.abs(ticks[i].t - tsMs);
+    if (d < bestD) {
+      bestD = d;
+      best = ticks[i];
+    } else if (ticks[i].t < tsMs - bestD) {
+      break; // sorted-enough: only gets farther
+    }
+  }
+  return bestD <= 60_000 ? best : null;
+}
+
+/** Tick from the live Tradovate ring closest to tsMs (null when the
+ *  ring no longer spans that instant). */
+export function nearestLiveTick(tsMs: number): TvTick | null {
+  return nearestTickIn(state.ticks, tsMs);
+}
+
 function handleData(data: Record<string, unknown>): void {
   const d = (data.d ?? {}) as Record<string, unknown>;
   if (data.e === "md") {
