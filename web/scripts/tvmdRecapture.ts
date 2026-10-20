@@ -252,10 +252,33 @@ async function run(): Promise<void> {
   let port: number;
   if (LOGIN_MODE) {
     port = 9222;
-    await sleep(3000);
     log("remote debugging on 0.0.0.0:9222 — from the Mac run:");
     log("  ssh -L 9222:127.0.0.1:9222 root@<vps-ip>");
     log("  then open http://127.0.0.1:9222 in Chrome, click the trader.tradovate.com page, and complete the Google sign-in.");
+    // wait for the endpoint like debugPortOf does (fixed port, longer
+    // window — first run on a cold profile is slow)
+    const deadline = Date.now() + 90_000;
+    let up = false;
+    while (Date.now() < deadline) {
+      if (proc.exitCode !== null) break;
+      try {
+        const probe = await fetch("http://127.0.0.1:9222/json/version", { signal: AbortSignal.timeout(3000) });
+        if (probe.ok) {
+          up = true;
+          break;
+        }
+      } catch {
+        /* not up yet */
+      }
+      await sleep(2000);
+    }
+    if (!up) {
+      const portFile = `${PROFILE}/DevToolsActivePort`;
+      console.error(
+        `[tvmdRecapture] chromium never answered on 9222 — exitCode=${proc.exitCode}, portFile=${existsSync(portFile) ? readFileSync(portFile, "utf8").trim() : "absent"}`,
+      );
+      throw new Error("chromium debug endpoint never answered on 9222");
+    }
   } else {
     port = await debugPortOf(proc);
   }
