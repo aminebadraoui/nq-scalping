@@ -978,8 +978,16 @@ export default function FlowChart({
     const last = bars[bars.length - 1];
     const cur = `${bars.length}:${last?.time}:${last?.close}:${last?.open}:${colorBy}:${mSig}`;
     // lightweight-charts throws ("time must be of type BusinessDay") on NaN
-    // epochs; a defensive filter keeps the chart alive even with bad input
-    const goodBars = bars.filter((b) => Number.isFinite(b.time));
+    // epochs; a defensive filter keeps the chart alive even with bad input.
+    // It also demands STRICTLY ascending times — the vendor's candle path
+    // can re-emit a minute bar with the same timestamp after a heal gap
+    // ("data must be asc ordered by time"), so collapse duplicates (the
+    // later entry wins) and sort.
+    const byTime = new Map<number, Bar>();
+    for (const b of bars) {
+      if (Number.isFinite(b.time)) byTime.set(b.time, b);
+    }
+    const goodBars = [...byTime.values()].sort((a, b) => a.time - b.time);
     barsRef.current = goodBars.map((b) => ({ low: b.low, high: b.high, close: b.close }));
     lastTimeRef.current = goodBars[goodBars.length - 1]?.time ?? 0;
     if (cur !== lastSigRef.current) {
