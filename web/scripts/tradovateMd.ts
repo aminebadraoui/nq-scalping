@@ -44,6 +44,7 @@ interface Config {
   env: "live" | "demo";
   mdHost: string;
   tradeHost: string;
+  restHost: string;
   token: string;
   tokenFile: string;
   symbols: string[];
@@ -136,6 +137,9 @@ function loadConfig(): Config | null {
     env,
     mdHost: process.env.TVMD_MD_HOST ?? defaults.md,
     tradeHost: process.env.TVMD_TRADE_HOST ?? defaults.trade,
+    restHost:
+      process.env.TVMD_REST_HOST ??
+      (env === "demo" ? "https://demo.tradovateapi.com/v1" : "https://live.tradovateapi.com/v1"),
     token,
     tokenFile,
     symbols: (process.env.TVMD_SYMBOLS ?? "NQM7,ESM7")
@@ -173,7 +177,8 @@ env:
   TVMD_QUIET          1 = errors only
   TVMD_DEBUG          1 = echo raw frames to console
   TVMD_TRANSPORT      ws = direct socket (default); http = browser-relay sink
-  TVMD_SINK_PORT      sink listen port                 (default 3777)`;
+  TVMD_SINK_PORT      sink listen port                 (default 3777)
+  TVMD_REST_HOST      REST fallback base URL           (default demo/live tradovateapi.com/v1)`;
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(USAGE);
@@ -356,6 +361,8 @@ const state = {
   authFails: 0,
   token: cfg.token,
   framesLogged: 0,
+  restActive: false,
+  restTick: 0,
 };
 
 const MAX_BACKOFF_MS = 60_000;
@@ -498,6 +505,133 @@ async function subscribeAll(): Promise<void> {
   }
 }
 
+/* --------------- REST polling fallback (md-device quota) --------------- */
+/* When the md WebSocket authorizes keep getting killed (device-quota
+ * exhaustion after reconnect churn), the same market-data engine is
+ * reachable over REST on the trading host — no md-device pool involved.
+ * The fallback polls snapshots every few seconds, journals them in the
+ * same JSONL shape the reader expects, and keeps retrying the
+ * WebSocket on the slow ladder in the background. */
+
+async function restFetch(path: string, body: unknown): Promise<unknown | null> {
+  try {
+    const res = await fetch(`${cfg!.restHost}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", Authorization: `Bearer ${state.token}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      const txt = (await res.text().catch(() => "")).slice(0, 140);
+      if (res.status === 401) logErr(`REST ${path} rejected (token?): ${txt}`);
+      else logWarn(`REST ${path} ${res.status}: ${txt}`);
+      return null;
+    }
+    return (await res.json()) as unknown;
+  } catch (e) {
+    logWarn(`REST ${path} failed: ${String(e)}`);
+    return null;
+  }
+}
+
+function journalChartPacket(p: unknown): void {
+  journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "chart", d: { charts: [p] } } });
+  state.framesLogged++;
+}
+
+function asArray(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : [];
+}
+
+function journalRestResponse(kind: "chart" | "quote" | "dom" | "hist", json: unknown): void {
+  const j = (json ?? {}) as Record<string, unknown>;
+  const d = j.d as Record<string, unknown> | undefined;
+  if (kind === "chart") {
+    const packets = asArray(j.charts ?? d?.charts);
+    for (const p of packets) journalChartPacket(p);
+    return;
+  }
+  const keys = kind === "quote" ? ["quotes"] : kind === "dom" ? ["doms"] : ["histograms"];
+  const list = asArray(j[keys[0]] ?? d?.[keys[0]]);
+  if (list.length) {
+    for (const item of list) {
+      journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "md", d: { [keys[0]]: [item] } } });
+      state.framesLogged++;
+    }
+    return;
+  }
+  // some endpoints may return a bare object (quote with `entries`, dom
+  // with `bids`, histogram with `items`)
+  if (kind === "quote" && j.entries) {
+    journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "md", d: { quotes: [j] } } });
+    state.framesLogged++;
+  } else if (kind === "dom" && j.bids) {
+    journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "md", d: { doms: [j] } } });
+    state.framesLogged++;
+  } else if (kind === "hist" && j.items) {
+    journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "md", d: { histograms: [j] } } });
+    state.framesLogged++;
+  }
+}
+
+const CHART_BODY = {
+  chartDescription: {
+    underlyingType: "Tick",
+    elementSize: 1,
+    elementSizeUnit: "UnderlyingUnits",
+    withHistogram: false,
+  },
+  timeRange: { asMuchAsElements: 10 },
+};
+
+async function restPoll(): Promise<void> {
+  state.restTick++;
+  for (const sym of cfg!.symbols) {
+    const chart = await restFetch("/md/getchart", { symbol: sym, ...CHART_BODY });
+    if (chart !== null) journalRestResponse("chart", chart);
+    if (state.restTick % 3 === 0) {
+      if (cfg!.subs.quote) {
+        const q = await restFetch("/md/getquote", { symbol: sym });
+        if (q !== null) journalRestResponse("quote", q);
+      }
+      if (cfg!.subs.dom) {
+        const d = await restFetch("/md/getdom", { symbol: sym });
+        if (d !== null) journalRestResponse("dom", d);
+      }
+      if (cfg!.subs.hist) {
+        const h = await restFetch("/md/gethistogram", { symbol: sym });
+        if (h !== null) journalRestResponse("hist", h);
+      }
+    }
+  }
+}
+
+function startRestFallback(): void {
+  if (state.restActive) return;
+  state.restActive = true;
+  log("md authorizes keep getting killed — switching to REST polling fallback (WS retried on the slow ladder)");
+  void restPoll();
+  restTimer = setInterval(() => void restPoll(), 2_000);
+  // deliberately NOT unref'd: in REST-only mode this interval is what
+  // keeps the process alive
+  const summary = setInterval(() => {
+    if (state.restActive) log(`REST fallback active — ${state.framesLogged} frames journaled`);
+  }, 60_000);
+  if (typeof summary.unref === "function") summary.unref();
+}
+
+let restTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopRestFallback(): void {
+  if (!state.restActive) return;
+  state.restActive = false;
+  if (restTimer) {
+    clearInterval(restTimer);
+    restTimer = null;
+  }
+  log("md WebSocket restored — leaving REST fallback");
+}
+
 async function authorize(): Promise<void> {
   if (!state.sock) return;
   let item: TvItem;
@@ -512,6 +646,7 @@ async function authorize(): Promise<void> {
     state.authFails = 0;
     state.backoffMs = 5_000;
     state.authBackoffMs = 60_000;
+    stopRestFallback();
     log("authorized ok");
     await subscribeAll();
     return;
@@ -527,8 +662,10 @@ async function authorize(): Promise<void> {
     // reconnect storms earn p-tickets (research doc §5)
     state.authFails += 1;
     if (state.authFails >= 3) {
-      state.giveUp = true;
-      logErr("3 consecutive authorize failures — stopping reconnects. Re-capture a token and restart.");
+      state.authFails = 0;
+      state.authBackoffMs = 600_000;
+      startRestFallback();
+      scheduleReconnect(false); // keep probing the WebSocket every ~10 min
       return;
     }
   }
@@ -778,6 +915,7 @@ function shutdown(signal: string): void {
   log(`received ${signal} — closing. ${state.framesLogged} push frames logged to ${cfg!.outDir}`);
   clearInterval(heartbeatTimer);
   clearInterval(renewTimer);
+  if (restTimer) clearInterval(restTimer);
   if (state.sock) {
     try {
       state.sock.close();
