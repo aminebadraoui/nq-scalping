@@ -16,6 +16,8 @@
  * ------------------------------------------------------------------ */
 
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { emptyStatus, type RecapStatus } from "./tvmdRecap";
 
 const TICK_SIZE = Number(process.env.TVMD_TICK_SIZE ?? 0.25); // MNQ
 const BUCKET_MS = 15_000; // footprint column width
@@ -323,8 +325,14 @@ export interface TvmdSnapshot {
   footprint: { price: number; cells: ({ bv: number; av: number } | null)[] }[];
   tape: { t: number; price: number; size: number; side: "buy" | "sell" }[];
   stats: { frames: number; ticks: number; lastFrame: string | null };
-  /** masked info about the session token the collector is using */
-  token: { prefix: string; renewedAt: string | null } | null;
+  /** masked info about the session token the collector is using, plus
+   *  the autoheal loop's status (Google-session health) */
+  token: {
+    prefix: string;
+    renewedAt: string | null;
+    anchoredAt: string | null;
+    recap: RecapStatus | null;
+  } | null;
 }
 
 /* -------------------- session token persistence -------------------- */
@@ -339,15 +347,35 @@ function tokenFilePath(): string {
 export interface TvmdTokenInfo {
   prefix: string;
   renewedAt: string | null;
+  anchoredAt: string | null;
+  recap: RecapStatus | null;
+}
+
+/** Autoheal status file written by the recapture loop — same default
+ *  derivation as scripts/tvmdRecapture.ts (next to the token file).
+ *  Absent until the loop runs. */
+function recapStatusFile(): string {
+  return process.env.TVMD_RECAP_STATUS ?? path.join(path.dirname(tokenFilePath()), ".recap-status.json");
+}
+
+function readRecapStatus(): RecapStatus | null {
+  try {
+    const raw = JSON.parse(readFileSync(recapStatusFile(), "utf8")) as Partial<RecapStatus>;
+    return { ...emptyStatus(), ...raw };
+  } catch {
+    return null;
+  }
 }
 
 export function tokenInfo(): TvmdTokenInfo | null {
   try {
-    const raw = JSON.parse(readFileSync(tokenFilePath(), "utf8")) as { token?: unknown; renewedAt?: unknown };
+    const raw = JSON.parse(readFileSync(tokenFilePath(), "utf8")) as { token?: unknown; renewedAt?: unknown; anchoredAt?: unknown };
     if (typeof raw.token !== "string" || !raw.token) return null;
     return {
       prefix: `${raw.token.slice(0, 8)}…`,
       renewedAt: typeof raw.renewedAt === "string" ? raw.renewedAt : null,
+      anchoredAt: typeof raw.anchoredAt === "string" ? raw.anchoredAt : null,
+      recap: readRecapStatus(),
     };
   } catch {
     return null;

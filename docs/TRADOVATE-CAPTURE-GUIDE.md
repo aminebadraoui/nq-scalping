@@ -15,6 +15,112 @@ indefinitely; when the chain finally breaks, re-capture and set
 
 ---
 
+## Password mode (preferred): no Google in the chain
+
+A Tradovate account with a real username/password (a new non-SSO
+account, or an SSO account with a password added via Web Trader →
+Settings → Profile → Change Username) removes the fragile Google
+session entirely. Set both on the VPS (Coolify secrets — never commit):
+
+```env
+TVMD_USERNAME=<tradovate username>
+TVMD_PASSWORD=<tradovate password>
+```
+
+With both set, `tvmdRecapture.ts` skips the cookie import and the
+Google click: it opens trader.tradovate.com in headless Chromium, types
+the credentials into the platform's own login form (the page performs
+its own request signing, so web-build changes don't break us), and
+captures the authorize-frame JWT as before. Same probe, same 12h
+re-anchor, same backoff. A rejected password or a verification-code /
+captcha prompt fails fast and pages Telegram — it never retries
+credentials in a loop (that earns penalty tickets). The persistent
+profile keeps one stable deviceId, so re-logins don't burn device quota.
+
+Test locally first (`TVMD_CHROMIUM` points at Mac Chrome; a scratch
+profile keeps it off your real one):
+
+```bash
+cd web
+TVMD_CHROMIUM="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  TVMD_RECAP_PROFILE=/tmp/tvmd-profile \
+  TVMD_ENV=demo TVMD_USERNAME=... TVMD_PASSWORD=... \
+  TVMD_TOKEN_FILE=./data/.tradovate-md-token.json \
+  node --import ../scripts/ts-loader.mjs ./scripts/tvmdRecapture.ts
+```
+
+---
+
+## Autoheal: capture the Google SSO once, then it heals itself (VPS)
+
+The VPS runs a self-healing loop (`web/scripts/tvmdRecapture.ts`, every
+60s from `docker-entrypoint.sh`). The architecture, and the two failure
+modes it exists for:
+
+1. **The token chain has a hard cap.** `auth/renewaccesstoken` extends a
+   demo SSO session ~30 min at a time, but a session hits a hard
+   lifetime ceiling (~24h from the Google-SSO login) that renewals cannot
+   extend past — the collector then gets "Expired Access Token" minutes
+   after a successful renewal. The loop therefore RE-ANCHORS
+   proactively: whenever the token file's `anchoredAt` (the last fresh
+   login) is older than `TVMD_RECAP_ANCHOR_HOURS` (default 12h), it
+   launches the browser and mints a fresh session even if the token
+   still answers.
+2. **The Google session is the fragile asset.** A Google login completed
+   from the VPS datacenter IP in headless chromium gets re-verification
+   challenges and dies fast. The durable "capture once" is exporting the
+   cookies from YOUR real Mac Chrome (trusted device, residential IP,
+   2FA done) and shipping them to the VPS profile.
+
+**One-time capture (preferred — do this once):**
+
+```bash
+# on the Mac: quit Chrome, relaunch it once with the debug flag
+open -a "Google Chrome" --args --remote-debugging-port=9333
+# make sure that Chrome is signed in to Google AND logged into trader.tradovate.com
+cd web
+node --import ../scripts/ts-loader.mjs ./scripts/tvmdCookieExport.ts --ship
+```
+
+`--ship` copies the session cookies into the running nq-dashboard
+container (`/app/data/tvmd-google-session.json`, never committed,
+mode 600). The recapture loop imports them into its persistent browser
+profile before every harvest, so the "Sign in with Google" click-through
+completes silently — no prompts, forever.
+
+**Fallback capture (one-time login via the dashboard):** `/tvmd` →
+Browser login → open the printed `http://…:9222` URL (SSH-tunneled) →
+complete the Google sign-in once. The profile persists it on the volume.
+
+**The heal loop then runs unattended:**
+
+- every 60s it probes the token against the same engine the collector
+  uses (`TVMD_ENV`-consistent REST host — a mismatch here was a past
+  bug: probing demo with a live token spins the loop forever);
+- a dead/stale token launches headless Chromium (stale `Singleton*`
+  profile locks from container rebuilds are cleared first — they used to
+  kill every launch with "profile in use, exit 21" after each redeploy),
+  clicks through the Google SSO with real input events when the login
+  screen appears, captures the authorize-frame JWT, and writes it to
+  `TVMD_TOKEN_FILE` with `anchoredAt` — the collector hot-swaps ~10s;
+- consecutive failures back off (5m → 15m → 30m: hammering Google with
+  repeated datacenter logins is what gets sessions killed), persist
+  `.recap-status.json`, and page you on **Telegram** when the Google
+  session itself is dead — the one thing automation cannot heal.
+  The `/tvmd` session bar shows the loop's health chip
+  (`autoheal ● ready` / `google session ✗ — needs re-login`).
+
+**Troubleshooting the loop:**
+
+| Symptom | Cause / fix |
+|---|---|
+| `chromium exited early (code 21)` in the VPS log | stale `Singleton*` files in `/app/data/tvmd-browser-profile` — the current script clears them; on old images delete them once by hand |
+| `no token captured — the stored Google session did not complete the sign-in` | Google session dead: re-run `tvmdCookieExport.ts --ship` (or the dashboard Browser login) |
+| loop launches chromium every minute | env mismatch: `TVMD_REST_HOST`/`TVMD_ENV` must match the collector's; also fixed by the current script's derived default |
+| "Expired Access Token" minutes after a renewal | the session hit its hard cap — normal; the proactive 12h re-anchor prevents it; one harvest heals it |
+
+---
+
 ## Route A — Chrome DevTools on the web platform (recommended, ~5 min)
 
 The web platform is the same account on the same servers; its traffic is
@@ -161,7 +267,9 @@ Expected flow: `authorized ok` → one `ok:` line per subscription with
 `"mode":"RealTime"` → 10s summaries of live pushes. All frames go to
 `web/data/tradovate-md/md-<YYYY-MM-DD>.jsonl` (ET day). Ctrl-C stops.
 
-**Token finally dead (session dropped through expiry)?** Re-capture via
+**Token finally dead (session dropped through expiry)?** On the VPS the
+autoheal loop (above) handles this automatically — paste only when the
+loop is disabled or the collector runs on the Mac. Re-capture via
 Route A (the platform page's authorize frame — reload the page to mint a
 fresh one), then paste the new JWT into the **session bar on `/tvmd`** and
 hit Apply. The API persists it to the shared token file and the collector

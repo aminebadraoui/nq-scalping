@@ -306,11 +306,32 @@ export default function TvmdPage() {
                   {snap.token.renewedAt ? (
                     <span className="text-zinc-500"> · renewed {Math.round((Date.now() - Date.parse(snap.token.renewedAt)) / 60000)}m ago</span>
                   ) : null}
+                  {snap.token.anchoredAt ? (
+                    <span className="text-zinc-500"> · anchored {Math.round((Date.now() - Date.parse(snap.token.anchoredAt)) / 60000)}m ago</span>
+                  ) : null}
                 </>
               ) : (
                 <span className="text-warn">no token file</span>
               )}
             </span>
+            {snap.token?.recap && (
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] ${
+                  snap.token.recap.googleSessionOk ? "bg-long/15 text-long" : "bg-warn/15 text-warn"
+                }`}
+                title={
+                  snap.token.recap.lastError
+                    ? `last failure: ${snap.token.recap.lastError}`
+                    : snap.token.recap.googleSessionOk
+                      ? `autoheal ready — last healed ${snap.token.recap.lastHealAt ?? "?"}`
+                      : "the Google session in the VPS browser profile is dead — re-import cookies or use Browser login"
+                }
+              >
+                {snap.token.recap.googleSessionOk
+                  ? `autoheal ● ready${snap.token.recap.lastHealAt ? ` · healed ${Math.round((Date.now() - Date.parse(snap.token.recap.lastHealAt)) / 3600000)}h ago` : ""}`
+                  : "google session ✗ — needs re-login"}
+              </span>
+            )}
             <input
               value={newToken}
               onChange={(e) => setNewToken(e.target.value)}
