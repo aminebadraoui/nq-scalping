@@ -46,6 +46,7 @@
  * ------------------------------------------------------------------ */
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { anchoredAtOf, emptyStatus, nextBackoffSeconds, shouldReanchor, type RecapStatus } from "../lib/tvmdRecap";
@@ -567,12 +568,16 @@ async function harvest(port: number, timeoutMs: number): Promise<string> {
 
 function acquireRunLock(): boolean {
   try {
-    // 20-min staleness: a crashed run must not block the loop forever
+    // 20-min staleness: a crashed run must not block the loop forever.
+    // The lock lives on the volume, so a redeploy that kills a run
+    // mid-harvest leaves it behind — a lock from another container
+    // (hostname changes per container) is stale immediately.
     if (existsSync(RUN_LOCK)) {
-      const started = Number(readFileSync(RUN_LOCK, "utf8"));
-      if (Number.isFinite(started) && Date.now() - started < 20 * 60_000) return false;
+      const [host, ts] = readFileSync(RUN_LOCK, "utf8").split("@");
+      const started = Number(ts);
+      if (host === hostname() && Number.isFinite(started) && Date.now() - started < 20 * 60_000) return false;
     }
-    writeFileSync(RUN_LOCK, String(Date.now()));
+    writeFileSync(RUN_LOCK, `${hostname()}@${Date.now()}`);
     return true;
   } catch {
     return true; // best-effort: proceed rather than deadlock the heal
