@@ -163,10 +163,20 @@ function clearBackoff(): void {
   }
 }
 
-function setBackoff(failures: number): void {
-  const secs = nextBackoffSeconds(failures);
+/** The ladder counts failures of the CURRENT login method only — a
+ *  long dead-Google streak must not push a fresh password setup
+ *  straight to the 30-min cap. */
+function setBackoff(): void {
+  let n = 1;
   try {
-    writeFileSync(BACKOFF_FILE, JSON.stringify({ until: Date.now() + secs * 1000, failures, mode: loginMethod() }));
+    const prev = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { mode?: unknown; methodFailures?: unknown };
+    if (prev.mode === loginMethod() && typeof prev.methodFailures === "number") n = prev.methodFailures + 1;
+  } catch {
+    /* none yet */
+  }
+  const secs = nextBackoffSeconds(n);
+  try {
+    writeFileSync(BACKOFF_FILE, JSON.stringify({ until: Date.now() + secs * 1000, methodFailures: n, mode: loginMethod() }));
   } catch {
     /* best-effort */
   }
@@ -174,10 +184,10 @@ function setBackoff(failures: number): void {
 
 function backoffActive(): boolean {
   try {
-    const raw = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { until?: unknown; mode?: unknown };
+    const raw = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { until?: unknown; mode?: unknown; methodFailures?: unknown };
     // a backoff earned by the other login method (e.g. dead Google
     // session before credentials were configured) doesn't apply
-    if (raw.mode !== loginMethod()) return false;
+    if (raw.mode !== loginMethod() || typeof raw.methodFailures !== "number") return false;
     return typeof raw.until === "number" && Date.now() < raw.until;
   } catch {
     return false;
@@ -680,7 +690,7 @@ async function main(): Promise<void> {
       const status = readStatus();
       const next = { ...status, googleSessionOk: false, failures: status.failures + 1, lastAttemptAt: new Date().toISOString(), lastError: error };
       writeStatus(next);
-      setBackoff(next.failures);
+      setBackoff();
       await alertOnFailure(next, error);
       throw e;
     }
