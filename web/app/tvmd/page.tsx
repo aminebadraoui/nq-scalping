@@ -282,6 +282,76 @@ export default function TvmdPage() {
         </span>
       </div>
 
+      {/* session bar: swap in a fresh token (new demo account / dead chain).
+          Always visible — a dead token means NO frames, which is exactly
+          when these controls are needed. */}
+      {snap && (
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-zinc-800 bg-panel px-4 py-2 font-mono text-xs">
+          <span className="text-zinc-500">session</span>
+          <span className="text-zinc-300">
+            {snap.token ? (
+              <>
+                <span className="text-long">{snap.token.prefix}</span>
+                {snap.token.renewedAt ? (
+                  <span className="text-zinc-500"> · renewed {Math.round((Date.now() - Date.parse(snap.token.renewedAt)) / 60000)}m ago</span>
+                ) : null}
+                {snap.token.anchoredAt ? (
+                  <span className="text-zinc-500"> · anchored {Math.round((Date.now() - Date.parse(snap.token.anchoredAt)) / 60000)}m ago</span>
+                ) : null}
+              </>
+            ) : (
+              <span className="text-warn">no token file</span>
+            )}
+          </span>
+          {snap.token?.recap && (
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] ${
+                snap.token.recap.googleSessionOk ? "bg-long/15 text-long" : "bg-warn/15 text-warn"
+              }`}
+              title={
+                snap.token.recap.lastError
+                  ? `last failure: ${snap.token.recap.lastError}`
+                  : snap.token.recap.googleSessionOk
+                    ? `autoheal ready — last healed ${snap.token.recap.lastHealAt ?? "?"}`
+                    : "the Google session in the VPS browser profile is dead — re-import cookies or use Browser login"
+              }
+            >
+              {snap.token.recap.googleSessionOk
+                ? `autoheal ● ready${snap.token.recap.lastHealAt ? ` · healed ${Math.round((Date.now() - Date.parse(snap.token.recap.lastHealAt)) / 3600000)}h ago` : ""}`
+                : "google session ✗ — needs re-login"}
+            </span>
+          )}
+          <input
+            value={newToken}
+            onChange={(e) => setNewToken(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void applyToken()}
+            placeholder="paste new session token (JWT from the authorize frame)"
+            className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
+          />
+          <button
+            onClick={() => void applyToken()}
+            disabled={saving || !newToken.trim()}
+            className="rounded bg-long/15 px-3 py-1 text-long disabled:opacity-40"
+          >
+            {saving ? "saving…" : "Apply"}
+          </button>
+          <button
+            onClick={() => void startLogin()}
+            disabled={loginBusy}
+            className="rounded bg-info/15 px-3 py-1 text-info disabled:opacity-40"
+            title="launch the VPS browser for a one-time Google sign-in"
+          >
+            {loginBusy ? "starting…" : "Browser login"}
+          </button>
+          {loginUrl && (
+            <a href={loginUrl} target="_blank" rel="noreferrer" className="rounded bg-info/20 px-2 py-1 text-info underline">
+              open {loginUrl}
+            </a>
+          )}
+          {tokenMsg && <span className={tokenMsg.startsWith("saved") || tokenMsg.startsWith("Open") ? "text-long" : "text-warn"}>{tokenMsg}</span>}
+        </div>
+      )}
+
       {!snap || snap.stats.frames === 0 ? (
         <div className="rounded-lg border border-zinc-800 bg-panel p-8 text-center font-mono text-sm text-zinc-400">
           {err ? (
@@ -297,71 +367,6 @@ export default function TvmdPage() {
         </div>
       ) : (
         <>
-          {/* session bar: swap in a fresh token (new demo account / dead chain) */}
-          <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-zinc-800 bg-panel px-4 py-2 font-mono text-xs">
-            <span className="text-zinc-500">session</span>
-            <span className="text-zinc-300">
-              {snap.token ? (
-                <>
-                  <span className="text-long">{snap.token.prefix}</span>
-                  {snap.token.renewedAt ? (
-                    <span className="text-zinc-500"> · renewed {Math.round((Date.now() - Date.parse(snap.token.renewedAt)) / 60000)}m ago</span>
-                  ) : null}
-                  {snap.token.anchoredAt ? (
-                    <span className="text-zinc-500"> · anchored {Math.round((Date.now() - Date.parse(snap.token.anchoredAt)) / 60000)}m ago</span>
-                  ) : null}
-                </>
-              ) : (
-                <span className="text-warn">no token file</span>
-              )}
-            </span>
-            {snap.token?.recap && (
-              <span
-                className={`rounded px-1.5 py-0.5 text-[10px] ${
-                  snap.token.recap.googleSessionOk ? "bg-long/15 text-long" : "bg-warn/15 text-warn"
-                }`}
-                title={
-                  snap.token.recap.lastError
-                    ? `last failure: ${snap.token.recap.lastError}`
-                    : snap.token.recap.googleSessionOk
-                      ? `autoheal ready — last healed ${snap.token.recap.lastHealAt ?? "?"}`
-                      : "the Google session in the VPS browser profile is dead — re-import cookies or use Browser login"
-                }
-              >
-                {snap.token.recap.googleSessionOk
-                  ? `autoheal ● ready${snap.token.recap.lastHealAt ? ` · healed ${Math.round((Date.now() - Date.parse(snap.token.recap.lastHealAt)) / 3600000)}h ago` : ""}`
-                  : "google session ✗ — needs re-login"}
-              </span>
-            )}
-            <input
-              value={newToken}
-              onChange={(e) => setNewToken(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void applyToken()}
-              placeholder="paste new session token (JWT from the authorize frame)"
-              className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
-            />
-            <button
-              onClick={() => void applyToken()}
-              disabled={saving || !newToken.trim()}
-              className="rounded bg-long/15 px-3 py-1 text-long disabled:opacity-40"
-            >
-              {saving ? "saving…" : "Apply"}
-            </button>
-            <button
-              onClick={() => void startLogin()}
-              disabled={loginBusy}
-              className="rounded bg-info/15 px-3 py-1 text-info disabled:opacity-40"
-              title="launch the VPS browser for a one-time Google sign-in"
-            >
-              {loginBusy ? "starting…" : "Browser login"}
-            </button>
-            {loginUrl && (
-              <a href={loginUrl} target="_blank" rel="noreferrer" className="rounded bg-info/20 px-2 py-1 text-info underline">
-                open {loginUrl}
-              </a>
-            )}
-            {tokenMsg && <span className={tokenMsg.startsWith("saved") || tokenMsg.startsWith("Open") ? "text-long" : "text-warn"}>{tokenMsg}</span>}
-          </div>
 
         <div className="grid grid-cols-12 gap-3">
           {/* footprint */}
