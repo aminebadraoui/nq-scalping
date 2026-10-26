@@ -78,6 +78,8 @@ const LOGIN_LOCK = `${PROFILE}/.login-running`;
  *  invocation must not overlap a login-mode browser) */
 const RUN_LOCK = `${PROFILE}/.recap-running`;
 const BACKOFF_FILE = `${PROFILE}/.recap-backoff`;
+/** bump when a fix changes login behavior: older backoffs stop applying */
+const RECAP_VERSION = 2;
 
 const HOOK = `(() => {
   try {
@@ -178,8 +180,8 @@ function clearBackoff(): void {
 function setBackoff(rejected = false): void {
   let n = 1;
   try {
-    const prev = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { mode?: unknown; methodFailures?: unknown };
-    if (prev.mode === loginMethod() && typeof prev.methodFailures === "number") n = prev.methodFailures + 1;
+    const prev = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { mode?: unknown; methodFailures?: unknown; ver?: unknown };
+    if (prev.mode === loginMethod() && prev.ver === RECAP_VERSION && typeof prev.methodFailures === "number") n = prev.methodFailures + 1;
   } catch {
     /* none yet */
   }
@@ -187,7 +189,7 @@ function setBackoff(rejected = false): void {
   try {
     writeFileSync(
       BACKOFF_FILE,
-      JSON.stringify({ until: Date.now() + secs * 1000, methodFailures: n, mode: loginMethod(), ...(rejected ? { rejectedFp: CRED_FP } : {}) }),
+      JSON.stringify({ until: Date.now() + secs * 1000, methodFailures: n, mode: loginMethod(), ver: RECAP_VERSION, ...(rejected ? { rejectedFp: CRED_FP } : {}) }),
     );
   } catch {
     /* best-effort */
@@ -196,10 +198,12 @@ function setBackoff(rejected = false): void {
 
 function backoffActive(): boolean {
   try {
-    const raw = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { until?: unknown; mode?: unknown; methodFailures?: unknown; rejectedFp?: unknown };
+    const raw = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { until?: unknown; mode?: unknown; methodFailures?: unknown; rejectedFp?: unknown; ver?: unknown };
     // a backoff earned by the other login method (e.g. dead Google
     // session before credentials were configured) doesn't apply
     if (raw.mode !== loginMethod() || typeof raw.methodFailures !== "number") return false;
+    // failures earned by an older build don't gate a fixed one
+    if (raw.ver !== RECAP_VERSION) return false;
     if (typeof raw.rejectedFp === "string") {
       if (raw.rejectedFp !== CRED_FP) return false; // credentials changed — try now
       log("parked: Tradovate rejected these credentials — update TVMD_USERNAME / TVMD_PASSWORD to retry");
@@ -528,6 +532,30 @@ async function submitPasswordLogin(call: (m: string, p?: unknown) => Promise<Rec
   return true;
 }
 
+/** the post-login "Select a Trading Mode" screen: click the button for
+ *  the collector's environment (TVMD_ENV demo → Simulation, live →
+ *  Live). Returns true once clicked. */
+async function pickTradingMode(call: (m: string, p?: unknown) => Promise<Record<string, unknown>>): Promise<boolean> {
+  const label = ENV === "demo" ? "^access simulation$" : "^login to the live environment$";
+  const btn = await evalJson(
+    call,
+    `(() => { if (!/trading-mode/.test(location.pathname)) return JSON.stringify({ ok: false });
+      const el = [...document.querySelectorAll("button")].filter(${VISIBLE})
+        .find(e => new RegExp(${JSON.stringify(label)}, "i").test((e.innerText || "").trim()));
+      if (!el) return JSON.stringify({ ok: false });
+      el.scrollIntoView({ block: "center" });
+      const r = el.getBoundingClientRect(); return JSON.stringify({ ok: true, x: r.x + r.width/2, y: r.y + r.height/2 }); })()`,
+  );
+  if (!btn?.ok) return false;
+  const x = Number(btn.x);
+  const y = Number(btn.y);
+  log(`trading-mode screen — choosing ${ENV === "demo" ? "Simulation" : "Live"}`);
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await call("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await call("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  return true;
+}
+
 /** where the page is stuck: url, visible text, controls (no values) */
 async function pageDiagnosis(call: (m: string, p?: unknown) => Promise<Record<string, unknown>>): Promise<string> {
   try {
@@ -607,6 +635,7 @@ async function harvest(port: number, timeoutMs: number): Promise<string> {
     let reloaded = false;
     let sawLogin = false;
     let submittedAt = 0;
+    let modePicked = false;
     while (Date.now() < deadline) {
       await sleep(2000);
       const msg = await call("Runtime.evaluate", { expression: "window.__tvmdTok ?? null", returnByValue: true });
@@ -627,6 +656,9 @@ async function harvest(port: number, timeoutMs: number): Promise<string> {
           const blocker = await passwordLoginBlocker(call);
           if (blocker) throw new Error(blocker + (await pageDiagnosis(call)));
         }
+        // after login the platform asks which environment to enter —
+        // pick the one the collector streams from (demo = Simulation)
+        if (clicked && !modePicked && (await pickTradingMode(call))) modePicked = true;
         continue;
       }
       // login screen? click through ONCE, then give the popup time and
