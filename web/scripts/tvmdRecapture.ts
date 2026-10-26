@@ -188,7 +188,9 @@ function backoffActive(): boolean {
     // a backoff earned by the other login method (e.g. dead Google
     // session before credentials were configured) doesn't apply
     if (raw.mode !== loginMethod() || typeof raw.methodFailures !== "number") return false;
-    return typeof raw.until === "number" && Date.now() < raw.until;
+    const active = typeof raw.until === "number" && Date.now() < raw.until;
+    if (active) log(`backing off (${loginMethod()} failures: ${String(raw.methodFailures)}) until ${new Date(raw.until as number).toISOString()}`);
+    return active;
   } catch {
     return false;
   }
