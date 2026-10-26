@@ -451,26 +451,43 @@ async function hasPasswordForm(call: (m: string, p?: unknown) => Promise<Record<
 async function submitPasswordLogin(call: (m: string, p?: unknown) => Promise<Record<string, unknown>>): Promise<boolean> {
   if (!(await typeInto(call, FIND_USERNAME, USERNAME))) return false;
   if (!(await typeInto(call, FIND_PASSWORD, PASSWORD))) return false;
+  // did React see the typing? lengths only — values never leave the page
+  const lens = await evalJson(
+    call,
+    `JSON.stringify({ u: (${FIND_USERNAME})()?.value?.length ?? -1, p: (${FIND_PASSWORD})()?.value?.length ?? -1 })`,
+  );
+  log(`login fields filled: username ${String(lens?.u)} chars, password ${String(lens?.p)} chars (expected ${USERNAME.length}/${PASSWORD.length})`);
+  // Enter in the focused password field submits the form without
+  // aiming at a button the cookie banner may cover
+  log(`submitting username/password login for ${USERNAME} (Enter)`);
+  await call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+  await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await sleep(4000);
+  if (!(await hasPasswordForm(call))) return true;
+  // still on the form: click Login, but only where it is the topmost
+  // element (scrolled into view, not under an overlay)
   const btn = await evalJson(
     call,
     `(() => { const el = [...document.querySelectorAll('button, input[type="submit"]')]
         .filter(${VISIBLE})
         .find(e => /^(log ?in|sign ?in|login)$/i.test((e.innerText || e.value || "").trim()));
-      if (!el) return JSON.stringify({ ok: false });
-      const r = el.getBoundingClientRect(); return JSON.stringify({ ok: true, x: r.x + r.width/2, y: r.y + r.height/2 }); })()`,
+      if (!el) return JSON.stringify({ ok: false, why: "no Login button" });
+      el.scrollIntoView({ block: "center" });
+      const r = el.getBoundingClientRect(); const x = r.x + r.width/2, y = r.y + r.height/2;
+      const top = document.elementFromPoint(x, y);
+      if (!top || !(top === el || el.contains(top))) return JSON.stringify({ ok: false, why: "Login button covered by " + (top?.tagName ?? "nothing") });
+      return JSON.stringify({ ok: true, x, y }); })()`,
   );
-  if (btn?.ok) {
-    const x = Number(btn.x);
-    const y = Number(btn.y);
-    log(`submitting username/password login for ${USERNAME}`);
-    await call("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
-    await call("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
-  } else {
-    // no labelled button — Enter in the (still focused) password field
-    log(`submitting username/password login for ${USERNAME} (Enter)`);
-    await call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
-    await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  if (!btn?.ok) {
+    log(`Enter did not submit and button click skipped: ${String(btn?.why)}`);
+    return true;
   }
+  const x = Number(btn.x);
+  const y = Number(btn.y);
+  log("Enter did not submit — clicking Login");
+  await call("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+  await call("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+  await call("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
   return true;
 }
 
@@ -485,7 +502,7 @@ async function pageDiagnosis(call: (m: string, p?: unknown) => Promise<Record<st
         controls: [...document.querySelectorAll("input, button")]
           .filter(${VISIBLE})
           .slice(0, 12)
-          .map(e => e.tagName === "INPUT" ? "input[" + (e.type || "text") + (e.name ? ":" + e.name : "") + "]" : "button[" + (e.innerText || "").trim().slice(0, 30) + "]")
+          .map(e => e.tagName === "INPUT" ? "input[" + (e.type || "text") + (e.name ? ":" + e.name : "") + " len=" + (e.value?.length ?? 0) + "]" : "button[" + (e.innerText || "").trim().slice(0, 30) + "]")
           .join(" "),
       })`,
     );
@@ -530,6 +547,9 @@ async function harvest(port: number, timeoutMs: number): Promise<string> {
   };
   try {
     await call("Page.enable");
+    // desktop-sized viewport: the default headless window is small enough
+    // for the cookie banner to cover the login form
+    await call("Emulation.setDeviceMetricsOverride", { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
     if (!PASSWORD_MODE) await importGoogleSession(call);
     await call("Page.addScriptToEvaluateOnNewDocument", { source: HOOK });
     await call("Page.navigate", { url: PLATFORM });
