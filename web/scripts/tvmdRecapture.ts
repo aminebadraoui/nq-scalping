@@ -65,6 +65,14 @@ const ANCHOR_HOURS = Number(process.env.TVMD_RECAP_ANCHOR_HOURS ?? 12) || 12;
  *  within a minute */
 const LOGIN_REQUEST = `${PROFILE}/.login-request`;
 const LOGIN_MODE = process.env.TVMD_RECAP_LOGIN === "1" || existsSync(LOGIN_REQUEST);
+/** a login request opens the remote-debugging UI for a HUMAN to finish
+ *  the Google sign-in — only needed without credentials. In password
+ *  mode the same request is just "retry now": one headless attempt that
+ *  skips the backoff, with no publicly reachable debug port. (Lazy:
+ *  PASSWORD_MODE is declared further down.) */
+function interactiveLogin(): boolean {
+  return LOGIN_MODE && !PASSWORD_MODE;
+}
 const LOGIN_LOCK = `${PROFILE}/.login-running`;
 /** serializes harvest runs (entrypoint loop is sequential, but a manual
  *  invocation must not overlap a login-mode browser) */
@@ -701,7 +709,7 @@ async function main(): Promise<void> {
       token = await run();
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
-      if (LOGIN_MODE) {
+      if (interactiveLogin()) {
         // the user just hasn't finished typing — not an autoheal failure
         log(`login-mode harvest not done yet: ${error}`);
         throw e;
@@ -732,7 +740,7 @@ async function main(): Promise<void> {
 }
 
 async function run(): Promise<string> {
-  log(LOGIN_MODE ? "login mode: launching chromium with remote debugging on 9222" : "token dead/unverified or anchor stale — launching chromium to re-anchor the session");
+  log(interactiveLogin() ? "login mode: launching chromium with remote debugging on 9222" : "token dead/unverified or anchor stale — launching chromium to re-anchor the session");
 
   cleanStaleLocks();
 
@@ -747,7 +755,7 @@ async function run(): Promise<string> {
     "--no-default-browser-check",
     `--user-data-dir=${PROFILE}`,
   ];
-  if (LOGIN_MODE) args.push("--remote-debugging-address=0.0.0.0", "--remote-debugging-port=9222");
+  if (interactiveLogin()) args.push("--remote-debugging-address=0.0.0.0", "--remote-debugging-port=9222");
   else args.push("--remote-debugging-port=0");
 
   const proc = spawn(process.env.TVMD_CHROMIUM || "chromium", args, { stdio: ["ignore", "ignore", "pipe"] });
@@ -761,7 +769,7 @@ async function run(): Promise<string> {
   };
 
   let port: number;
-  if (LOGIN_MODE) {
+  if (interactiveLogin()) {
     port = 9222;
     log("remote debugging on 0.0.0.0:9222 — from the Mac run:");
     log("  ssh -L 9222:127.0.0.1:9222 root@<vps-ip>");
@@ -802,7 +810,7 @@ async function run(): Promise<string> {
   }
 
   try {
-    const token = await harvest(port, LOGIN_MODE ? 20 * 60_000 : 150_000);
+    const token = await harvest(port, interactiveLogin() ? 20 * 60_000 : 150_000);
     proc.kill("SIGTERM"); // never leave orphan chromium holding the port
     return token;
   } catch (e) {
