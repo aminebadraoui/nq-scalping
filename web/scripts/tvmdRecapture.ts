@@ -46,6 +46,7 @@
  * ------------------------------------------------------------------ */
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -166,7 +167,7 @@ function clearBackoff(): void {
 /** The ladder counts failures of the CURRENT login method only — a
  *  long dead-Google streak must not push a fresh password setup
  *  straight to the 30-min cap. */
-function setBackoff(): void {
+function setBackoff(rejected = false): void {
   let n = 1;
   try {
     const prev = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { mode?: unknown; methodFailures?: unknown };
@@ -176,7 +177,10 @@ function setBackoff(): void {
   }
   const secs = nextBackoffSeconds(n);
   try {
-    writeFileSync(BACKOFF_FILE, JSON.stringify({ until: Date.now() + secs * 1000, methodFailures: n, mode: loginMethod() }));
+    writeFileSync(
+      BACKOFF_FILE,
+      JSON.stringify({ until: Date.now() + secs * 1000, methodFailures: n, mode: loginMethod(), ...(rejected ? { rejectedFp: CRED_FP } : {}) }),
+    );
   } catch {
     /* best-effort */
   }
@@ -184,10 +188,15 @@ function setBackoff(): void {
 
 function backoffActive(): boolean {
   try {
-    const raw = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { until?: unknown; mode?: unknown; methodFailures?: unknown };
+    const raw = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { until?: unknown; mode?: unknown; methodFailures?: unknown; rejectedFp?: unknown };
     // a backoff earned by the other login method (e.g. dead Google
     // session before credentials were configured) doesn't apply
     if (raw.mode !== loginMethod() || typeof raw.methodFailures !== "number") return false;
+    if (typeof raw.rejectedFp === "string") {
+      if (raw.rejectedFp !== CRED_FP) return false; // credentials changed — try now
+      log("parked: Tradovate rejected these credentials — update TVMD_USERNAME / TVMD_PASSWORD to retry");
+      return true;
+    }
     const active = typeof raw.until === "number" && Date.now() < raw.until;
     if (active) log(`backing off (${loginMethod()} failures: ${String(raw.methodFailures)}) until ${new Date(raw.until as number).toISOString()}`);
     return active;
@@ -432,6 +441,11 @@ async function clickSignInWithGoogle(call: (m: string, p?: unknown) => Promise<R
 const USERNAME = process.env.TVMD_USERNAME?.trim() || "";
 const PASSWORD = process.env.TVMD_PASSWORD || "";
 const PASSWORD_MODE = USERNAME !== "" && PASSWORD !== "";
+/** short one-way fingerprint of the configured credentials: a rejection
+ *  parks the loop until the env values change (retrying known-bad
+ *  credentials only risks an account lockout) */
+const CRED_FP = PASSWORD_MODE ? createHash("sha256").update(`tvmd:${USERNAME}:${PASSWORD}`).digest("hex").slice(0, 12) : "";
+const REJECTED_PREFIX = "username/password rejected";
 
 /** focus a field found by `finder` (JS returning an element), clear it,
  *  then type with Input.insertText so React sees real input events */
@@ -476,6 +490,9 @@ async function submitPasswordLogin(call: (m: string, p?: unknown) => Promise<Rec
   await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
   await sleep(4000);
   if (!(await hasPasswordForm(call))) return true;
+  // Enter submitted and the page already answered (e.g. rejected) — a
+  // second click would be a second failed login against the account
+  if (await passwordLoginBlocker(call)) return true;
   // still on the form: click Login, but only where it is the topmost
   // element (scrolled into view, not under an overlay)
   const btn = await evalJson(
@@ -692,7 +709,7 @@ async function main(): Promise<void> {
       const status = readStatus();
       const next = { ...status, googleSessionOk: false, failures: status.failures + 1, lastAttemptAt: new Date().toISOString(), lastError: error };
       writeStatus(next);
-      setBackoff();
+      setBackoff(PASSWORD_MODE && error.startsWith(REJECTED_PREFIX));
       await alertOnFailure(next, error);
       throw e;
     }
