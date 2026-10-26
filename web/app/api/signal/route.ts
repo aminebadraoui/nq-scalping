@@ -3,6 +3,7 @@ import { getSignalFeed, FEED_REVERSAL, FEED_SWEEP_RECLAIM, FEED_UNUSUAL_VOLUME, 
 import { cardGateOpen } from "@/lib/signals";
 import { getSignalHistory } from "@/lib/signalHistory";
 import { computeLiveReads } from "@/lib/liveReads";
+import { adminUnauthorized, isAdminRequest } from "@/lib/adminAuth";
 
 export const dynamic = "force-dynamic";
 
@@ -126,6 +127,7 @@ export async function GET() {
 
 /** POST /api/signal?push=1 — force-send the current signal card to Telegram. */
 export async function POST(req: NextRequest) {
+  if (!isAdminRequest(req)) return adminUnauthorized();
   const feed = getSignalFeed();
   if (req.nextUrl.searchParams.get("push") === "1") {
     const r = await feed.pushNow();

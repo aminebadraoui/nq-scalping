@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { adminFetch } from "@/lib/adminFetch";
 
 /* ---------- payload shapes (mirror web/app/api/weekly-review/route.ts) ---------- */
 
@@ -222,7 +223,7 @@ export function WeeklyBoard() {
   const act = async (id: number, action: "apply" | "reject") => {
     setBusy(id);
     try {
-      const r = await fetch("/api/insights", {
+      const r = await adminFetch("/api/insights", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, id }),
@@ -239,7 +240,7 @@ export function WeeklyBoard() {
   const actExperiment = async (id: number, action: "queue" | "unqueue" | "skip") => {
     setBusy(id);
     try {
-      const r = await fetch("/api/weekly-review", {
+      const r = await adminFetch("/api/weekly-review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, id }),

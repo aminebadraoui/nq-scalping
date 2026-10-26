@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { TvmdSnapshot } from "@/lib/tvmd";
 import type { SignalAudit } from "@/lib/tvmdSignals";
+import { adminFetch } from "@/lib/adminFetch";
 
 /* ---------------------------------------------------------------------------
  * Live Tradovate market-data view — the collected md feed rendered as a
@@ -145,17 +146,17 @@ export default function TvmdPage() {
     setSaving(true);
     setTokenMsg(null);
     try {
-      const res = await fetch("/api/tvmd", {
+      const res = await adminFetch("/api/tvmd", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token: t }),
       });
-      const j = (await res.json()) as { ok: boolean; error?: string };
+      const j = (await res.json()) as { ok: boolean; error?: string; reason?: string };
       if (res.ok && j.ok) {
         setNewToken("");
         setTokenMsg("saved — collector hot-restarts with the new session (~10s)");
       } else {
-        setTokenMsg(j.error ?? `api ${res.status}`);
+        setTokenMsg(j.error ?? j.reason ?? `api ${res.status}`);
       }
     } catch (e) {
       setTokenMsg(String(e));
@@ -169,13 +170,13 @@ export default function TvmdPage() {
     setLoginBusy(true);
     setLoginUrl(null);
     try {
-      const res = await fetch("/api/tvmd/login", { method: "POST" });
-      const j = (await res.json()) as { ok: boolean; url?: string; error?: string; hint?: string };
+      const res = await adminFetch("/api/tvmd/login", { method: "POST" });
+      const j = (await res.json()) as { ok: boolean; url?: string; error?: string; reason?: string; hint?: string };
       if (res.ok && j.ok && j.url) {
         setLoginUrl(j.url);
         setTokenMsg(j.hint ?? "open the URL and complete the Google sign-in");
       } else {
-        setTokenMsg(j.error ?? `api ${res.status}`);
+        setTokenMsg(j.error ?? j.reason ?? `api ${res.status}`);
       }
     } catch (e) {
       setTokenMsg(String(e));

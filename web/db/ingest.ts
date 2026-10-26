@@ -79,7 +79,7 @@ function loadOhlc(date: string): Map<string, { o: number; h: number; l: number; 
     const f = path.join(OHLC, name);
     if (!existsSync(f)) continue;
     try {
-      for (const b of JSON.parse(readFileSync(f, "utf8")).bars as { t: string }[]) {
+      for (const b of JSON.parse(readFileSync(f, "utf8")).bars as ({ t: string } & { o: number; h: number; l: number; c: number; v: number })[]) {
         out.set(b.t.slice(11, 16), b);
       }
     } catch {
@@ -263,7 +263,7 @@ async function main() {
       // absorption events appear in BOTH a.alerts (as ABSORPTION alerts) and
       // a.absorption — dedupe on the natural key so the upsert never sees the
       // same constrained row twice in one statement
-      const byKey = new Map<string, { ts: string; date: string; session: string; kind: string; price: number; bias: string | null; payload: unknown }>();
+      const byKey = new Map<string, { ts: string; date: string; session: string; kind: string; price: number; bias: string | null; payload: postgres.JSONValue }>();
       for (const x of [...a.alerts, ...a.absorption.map((y) => ({ ...y, kind: "ABSORPTION" })), ...a.reclaims.map((y) => ({ ...y, kind: "RECLAIM", bias: null }))] as {
         t: string;
         kind: string;
@@ -273,7 +273,7 @@ async function main() {
       }[]) {
         const ts = tsByKey.get(x.t);
         if (!ts) continue;
-        byKey.set(`${ts}|${session}|${x.kind}|${x.price}`, { ts, date, session, kind: x.kind, price: x.price, bias: x.bias, payload: x });
+        byKey.set(`${ts}|${session}|${x.kind}|${x.price}`, { ts, date, session, kind: x.kind, price: x.price, bias: x.bias, payload: x as postgres.JSONValue });
       }
       const rows = [...byKey.values()];
       await sql`

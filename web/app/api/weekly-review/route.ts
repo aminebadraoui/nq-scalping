@@ -1,4 +1,5 @@
 import { dbEnabled, getDb } from "@/lib/gcdb";
+import { adminUnauthorized, isAdminRequest } from "@/lib/adminAuth";
 
 export const dynamic = "force-dynamic";
 
@@ -116,6 +117,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  if (!isAdminRequest(req)) return adminUnauthorized();
   if (!dbEnabled()) return Response.json({ ok: false, reason: "no DATABASE_URL" });
   const db = getDb();
   let body: { action?: string; id?: number } = {};

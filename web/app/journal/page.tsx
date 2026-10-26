@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { familyName } from "@/lib/familyNames";
+import { adminFetch } from "@/lib/adminFetch";
 import { type StreakRow, type DrawdownRow, type HourCell, type HourRow } from "@/lib/journalMetrics";
 import { flattenFeatures, ledgerCsv, type LedgerRow as DeepTradeRow, type LedgerVariable } from "@/lib/tradeLedger";
 import { groupFeatures } from "@/lib/featureGroups";
@@ -590,7 +591,7 @@ export default function JournalPage() {
   }, [scoreRange, acctFilter]);
 
   const post = (body: Record<string, unknown>) => {
-    fetch("/api/insights", {
+    adminFetch("/api/insights", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

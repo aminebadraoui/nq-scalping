@@ -1,5 +1,6 @@
 import { existsSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { adminUnauthorized, isAdminRequest } from "@/lib/adminAuth";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,8 @@ const PUBLIC_URL = process.env.TVMD_LOGIN_PUBLIC ?? "http://31.97.138.30:9222";
  *  volume; the entrypoint loop starts Chromium's remote-debugging UI
  *  (published 9222) within a minute. The user completes the Google
  *  sign-in there ONCE; the script captures the token and exits. */
-export async function POST() {
+export async function POST(req: Request) {
+  if (!isAdminRequest(req)) return adminUnauthorized();
   if (existsSync(LOCK)) {
     try {
       if (Date.now() - statSync(LOCK).mtimeMs < 20 * 60_000) {

@@ -190,11 +190,12 @@ log "macroInterpret exit=$INTERPRET_RC"
 
 log "--- archive to R2 + free the disk ---"
 if [ -n "${R2_ACCOUNT_ID:-}" ] || grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
-  if python3 "$ROOT/scripts/r2_sync.py" upload 2>&1; then
+  if "$PY" "$ROOT/scripts/r2_sync.py" upload 2>&1; then
     log "r2 upload ok"
-    python3 "$ROOT/scripts/r2_sync.py" prune 2>&1
+    "$PY" "$ROOT/scripts/r2_sync.py" prune 2>&1
     log "r2 prune exit=$?"
   else
+    R2_RC=1
     log "r2 upload FAILED — keeping local files until the next run"
   fi
 else
@@ -210,11 +211,12 @@ else
   ES_BF_RC=$?
   log "es backfill exit=$ES_BF_RC"
   if [ -n "${R2_ACCOUNT_ID:-}" ] || grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 2>/dev/null; then
-    if python3 "$ROOT/scripts/es_r2_sync.py" upload 2>&1; then
+    if "$PY" "$ROOT/scripts/es_r2_sync.py" upload 2>&1; then
       log "es r2 upload ok"
-      python3 "$ROOT/scripts/es_r2_sync.py" prune 2>&1
+      "$PY" "$ROOT/scripts/es_r2_sync.py" prune 2>&1
       log "es r2 prune exit=$?"
     else
+      ES_R2_RC=1
       log "es r2 upload FAILED — keeping local es files until the next run"
     fi
   else
@@ -255,7 +257,17 @@ if [ -n "${NEON_API_KEY:-}" ]; then
   "$NODE_BIN" --import ../scripts/ts-loader.mjs ./scripts/neonQuota.ts 2>&1 || true
 fi
 
+# The exit code covers COLLECTION too: a failed GoCharting backfill/OHLC
+# pull, a crashed canary, or a failed R2 archive must not exit 0 just
+# because the TS steps passed (every step stays idempotent — the next
+# run repairs, but the operator has to know tonight's run was partial).
 FINAL_RC=$INGEST_RC
+if [ "$BACKFILL_RC" -ne 0 ]; then FINAL_RC=$BACKFILL_RC; fi
+if [ "$OHLC_RC" -ne 0 ]; then FINAL_RC=$OHLC_RC; fi
+if [ "${CANARY_RC:-0}" -ne 0 ]; then FINAL_RC=$CANARY_RC; fi
+if [ "${R2_RC:-0}" -ne 0 ]; then FINAL_RC=$R2_RC; fi
+if [ "${ES_BF_RC:-0}" -ne 0 ]; then FINAL_RC=$ES_BF_RC; fi
+if [ "${ES_R2_RC:-0}" -ne 0 ]; then FINAL_RC=$ES_R2_RC; fi
 if [ "$DAYBOOK_RC" -ne 0 ]; then FINAL_RC=$DAYBOOK_RC; fi
 if [ "$DIVSTORE_RC" -ne 0 ]; then FINAL_RC=$DIVSTORE_RC; fi
 if [ "$RECONCILE_RC" -ne 0 ]; then FINAL_RC=$RECONCILE_RC; fi
@@ -267,5 +279,5 @@ if [ "$RISKSTACK_RC" -ne 0 ]; then FINAL_RC=$RISKSTACK_RC; fi
 if [ "${DECAY_RC:-0}" -ne 0 ]; then FINAL_RC=$DECAY_RC; fi
 if [ "${BREADTH_RC:-0}" -ne 0 ]; then FINAL_RC=$BREADTH_RC; fi
 if [ "${FDR_RC:-0}" -ne 0 ]; then FINAL_RC=$FDR_RC; fi
-log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC ingest=$INGEST_RC divstore=$DIVSTORE_RC reconcile=$RECONCILE_RC scoresig=$SCORESIG_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC interpret=${INTERPRET_RC:-0} riskstack=$RISKSTACK_RC decay=${DECAY_RC:-0} breadth=${BREADTH_RC:-0} fdr=${FDR_RC:-0}) ==="
+log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC canary=${CANARY_RC:-0} r2=${R2_RC:-0} es=${ES_BF_RC:-0} es_r2=${ES_R2_RC:-0} ingest=$INGEST_RC divstore=$DIVSTORE_RC reconcile=$RECONCILE_RC scoresig=$SCORESIG_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC interpret=${INTERPRET_RC:-0} riskstack=$RISKSTACK_RC decay=${DECAY_RC:-0} breadth=${BREADTH_RC:-0} fdr=${FDR_RC:-0}) ==="
 exit $FINAL_RC

@@ -9,8 +9,8 @@
  * `exec` audit record — halts and resumes are trackable to the minute.
  *
  * Halting is always allowed (a kill switch must never ask permission).
- * Resuming is password-gated when ADMIN_PASSWORD is configured (see
- * the /api/trading route).
+ * Resuming always needs the ADMIN_PASSWORD; with none configured,
+ * resume is refused (fail closed — see the /api/trading route).
  * ------------------------------------------------------------------ */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -83,10 +83,11 @@ export function setTradingHalt(
 
 /** timing-safe resume-password check. Both sides are trimmed: a
  *  trailing space on the Coolify env var or a copy-pasted password must
- *  never lock the owner out of their own kill switch. No password
- *  configured → true (dashboard access is the gate). Pure + unit-tested. */
+ *  never lock the owner out of their own kill switch. FAILS CLOSED: no
+ *  password configured → false (the dashboard is public — resuming the
+ *  executor must never be one anonymous click). Pure + unit-tested. */
 export function verifyResumePassword(given: string, configured?: string | null): boolean {
-  if (!configured) return true;
+  if (!configured || !configured.trim() || !given.trim()) return false;
   const g = createHash("sha256").update(given.trim()).digest();
   const e = createHash("sha256").update(configured.trim()).digest();
   return timingSafeEqual(g, e);

@@ -90,7 +90,13 @@ test("verifyResumePassword: trims both sides — a trailing space on the env var
   assert.equal(verifyResumePassword("hunter2", " hunter2 "), true);
 });
 
-test("verifyResumePassword: no configured password → open (dashboard access is the gate)", () => {
-  assert.equal(verifyResumePassword("", undefined), true);
-  assert.equal(verifyResumePassword("anything", null), true);
+test("verifyResumePassword: no configured password → refused (fail closed)", () => {
+  assert.equal(verifyResumePassword("", undefined), false);
+  assert.equal(verifyResumePassword("anything", null), false);
+  assert.equal(verifyResumePassword("anything", ""), false);
+  assert.equal(verifyResumePassword("anything", "   "), false);
+});
+
+test("verifyResumePassword: blank given never matches a whitespace-padded secret", () => {
+  assert.equal(verifyResumePassword("   ", "hunter2"), false);
 });

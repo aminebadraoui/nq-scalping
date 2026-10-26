@@ -1,8 +1,8 @@
 /* The owner's manual trading halt — the dashboard kill switch.
- * POST flips the halt (resume is password-gated when ADMIN_PASSWORD is
- * configured; halting is always allowed — a kill switch must never ask
- * permission). GET reports the state AND whether resuming needs a
- * password, so the UI can adapt instead of guessing. Every flip is
+ * POST flips the halt (resume always needs ADMIN_PASSWORD and is refused
+ * when none is configured — fail closed; halting is always allowed — a
+ * kill switch must never ask permission). GET reports the state AND
+ * whether resume is possible, so the UI can adapt instead of guessing. Every flip is
  * audited in the daybook (lib/tradingHalt.ts). */
 import { setTradingHalt, tradingHalted, verifyResumePassword } from "@/lib/tradingHalt";
 
@@ -57,6 +57,7 @@ export async function GET() {
   return Response.json({
     ok: true,
     halted: tradingHalted(),
-    resumePasswordRequired: !!process.env.ADMIN_PASSWORD,
+    resumePasswordRequired: true,
+    resumeConfigured: !!(process.env.ADMIN_PASSWORD ?? "").trim(),
   });
 }

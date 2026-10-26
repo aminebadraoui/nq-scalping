@@ -7,17 +7,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
  *
  * STOP trading: always allowed, instant, no password (a kill switch
  * must never ask permission). RESUME trading opens a confirm dialog;
- * it asks for the admin password ONLY when the server has one
- * configured (GET /api/trading reports resumePasswordRequired, so the
- * UI adapts instead of guessing). Every flip is audited in the
+ * it always asks for the admin password, and resume is disabled when
+ * the server has none configured (GET /api/trading reports
+ * resumeConfigured, so the UI adapts instead of guessing). Every flip is audited in the
  * daybook. Keyboard: Esc closes, Enter submits.
  * ------------------------------------------------------------------ */
 
-type ApiState = { ok?: boolean; halted?: boolean; resumePasswordRequired?: boolean; reason?: string };
+type ApiState = { ok?: boolean; halted?: boolean; resumePasswordRequired?: boolean; resumeConfigured?: boolean; reason?: string };
 
 export default function TradingToggle() {
   const [halted, setHalted] = useState<boolean | null>(null);
-  const [passwordRequired, setPasswordRequired] = useState(false);
+  const [passwordRequired, setPasswordRequired] = useState(true);
+  const [resumeConfigured, setResumeConfigured] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -32,7 +33,8 @@ export default function TradingToggle() {
       const j = (await r.json()) as ApiState;
       if (j.ok) {
         setHalted(!!j.halted);
-        setPasswordRequired(!!j.resumePasswordRequired);
+        setPasswordRequired(j.resumePasswordRequired !== false);
+        setResumeConfigured(j.resumeConfigured !== false);
       }
     } catch {
       /* keep the last known state */
@@ -99,6 +101,7 @@ export default function TradingToggle() {
   if (halted === null) return null;
 
   const submitResume = () => {
+    if (!resumeConfigured) return;
     if (!passwordRequired || password.length > 0) void flip(false);
   };
 
@@ -146,11 +149,13 @@ export default function TradingToggle() {
               Resume live trading
             </h2>
             <p className="mt-1.5 font-mono text-[10px] leading-relaxed text-zinc-400">
-              {passwordRequired
-                ? "The executor will place orders again. Enter the admin password to confirm."
-                : "No admin password is configured on the server — this re-arms the executor immediately."}
+              {!resumeConfigured
+                ? "No admin password is configured on the server — resume is disabled. Set ADMIN_PASSWORD to re-arm the executor."
+                : passwordRequired
+                  ? "The executor will place orders again. Enter the admin password to confirm."
+                  : "This re-arms the executor immediately."}
             </p>
-            {passwordRequired && (
+            {resumeConfigured && passwordRequired && (
               <>
                 <label className="mb-1 mt-3 block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
                   admin password
@@ -187,7 +192,7 @@ export default function TradingToggle() {
               </button>
               <button
                 onClick={submitResume}
-                disabled={busy || (passwordRequired && password.length === 0)}
+                disabled={busy || !resumeConfigured || (passwordRequired && password.length === 0)}
                 className="rounded border border-long/50 bg-long/10 px-2.5 py-1 font-mono text-[10px] font-bold text-long hover:bg-long/20 disabled:opacity-40"
               >
                 {busy ? "Resuming…" : "Resume trading"}
