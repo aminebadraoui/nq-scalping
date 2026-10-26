@@ -67,8 +67,11 @@ export function parseFrame(raw: unknown): TvFrame {
  *  the client sends '[]' (independent of answering 'h' prompts). */
 export const HEARTBEAT_INTERVAL_MS = 2500;
 
-export function shouldSendHeartbeat(nowMs: number, lastFrameAtMs: number): boolean {
-  return nowMs - lastFrameAtMs >= HEARTBEAT_INTERVAL_MS;
+/** true once HEARTBEAT_INTERVAL_MS has passed since our last `[]` SENT
+ *  (callers pass the send time — keying on inbound frames starves the
+ *  heartbeat while the server is pushing data) */
+export function shouldSendHeartbeat(nowMs: number, lastSentAtMs: number): boolean {
+  return nowMs - lastSentAtMs >= HEARTBEAT_INTERVAL_MS;
 }
 
 export interface TvPenalty {

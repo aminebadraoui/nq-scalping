@@ -832,6 +832,7 @@ function connect(): void {
     }
     if (frame.type === "h") {
       sendRaw("[]");
+      lastHeartbeatSentAt = Date.now();
       return;
     }
     if (frame.type === "c") {
@@ -886,11 +887,16 @@ if (cfg.transport === "http") {
   connect();
 }
 
+// Client heartbeats run on OUR send clock, not inbound silence: during
+// RTH the server pushes frames continuously, so an inbound-idle rule
+// never fires and the server drops the socket ~30s after connect.
+let lastHeartbeatSentAt = 0;
 const heartbeatTimer = setInterval(() => {
-  if (state.sock && state.sock.readyState === WebSocket.OPEN && shouldSendHeartbeat(Date.now(), state.lastFrameAt)) {
+  if (state.sock && state.sock.readyState === WebSocket.OPEN && shouldSendHeartbeat(Date.now(), lastHeartbeatSentAt)) {
     sendRaw("[]");
+    lastHeartbeatSentAt = Date.now();
   }
-}, HEARTBEAT_INTERVAL_MS);
+}, 500);
 if (typeof heartbeatTimer.unref === "function") heartbeatTimer.unref();
 
 const renewTimer = setInterval(() => {
