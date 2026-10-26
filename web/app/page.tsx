@@ -7,7 +7,6 @@ import SweepReclaimPanel from "@/components/SweepReclaimPanel";
 import PriceActionPanel from "@/components/PriceActionPanel";
 import SignalHistory, { type HistoryEntry as SignalEntry } from "@/components/SignalHistory";
 import LiveSignalBoard from "@/components/LiveSignalBoard";
-import DomIcebergPanel from "@/components/DomIcebergPanel";
 import TickMomentumPanel from "@/components/TickMomentumPanel";
 import ExecStatusBar from "@/components/ExecStatusBar";
 import HealthPipeline from "@/components/HealthPipeline";
@@ -390,7 +389,6 @@ export default function DashboardPage() {
           />
           <SweepReclaimPanel minutes={chartMinutes} cur={viewingLive ? live?.cur : null} lastPrice={lastPrice} />
           <TickMomentumPanel />
-          <DomIcebergPanel />
         </aside>
       </div>
 

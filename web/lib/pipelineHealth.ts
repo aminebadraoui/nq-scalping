@@ -8,7 +8,6 @@
  *
  * Stages (left → right, the production flow):
  *   TAPE   the GoCharting tick/footprint feed (lib/live.ts)
- *   DOM    the L2 order-book feed (lib/dom.ts)
  *   BARS   candle confirmation / tape gate (the family checkers' gate)
  *   DETECT the family detectors scanning the live buffer
  *   CARD   signal-card production + Telegram push (signalFeed)
@@ -75,15 +74,6 @@ type LiveFeedDiag = {
   detectors: { bars: number; momentumFlush: number; momentumExpansion: number; rth: number } | null;
 } | null;
 
-type DomFeedDiag = {
-  connected: boolean;
-  frames: number;
-  silentConnects: number;
-  lastReconnectAt: number;
-  nqSnapshots: number;
-  nqIncrements: number;
-} | null;
-
 type ProtectionsDiag = {
   status: { state: "live" | "dry" | "halted" | "watch"; label: string; reason: string; halts: string[] };
   stage: "eval" | "funded";
@@ -103,7 +93,6 @@ export type PipelineHealthInput = {
     instrument: string;
     feeds: Record<string, boolean> | null;
     liveFeed: LiveFeedDiag;
-    domFeed: DomFeedDiag;
     protections: ProtectionsDiag;
     market: { open: boolean; next: { kind: string; atMs: number } } | null;
     /** the pipeline extras the health route assembles next to the feeds */
@@ -205,28 +194,6 @@ function tapeStage(h: PipelineHealthInput): PipelineStage {
   if (lf.heal && lf.heal.step > 0)
     details.push({ label: "self-heal", value: `step ${lf.heal.step} · ${lf.heal.episodes} episode(s)`, tone: "warn" });
   return { id: "tape", name: "tape", icon: "≋", level, headline, metric, details };
-}
-
-function domStage(h: PipelineHealthInput): PipelineStage {
-  const d = h.execution?.domFeed ?? null;
-  const marketOpen = h.execution?.market?.open ?? false;
-  const details: PipelineStage["details"] = [];
-  if (!d) return { id: "dom", name: "dom l2", icon: "▦", level: "unknown", headline: "L2 feed state unavailable", metric: "—", details };
-  if (!d.connected) return { id: "dom", name: "dom l2", icon: "▦", level: "down", headline: "L2 feed disconnected", metric: "no data", details };
-
-  let level: PipelineLevel = "ok";
-  let headline = "book streaming";
-  if (d.silentConnects > 0) {
-    level = "warn";
-    headline = `${d.silentConnects} silent reconnect(s) — vendor channel flapping`;
-  } else if (marketOpen && d.frames === 0) {
-    level = "warn";
-    headline = "no L2 frames decoded yet";
-  }
-  details.push({ label: "increments", value: String(d.nqIncrements) });
-  details.push({ label: "silent reconnects", value: String(d.silentConnects), tone: d.silentConnects > 0 ? "warn" : undefined });
-  if (d.lastReconnectAt) details.push({ label: "last reconnect", value: "see journal" });
-  return { id: "dom", name: "dom l2", icon: "▦", level, headline, metric: `${d.frames} frames · ${d.nqSnapshots} snaps`, details };
 }
 
 function barsStage(h: PipelineHealthInput): PipelineStage {
@@ -476,7 +443,7 @@ function watchStage(h: PipelineHealthInput, now: number): PipelineStage {
 
 export function derivePipeline(h: PipelineHealthInput | null, now: number): PipelineStage[] {
   const input = h ?? { execution: null };
-  return [tapeStage(input), domStage(input), barsStage(input), detectStage(input), cardStage(input, now), guardStage(input), routeStage(input, now), watchStage(input, now)];
+  return [tapeStage(input), barsStage(input), detectStage(input), cardStage(input, now), guardStage(input), routeStage(input, now), watchStage(input, now)];
 }
 
 /** one glance for the whole pipeline: the worst non-idle/non-off level */

@@ -254,25 +254,6 @@ export async function GET(req: NextRequest) {
                 return null;
               }
             })(),
-            // DOM_V2 L2 feed health — frames/decoded/silent-connects so a
-            // dead vendor channel is visible instead of a reconnect flap
-            domFeed: await (async () => {
-              try {
-                const { getDom } = await import("@/lib/dom");
-                const d = getDom().state;
-                return {
-                  connected: d.connected,
-                  frames: d.frames,
-                  silentConnects: d.silentConnects,
-                  lastReconnectAt: d.lastReconnectAt ?? 0,
-                  nqSnapshots: d.nq.snapshots,
-                  nqIncrements: d.nq.increments,
-                };
-              } catch (e) {
-                console.error("[health] domFeed error:", e);
-                return null;
-              }
-            })(),
             // the rules board — EVERY live rule that can stop/restrict
             // trading today, with threshold, live metric, and state
             rules: await (async () => {

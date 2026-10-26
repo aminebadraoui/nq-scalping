@@ -81,14 +81,6 @@ export async function register(): Promise<void> {
   } catch {
     /* signals are best-effort — never block the server from starting */
   }
-  try {
-    // DOM_V2 L2 feed + iceberg detector — booted warm so the book is ready
-    // when the dashboard first asks (best-effort, idempotent singleton)
-    const { getDom } = await import("./lib/dom");
-    getDom();
-  } catch {
-    /* ignore */
-  }
   if (process.env.LAB_ENABLED === "false") return;
   try {
     const { buildLabSamples } = await import("./lib/lab");

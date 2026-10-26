@@ -4,7 +4,7 @@
  * The collector appends one JSON line per frame to
  * data/tradovate-md/md-<ET-day>.jsonl:
  *   {"dir":"out","t":...,"frame":"authorize\n1\n\n<token>"}
- *   {"dir":"in","t":...,"type":"a","data":{...}}   // quote/dom/hist/chart
+ *   {"dir":"in","t":...,"type":"a","data":{...}}   // quote/hist/chart
  *
  * This module keeps an in-memory mirror (module singleton — lives for
  * the dev-server process) and re-reads only the bytes appended since
@@ -34,12 +34,6 @@ export interface TvQuote {
   contractId: number;
   timestamp: string;
   entries: Record<string, { price?: number; size?: number }>;
-}
-export interface TvDom {
-  contractId: number;
-  timestamp: string;
-  bids: { price: number; size: number }[];
-  offers: { price: number; size: number }[];
 }
 export interface TvHist {
   contractId: number;
@@ -84,7 +78,6 @@ const state = {
   offset: 0,
   carry: "",
   quotes: new Map<number, TvQuote>(),
-  doms: new Map<number, TvDom>(),
   hists: new Map<number, TvHist>(),
   lastContractId: null as number | null,
   ticks: [] as TvTick[],
@@ -104,7 +97,6 @@ function resetAll(): void {
   state.offset = 0;
   state.carry = "";
   state.quotes.clear();
-  state.doms.clear();
   state.hists.clear();
   state.lastContractId = null;
   state.ticks = [];
@@ -232,11 +224,6 @@ function handleData(data: Record<string, unknown>): void {
       for (const q of quotes) state.quotes.set(q.contractId, q);
       state.lastContractId = quotes[0].contractId;
     }
-    const doms = d.doms as TvDom[] | undefined;
-    if (Array.isArray(doms) && doms.length) {
-      for (const dom of doms) state.doms.set(dom.contractId, dom);
-      state.lastContractId = doms[0].contractId;
-    }
     const hists = d.histograms as TvHist[] | undefined;
     if (Array.isArray(hists) && hists.length) {
       for (const h of hists) {
@@ -319,7 +306,6 @@ export interface TvmdSnapshot {
   file: string;
   contractId: number | null;
   quote: TvQuote | null;
-  dom: TvDom | null;
   profile: { price: number; vol: number }[];
   columns: { t0: number; t1: number }[];
   footprint: { price: number; cells: ({ bv: number; av: number } | null)[] }[];
@@ -394,15 +380,10 @@ export function getSnapshot(): TvmdSnapshot {
   refresh();
   const cid = state.lastContractId;
   const quote = cid !== null ? (state.quotes.get(cid) ?? null) : null;
-  const dom = cid !== null ? (state.doms.get(cid) ?? null) : null;
   const hist = cid !== null ? (state.hists.get(cid) ?? null) : null;
 
-  // footprint rows: DOM levels ∪ traded prices, newest first
+  // footprint rows: traded prices, highest first
   const prices = new Set<number>();
-  if (dom) {
-    for (const l of dom.bids) prices.add(l.price);
-    for (const l of dom.offers) prices.add(l.price);
-  }
   for (const p of state.cells.keys()) prices.add(p);
   const rows = [...prices].sort((a, b) => b - a);
 
@@ -434,7 +415,6 @@ export function getSnapshot(): TvmdSnapshot {
     file: `md-${state.day}.jsonl`,
     contractId: cid,
     quote,
-    dom,
     profile,
     columns: cols,
     footprint,

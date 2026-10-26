@@ -155,26 +155,10 @@ footprint archive itself stays the source of truth.
 Regenerate protobuf modules after schema changes:
 `python -m grpc_tools.protoc -I. --python_out=. footprint.proto ohlc_bars.proto`
 
-## DOM_V2 (Level 2 book)
+## DOM_V2 (Level 2 book) — removed 2026-10-26
 
-The vendor serves a realtime L2 book on a **dedicated socket** —
-`wss://origin.wsdom.prodb.<dc>.gocharting.com/<dc>/ws` (the trade/quote socket
-is `origin.ws.<dc>`; both reverse-engineered from the terminal's
-`trades.worker` bundle). Frames are binary: a first byte of 109 means protobuf
-framing (FOOTPRINT/V2, TS/V2); otherwise the whole frame is **zlib-deflated
-JSON** of `{channel:"DOM_V2", payload:{t:"s"|"d", seq, data}}` — snapshot
-`{bids/asks:[{p,s}]}` rows, incremental `{bids/asks:[{a,p,s}]}` (`a:"d"` =
-level deleted). Aggregated per-price visible size, no order IDs.
+The GoCharting L2 feed (`probe_dom.py`, `web/lib/dom.ts`, the iceberg panel
+and the `dom l2` health stage) was removed: the vendor channel went silent
+on 2026-10-07 and nothing in the strategy read it. Historical
+`signals.features.dom` rows and the Neon `dom_refills` table are left as-is.
 
-- `probe_dom.py` — capture raw frames for reverse-engineering
-  (launchd: `docs/launchd/com.scalping.domprobe.plist`, Sundays 18:05 ET,
-  right after the Globex reopen; the channel is silent while the market is
-  closed).
-- `web/lib/dom.ts` — production feed: wsdom socket → `web/lib/domBook.ts`
-  book + iceberg refill detector → `/api/dom` SSE → dashboard
-  `DOM — hidden liquidity` panel. **Both NQ and ES** share the one
-  subscription: the ES front month is derived from `GOCHARTING_SYMBOL`
-  (same H/M/U/Z cycle; `GOCHARTING_SYMBOL_ES` overrides), ES uses its own
-  detector thresholds (`DOM_ICEBERG_ES_*`, defaults: ≥50 absorbed, ≥3-lot
-  slices) and its own `symbol` column in `dom_refills`. Study aid, not a
-  signal — nothing reads it into the strategy.

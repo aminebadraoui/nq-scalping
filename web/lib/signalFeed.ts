@@ -63,7 +63,6 @@ import { updateLiveOutcomes } from "./signalOutcomes";
 import { sendTelegram } from "./notify";
 import { formatSignalHtml, formatReclaimSetupHtml } from "./signalText";
 import { recordSignal } from "./signalHistory";
-import { domContextForSignal } from "./dom";
 import { STATS, headsUpWrLine } from "./strategyStats";
 import { getOverrides, decideSignal } from "./strategyOverrides";
 import { alignedCountFrac } from "./imbalance";
@@ -1173,17 +1172,7 @@ class SignalFeed {
 
   private async record(input: Parameters<typeof recordSignal>[0]): Promise<void> {
     if (!this.announce()) return;
-    // stamp the LIVE DOM picture (iceberg candidates vs entry/stop/target)
-    // into the signal's feature vector — observational only, best-effort,
-    // and it can never change the signal itself
-    let features = input.features ?? null;
-    try {
-      const dom = domContextForSignal({ entry: input.entry, stop: input.stop, target: input.target });
-      features = { ...(features ?? {}), dom };
-    } catch {
-      /* evidence is optional */
-    }
-    await recordSignal({ ...input, features });
+    await recordSignal({ ...input, features: input.features ?? null });
   }
 
   /** record a signal the feed vetoed (news blackout / overrides / retrace

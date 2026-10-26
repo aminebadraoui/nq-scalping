@@ -7,8 +7,8 @@ import { adminFetch } from "@/lib/adminFetch";
 
 /* ---------------------------------------------------------------------------
  * Live Tradovate market-data view — the collected md feed rendered as a
- * footprint: per-price × per-time-bucket bid×ask volume, plus the DOM
- * ladder, the day volume profile, and the recent tick tape. Purely a
+ * footprint: per-price × per-time-bucket bid×ask volume, plus the day
+ * volume profile and the recent tick tape. Purely a
  * display of web/data/tradovate-md/*.jsonl (collector: scripts/tradovateMd.ts);
  * it never touches execution code.
  * ------------------------------------------------------------------------- */
@@ -64,30 +64,6 @@ function Cell({ cell, colMax }: { cell: { bv: number; av: number } | null; colMa
       <span className={`font-mono ${txt}`}>{cell.bv}</span>
       <span className="font-mono text-zinc-600">×</span>
       <span className={`font-mono ${txt}`}>{cell.av}</span>
-    </div>
-  );
-}
-
-function DomLadder({ snap }: { snap: TvmdSnapshot }) {
-  const dom = snap.dom;
-  if (!dom) return <div className="p-2 text-xs text-zinc-500">no DOM yet</div>;
-  const rows: { label: string; price: number; size: number; side: "bid" | "offer" }[] = [];
-  for (const o of dom.offers) rows.push({ label: "", price: o.price, size: o.size, side: "offer" });
-  rows.reverse(); // highest ask on top
-  rows.push({ label: "spread", price: NaN, size: NaN, side: "offer" });
-  for (const b of dom.bids) rows.push({ label: "", price: b.price, size: b.size, side: "bid" });
-  return (
-    <div className="font-mono text-[10px]">
-      {rows.map((r, i) =>
-        r.label === "spread" ? (
-          <div key={i} className="my-0.5 border-t border-dashed border-zinc-700" />
-        ) : (
-          <div key={i} className="flex items-center justify-between px-2 py-[1px]">
-            <span className={r.side === "bid" ? "text-long" : "text-short"}>{r.price.toFixed(2)}</span>
-            <span className="text-zinc-400">{r.size}</span>
-          </div>
-        ),
-      )}
     </div>
   );
 }
@@ -395,12 +371,8 @@ export default function TvmdPage() {
             </div>
           </div>
 
-          {/* right column: DOM + tape */}
+          {/* right column: tape */}
           <div className="col-span-12 grid gap-3 lg:col-span-4">
-            <div className="rounded-lg border border-zinc-800 bg-panel">
-              <div className="px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">dom · 10 levels</div>
-              <DomLadder snap={snap} />
-            </div>
             <div className="rounded-lg border border-zinc-800 bg-panel">
               <div className="px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500">tape · last trades</div>
               <div className="max-h-72 overflow-y-auto">

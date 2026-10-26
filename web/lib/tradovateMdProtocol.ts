@@ -8,7 +8,7 @@
  *       'h'  heartbeat prompt       → client answers with '[]'
  *       'a'  array of response/event items [{i, s, d}]  (i = request
  *            id, s = HTTP-like status, 200 = success, absent i =
- *            unsolicited push, e.g. {e:'md', d:{quotes/doms/...}})
+ *            unsolicited push, e.g. {e:'md', d:{quotes/histograms/...}})
  *       'c'  server closing the connection
  *   - client → server requests: `${endpoint}\n${id}\n${query}\n${body}`
  *     where body is JSON. `authorize` takes the token as its body:
@@ -16,7 +16,7 @@
  *     Google-SSO JWTs must be sent RAW (unquoted) — the platform's own
  *     frames carry the bare JWT, and the server 401s the quoted form.
  *     Endpoint names are lowercase, as the official SDK sends them:
- *     md/subscribequote, md/subscribedom, md/subscribehistogram,
+ *     md/subscribequote, md/subscribehistogram,
  *     md/getchart, md/cancelchart, ...
  *   - the client must keep answering heartbeat prompts with '[]';
  *     the server drops a connection that is silent for ~15 s.

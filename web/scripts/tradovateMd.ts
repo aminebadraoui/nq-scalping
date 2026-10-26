@@ -5,7 +5,7 @@
  * Connects to the Tradovate market-data socket (live wss://md.tradovate
  * api.com / demo wss://md-demo.tradovateapi.com), authorizes with a
  * captured access token, and subscribes to the same streams the iOS/web
- * app uses: quote, DOM, volume histogram, tick chart (§2 of
+ * app uses: quote, volume histogram, tick chart (§2 of
  * docs/TRADOVATE-MARKET-DATA-RESEARCH.md). Every frame — outbound
  * requests and inbound responses/pushes — is appended to a per-day
  * JSONL file for the footprint pipeline to consume later.
@@ -48,7 +48,7 @@ interface Config {
   token: string;
   tokenFile: string;
   symbols: string[];
-  subs: { quote: boolean; dom: boolean; hist: boolean; chart: boolean };
+  subs: { quote: boolean; hist: boolean; chart: boolean };
   chartElements: number;
   outDir: string;
   quiet: boolean;
@@ -135,12 +135,13 @@ function loadConfig(): Config | null {
   // TVMD_TOKEN is only the bootstrap on a fresh volume
   const token = readTokenFile(tokenFile) || envToken;
 
-  const subsRaw = (process.env.TVMD_SUBS ?? "quote,dom,hist,chart").toLowerCase();
-  const subs = { quote: false, dom: false, hist: false, chart: false };
+  // no DOM: L2 is unused, so the book is never subscribed
+  const subsRaw = (process.env.TVMD_SUBS ?? "quote,hist,chart").toLowerCase();
+  const subs = { quote: false, hist: false, chart: false };
   for (const part of subsRaw.split(",")) {
     const s = part.trim();
-    if (s === "quote" || s === "dom" || s === "hist" || s === "chart") subs[s] = true;
-    else if (s) logErr(`unknown TVMD_SUBS entry '${s}' (quote|dom|hist|chart)`);
+    if (s === "quote" || s === "hist" || s === "chart") subs[s] = true;
+    else if (s) logErr(`unknown TVMD_SUBS entry '${s}' (quote|hist|chart)`);
   }
 
   return {
@@ -179,7 +180,7 @@ env:
   TVMD_MD_HOST        md WS URL override               (default wss://md.tradovateapi.com/v1/websocket)
   TVMD_TRADE_HOST     trading WS URL override          (default wss://live.tradovateapi.com/v1/websocket)
   TVMD_SYMBOLS        comma-separated contract symbols (default NQM7,ESM7)
-  TVMD_SUBS           quote,dom,hist,chart             (default all)
+  TVMD_SUBS           quote,hist,chart                 (default all)
   TVMD_CHART_ELEMENTS  tick-history elements           (default 10)
   TVMD_OUT            JSONL output dir                 (default ./data/tradovate-md)
   TVMD_TOKEN_FILE     token persistence file           (default ./data/.tradovate-md-token.json)
@@ -431,12 +432,11 @@ function requestRaw(endpoint: string, rawBody: string, timeoutMs = 20_000): Prom
   });
 }
 
-/** md push payloads arrive as {e:'md', d:{quotes|doms|histograms|charts}} */
+/** md push payloads arrive as {e:'md', d:{quotes|histograms|charts}} */
 function kindOf(item: TvItem): string {
   const d = item.d as Record<string, unknown> | undefined;
   if (!d) return item.e ?? "?";
   if (d.quotes) return "quote";
-  if (d.doms) return "dom";
   if (d.histograms) return "hist";
   if (d.charts) return "chart";
   return item.e ?? "?";
@@ -448,7 +448,7 @@ function bumpStats(item: TvItem): void {
   if (item.e !== "md" || !item.d) return;
   const d = item.d as Record<string, unknown>;
   const kind = kindOf(item);
-  const list = (d.quotes ?? d.doms ?? d.histograms ?? d.charts) as Array<Record<string, unknown>> | undefined;
+  const list = (d.quotes ?? d.histograms ?? d.charts) as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(list) || list.length === 0) return;
   const cid = String(list[0].contractId ?? "?");
   const key = `${kind}#${cid}`;
@@ -508,7 +508,6 @@ async function subscribeOne(endpoint: string, body: Record<string, unknown>, lab
 async function subscribeAll(): Promise<void> {
   for (const symbol of cfg!.symbols) {
     if (cfg!.subs.quote) await subscribeOne("md/subscribequote", { symbol }, `quote ${symbol}`);
-    if (cfg!.subs.dom) await subscribeOne("md/subscribedom", { symbol }, `dom ${symbol}`);
     if (cfg!.subs.hist) await subscribeOne("md/subscribehistogram", { symbol }, `histogram ${symbol}`);
     if (cfg!.subs.chart)
       await subscribeOne("md/getchart", tickChartBody(symbol, cfg!.chartElements), `tick chart ${symbol}`);
@@ -570,7 +569,7 @@ function asArray(v: unknown): unknown[] {
   return Array.isArray(v) ? v : [];
 }
 
-function journalRestResponse(kind: "chart" | "quote" | "dom" | "hist", json: unknown): void {
+function journalRestResponse(kind: "chart" | "quote" | "hist", json: unknown): void {
   const j = (json ?? {}) as Record<string, unknown>;
   const d = j.d as Record<string, unknown> | undefined;
   if (kind === "chart") {
@@ -578,7 +577,7 @@ function journalRestResponse(kind: "chart" | "quote" | "dom" | "hist", json: unk
     for (const p of packets) journalChartPacket(p);
     return;
   }
-  const keys = kind === "quote" ? ["quotes"] : kind === "dom" ? ["doms"] : ["histograms"];
+  const keys = kind === "quote" ? ["quotes"] : ["histograms"];
   const list = asArray(j[keys[0]] ?? d?.[keys[0]]);
   if (list.length) {
     for (const item of list) {
@@ -587,13 +586,10 @@ function journalRestResponse(kind: "chart" | "quote" | "dom" | "hist", json: unk
     }
     return;
   }
-  // some endpoints may return a bare object (quote with `entries`, dom
-  // with `bids`, histogram with `items`)
+  // some endpoints may return a bare object (quote with `entries`,
+  // histogram with `items`)
   if (kind === "quote" && j.entries) {
     journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "md", d: { quotes: [j] } } });
-    state.framesLogged++;
-  } else if (kind === "dom" && j.bids) {
-    journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "md", d: { doms: [j] } } });
     state.framesLogged++;
   } else if (kind === "hist" && j.items) {
     journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "md", d: { histograms: [j] } } });
@@ -620,10 +616,6 @@ async function restPoll(): Promise<void> {
       if (cfg!.subs.quote) {
         const q = await restFetch("/md/getquote", { symbol: sym });
         if (q !== null) journalRestResponse("quote", q);
-      }
-      if (cfg!.subs.dom) {
-        const d = await restFetch("/md/getdom", { symbol: sym });
-        if (d !== null) journalRestResponse("dom", d);
       }
       if (cfg!.subs.hist) {
         const h = await restFetch("/md/gethistogram", { symbol: sym });

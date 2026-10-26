@@ -8,28 +8,6 @@ import { groupFeatures } from "@/lib/featureGroups";
 import { familyName } from "@/lib/familyNames";
 import { canonicalFamily } from "@/lib/strategies/aliases";
 
-type CompactCandidate = {
-  side: "bid" | "ask";
-  price: number;
-  size: number;
-  refillSize: number;
-  refills: number;
-  absorbed: number;
-  consistency: number;
-  confidence: number;
-};
-
-type DomContext = {
-  nq: {
-    ts: number;
-    candidates: CompactCandidate[];
-    nearEntry: CompactCandidate[];
-    nearStop: CompactCandidate[];
-    nearTarget: CompactCandidate[];
-  };
-  es: { ts: number; candidates: CompactCandidate[] };
-};
-
 export type HistoryEntry = {
   /** signals.key — the stable signal id (used to link execution rows) */
   id?: string;
@@ -49,7 +27,6 @@ export type HistoryEntry = {
   test: boolean;
   sent: boolean;
   reason: string;
-  dom?: DomContext | null;
   /** the full feature vector recorded at fire time — signal inputs + study-only context */
   features?: Record<string, unknown> | null;
   /** strategy family id when the feed passes it top-level (otherwise read from features.family) */
@@ -412,44 +389,6 @@ export default function SignalHistory({ onInspect }: { onInspect?: (e: HistoryEn
               </div>
             )}
 
-            {/* the DOM picture captured at signal time — observational only */}
-            {e.dom && (
-              <div className="mt-1 border-t border-zinc-800/60 pt-0.5 font-mono text-[9px] leading-snug text-zinc-500">
-                <div className="text-zinc-600">DOM @ signal</div>
-                {(
-                  [
-                    ["entry", e.dom.nq.nearEntry],
-                    ["stop", e.dom.nq.nearStop],
-                    ["target", e.dom.nq.nearTarget],
-                  ] as [string, CompactCandidate[]][]
-                ).map(([label, rows]) =>
-                  rows.map((c, i) => (
-                    <div key={`${label}|${i}`} className="flex justify-between">
-                      <span>
-                        <span className={c.side === "bid" ? "text-long" : "text-short"}>{c.side === "bid" ? "BID" : "ASK"}</span>{" "}
-                        {fmt(c.price)} near {label} · refills {c.refills} · slice {c.refillSize} · abs {c.absorbed}
-                      </span>
-                      <span title={`confidence ${(c.confidence * 100).toFixed(0)}%`}>
-                        {(c.confidence * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  )),
-                )}
-                {e.dom.es.candidates.map((c, i) => (
-                  <div key={`es|${i}`} className="flex justify-between">
-                    <span>
-                      <span className="text-zinc-600">ES</span>{" "}
-                      <span className={c.side === "bid" ? "text-long" : "text-short"}>{c.side === "bid" ? "BID" : "ASK"}</span>{" "}
-                      {fmt(c.price)} · refills {c.refills} · slice {c.refillSize} · abs {c.absorbed}
-                    </span>
-                    <span title={`confidence ${(c.confidence * 100).toFixed(0)}%`}>
-                      {(c.confidence * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                ))}
-                {e.dom.nq.candidates.length === 0 && e.dom.es.candidates.length === 0 && <div>no refill signatures in the window</div>}
-              </div>
-            )}
             </div>
           );
         })}

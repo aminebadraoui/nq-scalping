@@ -53,11 +53,11 @@ const token = tokenFromFile() || (process.env.TVMD_TOKEN ?? "").trim();
 const symbols = (process.env.TVMD_SYMBOLS ?? "MNQZ6").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
 const mdHost = process.env.TVMD_MD_HOST ?? HOSTS[env].md;
 const tradeHost = process.env.TVMD_TRADE_HOST ?? HOSTS[env].trade;
-const subsRaw = (process.env.TVMD_SUBS ?? "quote,dom,hist,chart").toLowerCase();
-const subs = { quote: false, dom: false, hist: false, chart: false };
+const subsRaw = (process.env.TVMD_SUBS ?? "quote,hist,chart").toLowerCase();
+const subs = { quote: false, hist: false, chart: false };
 for (const part of subsRaw.split(",")) {
   const s = part.trim();
-  if (s === "quote" || s === "dom" || s === "hist" || s === "chart") subs[s] = true;
+  if (s === "quote" || s === "hist" || s === "chart") subs[s] = true;
 }
 const chartElements = Number(process.env.TVMD_CHART_ELEMENTS ?? 10) || 10;
 const sinkPort = Number(process.env.TVMD_SINK_PORT ?? 3777) || 3777;

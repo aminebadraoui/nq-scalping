@@ -174,7 +174,6 @@
   function subscribeAll() {
     CFG.symbols.forEach(function (sym) {
       if (CFG.subs.quote) subscribeOne("md/subscribequote", { symbol: sym }, "quote " + sym);
-      if (CFG.subs.dom) subscribeOne("md/subscribedom", { symbol: sym }, "dom " + sym);
       if (CFG.subs.hist) subscribeOne("md/subscribehistogram", { symbol: sym }, "hist " + sym);
       if (CFG.subs.chart) {
         subscribeOne(

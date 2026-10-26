@@ -41,7 +41,6 @@ function healthyExecution(): NonNullable<PipelineHealthInput["execution"]> {
       tapeGate: { totalBars: 400, tail: 1, tailAgeMs: 45_000, hold: true, veto: false, lastBarClose: NOW - 45_000 },
       detectors: { bars: 400, momentumFlush: 1, momentumExpansion: 2, rth: 1 },
     },
-    domFeed: { connected: true, frames: 8_000, silentConnects: 0, lastReconnectAt: 0, nqSnapshots: 900, nqIncrements: 7_000 },
     protections: {
       status: { state: "live", label: "TRADING", reason: "all gates clear", halts: [] },
       stage: "eval",
@@ -319,7 +318,6 @@ test("overall: everything off/idle/unknown is STANDBY, not DOWN", () => {
       executeLive: false,
       feeds: Object.fromEntries(Object.keys(exec.feeds!).map((k) => [k, false])),
       liveFeed: null,
-      domFeed: null,
       protections: { ...exec.protections!, status: { state: "dry", label: "DRY-RUN", reason: "executor live switch off", halts: [] } },
     },
     pipe: { windowOpen: false, execTrades: { ...healthyPipeline().execTrades!, open: 0, last: null } },
@@ -329,8 +327,8 @@ test("overall: everything off/idle/unknown is STANDBY, not DOWN", () => {
   assert.equal(o.label, "STANDBY");
 });
 
-test("null payload renders eight unknown stages without throwing", () => {
+test("null payload renders seven unknown stages without throwing", () => {
   const stages = derivePipeline(null, NOW);
-  assert.equal(stages.length, 8);
+  assert.equal(stages.length, 7);
   assert.ok(stages.every((s) => s.level === "unknown"));
 });

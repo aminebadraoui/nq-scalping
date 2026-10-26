@@ -70,14 +70,6 @@ export type ExecHealth = {
       } | null;
       detectors: { bars: number; momentumFlush: number; momentumExpansion: number; rth: number } | null;
     } | null;
-    domFeed: {
-      connected: boolean;
-      frames: number;
-      silentConnects: number;
-      lastReconnectAt: number;
-      nqSnapshots: number;
-      nqIncrements: number;
-    } | null;
     market: { open: boolean; sessionDay: string; next: { kind: string; atMs: number } } | null;
     /** the health-pipeline extras (signal card / latency / exec ledger) */
     pipeline: PipelineExtras | null;
