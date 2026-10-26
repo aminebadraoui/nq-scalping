@@ -32,6 +32,11 @@ export async function POST(req: Request) {
   } catch (e) {
     return Response.json({ ok: false, error: `cannot write login request: ${String(e)}` });
   }
+  if (process.env.TVMD_USERNAME && process.env.TVMD_PASSWORD) {
+    // password mode: the marker just means "retry now" — one headless
+    // login, no remote-debugging browser to open
+    return Response.json({ ok: true, hint: "Password login retry queued — it runs within a minute; watch the autoheal chip." });
+  }
   return Response.json({
     ok: true,
     url: PUBLIC_URL,

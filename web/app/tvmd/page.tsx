@@ -175,6 +175,8 @@ export default function TvmdPage() {
       if (res.ok && j.ok && j.url) {
         setLoginUrl(j.url);
         setTokenMsg(j.hint ?? "open the URL and complete the Google sign-in");
+      } else if (res.ok && j.ok) {
+        setTokenMsg(j.hint ?? "login retry queued");
       } else {
         setTokenMsg(j.error ?? j.reason ?? `api ${res.status}`);
       }

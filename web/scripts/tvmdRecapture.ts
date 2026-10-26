@@ -558,8 +558,19 @@ async function passwordLoginBlocker(call: (m: string, p?: unknown) => Promise<Re
   if (/incorrect|invalid (user|name|password|credentials)|wrong password|not recognized/i.test(text)) {
     return "username/password rejected by Tradovate — check TVMD_USERNAME / TVMD_PASSWORD";
   }
-  if (/captcha|verification code|security code|two-factor|2fa|enter the code/i.test(text)) {
-    return "Tradovate asked for a human step (verification code / captcha) — log in once by hand, then the loop resumes";
+  // a human step = an actually visible challenge widget or code field.
+  // Page text alone misfires (fine print), and a penalty countdown on
+  // the Login button is NOT a blocker — the page resubmits by itself
+  // when it ends, so we simply keep waiting.
+  const human = await evalJson(
+    call,
+    `JSON.stringify({
+      captcha: [...document.querySelectorAll("iframe")].some(f => /captcha|turnstile|challenges\\.cloudflare/i.test(f.src || "") && f.getBoundingClientRect().width >= 50),
+      code: [...document.querySelectorAll("input")].some(e => (${VISIBLE})(e) && /code|otp|one-time/i.test((e.name || "") + " " + (e.placeholder || "") + " " + (e.autocomplete || ""))),
+    })`,
+  );
+  if (human?.captcha || human?.code || /verification code|security code|enter the code|one-time code/i.test(text)) {
+    return `Tradovate asked for a human step (${human?.captcha ? "captcha" : "verification code"}) — log in once by hand, then the loop resumes`;
   }
   return null;
 }
