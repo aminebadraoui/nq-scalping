@@ -315,12 +315,12 @@ export default function TvmdPage() {
                   ? `last failure: ${snap.token.recap.lastError}`
                   : snap.token.recap.googleSessionOk
                     ? `autoheal ready — last healed ${snap.token.recap.lastHealAt ?? "?"}`
-                    : "the Google session in the VPS browser profile is dead — re-import cookies or use Browser login"
+                    : `autoheal login failing: ${snap.token.recap.lastError ?? "unknown error"}`
               }
             >
               {snap.token.recap.googleSessionOk
                 ? `autoheal ● ready${snap.token.recap.lastHealAt ? ` · healed ${Math.round((Date.now() - Date.parse(snap.token.recap.lastHealAt)) / 3600000)}h ago` : ""}`
-                : "google session ✗ — needs re-login"}
+                : "autoheal ✗ — login failing (hover for why)"}
             </span>
           )}
           <input
