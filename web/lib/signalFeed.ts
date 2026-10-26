@@ -68,7 +68,8 @@ import { getOverrides, decideSignal } from "./strategyOverrides";
 import { alignedCountFrac } from "./imbalance";
 import { crossGuardDayPnl, crossGuardSizeMult } from "./crossGuard";
 import { newsBlockedNow } from "./newsGate";
-import { registerExpectation, registerSendFailure, attachLimitOrderId } from "./execWatch";
+import { registerExpectation, registerSendFailure, attachLimitOrderId, placedLimitOrderIds } from "./execWatch";
+import { vwapUpState, vwapUpContracts, VWAPUP_PROD } from "./vwapUp";
 import { stopCrossedAtDispatch, limitCrossedAtDispatch, approachGateBlocked } from "./crossTrade";
 import { tradingHalted } from "./tradingHalt";
 import { counterGateDecision, counterGateParams } from "./rthExitLog";
@@ -236,6 +237,12 @@ const LIMIT_ENTRY_TTL_MS = 5 * 60_000;
  *  ON: footprint-proven continuation — 10,325 trades, 82.2% win, PF 3.47,
  *  every year ≥ 77.7%, account sim never breaches (see PLAYBOOK.md). */
 export const FEED_RTH = feedFlag("FEED_RTH", true);
+/** FEED_VWAPUP — VWAP-UP (lib/vwapUp.ts): intraday-uptrend first pullback
+ *  to session VWAP, long only, fixed $VWAPUP_RISK (default $100) risk, no
+ *  Kelly, no day tiers. Backtested: gcdata/new_edge_lab.py (614 real-OHLC
+ *  sessions, honest fills — PF 1.40, train/test 1.44/1.32, every year +;
+ *  docs/research/new-edge-lab-2026-10-26.md). Owner-approved 2026-10-26. */
+export const FEED_VWAPUP = feedFlag("FEED_VWAPUP", true);
 /** RTH daily card cap — the gap-only validation (scripts/gapOnlyValidation.ts,
  *  docs/research/fix-plan-2026-10-05.md) found the first-N RTH cards keep
  *  the eval consistency cap safe at real frictions (first-3 structural:
@@ -2604,6 +2611,106 @@ class SignalFeed {
     }
   }
 
+
+  /* ---- VWAP-UP (lib/vwapUp.ts) ---------------------------------------
+   * Each completed RTH minute where the uptrend condition holds, a buy
+   * LIMIT rests at session VWAP for the NEXT bar only (the backtest's
+   * per-bar level); it expires a few seconds before that bar closes and
+   * the watcher cancels it quietly. The day is done at the first armed
+   * bar that touched its level — filled or not — so there is at most one
+   * trade per day. A new limit is never placed while the previous one is
+   * still working (no stacking). Flat by 15:59 ET (time exit). */
+  private vwapArmed = new Map<string, string>(); // day → last armT placed
+  private vwapCarded = new Set<string>(); // days with the card sent
+  private vwapLastOrderId: string | null = null;
+
+  private async checkVwapUp(): Promise<void> {
+    if (!FEED_VWAPUP) return;
+    const live = getLive().state;
+    if (!live.connected || live.minutes.length < 60) return;
+    const fp = cachedFootprint(live.minutes, live.barsRevision);
+    if (this.tapeGateHolds(fp, "vwap_up")) return;
+    const now = Date.now();
+    const closed = fp.filter((m) => {
+      const c = barCloseMs(m);
+      return c !== null && c <= now;
+    });
+    const st = vwapUpState(closed);
+    if (!st.d || st.done || !st.arm) return;
+    const d = st.d;
+    const arm = st.arm;
+    if (this.vwapArmed.get(d) === arm.armT) return;
+    if (newsBlockedNow(now)) return;
+    // never two resting VWAP limits at once — the previous bar's limit
+    // must be cancelled (or filled) before the next one goes out
+    if (this.vwapLastOrderId && placedLimitOrderIds().includes(this.vwapLastOrderId)) return;
+    this.vwapArmed.set(d, arm.armT);
+    if (this.vwapArmed.size > 10) this.vwapArmed = new Map([...this.vwapArmed].slice(-5));
+
+    const budget = Number(process.env.VWAPUP_RISK) > 0 ? Number(process.env.VWAPUP_RISK) : 100;
+    const contracts = vwapUpContracts(budget);
+    const et = cdtToET(arm.armT);
+    const key = `vwap|${d}|long|${arm.armT}`;
+    const label = `vwap-up long ${et} (limit)`;
+    const intent: OrderIntent = { symbol: symbol(), dir: "long", contracts, entry: arm.level, stop: arm.stop, target: arm.target, timeET: et };
+    // the limit rests for the upcoming bar only: expire 8 s before it closes
+    const barEnd = barCloseMs({ t: arm.armT, d });
+    const expireAtMs = Math.max(now + 15_000, (barEnd ?? now + 60_000) - 8_000);
+
+    if (!this.vwapCarded.has(d)) {
+      this.vwapCarded.add(d);
+      const exitAt = barCloseMs({ t: "14:58", d });
+      if (exitAt !== null) registerTimeExit({ key: `vwap|${d}|exit`, label: `vwap-up long ${d} (15:59 ET flat)`, symbol: symbol(), dir: "long", exitAtMs: exitAt });
+      const sizeStr = `${contracts} MNQ · $${(contracts * VWAPUP_PROD.stopPts * 2).toFixed(0)} risk`;
+      const text = [
+        `📈 <b>VWAP-UP · 🟢 LONG · uptrend pullback armed · ${et} NY</b>`,
+        ``,
+        `<code>LIMIT   ${fmtPx(arm.level)}   (session VWAP — re-armed each minute while the trend holds)</code>`,
+        `<code>STOP    −${VWAPUP_PROD.stopPts} pts · TARGET +${VWAPUP_PROD.targetPts} pts (2R) · flat 15:59 ET</code>`,
+        `<code>SIZE    ${sizeStr}</code>`,
+        ``,
+        `<i>${VWAPUP_PROD.trendBars} bars above a rising VWAP · first touch only, one trade/day · new-edge lab PF 1.40 (real OHLC, honest fills)</i>`,
+      ].join("\n");
+      const res = await this.push(text);
+      if (!res.sent) this.lastError = res.reason;
+      await this.record({
+        timeET: et,
+        day: d,
+        symbol: symbol(),
+        side: "long",
+        price: arm.level,
+        entry: arm.level.toFixed(2),
+        stop: arm.stop.toFixed(2),
+        target: arm.target.toFixed(2),
+        size: sizeStr,
+        verdict: "vwap-up (uptrend VWAP pullback)",
+        headline: "NQ VWAP-UP long",
+        source: "live",
+        test: false,
+        sent: res.sent,
+        reason: res.reason,
+        features: { family: "vwap_up", level: arm.level, armT: arm.armT },
+      });
+    }
+
+    void placeOrder(intent, { limitPrice: arm.level, label })
+      .then((res) => {
+        void logExec({ key, label, attempt: "initial", outcome: res.ok ? "ok" : "failed", reason: res.reason });
+        if (!res.ok) return; // a refused arm just waits for the next bar
+        if (res.orderId) this.vwapLastOrderId = res.orderId;
+        registerExpectation({
+          key,
+          ts: Date.now(),
+          label,
+          intent,
+          scaleOut: false,
+          limit: { price: arm.level, expireAtMs, quiet: true },
+        });
+        if (res.orderId) attachLimitOrderId(key, res.orderId);
+      })
+      .catch(() => {});
+  }
+
   /** The 9:30 opening-drive card (lib/openDrive.ts) — EXPERIMENTAL, off by
    *  default. One signal per day by construction; fires only when the drive
    *  bar is the just-completed minute. */
@@ -3069,6 +3176,7 @@ class SignalFeed {
         ["momentum", () => this.checkMomentum()],
         ["openDrive", () => this.checkOpen()],
         ["session_continuation", () => this.checkRth()],
+        ["vwap_up", () => this.checkVwapUp()],
       ];
       for (const [name, fn] of checks) {
         t0 = performance.now();

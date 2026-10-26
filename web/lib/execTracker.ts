@@ -87,6 +87,7 @@ export function familyOfLabel(label: string): string {
     "open-sniper": "open_sniper",
     "gap-alert": "gap_alerts",
     "session-continuation": "session_continuation",
+    "vwap-up": "vwap_up",
   };
   const lower = first.toLowerCase();
   if (known[lower]) return known[lower];

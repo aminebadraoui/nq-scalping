@@ -67,7 +67,7 @@ export type Expectation = {
    *  resend flow, and CANCELS the order when the window closes, the
    *  expiry passes, or the give-up clock fires — a limit must never
    *  outlive the card that placed it. */
-  limit?: { orderId?: string; price: number; expireAtMs: number };
+  limit?: { orderId?: string; price: number; expireAtMs: number; quiet?: boolean };
 };
 
 const CHECK_AFTER_MS = 90_000;
@@ -1091,7 +1091,8 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
         // exchange-side; register the profile time exit from the FILL time
         if (!e.scaleOut) {
           const prof = momentumProfile();
-          if (prof.enabled) {
+          // VWAP-UP holds to its own 15:59 ET exit, not the momentum profile's
+          if (prof.enabled && !key.startsWith("vwap|")) {
             registerTimeExit({
               key,
               label: e.label,
@@ -1132,7 +1133,9 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
         const book = e.limit.orderId ? await ctOrders() : { ok: false, orders: [] as Record<string, unknown>[] };
         const v = expiryCancelVerdict(c.ok, c.reason, book, e.limit.orderId ?? "");
         void logExec({ key, label: e.label, attempt: "watch", outcome: v.outcome, reason: v.reason });
-        void alert(
+        // per-bar re-armed limits (VWAP-UP) expire every minute by design —
+        // only a FAILED cancel pages the owner
+        if (!(e.limit.quiet && v.outcome === "limit_expired")) void alert(
           v.outcome === "limit_expired"
             ? `⏱ <b>LIMIT EXPIRED — cancelled</b> — <code>${e.label}</code> rested unfilled for ${Math.round((now - e.ts) / 1000)}s${c.ok ? "" : " (already gone broker-side)"}`
             : `🚨 <b>LIMIT EXPIRED BUT CANCEL FAILED</b> — <code>${e.label}</code> — ${c.reason} — cancel it manually NOW`,
