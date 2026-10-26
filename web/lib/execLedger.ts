@@ -53,7 +53,9 @@ export type LedgerExec = {
   fill_entry: number | null;
   fill_entry_at: number | null;
   exit_avg: number | null;
-  exit_fills: Array<{ ts: number; action: string; qty: number; price: number }> | null;
+  /** jsonb — rows written by execTracker hold a JSON-encoded STRING
+   *  (JSON.stringify'd into the jsonb column), so accept both shapes */
+  exit_fills: Array<{ ts: number; action: string; qty: number; price: number }> | string | null;
   pts: number | null;
   gross_usd: number;
   fees_usd: number;
@@ -137,6 +139,23 @@ export function execMatchesSignalFallback(e: LedgerExec, s: LedgerSignal): boole
   return fam !== "" && canonicalFamily(e.family) === canonicalFamily(fam);
 }
 
+/** exit_fills as stored → always an array. execTracker writes
+ *  JSON.stringify(fills) into the jsonb column, so postgres hands back a
+ *  string; a bare string reaching the panel crashed /execution
+ *  (`exitFills.map is not a function`). Mirrors execTracker.mapDbRow. */
+export function parseExitFills(v: unknown): Array<{ ts: number; action: string; qty: number; price: number }> {
+  if (v === null || v === undefined) return [];
+  let out: unknown = v;
+  if (typeof v === "string") {
+    try {
+      out = JSON.parse(v);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(out) ? (out as Array<{ ts: number; action: string; qty: number; price: number }>) : [];
+}
+
 export function mergeExecLedger(
   signals: LedgerSignal[],
   execs: LedgerExec[],
@@ -179,7 +198,7 @@ export function mergeExecLedger(
       fillEntry: e.fill_entry,
       fillEntryAt: e.fill_entry_at,
       exitAvg: e.exit_avg,
-      exitFills: e.exit_fills ?? [],
+      exitFills: parseExitFills(e.exit_fills),
       pts: e.pts,
       grossUsd: Number(e.gross_usd),
       feesUsd: Number(e.fees_usd),

@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert";
-import { familyFromVerdict, execMatchesSignalFallback, mergeExecLedger, type LedgerExec, type LedgerSignal } from "../lib/execLedger";
+import { familyFromVerdict, execMatchesSignalFallback, mergeExecLedger, parseExitFills, type LedgerExec, type LedgerSignal } from "../lib/execLedger";
 
 const sig = (p: Partial<LedgerSignal>): LedgerSignal => ({
   key: "mv-1",
@@ -121,4 +121,22 @@ test("mergeExecLedger sorts newest first and prefers closed rows' money math", (
   const { rows } = mergeExecLedger([], [a, b], []);
   assert.equal(rows[0].ts, 900);
   assert.equal(rows[1].ts, 100);
+});
+
+test("parseExitFills: jsonb string, array, null and junk all become an array", () => {
+  const fill = { ts: 1, action: "Buy", qty: 2, price: 29100.25 };
+  assert.deepStrictEqual(parseExitFills(JSON.stringify([fill])), [fill]);
+  assert.deepStrictEqual(parseExitFills([fill]), [fill]);
+  assert.deepStrictEqual(parseExitFills("[]"), []);
+  assert.deepStrictEqual(parseExitFills(null), []);
+  assert.deepStrictEqual(parseExitFills(undefined), []);
+  assert.deepStrictEqual(parseExitFills("not json"), []);
+  assert.deepStrictEqual(parseExitFills('{"a":1}'), []);
+});
+
+test("mergeExecLedger: a JSON-string exit_fills (execTracker's jsonb write) reaches the row as an array", () => {
+  const fill = { ts: 1792781042783, action: "Buy", qty: 6, price: 29167.75 };
+  const { rows } = mergeExecLedger([], [exec({ exit_fills: JSON.stringify([fill]) })], []);
+  assert.ok(Array.isArray(rows[0].exitFills));
+  assert.deepStrictEqual(rows[0].exitFills, [fill]);
 });
