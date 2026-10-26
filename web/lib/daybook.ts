@@ -275,6 +275,17 @@ export type DaybookHeal = {
   reseeds: number;
 };
 
+/** live-source arbitration record (lib/live.ts): one per Tradovate ⇄
+ *  GoCharting switch of the NQ or ES live buffer. */
+export type DaybookFeed = {
+  t: "feed";
+  at: number;
+  sym: "NQ" | "ES";
+  active: "tv" | "gc";
+  reason: string;
+  switches: number;
+};
+
 /** signal-kill canary record (scripts/signalKillCanary.ts) — one per
  *  nightly replay-diff run with a divergence (replay cards without live
  *  signal rows). The durable "live killed signals?" audit trail. */
@@ -365,6 +376,7 @@ export type DaybookRecord =
   | DaybookManualAction
   | DaybookGuard
   | DaybookHeal
+  | DaybookFeed
   | DaybookCanary
   | DaybookLatency
   | DaybookEnd;

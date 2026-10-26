@@ -7,6 +7,7 @@ import { sessionDayOf } from "./times";
 import { esFrontMonth } from "./esJoin";
 import { appendDaybook } from "./daybook";
 import { sendTelegram } from "./notify";
+import { getTvFeed, tvBarComplete, type TvBar, type TvBarBuilder, type TvFeed } from "./tvFeed";
 
 /* ------------------------------------------------------------------ */
 /* Live GoCharting feed (server-side singleton)                        */
@@ -51,6 +52,11 @@ export type LiveMinute = {
    *  source — what every backtest was computed on) or the tick stream (a
    *  lossy ~7%-of-volume sample). Cards must only fire on "candle". */
   source?: "tick" | "candle";
+  /** which vendor built the bar: GoCharting (default when absent) or
+   *  Tradovate (lib/tvFeed.ts — the primary live feed since 2026-10-25).
+   *  A closed, gap-free Tradovate bar is full-tape, so it carries
+   *  source:"candle" and passes the same card gate. */
+  vendor?: "gc" | "tv";
   /** price (0.25-tick) -> [buy, sell] contracts — only kept for the recent minutes */
   levels?: Record<string, [number, number]>;
   /** price (0.25-tick) -> [buyTrades, sellTrades] counts — parallel to
@@ -99,6 +105,8 @@ export type LiveState = {
   };
   /** tape-gap self-heal ladder state (the live.ts recovery machine) */
   heal: TapeHealState;
+  /** live source arbitration (Tradovate primary, GC hot standby) */
+  feed?: FeedStatus;
 };
 
 /* ------------------------------------------------------------------ *
@@ -418,6 +426,118 @@ async function cognitoIdToken(env: Record<string, string>): Promise<string> {
   return j.AuthenticationResult.IdToken;
 }
 
+/* ------------------------------------------------------------------ *
+ * Live source arbitration (2026-10-25): Tradovate is the PRIMARY live
+ * feed, GoCharting the hot standby. GC keeps its socket, candle
+ * refresh and heal ladder running at all times (the `gc` buffer); the
+ * public `state` serves Tradovate bars/ticks/quote while Tradovate is
+ * healthy and falls back to GC the moment it is not. NQ and the ES
+ * twin arbitrate independently. LIVE_BAR_SOURCE=gc forces GC
+ * (kill switch); anything else = auto.
+ * ------------------------------------------------------------------ */
+
+export type FeedSource = "tv" | "gc";
+
+/** Tradovate considered stale when no tick line arrived for this long
+ *  while the market is open */
+export const TV_STALE_MS = 20_000;
+/** no closed bar for this long while open → unhealthy (NQ/ES trade every
+ *  minute; two quiet minutes in a row means the chart stream died) */
+export const TV_NO_BAR_MS = 125_000;
+/** continuous health required before switching (back) to Tradovate */
+export const TV_RECOVER_MS = 120_000;
+
+export type FeedArbiter = {
+  active: FeedSource;
+  /** start of the current continuous-healthy streak (0 = unhealthy) */
+  healthySince: number;
+  lastSwitchAt: number;
+  switches: number;
+  /** why the current source is active (health reason on a fail-over) */
+  reason: string;
+};
+
+export type FeedStatus = {
+  forced: boolean;
+  nq: FeedArbiter & { health: string };
+  es: FeedArbiter & { health: string };
+  tv: { sessionDay: string; nqSym: string | null; esSym: string | null; lastLineWallMs: number; ignoredSyms: string[] };
+};
+
+export function seedArbiter(): FeedArbiter {
+  return { active: "gc", healthySince: 0, lastSwitchAt: 0, switches: 0, reason: "boot" };
+}
+
+export function liveBarSourceForced(env: Record<string, string | undefined> = process.env): boolean {
+  return (env.LIVE_BAR_SOURCE ?? "").trim().toLowerCase() === "gc";
+}
+
+/** Pure Tradovate health check for one builder. "ok" = usable now. */
+export function tvHealth(
+  b: Pick<TvBarBuilder, "lastTickWallMs" | "lastClosed" | "coverageStart">,
+  now: number,
+  bootstrapped: boolean,
+): string {
+  if (!bootstrapped) return "bootstrapping";
+  if (!b.lastTickWallMs) return "no ticks";
+  if (now - b.lastTickWallMs > TV_STALE_MS) return `stale ${Math.round((now - b.lastTickWallMs) / 1000)}s`;
+  if (!b.coverageStart()) return "warming (no complete bar yet)";
+  const lc = b.lastClosed();
+  if (!lc) return "no closed bar";
+  if (now - (lc.ms + 60_000) > TV_NO_BAR_MS) return `no bar since ${lc.t}Z`;
+  if (!tvBarComplete(lc)) return lc.partial ? `partial bar ${lc.t}Z` : `gap ${lc.missing} ticks in ${lc.t}Z`;
+  return "ok";
+}
+
+/** Pure arbiter transition. Fail over to GC immediately on any
+ *  unhealthy reading while the market is open; return to Tradovate only
+ *  after TV_RECOVER_MS of continuous health. A closed market holds the
+ *  current source (no flapping across the daily halt). */
+export function arbiterStep(prev: FeedArbiter, health: string, now: number, marketOpen: boolean, forced: boolean): FeedArbiter {
+  if (forced) {
+    if (prev.active === "gc" && prev.reason === "forced (LIVE_BAR_SOURCE=gc)") return prev;
+    return { ...prev, active: "gc", healthySince: 0, lastSwitchAt: prev.active === "gc" ? prev.lastSwitchAt : now, switches: prev.active === "gc" ? prev.switches : prev.switches + 1, reason: "forced (LIVE_BAR_SOURCE=gc)" };
+  }
+  if (!marketOpen) return prev.healthySince ? { ...prev, healthySince: 0 } : prev;
+  const ok = health === "ok";
+  if (!ok) {
+    if (prev.active === "tv") return { active: "gc", healthySince: 0, lastSwitchAt: now, switches: prev.switches + 1, reason: `tradovate ${health}` };
+    return prev.healthySince ? { ...prev, healthySince: 0 } : prev;
+  }
+  const since = prev.healthySince || now;
+  if (prev.active === "gc" && now - since >= TV_RECOVER_MS) {
+    return { active: "tv", healthySince: since, lastSwitchAt: now, switches: prev.switches + 1, reason: "tradovate healthy" };
+  }
+  return since === prev.healthySince ? prev : { ...prev, healthySince: since };
+}
+
+function barKey(m: { du?: string; t: string }): string {
+  return `${m.du ?? ""}|${m.t}`;
+}
+
+/** Pure: the served minute list in Tradovate mode. Complete Tradovate
+ *  bars win; GC bars fill history before Tradovate coverage (and any
+ *  incomplete Tradovate minute); GC bars NEWER than the last closed
+ *  Tradovate bar are dropped (GC's tick-built just-rolled minute must
+ *  not sit at the tail during the finalize grace). */
+export function composeTvMinutes(gcMinutes: LiveMinute[], tvClosed: TvBar[]): LiveMinute[] {
+  if (!tvClosed.length) return gcMinutes.slice();
+  const lastTv = barKey(tvClosed[tvClosed.length - 1]);
+  const byKey = new Map<string, LiveMinute>();
+  for (const m of gcMinutes) {
+    if (!/^\d{2}:\d{2}$/.test(m.t)) continue;
+    const k = barKey(m);
+    if (k > lastTv) continue;
+    byKey.set(k, m);
+  }
+  for (const b of tvClosed) {
+    const k = barKey(b);
+    if (b.source === "candle" || !byKey.has(k)) byKey.set(k, b);
+  }
+  const out = [...byKey.entries()].sort((a, b) => a[0].localeCompare(b[0])).map((e) => e[1]);
+  return out.length > MAX_MINUTES ? out.slice(-MAX_MINUTES) : out;
+}
+
 class LiveFeed {
   private ws: WebSocket | null = null;
   private token: string | null = null;
@@ -464,8 +584,8 @@ class LiveFeed {
 
   private tickTail(): number {
     let n = 0;
-    for (let i = this.state.minutes.length - 1; i >= 0; i--) {
-      if ((this.state.minutes[i].source ?? "tick") === "candle") break;
+    for (let i = this.gc.minutes.length - 1; i >= 0; i--) {
+      if ((this.gc.minutes[i].source ?? "tick") === "candle") break;
       n++;
     }
     return n;
@@ -505,9 +625,9 @@ class LiveFeed {
           return;
         }
         const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|");
-        const r = mergeCandleMinutes(this.state.minutes, candles, nowKey);
-        if (r.replaced || r.added) this.state.barsRevision++;
-        this.state.lastCandleRefreshAt = Date.now();
+        const r = mergeCandleMinutes(this.gc.minutes, candles, nowKey);
+        if (r.replaced || r.added) this.gc.barsRevision++;
+        this.gc.lastCandleRefreshAt = Date.now();
         const newest = candles.map((c) => c.t).sort().at(-1) ?? "";
         console.log(
           `[candles] refresh: ${candles.length} candles (newest ${newest}) · merged ${r.replaced}R/${r.added}A · tail ${this.tickTail()} tick`,
@@ -549,8 +669,8 @@ class LiveFeed {
     this.raceRestMs = 0;
     this.raceFrameMs = 0;
     this.raceFetchFailedLogged = false;
-    this.state.race.active = true;
-    this.state.race.races++;
+    this.gc.race.active = true;
+    this.gc.race.races++;
     const step = (): void => {
       if (!this.raceActive || this.raceBarKey !== key) return;
       const now = Date.now();
@@ -562,20 +682,20 @@ class LiveFeed {
         .then((candles) => {
           if (!this.raceActive || this.raceBarKey !== key) return;
           if (!candles.length) return;
-          const r = mergeCandleMinutes(this.state.minutes, candles, new Date().toISOString().slice(0, 16).replace("T", "|"));
+          const r = mergeCandleMinutes(this.gc.minutes, candles, new Date().toISOString().slice(0, 16).replace("T", "|"));
           if (r.replaced || r.added) {
-            this.state.barsRevision++;
+            this.gc.barsRevision++;
             this.emit();
           }
           // the raced bar is the buffer tail for the whole race window (bars
           // are 60s apart); match on SOURCE like the tape gate does — the
           // vendor candle's day stamp uses the feed clock, not UTC, so a
           // du/t key match would miss the confirmation
-          const confirmed = (this.state.minutes.at(-1)?.source ?? "tick") === "candle";
+          const confirmed = (this.gc.minutes.at(-1)?.source ?? "tick") === "candle";
           if (confirmed && this.raceRestMs === 0) {
             this.raceRestMs = Date.now();
-            this.state.race.restWins++;
-            this.state.race.lastRestConfirmMs = this.raceRestMs;
+            this.gc.race.restWins++;
+            this.gc.race.lastRestConfirmMs = this.raceRestMs;
             if (fastDispatchEnabled(this.env)) {
               console.log(`[fast-dispatch] bar ${key} candle confirmed via REST +${((this.raceRestMs - closeMs) / 1000).toFixed(1)}s — cards eligible`);
             }
@@ -600,11 +720,11 @@ class LiveFeed {
   private noteRaceFrameConfirm(): void {
     if (!this.raceActive || this.raceFrameMs > 0) return;
     // same source-based match as the REST path (see above)
-    const confirmed = (this.state.minutes.at(-1)?.source ?? "tick") === "candle";
+    const confirmed = (this.gc.minutes.at(-1)?.source ?? "tick") === "candle";
     if (!confirmed) return;
     this.raceFrameMs = Date.now();
-    this.state.race.frameWins++;
-    this.state.race.lastFrameConfirmMs = this.raceFrameMs;
+    this.gc.race.frameWins++;
+    this.gc.race.lastFrameConfirmMs = this.raceFrameMs;
     this.finishConfirmRace(this.raceBarKey);
   }
 
@@ -614,10 +734,10 @@ class LiveFeed {
       console.log(formatConfirmRace(key, this.raceCloseMs, this.raceRestMs, this.raceFrameMs, Date.now()));
     }
     this.raceActive = false;
-    this.state.race.active = false;
+    this.gc.race.active = false;
   }
 
-  state: LiveState = {
+  gc: LiveState = {
     connected: false,
     lastMessage: 0,
     lastTradeMs: 0,
@@ -633,9 +753,142 @@ class LiveFeed {
     heal: seedTapeHeal(),
   };
 
+  /* ---- Tradovate-primary arbitration (see the block above the class) ---- */
+  private tv: TvFeed | null = null;
+  private nqArb: FeedArbiter = seedArbiter();
+  private esArb: FeedArbiter = seedArbiter();
+  private nqHealth = "not started";
+  private esHealth = "not started";
+  private pubKey = "";
+  private pubRev = 0;
+  private pubMinutes: LiveMinute[] = [];
+  private pubEsMinutes: LiveMinute[] = [];
+  private lastGcMinutes: LiveMinute[] | null = null;
+  private lastGcEsMinutes: LiveMinute[] | null = null;
+  private switchPagedAt = 0;
+
+  /** The PUBLIC live state every consumer reads. With LIVE_BAR_SOURCE=gc
+   *  it is the raw GC buffer (identity preserved). Otherwise a composed
+   *  view: Tradovate bars/ticks/quote while Tradovate is healthy, GC
+   *  otherwise — NQ and ES independently. barsRevision is a monotonic
+   *  PUBLISHED revision: it bumps on any change of either vendor's bars
+   *  or of the active source, so detector caches never serve a bar set
+   *  from the other vendor. */
+  get state(): LiveState {
+    const gc = this.gc;
+    if (liveBarSourceForced() || !this.tv) return gc;
+    const tv = this.tv;
+    const nqTv = this.nqArb.active === "tv";
+    const esTv = this.esArb.active === "tv";
+    const key = [nqTv, esTv, gc.barsRevision, gc.minutes.length, gc.es.minutes.length, tv.nq.revision, tv.es.revision].join("|");
+    if (key !== this.pubKey || gc.minutes !== this.lastGcMinutes || gc.es.minutes !== this.lastGcEsMinutes) {
+      this.pubKey = key;
+      this.lastGcMinutes = gc.minutes;
+      this.lastGcEsMinutes = gc.es.minutes;
+      this.pubMinutes = nqTv ? composeTvMinutes(gc.minutes, tv.nq.closedBars()) : gc.minutes;
+      this.pubEsMinutes = esTv ? composeTvMinutes(gc.es.minutes, tv.es.closedBars()) : gc.es.minutes;
+      this.pubRev++;
+    }
+    const out: LiveState = {
+      ...gc,
+      barsRevision: this.pubRev,
+      minutes: this.pubMinutes,
+      es: esTv ? { lastTradeMs: tv.es.lastTickWallMs, minutes: this.pubEsMinutes, cur: tv.es.developing() } : gc.es,
+      feed: this.feedStatus(),
+    };
+    if (nqTv) {
+      out.connected = true;
+      out.lastMessage = Math.max(tv.status.lastLineWallMs, gc.lastMessage);
+      out.lastTradeMs = tv.nq.lastTickWallMs;
+      out.lastVolChangeMs = tv.nq.lastTickWallMs;
+      out.lastCandleRefreshAt = tv.nq.lastFinalizeAt;
+      out.ticks = tv.nq.ticks;
+      out.cur = tv.nq.developing();
+      out.snapshot = this.tvSnapshot();
+    }
+    return out;
+  }
+
+  /** NQ day snapshot from the Tradovate quote; GC's fields fill gaps */
+  private tvSnapshot(): Snapshot | null {
+    const tv = this.tv!;
+    const q = tv.nqQuote;
+    const g = this.gc.snapshot;
+    const ltp = tv.nq.lastPrice || q?.ltp || g?.ltp || 0;
+    if (!ltp) return g;
+    return {
+      date: q?.timestamp ?? g?.date ?? new Date().toISOString(),
+      open: q?.open ?? g?.open ?? ltp,
+      high: q?.high ?? g?.high ?? ltp,
+      low: q?.low ?? g?.low ?? ltp,
+      ltp,
+      volume: q?.volume ?? g?.volume ?? 0,
+      prev_close: q?.settle ?? g?.prev_close ?? 0,
+      prev_date: g?.prev_date ?? "",
+      s_type: g?.s_type ?? "live",
+      delta: tv.nq.delta(),
+    };
+  }
+
+  private feedStatus(): FeedStatus {
+    const st = this.tv?.status;
+    return {
+      forced: liveBarSourceForced(),
+      nq: { ...this.nqArb, health: this.nqHealth },
+      es: { ...this.esArb, health: this.esHealth },
+      tv: {
+        sessionDay: st?.sessionDay ?? "",
+        nqSym: st?.nqSym ?? null,
+        esSym: st?.esSym ?? null,
+        lastLineWallMs: st?.lastLineWallMs ?? 0,
+        ignoredSyms: st?.ignoredSyms ?? [],
+      },
+    };
+  }
+
+  /** 1s arbitration tick: health → transition → log/page/journal */
+  private arbitrate(now = Date.now()): void {
+    const tv = this.tv;
+    if (!tv) return;
+    const forced = liveBarSourceForced();
+    const open = marketOpenAt(now);
+    this.nqHealth = tvHealth(tv.nq, now, tv.status.bootstrapped);
+    this.esHealth = tvHealth(tv.es, now, tv.status.bootstrapped);
+    const nq = arbiterStep(this.nqArb, this.nqHealth, now, open, forced);
+    const es = arbiterStep(this.esArb, this.esHealth, now, open, forced);
+    const nqSwitched = nq.active !== this.nqArb.active;
+    const esSwitched = es.active !== this.esArb.active;
+    this.nqArb = nq;
+    this.esArb = es;
+    if (!nqSwitched && !esSwitched) return;
+    for (const [name, sw, a] of [["NQ", nqSwitched, nq], ["ES", esSwitched, es]] as const) {
+      if (!sw) continue;
+      console.log(`[feed] ${name} live source → ${a.active.toUpperCase()} (${a.reason}) · switch #${a.switches}`);
+      try {
+        appendDaybook({ t: "feed", at: now, sym: name, active: a.active, reason: a.reason, switches: a.switches });
+      } catch {
+        /* journaling is best-effort */
+      }
+    }
+    this.emit();
+    // page on NQ switches only (ES is context), at most every 2 min
+    if (nqSwitched && now - this.switchPagedAt >= 120_000) {
+      this.switchPagedAt = now;
+      const toGc = nq.active === "gc";
+      void sendTelegram(
+        [
+          toGc ? `⚠️ <b>LIVE FEED → GoCharting</b> (Tradovate fail-over)` : `✅ <b>LIVE FEED → Tradovate</b>`,
+          `<code>${new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" })} ET</code>`,
+          `Reason: ${nq.reason}`,
+        ].join("\n"),
+        { parseMode: "HTML" },
+      ).catch(() => {});
+    }
+  }
+
   constructor() {
     this.env = loadEnv();
-    this.state.race.fastDispatch = fastDispatchEnabled(this.env);
+    this.gc.race.fastDispatch = fastDispatchEnabled(this.env);
   }
 
   subscribe(fn: (s: LiveState) => void) {
@@ -661,10 +914,10 @@ class LiveFeed {
     // whole in-progress session (the live buffer was tick-only — the 7%-of-
     // volume tape behind the 2026-10-05 live-vs-backtest divergence).
     const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|"); // "YYYY-MM-DD|HH:mm" UTC
-    const have = new Set(this.state.minutes.map((m) => `${m.du ?? ""}|${m.t}`));
+    const have = new Set(this.gc.minutes.map((m) => `${m.du ?? ""}|${m.t}`));
     // the developing minute (still `cur`, not yet in `minutes`) must win over a
     // seeded candle for the same minute, or it gets duplicated on rollover
-    const cur = this.state.cur;
+    const cur = this.gc.cur;
     if (cur && /^\d{2}:\d{2}$/.test(cur.t)) have.add(`${cur.du ?? ""}|${cur.t}`);
     let added = 0;
     for (const c of candles) {
@@ -681,7 +934,7 @@ class LiveFeed {
       // candle, so drop them instead
       if (!(c.high > 0) || !(c.low > 0)) continue;
       have.add(key);
-      this.state.minutes.push({
+      this.gc.minutes.push({
         t: hhmm,
         du,
         o: 0, // footprint has no open/close — chart falls back to range bars
@@ -697,8 +950,8 @@ class LiveFeed {
       added++;
     }
     if (!added) return;
-    this.state.minutes.sort((a, b) => `${a.du ?? ""}|${a.t}`.localeCompare(`${b.du ?? ""}|${b.t}`));
-    if (this.state.minutes.length > MAX_MINUTES) this.state.minutes = this.state.minutes.slice(-MAX_MINUTES);
+    this.gc.minutes.sort((a, b) => `${a.du ?? ""}|${a.t}`.localeCompare(`${b.du ?? ""}|${b.t}`));
+    if (this.gc.minutes.length > MAX_MINUTES) this.gc.minutes = this.gc.minutes.slice(-MAX_MINUTES);
   }
 
   /** ES twin of seedFromFootprint: seed the in-progress session's ES minutes
@@ -706,7 +959,7 @@ class LiveFeed {
    *  since this process started. No persist, no levels. */
   private seedEsFromFootprint(candles: BootCandle[]) {
     const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|");
-    const buf = this.state.es;
+    const buf = this.gc.es;
     const have = new Set(buf.minutes.map((m) => `${m.du ?? ""}|${m.t}`));
     const cur = buf.cur;
     if (cur && /^\d{2}:\d{2}$/.test(cur.t)) have.add(`${cur.du ?? ""}|${cur.t}`);
@@ -831,24 +1084,24 @@ class LiveFeed {
   }
 
   private applyTick(t: Tick) {
-    const rolled = this.applyTickTo(t, this.state);
+    const rolled = this.applyTickTo(t, this.gc);
     if (rolled) {
       // the minute just closed — persist it to Neon so live data survives a
       // restart instead of living only in this RAM buffer (best-effort)
-      const prev = this.state.minutes[this.state.minutes.length - 1];
+      const prev = this.gc.minutes[this.gc.minutes.length - 1];
       if (prev && /^\d{2}:\d{2}$/.test(prev.t)) {
         void persistLiveMinute(prev).catch(() => {});
         this.startConfirmRace(prev);
       }
     }
-    this.state.ticks.push(t);
-    if (this.state.ticks.length > 2000) this.state.ticks = this.state.ticks.slice(-2000);
+    this.gc.ticks.push(t);
+    if (this.gc.ticks.length > 2000) this.gc.ticks = this.gc.ticks.slice(-2000);
   }
 
   /** ES twin tick — same minute building, none of the NQ bookkeeping. */
   private applyEsTick(t: Tick) {
-    this.applyTickTo(t, this.state.es);
-    this.state.es.lastTradeMs = Date.now();
+    this.applyTickTo(t, this.gc.es);
+    this.gc.es.lastTradeMs = Date.now();
   }
 
   /** key ends with ":<symbol>" — matches the vendor's "CME:FUTURE:ESZ26"
@@ -896,7 +1149,7 @@ class LiveFeed {
     } catch {
       return;
     }
-    this.state.lastMessage = Date.now();
+    this.gc.lastMessage = Date.now();
     if (j.channel === "snapshot" && j.payload) {
       // with the ES twin subscribed the snapshot map carries both symbols —
       // pick the NQ entry, never ES
@@ -909,7 +1162,7 @@ class LiveFeed {
       }
       if (!p) p = Object.values(j.payload)[0] as any;
       if (p) {
-        this.state.snapshot = {
+        this.gc.snapshot = {
           date: p.date,
           open: p.open,
           high: p.high,
@@ -925,16 +1178,16 @@ class LiveFeed {
         // a dropped subscription from a closed market)
         if (p.volume !== this.lastVol) {
           this.lastVol = p.volume;
-          this.state.lastVolChangeMs = Date.now();
+          this.gc.lastVolChangeMs = Date.now();
         }
         // keep the current minute's last price honest even without ticks
-        if (!this.state.cur) {
-          this.state.cur = { t: "now", o: p.ltp, h: p.high, l: p.low, c: p.ltp, vol: 0, buy: 0, sell: 0, live: true };
+        if (!this.gc.cur) {
+          this.gc.cur = { t: "now", o: p.ltp, h: p.high, l: p.low, c: p.ltp, vol: 0, buy: 0, sell: 0, live: true };
         }
         this.emit();
       }
     } else if (j.channel === "trade" && j.payload) {
-      this.state.lastTradeMs = Date.now();
+      this.gc.lastTradeMs = Date.now();
       // route each subscribed symbol's prints to its own buffer
       for (const [k, v] of Object.entries(j.payload as Record<string, unknown>)) {
         const p = v as any;
@@ -949,7 +1202,7 @@ class LiveFeed {
       if (Array.isArray(p) && p.length && p[0].ltp) {
         const d = p[p.length - 1];
         this.lastLtp = Number(d.ltp);
-        this.state.lastMessage = Date.now();
+        this.gc.lastMessage = Date.now();
       }
     }
   }
@@ -969,7 +1222,7 @@ class LiveFeed {
       this.ws.binaryType = "arraybuffer";
       this.ws.onopen = () => {
         this.retryMs = 10_000; // healthy connect — reset the backoff
-        this.state.connected = true;
+        this.gc.connected = true;
         this.emit();
         this.subscribeChannels();
       };
@@ -989,15 +1242,15 @@ class LiveFeed {
                 // an ES footprint frame must never pollute the NQ buffer.
                 const sym = r.symbol ? r.symbol.toUpperCase() : "";
                 const nq = this.nqSymbol().toUpperCase();
-                const ltp = this.state.snapshot?.ltp ?? 0;
+                const ltp = this.gc.snapshot?.ltp ?? 0;
                 const lastHigh = r.candles[r.candles.length - 1]?.high ?? 0;
                 const pricePlausible = ltp > 0 && lastHigh > 0 ? Math.abs(lastHigh / 100 - ltp) / ltp < 0.2 : sym === nq;
                 if ((!sym || sym === nq) && pricePlausible) {
                   const nowKey = new Date().toISOString().slice(0, 16).replace("T", "|");
-                  const merged = mergeCandleMinutes(this.state.minutes, r.candles, nowKey);
-                  this.state.lastCandleRefreshAt = Date.now();
+                  const merged = mergeCandleMinutes(this.gc.minutes, r.candles, nowKey);
+                  this.gc.lastCandleRefreshAt = Date.now();
                   if (merged.replaced || merged.added) {
-                    this.state.barsRevision++;
+                    this.gc.barsRevision++;
                     this.emit();
                   }
                   this.noteRaceFrameConfirm();
@@ -1015,14 +1268,14 @@ class LiveFeed {
                 }
               }
             }
-            this.state.lastMessage = Date.now();
+            this.gc.lastMessage = Date.now();
           } catch {
             /* ignore */
           }
         }
       };
       this.ws.onclose = () => {
-        this.state.connected = false;
+        this.gc.connected = false;
         this.emit();
         // exponential backoff: a tight reconnect loop is what got the account
         // temporarily locked by Cognito ("Password attempts exceeded")
@@ -1046,6 +1299,11 @@ class LiveFeed {
   start() {
     if (this.timer) return;
     this.connect();
+    // Tradovate primary feed: tail the collector journal and arbitrate
+    // every second (GC keeps running underneath as the hot standby)
+    this.tv = getTvFeed();
+    this.tv.onUpdate(() => this.emit());
+    setInterval(() => this.arbitrate(), 1000);
     this.lastSessionDay = sessionDayOf(Date.now());
     let ticks = 0;
     this.timer = setInterval(() => {
@@ -1058,11 +1316,11 @@ class LiveFeed {
       const sessionDay = sessionDayOf(now);
       if (this.lastSessionDay && sessionDay !== this.lastSessionDay) {
         console.log(`[live] session rollover ${this.lastSessionDay} → ${sessionDay} — clearing buffer, reconnecting`);
-        this.state.minutes = [];
-        this.state.cur = null;
-        this.state.ticks = [];
-        this.state.es.minutes = [];
-        this.state.es.cur = null;
+        this.gc.minutes = [];
+        this.gc.cur = null;
+        this.gc.ticks = [];
+        this.gc.es.minutes = [];
+        this.gc.es.cur = null;
         this.bootstrapped = false;
         this.lastSessionDay = sessionDay;
         try {
@@ -1071,7 +1329,7 @@ class LiveFeed {
           /* ignore */
         }
       }
-      if (this.state.connected) {
+      if (this.gc.connected) {
         this.ws?.send(JSON.stringify({ command: "PING", payload: {} }));
         ticks++;
         // re-assert the subscriptions once a minute: cheap, and it recovers a
@@ -1079,7 +1337,7 @@ class LiveFeed {
         if (ticks % 12 === 0) this.subscribeChannels();
         // watchdog 1: no message at all for 5 minutes while "connected" means
         // the socket is dead but silent — force a reconnect
-        const dead = this.state.lastMessage && now - this.state.lastMessage > 300_000;
+        const dead = this.gc.lastMessage && now - this.gc.lastMessage > 300_000;
         // watchdog 2: the market SHOULD be open (calendar) but no print has
         // arrived for 3 minutes → the trade subscription is dead; reconnect.
         // The old version required vendor volume to be MOVING — exactly what
@@ -1087,13 +1345,13 @@ class LiveFeed {
         // sessions (the 9:30 open-drive window saw no data for days).
         const tradesStale =
           marketOpenAt(now) &&
-          this.state.lastTradeMs > 0 &&
-          now - this.state.lastTradeMs > 180_000 &&
+          this.gc.lastTradeMs > 0 &&
+          now - this.gc.lastTradeMs > 180_000 &&
           now - this.lastForcedReconnectMs > 180_000;
         if (dead || tradesStale) {
           this.lastForcedReconnectMs = now;
           console.log(
-            `[live] forced reconnect (${dead ? "socket silent" : `no print for ${Math.round((now - this.state.lastTradeMs) / 1000)}s while market open`})`,
+            `[live] forced reconnect (${dead ? "socket silent" : `no print for ${Math.round((now - this.gc.lastTradeMs) / 1000)}s while market open`})`,
           );
           try {
             this.ws?.close();
@@ -1106,7 +1364,7 @@ class LiveFeed {
       //      halt can never confirm candles and must not trip it) ----
       if (marketOpenAt(now)) {
         const tail = this.tickTail();
-        const total = this.state.minutes.length;
+        const total = this.gc.minutes.length;
         // bars-frozen watchdog (2026-10-15): a frozen tail while the market
         // trades means the vendor data pipeline stopped completing bars
         // (candles stale + tick frames replaying old stamps) — the ladder's
@@ -1115,16 +1373,16 @@ class LiveFeed {
         // page requires the tail to have ADVANCED at least once since boot
         // and then stalled — a freshly reseeded buffer with an old tail is
         // a deploy artifact, not a vendor freeze.
-        const tailCloseNow = liveMinuteCloseMs(this.state.minutes[this.state.minutes.length - 1] as { t: string; du?: string });
+        const tailCloseNow = liveMinuteCloseMs(this.gc.minutes[this.gc.minutes.length - 1] as { t: string; du?: string });
         if (tailCloseNow > this.lastTailClose) {
           this.lastTailClose = tailCloseNow;
           this.tailAdvancedAt = now;
         }
-        const frozen = tapeTailStale(this.state.minutes, now) && this.tailAdvancedAt > 0 && now - this.tailAdvancedAt > STALE_BARS_RECOVERY_MS;
+        const frozen = tapeTailStale(this.gc.minutes, now) && this.tailAdvancedAt > 0 && now - this.tailAdvancedAt > STALE_BARS_RECOVERY_MS;
         if (frozen) {
           if (now - this.frozenLoggedAt >= 60_000) {
             this.frozenLoggedAt = now;
-            const close = liveMinuteCloseMs(this.state.minutes[this.state.minutes.length - 1] as { t: string; du?: string });
+            const close = liveMinuteCloseMs(this.gc.minutes[this.gc.minutes.length - 1] as { t: string; du?: string });
             console.log(`[live] BARS FROZEN — tail close ${Math.round((now - close) / 1000)}s ago while the market is open (vendor pipeline stalled)`);
           }
           if (now - this.frozenPageAt >= 30 * 60_000) {
@@ -1133,15 +1391,15 @@ class LiveFeed {
               [
                 `🚨 <b>VENDOR DATA FROZEN</b> — bars stopped completing`,
                 `<code>${new Date(now).toLocaleString("en-US", { timeZone: "America/New_York" })} ET</code>`,
-                `The tail bar closed ${Math.round((now - liveMinuteCloseMs(this.state.minutes[this.state.minutes.length - 1] as { t: string; du?: string })) / 1000)}s ago while the market is open — the self-heal ladder is force-fetching/reconnecting/reseeding. No signals can fire until the vendor stream resumes.`,
+                `The tail bar closed ${Math.round((now - liveMinuteCloseMs(this.gc.minutes[this.gc.minutes.length - 1] as { t: string; du?: string })) / 1000)}s ago while the market is open — the self-heal ladder is force-fetching/reconnecting/reseeding. ${this.nqArb.active === "tv" ? "Tradovate is serving live bars — this is the GC STANDBY (no fail-over available while it is frozen)." : "No signals can fire until the vendor stream resumes."}`,
               ].join("\n"),
               { parseMode: "HTML" },
             ).catch(() => {});
           }
         }
-        const prev = this.state.heal; // pre-decision state carries the episode's ladder usage
+        const prev = this.gc.heal; // pre-decision state carries the episode's ladder usage
         const { next, action } = tapeHealDecision(prev, now, frozen ? TAPE_HEAL_TAIL_ALERT + 1 : tail, frozen ? total - 1 : total);
-        this.state.heal = next;
+        this.gc.heal = next;
         if (action === "force-fetch") {
           console.log(`[heal] unconfirmed tail ${tail} — forced candle fetch (${next.forcedFetches}/${TAPE_HEAL_MAX_FORCED_FETCHES})`);
           this.refreshCandles(true);
@@ -1154,11 +1412,11 @@ class LiveFeed {
           }
         } else if (action === "force-reseed") {
           console.log(`[heal] unconfirmed tail ${tail} — soft re-seed: clearing the buffer and re-bootstrapping`);
-          this.state.minutes = [];
-          this.state.cur = null;
-          this.state.ticks = [];
-          this.state.es.minutes = [];
-          this.state.es.cur = null;
+          this.gc.minutes = [];
+          this.gc.cur = null;
+          this.gc.ticks = [];
+          this.gc.es.minutes = [];
+          this.gc.es.cur = null;
           this.bootstrapped = false;
           void this.bootstrap();
         } else if (next.healedAt > 0 && next.healedAt !== this.healLoggedAt) {
