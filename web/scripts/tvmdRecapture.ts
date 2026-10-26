@@ -45,7 +45,7 @@
  *      page target, complete the Google sign-in in that window.
  * ------------------------------------------------------------------ */
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -122,6 +122,10 @@ const SYMBOL = (process.env.TVMD_SYMBOLS ?? "MNQZ6").split(",")[0].trim();
  *  engine — the same gate the collector uses — and recapture whenever
  *  the token doesn't answer. */
 async function tokenAlive(): Promise<boolean> {
+  // the collector streaming is the strongest liveness signal — the REST
+  // probe can answer non-OK for a token the md WebSocket accepts, and a
+  // false "dead" verdict re-logs in every minute
+  if (collectorStreaming()) return true;
   try {
     const raw = JSON.parse(readFileSync(TOKEN_FILE, "utf8")) as { token?: string };
     if (typeof raw.token !== "string" || !raw.token) return false;
@@ -131,11 +135,29 @@ async function tokenAlive(): Promise<boolean> {
       body: JSON.stringify({ symbol: SYMBOL }),
       signal: AbortSignal.timeout(10_000),
     });
+    if (!res.ok) log(`token probe: ${REST_HOST}/md/getquote → ${res.status} ${(await res.text()).slice(0, 120)}`);
     return res.ok;
   } catch {
     return false;
   }
 }
+
+/** collector JSONL written in the last 3 min = the md session is live */
+function collectorStreaming(): boolean {
+  try {
+    const dir = process.env.TVMD_OUT ?? "./data/tradovate-md";
+    const newest = readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => statSync(path.join(dir, f)).mtimeMs)
+      .reduce((a, b) => Math.max(a, b), 0);
+    return Date.now() - newest < 3 * 60_000;
+  } catch {
+    return false;
+  }
+}
+
+/** hard floor between fresh logins, whatever the probe says */
+const MIN_RELOGIN_MS = 10 * 60_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -742,6 +764,10 @@ async function main(): Promise<void> {
       return; // failed recently — the entrypoint tick probes again in 60s
     } else {
       const anchored = anchoredAtOf(TOKEN_FILE);
+      const anchoredMs = anchored ? Date.parse(anchored) : NaN;
+      if (Number.isFinite(anchoredMs) && Date.now() - anchoredMs < MIN_RELOGIN_MS) {
+        return; // just logged in — never re-login storm on a flaky probe
+      }
       if ((await tokenAlive()) && !shouldReanchor(anchored, Date.now(), ANCHOR_HOURS)) {
         return; // healthy chain + fresh anchor — nothing to do
       }

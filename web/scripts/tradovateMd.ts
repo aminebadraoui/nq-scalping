@@ -96,7 +96,17 @@ function readTokenFile(path: string): string {
 
 function writeTokenFile(path: string, token: string): void {
   try {
-    writeFileSync(path, JSON.stringify({ token, renewedAt: new Date().toISOString() }, null, 2));
+    // keep the recapture loop's anchoredAt (last fresh login): dropping
+    // it on renewal makes the loop think the session was never anchored
+    // and re-login after every 20-min renewal
+    let anchoredAt: string | undefined;
+    try {
+      const prev = JSON.parse(readFileSync(path, "utf8")) as { anchoredAt?: unknown };
+      if (typeof prev.anchoredAt === "string") anchoredAt = prev.anchoredAt;
+    } catch {
+      /* first write */
+    }
+    writeFileSync(path, JSON.stringify({ token, renewedAt: new Date().toISOString(), ...(anchoredAt ? { anchoredAt } : {}) }, null, 2));
     // record our own write so the hot-swap watcher ignores it
     try {
       tokenFileMtime = statSync(path).mtimeMs;
