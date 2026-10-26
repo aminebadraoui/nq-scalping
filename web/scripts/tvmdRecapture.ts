@@ -150,6 +150,11 @@ function writeStatus(next: Partial<RecapStatus>): void {
   }
 }
 
+/** evaluated lazily: PASSWORD_MODE is declared further down the module */
+function loginMethod(): "password" | "google" {
+  return PASSWORD_MODE ? "password" : "google";
+}
+
 function clearBackoff(): void {
   try {
     unlinkSync(BACKOFF_FILE);
@@ -161,7 +166,7 @@ function clearBackoff(): void {
 function setBackoff(failures: number): void {
   const secs = nextBackoffSeconds(failures);
   try {
-    writeFileSync(BACKOFF_FILE, JSON.stringify({ until: Date.now() + secs * 1000, failures }));
+    writeFileSync(BACKOFF_FILE, JSON.stringify({ until: Date.now() + secs * 1000, failures, mode: loginMethod() }));
   } catch {
     /* best-effort */
   }
@@ -169,7 +174,10 @@ function setBackoff(failures: number): void {
 
 function backoffActive(): boolean {
   try {
-    const raw = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { until?: unknown };
+    const raw = JSON.parse(readFileSync(BACKOFF_FILE, "utf8")) as { until?: unknown; mode?: unknown };
+    // a backoff earned by the other login method (e.g. dead Google
+    // session before credentials were configured) doesn't apply
+    if (raw.mode !== loginMethod()) return false;
     return typeof raw.until === "number" && Date.now() < raw.until;
   } catch {
     return false;
@@ -466,6 +474,28 @@ async function submitPasswordLogin(call: (m: string, p?: unknown) => Promise<Rec
   return true;
 }
 
+/** where the page is stuck: url, visible text, controls (no values) */
+async function pageDiagnosis(call: (m: string, p?: unknown) => Promise<Record<string, unknown>>): Promise<string> {
+  try {
+    const st = await evalJson(
+      call,
+      `JSON.stringify({
+        url: location.href,
+        text: (document.body?.innerText ?? "").replace(/\\s+/g, " ").trim().slice(0, 500),
+        controls: [...document.querySelectorAll("input, button")]
+          .filter(${VISIBLE})
+          .slice(0, 12)
+          .map(e => e.tagName === "INPUT" ? "input[" + (e.type || "text") + (e.name ? ":" + e.name : "") + "]" : "button[" + (e.innerText || "").trim().slice(0, 30) + "]")
+          .join(" "),
+      })`,
+    );
+    if (!st) return "";
+    return ` | url=${String(st.url)} | text="${String(st.text)}" | controls=${String(st.controls)}`;
+  } catch {
+    return "";
+  }
+}
+
 /** after a submit: a rejection or a human-only step (MFA code, captcha)
  *  must fail fast — retrying credentials is what earns penalty tickets */
 async function passwordLoginBlocker(call: (m: string, p?: unknown) => Promise<Record<string, unknown>>): Promise<string | null> {
@@ -546,12 +576,15 @@ async function harvest(port: number, timeoutMs: number): Promise<string> {
         await call("Page.reload", {});
       }
     }
+    // password mode: say WHERE the page got stuck (url, visible text,
+    // form controls — never field values) so the status chip diagnoses
+    const diag = PASSWORD_MODE ? await pageDiagnosis(call) : "";
     close();
     throw new Error(
       PASSWORD_MODE
         ? sawLogin
-          ? "no token captured — the username/password login was submitted but no session started"
-          : "no token captured — no username/password form appeared on the platform page"
+          ? `no token captured — the username/password login was submitted but no session started${diag}`
+          : `no token captured — no username/password form appeared on the platform page${diag}`
         : LOGIN_MODE
         ? "no token captured — complete the Google sign-in in the remote-debugging window, then rerun (the profile persists)"
         : sawLogin
