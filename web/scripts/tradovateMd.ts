@@ -458,6 +458,33 @@ function bumpStats(item: TvItem): void {
   stats.set(key, row);
 }
 
+/** chart subscription id (historicalId / realtimeId) → symbol. Chart
+ *  packets carry only that id, so the journal stamps `sym` on each one —
+ *  the live bar source (lib/tvFeed.ts) must never mix two symbols. */
+const chartSymbols = new Map<number, string>();
+/** quote contractId (the subscribequote subscriptionId) → symbol */
+const quoteSymbols = new Map<number, string>();
+
+function stampChartSymbols(item: TvItem): void {
+  if (item.e === "md" && item.d) {
+    const quotes = (item.d as Record<string, unknown>).quotes;
+    if (Array.isArray(quotes)) {
+      for (const q of quotes as Array<Record<string, unknown>>) {
+        const sym = typeof q.contractId === "number" ? quoteSymbols.get(q.contractId) : undefined;
+        if (sym) q.sym = sym;
+      }
+    }
+    return;
+  }
+  if (item.e !== "chart" || !item.d) return;
+  const charts = (item.d as Record<string, unknown>).charts;
+  if (!Array.isArray(charts)) return;
+  for (const c of charts as Array<Record<string, unknown>>) {
+    const sym = typeof c.id === "number" ? chartSymbols.get(c.id) : undefined;
+    if (sym) c.sym = sym;
+  }
+}
+
 function handleDataFrame(frame: TvFrame): void {
   for (const item of frame.data) {
     // request correlation
@@ -469,6 +496,7 @@ function handleDataFrame(frame: TvFrame): void {
       continue;
     }
     // unsolicited push / event
+    stampChartSymbols(item);
     journalLine({ dir: "in", t: new Date().toISOString(), type: frame.type, data: item });
     state.framesLogged++;
     bumpStats(item);
@@ -476,24 +504,24 @@ function handleDataFrame(frame: TvFrame): void {
   }
 }
 
-async function subscribeOne(endpoint: string, body: Record<string, unknown>, label: string): Promise<void> {
+async function subscribeOne(endpoint: string, body: Record<string, unknown>, label: string): Promise<TvItem | null> {
   for (;;) {
     let item: TvItem;
     try {
       item = await request(endpoint, body);
     } catch (e) {
       logWarn(`${label}: ${String(e)}`);
-      return;
+      return null;
     }
     if (isSuccess(item)) {
       log(`${label} ok: ${JSON.stringify(item.d)}`);
-      return;
+      return item;
     }
     const pen = penaltyOf(item.d);
     if (pen) {
       if (pen.captcha) {
         logErr(`${label}: captcha penalty — cannot retry programmatically; stop and re-capture later`);
-        return;
+        return null;
       }
       logWarn(`${label}: penalty, waiting ${pen.time}s then retrying with p-ticket`);
       await sleep(pen.time * 1000);
@@ -501,16 +529,23 @@ async function subscribeOne(endpoint: string, body: Record<string, unknown>, lab
       continue;
     }
     logErr(`${label} failed: ${errorTextOf(item)}`);
-    return;
+    return null;
   }
 }
 
 async function subscribeAll(): Promise<void> {
   for (const symbol of cfg!.symbols) {
-    if (cfg!.subs.quote) await subscribeOne("md/subscribequote", { symbol }, `quote ${symbol}`);
+    if (cfg!.subs.quote) {
+      const ok = await subscribeOne("md/subscribequote", { symbol }, `quote ${symbol}`);
+      const id = (ok?.d as { subscriptionId?: unknown } | undefined)?.subscriptionId;
+      if (typeof id === "number") quoteSymbols.set(id, symbol);
+    }
     if (cfg!.subs.hist) await subscribeOne("md/subscribehistogram", { symbol }, `histogram ${symbol}`);
-    if (cfg!.subs.chart)
-      await subscribeOne("md/getchart", tickChartBody(symbol, cfg!.chartElements), `tick chart ${symbol}`);
+    if (cfg!.subs.chart) {
+      const ok = await subscribeOne("md/getchart", tickChartBody(symbol, cfg!.chartElements), `tick chart ${symbol}`);
+      const d = (ok?.d ?? {}) as { historicalId?: unknown; realtimeId?: unknown };
+      for (const id of [d.historicalId, d.realtimeId]) if (typeof id === "number") chartSymbols.set(id, symbol);
+    }
   }
 }
 
@@ -560,7 +595,8 @@ async function restFetch(path: string, body: unknown): Promise<unknown | null> {
   }
 }
 
-function journalChartPacket(p: unknown): void {
+function journalChartPacket(p: unknown, sym?: string): void {
+  if (sym && p && typeof p === "object") (p as Record<string, unknown>).sym = sym;
   journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "chart", d: { charts: [p] } } });
   state.framesLogged++;
 }
@@ -569,18 +605,19 @@ function asArray(v: unknown): unknown[] {
   return Array.isArray(v) ? v : [];
 }
 
-function journalRestResponse(kind: "chart" | "quote" | "hist", json: unknown): void {
+function journalRestResponse(kind: "chart" | "quote" | "hist", json: unknown, sym?: string): void {
   const j = (json ?? {}) as Record<string, unknown>;
   const d = j.d as Record<string, unknown> | undefined;
   if (kind === "chart") {
     const packets = asArray(j.charts ?? d?.charts);
-    for (const p of packets) journalChartPacket(p);
+    for (const p of packets) journalChartPacket(p, sym);
     return;
   }
   const keys = kind === "quote" ? ["quotes"] : ["histograms"];
   const list = asArray(j[keys[0]] ?? d?.[keys[0]]);
   if (list.length) {
     for (const item of list) {
+      if (sym && item && typeof item === "object") (item as Record<string, unknown>).sym = sym;
       journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "md", d: { [keys[0]]: [item] } } });
       state.framesLogged++;
     }
@@ -588,6 +625,7 @@ function journalRestResponse(kind: "chart" | "quote" | "hist", json: unknown): v
   }
   // some endpoints may return a bare object (quote with `entries`,
   // histogram with `items`)
+  if (sym && kind === "quote") j.sym = sym;
   if (kind === "quote" && j.entries) {
     journalLine({ dir: "in", t: new Date().toISOString(), type: "a", data: { e: "md", d: { quotes: [j] } } });
     state.framesLogged++;
@@ -611,11 +649,11 @@ async function restPoll(): Promise<void> {
   state.restTick++;
   for (const sym of cfg!.symbols) {
     const chart = await restFetch("/md/getchart", { symbol: sym, ...CHART_BODY });
-    if (chart !== null) journalRestResponse("chart", chart);
+    if (chart !== null) journalRestResponse("chart", chart, sym);
     if (state.restTick % 3 === 0) {
       if (cfg!.subs.quote) {
         const q = await restFetch("/md/getquote", { symbol: sym });
-        if (q !== null) journalRestResponse("quote", q);
+        if (q !== null) journalRestResponse("quote", q, sym);
       }
       if (cfg!.subs.hist) {
         const h = await restFetch("/md/gethistogram", { symbol: sym });
