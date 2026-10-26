@@ -587,7 +587,7 @@ async function harvest(port: number, timeoutMs: number): Promise<string> {
           submittedAt = Date.now();
         } else if (clicked && Date.now() > submittedAt + 4000) {
           const blocker = await passwordLoginBlocker(call);
-          if (blocker) throw new Error(blocker);
+          if (blocker) throw new Error(blocker + (await pageDiagnosis(call)));
         }
         continue;
       }
