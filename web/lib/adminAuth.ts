@@ -4,7 +4,7 @@
  * The dashboard is public, so every route that mutates state the
  * executor or the operator relies on (strategy overrides, the weekly
  * experiment queue, the Tradovate md token, the login browser, forced
- * Telegram pushes) requires the ADMIN_PASSWORD. The client sends it as
+ * Telegram pushes, stored pattern-mining runs) requires the ADMIN_PASSWORD. The client sends it as
  * `x-admin-password: <pw>` or `Authorization: Bearer <pw>`.
  *
  * FAILS CLOSED: no ADMIN_PASSWORD configured → nothing is authorized.
@@ -59,6 +59,7 @@ export const ADMIN_WRITE_PATHS = [
   "/api/tvmd",
   "/api/tvmd/login",
   "/api/signal",
+  "/api/patterns",
 ] as const;
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);

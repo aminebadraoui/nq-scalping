@@ -24,5 +24,5 @@ export async function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/insights", "/api/weekly-review", "/api/tvmd", "/api/tvmd/login", "/api/signal"],
+  matcher: ["/api/insights", "/api/weekly-review", "/api/tvmd", "/api/tvmd/login", "/api/signal", "/api/patterns"],
 };

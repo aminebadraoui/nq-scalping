@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { familyName } from "@/lib/familyNames";
 import { FEATURE_REGISTRY, type RegistryEntry } from "@/lib/featureRegistry";
+import { adminFetch } from "@/lib/adminFetch";
 
 type Cell = {
   label: string;
@@ -215,7 +216,7 @@ export default function PatternExplorer() {
 
   const runNow = () => {
     setRunning(true);
-    fetch("/api/patterns", {
+    adminFetch("/api/patterns", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ since, minN: 5, account: "all", family: "", universe }),

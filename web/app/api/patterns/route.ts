@@ -10,6 +10,7 @@
  *      a stored run snapshot (reproducible view)
  * POST /api/patterns        { since, family, account, minN }
  *      run the analysis, store it in pattern_runs, return the run
+ *      (admin only — it writes to Neon; see lib/adminAuth.ts)
  *
  * Every pattern carries registry metadata (registered / doc) and the
  * response lists unregistered keys — the feature-drift signal.
@@ -30,6 +31,7 @@ import {
   type WinLossRow,
 } from "@/lib/patternMining";
 import { groupKeyOf, GROUP_ORDER } from "@/lib/featureGroups";
+import { adminUnauthorized, isAdminRequest } from "@/lib/adminAuth";
 import { lookupFeature, driftKeys } from "@/lib/featureRegistry";
 import {
   ensurePatternRunsTable,
@@ -177,6 +179,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAdminRequest(req)) return adminUnauthorized();
   if (!dbEnabled()) {
     return Response.json({ ok: false, reason: "no database configured" });
   }
