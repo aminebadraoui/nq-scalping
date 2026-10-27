@@ -1423,16 +1423,22 @@ class SignalFeed {
     const sigs = [...momSigs, ...expSigs];
 
     // big-bar continuation (family D, FEED_BIGBAR): one candidate per
-    // session — the FIRST ≥100-pt bar, and only when it is the
-    // just-closed minute. The scan runs only when the tail bar is
-    // big-bar-sized, so the per-tick cost is the normal case's O(1).
-    const tailBar = fp[fp.length - 1];
+    // session — the FIRST ≥100-pt bar, when it is the tail OR the
+    // just-closed candle bar (tailOrJustClosedBar — the 2026-10-16 rule
+    // for momentum/RTH; the strict tail-only check dropped the card
+    // whenever the tape gate held past the minute roll, 2026-10-26 audit).
+    // The scan runs only when one of those two bars is big-bar-sized, so
+    // the per-tick cost stays the normal case's O(1).
+    const isBig = (b: (typeof fp)[number] | undefined) =>
+      !!b && b.high - b.low >= BIGBAR_MIN_RANGE && !this.bigBarDays.has(b.d);
     const bigBar =
-      FEED_BIGBAR && tailBar && tailBar.high - tailBar.low >= BIGBAR_MIN_RANGE && !this.bigBarDays.has(tailBar.d)
+      FEED_BIGBAR && (isBig(fp[fp.length - 1]) || isBig(fp[fp.length - 2]))
         ? detectBigBar(fp as unknown as BigBarMinute[])
         : null;
     const bigSig =
-      bigBar && bigBar.entryIdx === fp.length - 1 ? (bigBar as MomentumSignal & { __bigBar?: boolean }) : null;
+      bigBar && !this.bigBarDays.has(bigBar.d) && tailOrJustClosedBar(fp, bigBar.entryIdx)
+        ? (bigBar as MomentumSignal & { __bigBar?: boolean })
+        : null;
     if (bigSig) {
       bigSig.__bigBar = true;
       this.bigBarDays.add(bigSig.d);
