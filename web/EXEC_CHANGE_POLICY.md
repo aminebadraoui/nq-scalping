@@ -10,7 +10,13 @@
 - Code: `web/lib/{crossTrade,executor,execWatch,execLog,crossGuard,
   accountGuard,propRules,propAccount,profile,timeExit,runner,
   runnerTracker,newsGate,openDrive,momentum,softMomentum,
-  signalFeed,unusualVolume}.ts` (and anything they newly import).
+  signalFeed,unusualVolume}.ts` (and anything they newly import), plus
+  (2026-10-26) `ctAccount.ts` (broker pacing + the guard's account
+  snapshot), `execOverrides.ts` (credential switch + guard reset),
+  `tradingHalt.ts` (the kill switch), `risk/guardCore.ts` +
+  `risk/challengeRules.ts` (the guard's rule core) and the live
+  detectors `bigBar.ts` + `vwapUp.ts`. The authoritative list is
+  `PROTECTED` in `scripts/exec-gate.sh`.
 - Config on the VPS: any Coolify env var of `nq-dashboard`
   (feed toggles `FEED_*`, profile knobs `*_STOP_MULT`/`*_TARGET_R`,
   risk caps, `EXECUTE_LIVE`, `AUTO_RETRY_VERIFIED`,

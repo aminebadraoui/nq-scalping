@@ -28,6 +28,14 @@ PROTECTED=(
   web/lib/softMomentum.ts
   web/lib/signalFeed.ts
   web/lib/unusualVolume.ts
+  # added 2026-10-26: they decide orders, sizes, or the kill switch too
+  web/lib/ctAccount.ts
+  web/lib/execOverrides.ts
+  web/lib/tradingHalt.ts
+  web/lib/risk/guardCore.ts
+  web/lib/risk/challengeRules.ts
+  web/lib/bigBar.ts
+  web/lib/vwapUp.ts
 )
 
 base="$1"

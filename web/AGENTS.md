@@ -11,8 +11,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Live-execution policy (repo rule, do not skip)
 
 Every push to `main` auto-deploys the VPS executor (`EXECUTE_LIVE=1`).
-Before changing live-execution code (lib/{crossTrade,executor,execWatch,
-profile,signalFeed,openDrive,momentum,softMomentum,guard/risk files}) or
+Before changing live-execution code (the `PROTECTED` list in
+scripts/exec-gate.sh — crossTrade, executor, execWatch, signalFeed, the
+detectors, the guard/risk files, ctAccount, tradingHalt, …) or
 ANY Coolify env var of `nq-dashboard` (feed toggles, profile knobs,
 risk caps): read and follow `web/EXEC_CHANGE_POLICY.md` — backtest with
 the named study first, tag the commit `[backtested: <script>]`, and
