@@ -17,15 +17,22 @@ mkdir -p /app/gcdata/data /app/cache
 
 if [ "${RUN_ONCE:-0}" = "1" ]; then
   echo "[jobs] RUN_ONCE=1 — running the nightly pipeline now"
-  /bin/bash /app/scripts/nightly.sh "$@"
-  echo "[jobs] pipeline finished (rc=$?) — sleeping forever (verification mode)"
+  # `|| rc=$?`: under `set -e` a failing pipeline must NOT kill the
+  # entrypoint — compose's restart policy would re-run the whole pipeline
+  # in a loop. Log the rc and park, as documented.
+  rc=0
+  /bin/bash /app/scripts/nightly.sh "$@" || rc=$?
+  echo "[jobs] pipeline finished (rc=$rc) — sleeping forever (verification mode)"
   exec tail -f /dev/null
 fi
 
 if [ "${RUN_WEEKLY:-0}" = "1" ]; then
   echo "[jobs] RUN_WEEKLY=1 — running the weekly review now (then normal cron mode)"
-  /bin/bash /app/scripts/weekly.sh "$@"
-  echo "[jobs] weekly review finished (rc=$?) — continuing to cron mode"
+  # a failed weekly run must still fall through to cron mode — otherwise
+  # the container dies before the nightly crontab is installed
+  rc=0
+  /bin/bash /app/scripts/weekly.sh "$@" || rc=$?
+  echo "[jobs] weekly review finished (rc=$rc) — continuing to cron mode"
 fi
 
 SCHEDULE="${CRON_SCHEDULE:-45 17 * * 1-5}"
