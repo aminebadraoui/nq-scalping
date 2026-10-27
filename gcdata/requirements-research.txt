@@ -1,0 +1,10 @@
+# Local research tools only (never installed on the VPS):
+# validate_sweep.py (DSR/PBO/CPCV), optuna_view.py, new_edge_lab.py.
+# Unpinned: pin to whatever your local .venv has once you confirm it
+#   (.venv/bin/pip freeze | grep -iE 'numpy|optuna|purgedcv').
+-r requirements.txt
+numpy
+optuna
+# purgedcv: not on this repo — if it is a local/private package, install it
+# from its source instead of PyPI and delete this line
+purgedcv

@@ -117,7 +117,9 @@ archive.
 ## Setup
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install websocket-client protobuf
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# research tools (validate_sweep.py, optuna_view.py, new_edge_lab.py):
+#   .venv/bin/pip install -r requirements-research.txt
 cp .env.example .env   # then edit with your GoCharting credentials
 ```
 
