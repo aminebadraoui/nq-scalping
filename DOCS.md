@@ -1,7 +1,7 @@
 # DOCS — classified documentation index
 
 Every markdown file in this repo, classified so you can find the one you need
-and trust the right one. Updated 2026-10-16.
+and trust the right one. Updated 2026-10-16; unclassified files appended 2026-10-26.
 
 **Layout:** design docs live in `docs/strategy/`, empirical studies in
 `docs/research/`, data/macro notes in `docs/data/`. Four files stay at the
@@ -173,3 +173,140 @@ trap), `docs/research/TRADE_REVIEW_2026-10-02.md` (live-fill forensics),
 `docs/research/es-features-study-2026-10-02.md` (cross-asset layer), and the
 three macro PIT audits in `docs/data/`. They are all committed to git; do not
 delete them to "tidy up".
+
+## Not yet classified (indexed by the 2026-10-26 audit)
+
+These files exist but were missing from this index. Titles are copied
+from each file; **status is unreviewed** — classify them (active /
+superseded / historical) into the sections above when you next touch
+them. Files marked *untracked* are not in git yet.
+
+### Agent & repo rules
+
+| File | Title |
+|---|---|
+| `CLAUDE.md` *(untracked)* | Claude / Cowork working guide — safety rules, sources of record, commands |
+| `AGENTS.md` | Repo-level agent instructions |
+| `web/AGENTS.md` | This is NOT the Next.js you know |
+| `web/EXEC_CHANGE_POLICY.md` | Execution-change policy — read before touching live-execution code |
+
+### Operations (runbooks, knobs, telemetry)
+
+| File | Title |
+|---|---|
+| `docs/execution-latency-telemetry.md` | Execution-latency telemetry — signal → CrossTrade → fill |
+| `docs/execution-optimization-env-proposals.md` | Execution-optimization — env-knob proposals (owner approval required) |
+| `docs/operations/INCIDENT-RUNBOOK.md` | Incident runbook — the five failure modes that have actually happened |
+| `docs/operations/KNOBS.md` | Execution knobs — the kill-switch table (every live knob, one glance) |
+| `docs/operations/LIVE-SIM-RUNBOOK.md` | LIVE-SIM RUNBOOK — simulate execution on GoCharting prices, no live account |
+| `docs/research/daybook-2026-10-07.md` | Daybook — the DB-less system journal (2026-10-07) |
+| `docs/research/recovery-runbook-2026-10-05.md` *(untracked)* | Recovery runbook — new eval account, post-blow (2026-10-05) |
+
+### Architecture & process
+
+| File | Title |
+|---|---|
+| `docs/architecture/ARCHITECTURE-REVIEW.md` | ARCHITECTURE REVIEW — unified, classified, scalable (Renaissance-style) |
+| `docs/architecture/RESEARCH-LOOP.md` | RESEARCH-LOOP — how we study without looping |
+| `docs/architecture/STRATEGY-RENAME-INVESTIGATION-2026-10-19.md` | Strategy rename — deep investigation (2026-10-19) |
+| `docs/architecture/WEEKLY-REVIEW.md` | WEEKLY-REVIEW — the Saturday self-improvement loop |
+| `docs/architecture/codebase-audit-2026-10-25.md` *(untracked)* | Codebase audit + modularization roadmap — 2026-10-25 |
+| `docs/superpowers/specs/2026-10-25-tradovate-primary-feed-design.md` | Tradovate primary live feed, GoCharting fallback — design (2026-10-25) |
+
+### Data feeds & vendors
+
+| File | Title |
+|---|---|
+| `docs/TRADOVATE-CAPTURE-GUIDE.md` | Tradovate Token Capture Guide — iOS app session → computer |
+| `docs/TRADOVATE-MARKET-DATA-RESEARCH.md` *(untracked)* | Tradovate Market-Data API as a Footprint Data Feed — Research Report |
+| `docs/research/databento-cme-mbo-footprint-costs-2026-10-16.md` *(untracked)* | Databento for CME NQ/ES MBO Footprint Data — Pricing & Feasibility Research |
+| `docs/research/sierra-chart-dtc-data-feed-research.md` *(untracked)* | Sierra Chart Data Feed + DTC Protocol for CME NQ/ES Market Depth — Research Report |
+| `docs/research/vendor-redundancy-evaluation-2026-10-15.md` | Vendor redundancy evaluation — can the signal engine survive a GoCharting bad day? (2026-10-15) |
+| `docs/research/vendor-replacement-cheapest-2026-10-16.md` *(untracked)* | Cheapest replacement for the GoCharting data source — vendor research (2026-10-16) |
+| `gcdata/ES_DATA.md` | ES cross-asset archive — GoCharting ES footprint (data/es) |
+
+### Incidents & post-mortems
+
+| File | Title |
+|---|---|
+| `docs/research/live-vs-backtest-2026-10-05.md` | Live vs backtest divergence — why the account is down $1,405 (2026-10-05) |
+| `docs/research/missed-fill-incident-2026-10-13.md` | Missed-fill ledger incident — 2026-10-13 10:16 RTH card |
+| `docs/research/naked-stop-incident-2026-10-08.md` | 2026-10-08 — two incidents, the protection stack, and the fill-model reckoning |
+| `docs/research/naked-stop-incident-2026-10-15.md` | Naked-stop incident — 2026-10-15 (account blown) |
+| `docs/research/naked-stop-recurrence-2026-10-12.md` | 2026-10-12 — naked-stop recurrence: the protection stack engaged, the repair path had a broken leg |
+| `docs/research/neon-quota-2026-10-08.md` | Neon transfer-cap incident — root cause, probes, and the fix (2026-10-08) |
+| `docs/research/tick-veto-clock-bug-2026-10-15.md` | Post-mortem: the tick-veto clock bug — a self-inflicted zero-signals morning (2026-10-15) |
+
+### Risk, sizing & prop-firm math
+
+| File | Title |
+|---|---|
+| `docs/research/PROP_FIRM_ALTERNATIVES_2026-10-05.md` *(untracked)* | Cheaper MyFundedFutures Alternatives on the Same Stack (Tradovate via CrossTrade) |
+| `docs/research/brun-prop-strategies-2026-10-15.md` *(untracked)* | Brun prop-strategy ideas — the variance game vs our edge game (2026-10-15) |
+| `docs/research/brun-prop-variance-deepdive-2026-10-15.md` *(untracked)* | Risk-geometry deep dive — the math behind Brun's prop-variance segment (2026-10-15) |
+| `docs/research/brun-risk-geometry-ideas-2026-10-15.md` *(untracked)* | Brun risk-geometry ideas — what survives contact with our measured archive (2026-10-15) |
+| `docs/research/cell-sizing-2026-10-15.md` *(untracked)* | Cell-edge sizing — does sizing to the vol/EMA200 cells beat flat $100? (2026-10-15) |
+| `docs/research/challenge-roi-2026-10-15.md` *(untracked)* | Challenge ROI — pricing the eval as an option per firm (2026-10-15) |
+| `docs/research/daily-breakout-prop-sizing-2026-10-19.md` *(untracked)* | Daily PDH/PDL breakout — 1 trade/day, 16:00 ET flat — what contract size passes the MFF Rapid EOD 50k? (2026-10-19) |
+| `docs/research/flatten-arm-2026-10-12.md` | Flatten arm — instant flatten on the daily target / daily loss (2026-10-12) |
+| `docs/research/kelly-mode-2026-10-07.md` *(untracked)* | Kelly mode — backtest sizer + self-updating live chip (2026-10-07) |
+| `docs/research/live-sizing-frontier-2026-10-26.md` *(untracked)* | Live-calibrated sizing frontier — what sizing passes the MFF 50k fastest at a bounded breach risk? (2026-10-26) |
+| `docs/research/loss-floor-fit-2026-10-12.md` | Loss-floor fit — the daily stop-after-loss rule on $100/cap-8/+$400 (2026-10-12) |
+| `docs/research/parallel-evals-2026-10-15.md` *(untracked)* | Parallel evals — does a copy-traded cohort pay, and how to stagger it? (2026-10-15) |
+| `docs/research/profile-100-8-400-2026-10-12.md` | Profile backtest: $100 risk · cap 8 · +$400 daily target (2026-10-12) |
+| `docs/research/prop-firm-math-deepdive-2026-10-16.md` *(untracked)* | Prop-firm math, one account — the complete game, measured (2026-10-16) |
+| `docs/research/rth-kelly-optout-2026-10-26.md` *(untracked)* | RTH Kelly opt-out — does sizing Session Continuation flat instead of half-Kelly pass the Rapid EOD 50k faster without more breach? (2026-10-26) |
+| `docs/research/size-down-cap5-risk50-target200-2026-10-12.md` | Size-down: cap 5 contracts · $50 risk · +$200 daily target — P(breach) vs time-to-pass (2026-10-12) |
+| `docs/research/sizing-frontier-2026-10-12.md` | Risk-sizing frontier — the fastest breach-proof profile (2026-10-12) |
+| `reports/MFF 50k eval fastest pass.md` *(untracked)* | Trade frequency, not size, sets your pass date |
+
+### Execution mechanics (entries, fills, latency)
+
+| File | Title |
+|---|---|
+| `docs/research/fast-dispatch-2026-10-15.md` | Fast dispatch — how much does ~40s earlier candle confirmation recover? (2026-10-15) |
+| `docs/research/fill-lag-fix-plan-2026-10-15.md` | Fixing the fill wall — tick-native bar close + instant limit dispatch (2026-10-15) |
+| `docs/research/fill-model-integrity-2026-10-08.md` | Fill-model integrity — what the backtest engine is, what broke, and the new discipline (2026-10-08) |
+| `docs/research/fix-plan-2026-10-05.md` | Live fix plan — make the executor actually run the backtested plan (2026-10-05) |
+| `docs/research/limit-stop-flip-2026-10-26.md` | Limit → stop flip — does sending every resting limit as the opposite-side stop entry beat the limit? (2026-10-26) |
+| `docs/research/live-stack-exact-2026-10-12.md` | Exact live stack — all four families at $100/cap-8 with the live guards (2026-10-12) |
+| `docs/research/live-stack-exact-2026-10-13.md` | Exact live stack v2 — the RTH limit-entry mechanics replayed inside the combined backtest (2026-10-13) |
+| `docs/research/live-stack-no-rth-2026-10-13.md` *(untracked)* | Live stack without RTH — does dropping the lowest-WR family improve the combined config? (2026-10-13) |
+| `docs/research/momentum-entry-mechanics-2026-10-14.md` | Momentum entry-mechanics — does any entry fix stop the chase-drift instant-exit bleed? (2026-10-14) |
+| `docs/research/retrace-slippage-2026-10-04.md` | Retrace slippage sensitivity — 2026-10-04 |
+| `docs/research/rth-limit-fill-drift-2026-10-13.md` | RTH limit-entry fill drift — does any entry-mechanics fix stop the fill-then-instant-stop bleed? (2026-10-13) |
+| `docs/research/rth-limit-redesign-2026-10-06.md` | RTH limit-entry redesign — 2026-10-06 |
+
+### Strategy & gate studies
+
+| File | Title |
+|---|---|
+| `docs/research/all-strategies-2026-10-05.md` | All strategies — unified results (2026-10-05) |
+| `docs/research/bond-regime-2026-10-16.md` *(untracked)* | Bond-regime conditioned outcomes — does the 10Y "one number" separate anything on our tape? (2026-10-16) |
+| `docs/research/full-gates-replay-2026-10-08.md` | Full-gates replay — cap sweep + counter-gate under the whole live rule stack (2026-10-08) |
+| `docs/research/leg-studies-2026-10-16.md` *(untracked)* | Leg studies — 1-min leg coverage, quality, harvestability, and the leg-card falsification (2026-10-16) |
+| `docs/research/missed-beautiful-trades-2026-10-15.md` | Missed beautiful trades — the 2026-10-08 → 10-15 week, replayed through the current strategies |
+| `docs/research/new-edge-lab-2026-10-26.md` | New-edge lab — is there an NQ intraday edge that survives honest execution on real prices? (2026-10-26) |
+| `docs/research/prev-candle-range-flow-2026-10-12.md` *(untracked)* | Previous-1m-candle range trade with 1m+5m flow — does it pass MFF Rapid EOD 50k? (2026-10-12) |
+| `docs/research/regime-conditioned-2026-10-15.md` *(untracked)* | Regime-conditioned outcomes — is Brun's autocorrelation real on our tape? (2026-10-15) |
+| `docs/research/reversal-pa-gate-2026-10-16.md` | Reversal price-action gate — keep it or remove it? (2026-10-16) |
+| `docs/research/reverse-engineered-patterns-2026-10-15.md` | Reverse-engineered pattern families — can new footprint patterns capture the "best trades"? (2026-10-15) |
+| `docs/research/rth-counter-gate-2026-10-07.md` | RTH counter-signal gate — research note (2026-10-07) |
+| `docs/research/rth-optimizer-2026-10-05.md` | RTH (soft-continuation) optimizer — 2026-10-05 |
+| `docs/research/rth-quality-gate-2026-10-13.md` | RTH quality-gate vs first-3 cap — should the daily card cap be replaced/augmented by a setup-quality gate? (2026-10-13) |
+| `docs/research/seasonal-almanac-2026-10-05.md` | Seasonal almanac — every calendar window, measured |
+| `docs/research/winner-loser-atlas-2026-10-05.md` | Winner/loser atlas — session delta, session-extreme targets, and the loss anatomy |
+
+### Literature & background
+
+| File | Title |
+|---|---|
+| `docs/research/bonds-explainer-10y-ideas-2026-10-16.md` *(untracked)* | Bonds / 10Y explainer — what applies to the NQ scalping system (2026-10-16) |
+| `docs/research/empirical-1min-predictability-lit-review.md` *(untracked)* | Literature Survey: Short-Horizon (1-Minute/Candle) Predictability in Intraday Markets |
+| `docs/research/math-beginner-curriculum-2026-10-10.md` *(untracked)* | Math for the Tape — a beginner curriculum up to the next-word/next-tick research (2026-10-10) |
+| `docs/research/medallion-documentary-2026-10-07.md` *(untracked)* | Medallion Documentary — Analysis & Extractable Learnings |
+| `docs/research/medallion-ideas-2026-10-07.md` *(untracked)* | Medallion-inspired experiment ideas (2026-10-07) |
+| `docs/research/next-candle-90pct-claim-lit-review.md` *(untracked)* | Literature Research Report — The "~90% Certainty on the Next 1-Minute Candle" Claim |
+| `docs/research/next-word-next-tick-analogy-2026-10-10.md` *(untracked)* | Next Word, Next Tick — deep research on the scalping ⇄ next-token-prediction analogy (2026-10-10) |
+| `docs/research/short-horizon-predictability-2026-10-19.md` *(untracked)* | Short-Horizon Predictability — what "90% next-candle certainty" is actually called, and what it does (and doesn't) promise for 1-min scalping (2026-10-19) |
+| `docs/research/short-horizon-vs-long-horizon-predictability.md` *(untracked)* | Short-Horizon Predictability vs Long-Horizon Unpredictability: A Literature Research Report |

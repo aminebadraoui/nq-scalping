@@ -45,13 +45,18 @@ SYMBOL/EXCHANGE/SEGMENT` · `TELEGRAM_BOT_TOKEN` · `TELEGRAM_CHAT_ID` ·
 The Mac's `web/.env.local` keeps `EXECUTE_LIVE=0` — **the VPS is the single
 live executor**, so local runs never double-execute.
 
-## Local data pipeline (this Mac)
+## Data pipeline (nq-jobs on the VPS)
 
-- `launchd com.scalping.collect` → `scripts/nightly.sh`, **Mon–Fri 17:45 US
-  Eastern** (~45 min after the 16:59 close): collect from GoCharting → ingest
-  Neon → reconcile trades → analyze → mine insights → upload/prune R2 → ES
-  archive → Friday risk-stack backtest.
-- `launchd com.scalping.domprobe` → weekly DOM_V2 sample, Sundays 18:05 ET.
+- The nightly pipeline runs in the **`nq-jobs`** Coolify compose app
+  (`docker-compose.yml` + `jobs.Dockerfile`, entrypoint
+  `scripts/jobs_entry.sh`): `scripts/nightly.sh` Mon–Fri 17:45 ET —
+  collect from GoCharting → daybook → ingest Neon → reconcile → analyze →
+  insights → R2 upload/prune → ES archive → Friday risk-stack backtest.
+  Same container: pre-reset reconcile 16:50 ET, macro interpretation
+  08:45 ET, weekly review Sat 09:15 ET. Full schedule: `deploy/STATE.md`
+  §Operate.
+- The Mac's `launchd com.scalping.collect` is a **fallback only** and stays
+  booted out — the R2 manifest is single-writer, so never run both.
 
 ## Credentials policy (do not regress this)
 
