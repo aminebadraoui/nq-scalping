@@ -576,7 +576,34 @@ export function stackGuardDecision(
  *  protection alerts. GLOBAL safety invariants live here (every REST
  *  placement passes through): the crossed-stop dispatch gate for limits,
  *  protection registration, and the post-place bracket-leg verification. */
-export async function placeCrossTradeOrderREST(
+/* ------------------------------------------------------------------ *
+ * Placement lock (2026-10-26 audit). The stacking latch below
+ * (markEntryPlaced) is only set AFTER an order POST succeeds, and the
+ * feeds fire placements without awaiting them (void placeOrder…). Two
+ * cards in the same tick — e.g. a huge-bar expansion and a session
+ * continuation on the same RTH bar, or the 15s guard-retry pump firing
+ * while the previous attempt is still in flight — therefore both passed
+ * the flat pre-flight and both POSTed: a stacked position at twice the
+ * planned risk (reproduced). Placements now run strictly one at a time;
+ * the second one starts after the first settles, sees the 60s latch and
+ * is refused exactly as a sequential second card always was.
+ * ------------------------------------------------------------------ */
+let placementTail: Promise<unknown> = Promise.resolve();
+
+export function withPlacementLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = placementTail.then(fn, fn);
+  placementTail = run.catch(() => undefined);
+  return run;
+}
+
+export function placeCrossTradeOrderREST(
+  intent: OrderIntent,
+  opts: { limitPrice?: number; label?: string } = {},
+): ReturnType<typeof placeOrderRESTUnlocked> {
+  return withPlacementLock(() => placeOrderRESTUnlocked(intent, opts));
+}
+
+async function placeOrderRESTUnlocked(
   intent: OrderIntent,
   opts: { limitPrice?: number; label?: string } = {},
 ): Promise<{
@@ -928,7 +955,13 @@ async function restFlatGate(cfg: CrossTradeConfig): Promise<{ ok: boolean; reaso
  *   UNKNOWN (network) → never retried, reported for reconciliation.
  * ------------------------------------------------------------------ */
 
-export async function placeCrossTradeScaleOutREST(
+export function placeCrossTradeScaleOutREST(
+  intent: OrderIntent,
+): ReturnType<typeof placeScaleOutRESTUnlocked> {
+  return withPlacementLock(() => placeScaleOutRESTUnlocked(intent));
+}
+
+async function placeScaleOutRESTUnlocked(
   intent: OrderIntent,
 ): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
   const cfg = loadConfig();
@@ -940,7 +973,7 @@ export async function placeCrossTradeScaleOutREST(
 
   if (runner.contracts < 1) {
     // too small to split — fall back to a single bracketed order (REST path)
-    return placeCrossTradeOrderREST(bank);
+    return placeOrderRESTUnlocked(bank); // already inside the lock
   }
   if (live && tradingHalted()) return { ok: false, reason: "trading halted by owner — dashboard kill switch (resume from the dashboard)" };
   if (!live) {
