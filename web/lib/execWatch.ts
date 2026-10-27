@@ -308,6 +308,14 @@ export async function checkProtection(): Promise<void> {
       void checkExitSlippage(reg.intent);
       setOpenProtection(null); // flat — the entry closed or expired
     }
+    // a confirmed-flat book ends any naked episode: without this, the
+    // stale timer (or the post-repair now+cooldown stamp) carried over to
+    // the NEXT trade, whose first check — run at the fill, inside the
+    // sub-second OSO activation window — then "repaired" a healthy
+    // bracket immediately; a stale nakedAlerted also muted the next
+    // UNTRACKED alert
+    setNakedSince(null);
+    setNakedAlerted(false);
     return;
   }
   // position open: reset the unreadable latch + the flat-claim window so
