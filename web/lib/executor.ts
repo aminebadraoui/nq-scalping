@@ -58,9 +58,12 @@ export async function placeOrder(
   const t0 = performance.now();
   try {
     if (crossTradeEnabled()) {
-      return process.env.CROSSTRADE_REST === "0"
+      // `return await`: inside try/finally a bare `return promise` runs the
+      // finally (markDispatch) BEFORE the placement settles — the dispatch
+      // stage was recorded as ~0 ms
+      return await (process.env.CROSSTRADE_REST === "0"
         ? placeCrossTradeOrder(intent)
-        : placeCrossTradeOrderREST(intent, opts);
+        : placeCrossTradeOrderREST(intent, opts));
     }
     return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
   } finally {
@@ -91,9 +94,9 @@ export async function placeScaleOut(
     if (!crossTradeEnabled()) {
       return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
     }
-    return process.env.CROSSTRADE_REST === "0" || process.env.CROSSTRADE_SCALEOUT_REST === "0"
+    return await (process.env.CROSSTRADE_REST === "0" || process.env.CROSSTRADE_SCALEOUT_REST === "0"
       ? placeCrossTradeScaleOut(intent)
-      : placeCrossTradeScaleOutREST(intent);
+      : placeCrossTradeScaleOutREST(intent));
   } finally {
     markDispatch(performance.now() - t0, Date.now() % 60_000);
   }

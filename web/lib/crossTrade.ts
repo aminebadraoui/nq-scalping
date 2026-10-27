@@ -419,7 +419,12 @@ export async function placeCrossTradeScaleOut(
   let runnerPayload: CrossTradePayload;
   try {
     bankPayload = buildCrossTradePayload(bank, cfg, { orderId: bankOrderId, withTarget: true });
-    runnerPayload = buildCrossTradePayload(runner, cfg, { orderId: runnerOrderId, withTarget: false });
+    // the BANK leg carries the flat requirement (the anti-stacking check
+    // for the trade, like the REST path's single flat gate per trade). The
+    // runner is posted right after the bank — a market order that fills at
+    // once — so a flat requirement on the runner refused it nearly every
+    // time and the webhook scale-out could never place its runner.
+    runnerPayload = buildCrossTradePayload(runner, { ...cfg, requireFlat: false }, { orderId: runnerOrderId, withTarget: false });
   } catch (e) {
     return { ok: false, reason: String(e) };
   }
