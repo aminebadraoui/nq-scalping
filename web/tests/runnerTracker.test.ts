@@ -57,3 +57,12 @@ test("short mirror: rungs below entry, stops move down", () => {
   const beLocked = state({ dir: -1, entry: 100, stop0: 102, risk: 2, lockedRungs: 1 });
   assert.equal(nextRungAction(beLocked, 100.5, 99).move, "done"); // BE stop touched
 });
+
+import { timeExitDue } from "../lib/runnerTracker";
+
+test("timeExitDue: alerts once at 60 bars, then the runner keeps trailing", () => {
+  assert.equal(timeExitDue({}, 59), false);
+  assert.equal(timeExitDue({}, 60), true);
+  assert.equal(timeExitDue({ timeExitAlertedAt: "2026-10-26T15:00:00Z" }, 75), false);
+  assert.equal(timeExitDue({}, -1), false);
+});

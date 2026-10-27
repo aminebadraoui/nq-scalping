@@ -41,12 +41,20 @@ export type RunnerState = {
   entryTimeET: string;
   createdAt: string;
   updatedAt?: string;
+  /** set once the 60-bar time-exit alert went out (the runner keeps
+   *  being trailed until it is stopped out or flattened by hand) */
+  timeExitAlertedAt?: string;
 };
 
 export type RungAction =
   | { move: "none" }
   | { move: "stop"; rung: number; stopPrice: number }
   | { move: "done"; why: "stop-touched" | "time-exit" };
+
+/** Pure: the 60-bar time-exit alert is due (once per runner). */
+export function timeExitDue(s: Pick<RunnerState, "timeExitAlertedAt">, ageBars: number, maxBars = 60): boolean {
+  return ageBars >= maxBars && !s.timeExitAlertedAt;
+}
 
 /** Pure ladder transition — mirrors scoreRunner's per-bar logic. */
 export function nextRungAction(s: RunnerState, high: number, low: number, maxBars = 60, entryBarAge = -1): RungAction {
@@ -126,24 +134,28 @@ class RunnerTracker {
       // (part of the backtested ladder) could never trigger
       const created = Date.parse(s.createdAt);
       const ageBars = Number.isFinite(created) ? Math.floor((Date.now() - created) / 60_000) : -1;
-      const action = nextRungAction(s, last.high, last.low, 60, ageBars);
+      if (timeExitDue(s, ageBars)) {
+        s.timeExitAlertedAt = new Date().toISOString();
+        void this.persist().catch(() => {});
+        console.warn(`[runnerTracker] ${s.id} TIME EXIT — flatten the runner manually (order ${s.runnerOrderId})`);
+        // a console line nobody reads is not an alert. Not auto-flattened:
+        // the exit order is not reduce-only, and a runner already stopped
+        // out between polls would turn a market exit into a NEW position.
+        // Alerted ONCE; the runner stays tracked so its stop keeps
+        // trailing up the ladder until it is stopped out or flattened.
+        void sendTelegram(
+          `⏱ <b>RUNNER TIME EXIT (60 bars)</b> — ${s.dir > 0 ? "long" : "short"} ${s.runnerQty} MNQ runner from ${s.entryTimeET} ET — flatten it manually (order <code>${s.runnerOrderId}</code>); its ladder stop keeps trailing until you do.`,
+          { parseMode: "HTML" },
+        ).catch(() => {});
+      }
+      // the time exit is handled above (alert); the ladder itself only
+      // ends on a stop touch, so pass no bar age here
+      const action = nextRungAction(s, last.high, last.low, 60, -1);
       if (action.move === "none") continue;
       if (action.move === "done") {
         this.states.delete(s.id);
         void this.persist().catch(() => {});
-        if (action.why === "time-exit") {
-          console.warn(`[runnerTracker] ${s.id} TIME EXIT — flatten the runner manually (order ${s.runnerOrderId})`);
-          // a console line nobody reads is not an alert. Not auto-flattened:
-          // the exit order is not reduce-only, and a runner already stopped
-          // out between polls would turn a market exit into a NEW position.
-          // The runner keeps its last exchange-side ladder stop meanwhile.
-          void sendTelegram(
-            `⏱ <b>RUNNER TIME EXIT (60 bars)</b> — ${s.dir > 0 ? "long" : "short"} ${s.runnerQty} MNQ runner from ${s.entryTimeET} ET — flatten it manually (order <code>${s.runnerOrderId}</code>); its last ladder stop stays working until you do.`,
-            { parseMode: "HTML" },
-          ).catch(() => {});
-        } else {
-          console.log(`[runnerTracker] ${s.id} stopped out exchange-side — cleared`);
-        }
+        console.log(`[runnerTracker] ${s.id} stopped out exchange-side — cleared`);
         continue;
       }
       // move the stop up the ladder
