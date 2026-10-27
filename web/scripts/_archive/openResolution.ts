@@ -10,11 +10,11 @@
  *
  * Scored first-touch style: TP 10/SL 30 and TP 15/SL 35 over the next
  * 60 minutes. GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
- * scripts/openResolution.ts
+ * scripts/_archive/openResolution.ts
  * ------------------------------------------------------------------ */
 
-import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { closeOf, type MomMinute } from "../lib/momentum";
+import { loadSessionMinutes, archiveDates } from "../../lib/archive";
+import { closeOf, type MomMinute } from "../../lib/momentum";
 
 const TPSL: [number, number][] = [[10, 30], [15, 35]];
 

@@ -14,7 +14,7 @@
  * PF 3.15) as a second scenario.
  *
  * GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
- *   scripts/sizeOptimal.ts   (needs /tmp/mom_rr085.json + /tmp/mom_exp_seq2.json,
+ *   scripts/_archive/sizeOptimal.ts   (needs /tmp/mom_rr085.json + /tmp/mom_exp_seq2.json,
  *                             or run momentumStudy --sweep first)
  * ------------------------------------------------------------------ */
 

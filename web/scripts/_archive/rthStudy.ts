@@ -11,16 +11,16 @@
  *   C3 RTH pullback — the validated pullback pattern (trend + shrinking
  *      counter + reclaim) restricted to 10:00-16:00.
  *
- * GC_REMOTE_URL=... node --import scripts/ts-loader.mjs scripts/rthStudy.ts
+ * GC_REMOTE_URL=... node --import scripts/ts-loader.mjs scripts/_archive/rthStudy.ts
  * ------------------------------------------------------------------ */
 
-import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
-import { closeOf, type MomMinute } from "../lib/momentum";
+import { loadSessionMinutes, archiveDates } from "../../lib/archive";
+import { dollarize, simulateAccount, accountLine } from "../../lib/propAccount";
+import { closeOf, type MomMinute } from "../../lib/momentum";
 // consolidated engine: standard T1/T2/T4 + verdict (the local first-touch
 // scorer is NOT the engine scorer — time-outs here are neutral 0-pt trades,
 // so it stays hand-rolled; see the standard block comment).
-import { coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict, type EngineTrade } from "../lib/backtestEngine";
+import { coreStats, propViability, wilson95, renderT1, renderT2, renderT4, renderVerdict, type EngineTrade } from "../../lib/backtestEngine";
 
 type Scored = { n: number; wins: number; exp: number; gw: number; gl: number };
 

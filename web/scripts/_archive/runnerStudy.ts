@@ -11,14 +11,14 @@
  * distribution (median, worst, P(day ≥ $500), P(day ≥ $900)).
  *
  *   GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
- *     scripts/runnerStudy.ts [--family momentum|expansion|rth|open|all] \
+ *     scripts/_archive/runnerStudy.ts [--family momentum|expansion|rth|open|all] \
  *     [--max N] [--offline] [--maxBars 60]
  * ------------------------------------------------------------------ */
 
-import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { dollarize, simulateAccount, accountLine } from "../lib/propAccount";
-import { scoreRunner, scoreScaleOut, type RunnerTrade, type ScaleOutTrade } from "../lib/runner";
-import { closeOf } from "../lib/momentum";
+import { loadSessionMinutes, archiveDates } from "../../lib/archive";
+import { dollarize, simulateAccount, accountLine } from "../../lib/propAccount";
+import { scoreRunner, scoreScaleOut, type RunnerTrade, type ScaleOutTrade } from "../../lib/runner";
+import { closeOf } from "../../lib/momentum";
 import {
   detectMomentum,
   detectExpansionScalp,
@@ -26,10 +26,10 @@ import {
   EXP_PROD,
   type MomMinute,
   type MomentumSignal,
-} from "../lib/momentum";
-import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
-import { detectOpenDrive, OPEN_PROD } from "../lib/openDrive";
-import { coreStats, propViability, renderT1, renderT4, renderVerdict } from "../lib/backtestEngine";
+} from "../../lib/momentum";
+import { detectSoftMomentum, SOFT_PROD } from "../../lib/softMomentum";
+import { detectOpenDrive, OPEN_PROD } from "../../lib/openDrive";
+import { coreStats, propViability, renderT1, renderT4, renderVerdict } from "../../lib/backtestEngine";
 
 const CONCURRENCY = 8;
 const FIXED_MICROS = 9; // live default for momentum/expansion/RTH

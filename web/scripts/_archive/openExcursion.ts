@@ -9,11 +9,11 @@
  *   · median adverse excursion before the TP (the drawdown to tolerate)
  *
  * GC_REMOTE_URL=... node --import scripts/ts-loader.mjs \
- *   scripts/openExcursion.ts
+ *   scripts/_archive/openExcursion.ts
  * ------------------------------------------------------------------ */
 
-import { loadSessionMinutes, archiveDates } from "../lib/archive";
-import { closeOf, type MomMinute } from "../lib/momentum";
+import { loadSessionMinutes, archiveDates } from "../../lib/archive";
+import { closeOf, type MomMinute } from "../../lib/momentum";
 
 const TPS = [3, 5, 8, 10];
 const SLS = [10, 15, 20, 25, 30];
