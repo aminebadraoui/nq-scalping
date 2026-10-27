@@ -714,6 +714,7 @@ class SignalFeed {
   private eventTickSrcAtMax = "";
   private eventTickRevAtMax = 0;
   private eventTickLast = 0;
+  private eventTickTrail: ReturnType<typeof setTimeout> | null = null;
   private pollSkipLoggedAt = 0;
   /** coalesced pending tick: a tick that arrived while another was
    *  running is QUEUED (last one wins), never dropped — a dropped event
@@ -2396,8 +2397,11 @@ class SignalFeed {
       }
       const rthCap = rthMaxCardsPerDay();
       if (rthCap > 0) {
+        // check only — the card counts once it passes the dispatch gates
+        // below (2026-10-26 audit: cards refused by the crossed-stop /
+        // crossed-limit / approach / stale-tape gates used to consume the
+        // day's "first N" cap with zero orders sent)
         const sent = (this.rthDayCount.get(s.d) ?? 0) + 1;
-        this.rthDayCount.set(s.d, sent);
         if (sent > rthCap) {          const es = esCardChips(esCtx, nqMid, s, false);
           const rn = roundNumberChips(s);
           const gch = gapChips(fp, s, gaps);
@@ -2434,8 +2438,10 @@ class SignalFeed {
       const lim = rthLimitParams();
       const useLimitEntry = lim.enabled;
       // the limit-entry redesign reuses the profile bracket math with its
-      // validated knobs (half stop, 2.5R target); the classic profile wins
-      // when both are enabled (explicit knob discipline, one plan at a time)
+      // validated knobs (half stop, 2.5R target). When RTH_LIMIT_ENTRIES and
+      // RTH_PROFILE are BOTH on, the limit bracket is the one used (the code
+      // below has always done this; the old comment said the opposite) —
+      // the profile's time exit still applies. Enable one plan at a time.
       const bracket: FamilyProfile = useLimitEntry
         ? { enabled: true, stopMult: lim.stopMult, targetR: lim.targetR, sizeMult: 1, timeExitBars: 0 }
         : prof;
@@ -2535,6 +2541,7 @@ class SignalFeed {
         continue;
       }
 
+      if (rthCap > 0) this.rthDayCount.set(s.d, (this.rthDayCount.get(s.d) ?? 0) + 1);
       const et = cdtToET(s.t);
       const label = `session-continuation ${s.dir} ${et}${useLimitEntry ? " (limit)" : ""}`;
       const intent: OrderIntent = {
@@ -3343,7 +3350,21 @@ class SignalFeed {
       this.eventTickRevAtMax = d.revAtMax;
       if (!d.fire) return;
       const now = Date.now();
-      if (now - this.eventTickLast < 250) return; // stampede throttle
+      if (now - this.eventTickLast < 250) {
+        // stampede throttle — but DEFER, never drop: the decision state
+        // above already advanced past this bar, so a dropped emit used to
+        // lose the bar for good (the poll backstop then skips it too). One
+        // trailing tick at the end of the window covers every emit inside it.
+        if (!this.eventTickTrail) {
+          this.eventTickTrail = setTimeout(() => {
+            this.eventTickTrail = null;
+            if (!signalWindowOpen(Date.now())) return;
+            this.eventTickLast = Date.now();
+            void this.tick("event");
+          }, Math.max(1, 250 - (now - this.eventTickLast)));
+        }
+        return;
+      }
       if (!signalWindowOpen(now)) return;
       this.eventTickLast = now;
       void this.tick("event");
