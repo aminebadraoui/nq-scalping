@@ -217,3 +217,23 @@ test("honest scale-out: the bank needs a one-tick trade-through and each unit pa
   assert.equal(t.fullLoss, true);
   assert.ok(t.pnl < -3 * 2 - 3 * 0.95 + 1e-9);
 });
+
+test("honest scale-out, fixed entry: the fill bar can stop the trade but never banks", () => {
+  const rows = [
+    { high: 101, low: 99 }, // bar before the fill
+    { high: 104, low: 97.5 }, // limit fill at 100 inside this bar; spans 1R (102) and the stop (98)
+  ];
+  const t = scoreScaleOutRaw(rows, 100, 98, 1, 0, { entryKind: "fixed" });
+  assert.equal(t.banked, false);
+  assert.equal(t.fullLoss, true);
+});
+
+test("commissionInUsd skips the point fee floor (callers that charge $ commissions)", () => {
+  const rows = [
+    { high: 101, low: 99, buy: 50, sell: 50 },
+    { high: 99.5, low: 90, buy: 50, sell: 50 },
+  ];
+  const a = scoreRunnerRaw(rows, 100, 98, 1, 0);
+  const b = scoreRunnerRaw(rows, 100, 98, 1, 0, { commissionInUsd: true });
+  assert.ok(Math.abs(a.pnl - b.pnl - -0.95) < 1e-9);
+});

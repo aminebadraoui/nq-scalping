@@ -15,7 +15,7 @@
  *   node --import ../scripts/ts-loader.mjs ./scripts/rthLimitValidation.ts
  * ------------------------------------------------------------------ */
 
-import { closeEstimate, DEFAULT_SLIP_PTS, TICK } from "../lib/honestFill";
+import { closeEstimate, marketFillEstimate, DEFAULT_SLIP_PTS, TICK } from "../lib/honestFill";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { closeOf, midOf, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
@@ -46,6 +46,11 @@ type Config = { s: number; t: number; cap: string };
 type Trade = { date: string; pnl: number; risk: number };
 
 const openOf = (m: MomMinute): number => (m.o > 0 ? m.o : midOf(m));
+/** tape price at dispatch (just after the signal bar closes) — the next
+ *  bar's TRUE open when joined, else the unbiased estimate from the signal
+ *  bar. (It used to be the next bar's mid: its whole range — lookahead.) */
+const dispatchPx = (m: MomMinute[], i: number, dir: 1 | -1): number =>
+  m[i + 1] && m[i + 1].o > 0 ? m[i + 1].o : marketFillEstimate(m[i], dir, "p50");
 
 function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string, c: Config): Trade[] {
   const out: Trade[] = [];
@@ -66,7 +71,7 @@ function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string,
     // skipped when the dispatch tape sits beyond the OSO stop — consumes
     // the day cap exactly like the live path (recorded as a skip).
     const nb = minutes[s.entryIdx + 1];
-    if (XGATE && nb && stopCrossedAtDispatch(s.dir, stop, midOf(nb)) === true) {
+    if (XGATE && nb && stopCrossedAtDispatch(s.dir, stop, dispatchPx(minutes, s.entryIdx, dir)) === true) {
       cardCount++;
       continue;
     }
@@ -296,7 +301,7 @@ function scoreConfigTtl(minutes: MomMinute[], sigs: MomentumSignal[], date: stri
     if (!(dir > 0 ? stop < s.entry && s.entry < target : target < s.entry && s.entry < stop)) continue;
     // crossed-stop dispatch gate (mirrors scoreConfig)
     const nb2 = minutes[s.entryIdx + 1];
-    if (XGATE && nb2 && stopCrossedAtDispatch(s.dir, stop, midOf(nb2)) === true) {
+    if (XGATE && nb2 && stopCrossedAtDispatch(s.dir, stop, dispatchPx(minutes, s.entryIdx, dir)) === true) {
       cardCount++;
       continue;
     }

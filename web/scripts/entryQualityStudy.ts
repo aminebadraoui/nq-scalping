@@ -201,7 +201,7 @@ function runVariant(v: Variant, date: string, minutes: MomMinute[], signals: Sig
     // to show the gap); every other variant scores its real fill honestly
     const t = v.closeFill
       ? scoreScaleOut(minutes, fill, stop, dir, fillIdx, { maxBars: mb, cost: COST, fill: "legacy" })
-      : scoreScaleOut(minutes, fill, stop, dir, fillIdx - 1, { maxBars: mb, cost: COST, entryKind: "fixed" });
+      : scoreScaleOut(minutes, fill, stop, dir, fillIdx - 1, { maxBars: mb, cost: COST, entryKind: "fixed", commissionInUsd: true });
     if (!t) continue;
     if (halt) continue; // give-back halt: skip remaining entries today
 

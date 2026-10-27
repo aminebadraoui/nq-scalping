@@ -75,7 +75,7 @@ function scoreFixed(
   const risk = Math.abs(entry - stop0);
   if (!(risk > 0)) return null;
   const target = entry + dir * targetR * risk;
-  const sc = scoreTrade(minutes, { dir, entry, stop: stop0, target, entryIdx, risk }, { costPts: COST, holdBars: maxBars });
+  const sc = scoreTrade(minutes, { dir, entry, stop: stop0, target, entryIdx, risk }, { costPts: COST, holdBars: maxBars, commissionInUsd: true });
   if (!sc) return null;
   return { pnl: sc.pnl, risk: sc.risk, heldBars: sc.heldBars, ambiguous: sc.ambiguous, hit: sc.hit };
 }
@@ -144,7 +144,7 @@ function runDay(rule: RuleSet, date: string, minutes: MomMinute[], signals: Arra
       let pnlPts: number | null = null;
       let heldBars = 0;
       if (rule.exit === "ladder") {
-        const t = scoreScaleOut(minutes, s.entry, s.stop, dir, s.entryIdx, { maxBars: mb, cost: COST });
+        const t = scoreScaleOut(minutes, s.entry, s.stop, dir, s.entryIdx, { maxBars: mb, cost: COST, commissionInUsd: true });
         if (!t) continue;
         pnlPts = (t as ScaleOutTrade).pnl;
         heldBars = t.heldBars;

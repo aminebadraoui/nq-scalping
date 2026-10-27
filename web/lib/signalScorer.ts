@@ -95,16 +95,23 @@ export function scoreSignalBars(
   if (start < 0) return empty;
 
   const dir = side === "long" ? 1 : -1;
-  // a resting-limit card: the entry is away from the market price at the signal
+  // a resting card: the entry is away from the market price at the signal —
+  // on the favourable side it is a LIMIT (needs a one-tick trade-through),
+  // on the adverse side a STOP / trigger entry (needs price to reach it)
   const mp = opts.marketPrice;
-  const isLimit = mp !== undefined && Number.isFinite(mp) && Math.abs(entry - mp) >= TICK;
+  const away = mp !== undefined && Number.isFinite(mp) && Math.abs(entry - mp) >= TICK;
+  const isStopEntry = away && (dir === 1 ? entry > (mp as number) : entry < (mp as number));
+  const isLimit = away; // both kinds wait for a fill and score the fill bar stop-first
   let fillIdx = start; // market cards: filled at the signal, walk from the next bar
   if (isLimit) {
     fillIdx = -1;
     const lastFill = Math.min(bars.length - 1, start + FILL_WINDOW_BARS);
     for (let j = start + 1; j <= lastFill; j++) {
       const bj = bars[j];
-      if (dir === 1 ? bj.low <= entry - TICK : bj.high >= entry + TICK) {
+      const filled = isStopEntry
+        ? dir === 1 ? bj.high >= entry : bj.low <= entry
+        : dir === 1 ? bj.low <= entry - TICK : bj.high >= entry + TICK;
+      if (filled) {
         fillIdx = j;
         break;
       }

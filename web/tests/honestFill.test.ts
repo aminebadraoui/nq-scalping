@@ -74,3 +74,13 @@ test("market entry: whole next bar is after the fill", () => {
   assert.equal(r?.entry, 100.75); // true open + slip
   assert.equal(r?.hit, "target");
 });
+
+test("stop entry on a gap bar fills no better than the bar's own low", () => {
+  const bars = [
+    { high: 101, low: 100 },
+    { high: 106, low: 103.5 }, // traded entirely above the 102 trigger
+    { high: 120, low: 104 },
+  ];
+  const r = simulateHonest(bars, { dir: 1, signalIdx: 0, entry: { kind: "stop", price: 102, ttlBars: 3 }, stopPts: 3, targetPts: 6 });
+  assert.equal(r?.entry, 103.75); // 103.5 + slip, not 102.25
+});

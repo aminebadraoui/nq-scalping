@@ -98,3 +98,24 @@ test("resting-limit card: filled on a trade-through, target on a later bar", () 
   const o = scoreSignalBars(bars, "10:00", "long", 100, 97, 106, { marketPrice: 104.5 });
   assert.equal(o.outcome, "win");
 });
+
+test("trigger card above the market (buy-stop): fills only when price reaches the trigger", () => {
+  const bars = [
+    { t: "10:00", high: 101, low: 100, close: 100.5 },
+    { t: "10:01", high: 101.5, low: 99, close: 100 }, // below the 102 trigger: no fill (the old rule "filled" it here)
+    { t: "10:02", high: 103, low: 101, close: 102.5 }, // reaches 102 → fill bar (no target credit)
+    { t: "10:03", high: 106, low: 102, close: 105 },
+  ];
+  const o = scoreSignalBars(bars, "10:00", "long", 102, 100.5, 105, { marketPrice: 100.5 });
+  assert.equal(o.outcome, "win");
+  assert.equal(o.exitTime, "10:03");
+});
+
+test("live bars: a pending limit still inside its fill window is open, not nofill", () => {
+  const bars = [
+    { t: "10:00", high: 105, low: 104, close: 104.5 },
+    { t: "10:01", high: 105, low: 103, close: 104 },
+  ];
+  const o = scoreSignalBars(bars, "10:00", "long", 100, 97, 106, { marketPrice: 104.5, completeSession: false });
+  assert.equal(o.outcome, "open");
+});

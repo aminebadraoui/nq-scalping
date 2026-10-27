@@ -215,7 +215,10 @@ export function simulateHonest(bars: readonly FillBar[], spec: HonestSpec, opts?
         const trig = dir > 0 ? b.high >= o.price : b.low <= o.price;
         if (trig) {
           fillIdx = j;
-          entry = o.price + dir * slip;
+          // a bar that traded entirely beyond the trigger (a gap) fills no
+          // better than its own nearest extreme
+          const base = dir > 0 ? Math.max(o.price, b.low) : Math.min(o.price, b.high);
+          entry = base + dir * slip;
           break;
         }
       }

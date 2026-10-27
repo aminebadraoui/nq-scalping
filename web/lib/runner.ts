@@ -34,16 +34,21 @@ type FillOpts = {
   slipPts?: number;
   /** "signal" (default): `entry` is the signal bar's close proxy — re-filled
    *  honestly. "fixed": `entry` is a real fill that happened inside bar
-   *  entryIdx + 1 (a limit / retrace fill; callers pass fillIdx − 1) — kept,
+   *  entryIdx + 1 (a limit / retrace fill; callers pass fillIdx − 1 — NOT
+   *  the backtestEngine convention, where entryIdx is the fill bar) — kept,
    *  and that fill bar can stop the trade but never credits a rung/bank. */
   entryKind?: "signal" | "fixed";
+  /** the caller charges the commission in dollars — no 0.95-pt fee floor */
+  commissionInUsd?: boolean;
+  /** next-open estimate without a true open (default p80, conservative) */
+  marketQuantile?: "p50" | "p80";
 };
 
 /** honest re-fill of a signal-bar entry: returns the fill and the shifted stop */
-function honestEntry(minutes: RunnerBar[], entryIdx: number, entry: number, stop0: number, dir: 1 | -1, slip: number): { entry: number; stop0: number } {
+function honestEntry(minutes: RunnerBar[], entryIdx: number, entry: number, stop0: number, dir: 1 | -1, slip: number, q?: "p50" | "p80"): { entry: number; stop0: number } {
   const nb = minutes[entryIdx + 1];
   const sig = minutes[entryIdx] as FillBar;
-  const open = nb && (nb.o ?? 0) > 0 ? (nb.o as number) : marketFillEstimate(sig, dir);
+  const open = nb && (nb.o ?? 0) > 0 ? (nb.o as number) : marketFillEstimate(sig, dir, q);
   const fill = open + dir * slip;
   return { entry: fill, stop0: stop0 + (fill - entry) };
 }
@@ -79,8 +84,8 @@ export function scoreRunner(
   const honest = (opts.fill ?? "honest") === "honest";
   const slip = honest ? (opts.slipPts ?? DEFAULT_SLIP_PTS) : 0;
   const tt = honest ? TICK : 0; // rung trade-through
-  const cost = honest ? Math.max(opts.cost ?? 0, MNQ_FEE_PTS) : (opts.cost ?? 0.5);
-  if (honest && opts.entryKind !== "fixed" && entryIdx + 1 < minutes.length) ({ entry, stop0 } = honestEntry(minutes, entryIdx, entry, stop0, dir, slip));
+  const cost = honest ? (opts.commissionInUsd ? (opts.cost ?? 0) : Math.max(opts.cost ?? 0, MNQ_FEE_PTS)) : (opts.cost ?? 0.5);
+  if (honest && opts.entryKind !== "fixed" && entryIdx + 1 < minutes.length) ({ entry, stop0 } = honestEntry(minutes, entryIdx, entry, stop0, dir, slip, opts.marketQuantile));
   const fixedFill = honest && opts.entryKind === "fixed";
   const risk = Math.abs(entry - stop0);
   if (!(risk > 0)) return null;
@@ -201,8 +206,8 @@ export function scoreScaleOut(
   const slip = honest ? (opts.slipPts ?? DEFAULT_SLIP_PTS) : 0;
   const tt = honest ? TICK : 0;
   // honest: the commission is per contract — every unit pays it
-  const cost = honest ? Math.max(opts.cost ?? 0, MNQ_FEE_PTS * units) : (opts.cost ?? 0.5);
-  if (honest && opts.entryKind !== "fixed" && entryIdx + 1 < minutes.length) ({ entry, stop0 } = honestEntry(minutes, entryIdx, entry, stop0, dir, slip));
+  const cost = honest ? (opts.commissionInUsd ? (opts.cost ?? 0) : Math.max(opts.cost ?? 0, MNQ_FEE_PTS * units)) : (opts.cost ?? 0.5);
+  if (honest && opts.entryKind !== "fixed" && entryIdx + 1 < minutes.length) ({ entry, stop0 } = honestEntry(minutes, entryIdx, entry, stop0, dir, slip, opts.marketQuantile));
   const fixedFill = honest && opts.entryKind === "fixed";
   const risk = Math.abs(entry - stop0);
   if (!(risk > 0)) return null;
@@ -251,7 +256,7 @@ export function scoreScaleOut(
       // pessimistic: if the same bar also traded back through BE, the
       // runner is out at breakeven before the bar closes
       if (dir > 0 ? b.low <= entry : b.high >= entry) {
-        runnerExitR = 0;
+        runnerExitR = -slip / risk; // the BE stop is a stop order: it slips too
         stopped = true;
         heldBars = j - entryIdx;
         break;

@@ -47,7 +47,9 @@ export type ScoreSpec = {
    *  that fill, like the live executor's rebuilt brackets.
    *  "fixed": `entry` is a real fill that happened INSIDE bar `entryIdx`
    *  (a limit / stop fill) — kept as is, and bar `entryIdx` itself is
-   *  checked for the stop (stop-first, no target credit). */
+   *  checked for the stop (stop-first, no target credit).
+   *  NOTE: here `entryIdx` IS the fill bar; lib/runner.ts's "fixed" takes
+   *  the bar BEFORE the fill (its walk starts at entryIdx + 1). */
   entryKind?: "signal" | "fixed";
 };
 
@@ -78,6 +80,10 @@ export type ScoreOpts = {
   fill?: "honest" | "legacy";
   /** honest mode: slippage on market entries, stops and time exits */
   slipPts?: number;
+  /** honest mode: the caller charges the commission in DOLLARS itself —
+   *  skip the 0.95-pt fee floor so it is not charged twice (pnl is then
+   *  points net of `costPts` only) */
+  commissionInUsd?: boolean;
   /** honest mode: next-open estimate when the archive has no true open —
    *  "p80" (default, conservative) or "p50" (optimistic bound) */
   marketQuantile?: "p50" | "p80";
@@ -121,7 +127,7 @@ function scoreTradeHonest(minutes: ScoreBar[], spec: ScoreSpec, opts?: ScoreOpts
   if (dir < 0 && !(spec.target < spec.entry && spec.entry < spec.stop)) return null;
   const slip = opts?.slipPts ?? DEFAULT_SLIP_PTS;
   // fees are a floor: a study passing the legacy 0.5-pt cost still pays the real commission
-  const costPts = Math.max(opts?.costPts ?? 0, HONEST_COST);
+  const costPts = opts?.commissionInUsd ? (opts?.costPts ?? 0) : Math.max(opts?.costPts ?? 0, HONEST_COST);
   const stopSlip = opts?.stopSlipPts ?? slip;
   const holdBars = opts?.holdBars ?? DEFAULT_HOLD;
   const fixed = spec.entryKind === "fixed";

@@ -112,7 +112,7 @@ function runOffsets(date: string, minutes: MomMinute[], offsets: number[]) {
       const stop = fill - dir * risk;
 
       /* 4) ladder exit from the fill bar */
-      const t = scoreScaleOut(minutes, fill, stop, dir, touched - 1, { maxBars: 60, cost: COST, entryKind: "fixed" });
+      const t = scoreScaleOut(minutes, fill, stop, dir, touched - 1, { maxBars: 60, cost: COST, entryKind: "fixed", commissionInUsd: true });
       if (!t) continue;
       if (halt) continue;
 
