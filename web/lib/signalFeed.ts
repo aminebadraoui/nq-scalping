@@ -1678,14 +1678,21 @@ class SignalFeed {
         // kill switch. Brackets are pre-built from the LIMIT
         // (fill-anchored by construction — a resting limit can only fill
         // at or better).
-        const risk = s.risk;
+        // the bracket distances MUST match the distance the size was
+        // computed from (`riskPts`): with MOM_PROFILE=1 the size used the
+        // profile stop (stopMult × risk) while this bracket used the full
+        // risk — ~2.9× the per-trade $ budget at the broker (2026-10-26
+        // audit). Without a profile riskPts === s.risk and the target is
+        // 1R: identical to before.
+        const stopDist = riskPts;
+        const tgtDist = profBracket && !scaleOut ? Math.abs(profBracket.target - s.entry) : s.risk;
         const intent: OrderIntent = {
           symbol: symbol(),
           dir: s.dir,
           contracts: size.contracts,
           entry: level,
-          stop: level - dirSign * risk,
-          target: level + dirSign * risk,
+          stop: level - dirSign * stopDist,
+          target: level + dirSign * tgtDist,
           timeET: et,
         };
         const expireAtMs = Date.now() + lp.ttlMin * 60_000;
@@ -1708,7 +1715,7 @@ class SignalFeed {
           flush
             ? `<code>LIMIT   ${fmtPx(level)}   (signal close — no chase)</code>`
             : `<code>LIMIT   ${fmtPx(level)}   (signal close ${fmtPx(s.entry)} ∓ ${EXP_RETRACE_PTS.toFixed(1)} pt)</code>`,
-          `<code>STOP    fill ∓ ${risk.toFixed(2)} pts · TARGET fill ± ${risk.toFixed(2)} pts (1R)</code>`,
+          `<code>STOP    fill ∓ ${stopDist.toFixed(2)} pts · TARGET fill ± ${tgtDist.toFixed(2)} pts (${(tgtDist / stopDist).toFixed(2).replace(/\.?0+$/, "")}R)</code>`,
           `<code>SIZE    ${sizeStrArm}</code>`,
           ``,
           `${aPlus ? `A+ both triggers (${STATS.momentum.aPlus}) · ` : ""}${firstToday ? `1st today (${STATS.momentum.firstOfDay}) · ` : ""}${chipLine}limit rests at the broker for up to ${lp.ttlMin} min, cancelled if untraded`,
@@ -1728,8 +1735,8 @@ class SignalFeed {
           side: s.dir,
           price: level,
           entry: level.toFixed(2),
-          stop: (level - (s.dir === "long" ? 1 : -1) * risk).toFixed(2),
-          target: (level + (s.dir === "long" ? 1 : -1) * risk).toFixed(2),
+          stop: intent.stop.toFixed(2),
+          target: intent.target.toFixed(2),
           size: sizeStrArm,
           verdict: isBigBar
             ? "momentum (big-bar continuation · limit)"
