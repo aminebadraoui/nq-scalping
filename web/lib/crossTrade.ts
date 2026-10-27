@@ -1029,6 +1029,18 @@ async function placeScaleOutRESTUnlocked(
   }
   if (bankRes.kind !== "ok") return { ok: false, reason: `bank: ${bankRes.reason}` };
   markEntryPlaced(); // the entry is placed — latch against stacking from here
+  // the bank is LIVE from here: verify its OSO children now, whatever
+  // happens to the runner (2026-10-26 audit — a failed runner used to
+  // return before the bank was ever verified or registered)
+  verifyBracketsAfterPlace({
+    label: `${describeIntent(bank)} (bank)`,
+    key: `protect|${Date.now()}`,
+    intent: bank,
+    entryOrderId: bankOrderId,
+    nativeEntryId: bankRes.children?.nativeEntryId,
+    stopChildId: bankRes.children?.stopChildId,
+    targetChildId: bankRes.children?.targetChildId,
+  });
 
   console.log(`[crossTrade] LIVE(REST) SCALE-OUT runner ${runnerOrderId} → ${runnerPayload.instrument} @ ${cfg.account}`);
   const runnerRes = await postRESTLeg(runnerPayload, cfg);
@@ -1038,7 +1050,11 @@ async function placeScaleOutRESTUnlocked(
     // it will be refused and reported — never silently stacked.)
     console.warn(`[crossTrade] REST unavailable for the runner (${runnerRes.reason}) — runner via webhook (bank already placed)`);
     const w = await postWebhookLeg(runner, cfg, { orderId: runnerOrderId, withTarget: false });
+    // runner placed → the ladder owns its stop (repair may only flatten);
+    // runner failed → only the bracketed bank is open: protect it like a
+    // single order (re-arm allowed)
     if (w.ok) registerOpenProtection(intent, { rearmOk: false });
+    else registerOpenProtection(bank, { rearmOk: true });
     return {
       ok: w.ok,
       reason: `bank: ${bankRes.reason} · runner(webhook): ${w.reason}`,
@@ -1047,19 +1063,15 @@ async function placeScaleOutRESTUnlocked(
       runnerQty: runner.contracts,
     };
   }
-  if (bankRes.kind === "ok" && runnerRes.kind === "ok") {
+  if (runnerRes.kind !== "ok") {
+    // runner rejected / unknown: the bank is open and bracketed — register
+    // it with the protection watchdog like a single order so a late stop
+    // rejection is repaired (it used to be left untracked → alert only)
+    registerOpenProtection(bank, { rearmOk: true });
+  } else {
     // global protection: the ladder owns the runner stop — repair may only
     // flatten — and each leg's OSO children are verified after placement
     registerOpenProtection(intent, { rearmOk: false });
-    verifyBracketsAfterPlace({
-      label: `${describeIntent(bank)} (bank)`,
-      key: `protect|${Date.now()}`,
-      intent: bank,
-      entryOrderId: bankOrderId,
-      nativeEntryId: bankRes.children?.nativeEntryId,
-      stopChildId: bankRes.children?.stopChildId,
-      targetChildId: bankRes.children?.targetChildId,
-    });
     verifyBracketsAfterPlace({
       label: `${describeIntent(runner)} (runner)`,
       key: `protect|${Date.now()}`,
