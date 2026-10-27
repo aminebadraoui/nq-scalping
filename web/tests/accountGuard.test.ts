@@ -520,3 +520,14 @@ test("mergeRehydration: a stale row can never rewind the day or undo the profit-
   assert.equal(t.floor, 48100);
   assert.equal(t.highWater, 50100);
 });
+
+import { hydrationMode } from "../lib/accountGuard";
+
+test("hydrationMode: the row overwrites day fields only over a fresh seed", () => {
+  assert.equal(hydrationMode(false, false), "apply");
+  // memory came from the state file (and may have traded while the DB was
+  // down at boot): a late first DB read must not rewind it
+  assert.equal(hydrationMode(false, true), "merge");
+  assert.equal(hydrationMode(true, false), "merge");
+  assert.equal(hydrationMode(true, true), "merge");
+});

@@ -330,6 +330,16 @@ export function __resetHydrateLatchForTest(): void {
 
 const gh = globalThis as unknown as { __gcGuardHydrated?: boolean };
 
+/** which merge a successful DB read gets. "apply" (the row wins the day
+ *  fields) only for the first read of a process whose memory is a fresh
+ *  seed. When memory was restored from the state file it is already at
+ *  least as new as the row (save() writes both) and may have moved on
+ *  while the DB was unreachable at boot — the row must then only make the
+ *  guard stricter. Exported for tests. */
+export function hydrationMode(hydratedBefore: boolean, fromFile: boolean): "apply" | "merge" {
+  return !hydratedBefore && !fromFile ? "apply" : "merge";
+}
+
 /** restart recovery: the persisted row wins for the day fields
  *  (unchanged pre-2026-10-26 behavior). Exported for tests. */
 export function applyFirstHydration(s: GuardState, h: Partial<GuardState>): void {
@@ -397,13 +407,14 @@ export async function hydrateGuardFromDb(opts?: { force?: boolean; timeoutMs?: n
           mem().dayBaselineOk = true;
           return true;
         }
-        if (!gh.__gcGuardHydrated) {
+        if (hydrationMode(!!gh.__gcGuardHydrated, restoredFromFile) === "apply") {
           // FIRST hydration of this process (restart recovery): the
           // persisted row is the best record of the day so far — apply it
           applyFirstHydration(s, h);
           gh.__gcGuardHydrated = true;
         } else {
-          // RE-hydration (every HYDRATE_TTL_MS from the gate): the row is
+          gh.__gcGuardHydrated = true;
+          // RE-hydration (or a first read over file-restored memory) (every HYDRATE_TTL_MS from the gate): the row is
           // only written on transitions, so its volatile day fields are
           // OLDER than memory. Overwriting them undid the profit-arm halt
           // (lastDayPnl 650 → stored 450: the first post-arm loss at 550
