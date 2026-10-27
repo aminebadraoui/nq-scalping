@@ -387,14 +387,16 @@ function openExecs(): Map<string, OpenExec> {
   return gp.__gcOpenExecs;
 }
 
-async function readMnqHeld(): Promise<number> {
-  const rows = await fetchPositionsCached();
-  if (rows === null) return -1;
-  let held = 0;
-  for (const p of rows) {
-    if (String(p.instrument ?? p.contractName ?? "").includes(MNQ)) held += Number(p.qty ?? p.quantity ?? 0);
-  }
-  return held;
+/** signed net MNQ position, or null when the book is unreadable. Uses
+ *  the same reader as the protection watchdog (netPos, then qty) — this
+ *  one used to read `qty ?? quantity` only, so netPos-only rows (the
+ *  shape every other reader and the WS mirror use) read as flat, and a
+ *  real 1-lot short (-1) collided with the old -1 "unreadable" sentinel. */
+async function readMnqHeld(): Promise<number | null> {
+  const r = await readMnqPositionRead();
+  if (r.status === "unreadable") return null;
+  if (r.status === "flat") return 0;
+  return r.qty;
 }
 
 /** pure exit-leg picker for the flat-transition poll (2026-10-13
@@ -561,7 +563,7 @@ export async function sweepOrphanLedger(opts?: { nowMs?: number }): Promise<void
   const fills = await ctFills();
   if (fills === null || fills.length === 0) return;
   const held = await readMnqHeld();
-  if (held === -1) return; // positions unreadable — never guess
+  if (held === null) return; // positions unreadable — never guess
   const sorted = [...fills].sort((a, b) => a.ts - b.ts);
   for (const row of candidates) {
     const want = row.side === "long" ? "Buy" : "Sell";
