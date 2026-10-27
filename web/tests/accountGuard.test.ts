@@ -495,3 +495,28 @@ test("halt-target respects the raised 30% consistency bar (OOS 2026-10-12 find)"
   assert.match(d2.reason, /raised target/);
   __resetGuardForTest();
 });
+
+import { mergeRehydration } from "../lib/accountGuard";
+
+test("mergeRehydration: a stale row can never rewind the day or undo the profit-arm halt", () => {
+  const s = { ...guardState() };
+  Object.assign(s, { dayKey: "2026-10-27", dayStartRealized: 0, profitArmed: true, lastDayPnl: 650, dayPeak: 650, bestDayPnl: 650, floor: 48000, highWater: 50650, locked: false, ddHalved: false });
+  // the row written at the arm transition: older lastDayPnl, older peak
+  mergeRehydration(s, { dayKey: "2026-10-27", dayStartRealized: 0, profitArmed: true, lastDayPnl: 450, dayPeak: 450, bestDayPnl: 450, floor: 48000, highWater: 50450, locked: false, ddHalved: true });
+  assert.equal(s.lastDayPnl, 650);
+  assert.equal(s.dayPeak, 650);
+  assert.equal(s.highWater, 50650);
+  assert.equal(s.ddHalved, false); // memory keeps the hysteresis flag
+  // yesterday's row (a failed write at rollover) cannot rewind the day key
+  mergeRehydration(s, { dayKey: "2026-10-26", dayStartRealized: -300 });
+  assert.equal(s.dayKey, "2026-10-27");
+  assert.equal(s.dayStartRealized, 0);
+  // but a stricter row still wins: higher floor, locked, armed
+  const t = { ...guardState() };
+  Object.assign(t, { dayKey: "2026-10-27", profitArmed: false, locked: false, floor: 48000, highWater: 50000, lastDayPnl: 100 });
+  mergeRehydration(t, { dayKey: "2026-10-27", profitArmed: true, locked: true, floor: 48100, highWater: 50100 });
+  assert.equal(t.profitArmed, true);
+  assert.equal(t.locked, true);
+  assert.equal(t.floor, 48100);
+  assert.equal(t.highWater, 50100);
+});

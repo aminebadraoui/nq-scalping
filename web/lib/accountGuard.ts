@@ -327,6 +327,51 @@ export function __resetHydrateLatchForTest(): void {
   hydrateLatch = null;
 }
 
+const gh = globalThis as unknown as { __gcGuardHydrated?: boolean };
+
+/** restart recovery: the persisted row wins for the day fields
+ *  (unchanged pre-2026-10-26 behavior). Exported for tests. */
+export function applyFirstHydration(s: GuardState, h: Partial<GuardState>): void {
+  s.highWater = Math.max(Number(h.highWater ?? 0), s.highWater);
+  s.floor = Math.max(Number(h.floor ?? 0), s.floor);
+  if (h.locked !== undefined) s.locked = h.locked;
+  if (h.lastCommitDay) s.lastCommitDay = h.lastCommitDay;
+  if (h.dayKey) {
+    s.dayKey = h.dayKey;
+    s.dayStartRealized = Number(h.dayStartRealized ?? 0);
+  }
+  s.bestDayPnl = Math.max(Number(h.bestDayPnl ?? 0), s.bestDayPnl);
+  s.dayPeak = Math.max(Number(h.dayPeak ?? 0), s.dayPeak);
+  if (h.profitArmed !== undefined) s.profitArmed = h.profitArmed;
+  if (h.lastDayPnl !== undefined && h.lastDayPnl !== null) s.lastDayPnl = Number(h.lastDayPnl);
+  if (h.ddHalved !== undefined) s.ddHalved = h.ddHalved;
+  s.dayPnl = 0; // recomputed by guardCheck from dayStartRealized
+}
+
+/** live re-hydration: memory is authoritative; the row can only make
+ *  the guard STRICTER (higher floor / high-water, locked, armed), never
+ *  rewind the day or its counters. Exported for tests. */
+export function mergeRehydration(s: GuardState, h: Partial<GuardState>): void {
+  s.highWater = Math.max(Number(h.highWater ?? 0), s.highWater);
+  s.floor = Math.max(Number(h.floor ?? 0), s.floor);
+  if (h.locked === true) s.locked = true;
+  if (h.lastCommitDay && h.lastCommitDay > (s.lastCommitDay ?? "")) s.lastCommitDay = h.lastCommitDay;
+  if (h.dayKey && !s.dayKey) {
+    // memory never established a day (e.g. first gate check pending)
+    s.dayKey = h.dayKey;
+    s.dayStartRealized = Number(h.dayStartRealized ?? 0);
+  }
+  if (h.dayKey && h.dayKey === s.dayKey) {
+    s.bestDayPnl = Math.max(Number(h.bestDayPnl ?? 0), s.bestDayPnl);
+    s.dayPeak = Math.max(Number(h.dayPeak ?? 0), s.dayPeak);
+    if (h.profitArmed === true) s.profitArmed = true;
+    if ((s.lastDayPnl === null || s.lastDayPnl === undefined) && h.lastDayPnl !== undefined && h.lastDayPnl !== null) {
+      s.lastDayPnl = Number(h.lastDayPnl);
+    }
+  }
+  // dayStartRealized, lastDayPnl, ddHalved, dayPnl: memory keeps them
+}
+
 export async function hydrateGuardFromDb(opts?: { force?: boolean; timeoutMs?: number }): Promise<boolean> {
   if (!dbEnabled()) return true;
   if (!opts?.force && hydrateLatch && Date.now() - hydrateLatch.at < HYDRATE_TTL_MS) return hydrateLatch.ok;
@@ -339,6 +384,7 @@ export async function hydrateGuardFromDb(opts?: { force?: boolean; timeoutMs?: n
         }>;
         if (!rows.length) {
           mem().dayBaselineOk = true; // fresh account — an empty baseline is legitimate
+          gh.__gcGuardHydrated = true;
           return true;
         }
         const raw = rows[0].state;
@@ -350,20 +396,19 @@ export async function hydrateGuardFromDb(opts?: { force?: boolean; timeoutMs?: n
           mem().dayBaselineOk = true;
           return true;
         }
-        s.highWater = Math.max(Number(h.highWater ?? 0), s.highWater);
-        s.floor = Math.max(Number(h.floor ?? 0), s.floor);
-        if (h.locked !== undefined) s.locked = h.locked;
-        if (h.lastCommitDay) s.lastCommitDay = h.lastCommitDay;
-        if (h.dayKey) {
-          s.dayKey = h.dayKey;
-          s.dayStartRealized = Number(h.dayStartRealized ?? 0);
+        if (!gh.__gcGuardHydrated) {
+          // FIRST hydration of this process (restart recovery): the
+          // persisted row is the best record of the day so far — apply it
+          applyFirstHydration(s, h);
+          gh.__gcGuardHydrated = true;
+        } else {
+          // RE-hydration (every HYDRATE_TTL_MS from the gate): the row is
+          // only written on transitions, so its volatile day fields are
+          // OLDER than memory. Overwriting them undid the profit-arm halt
+          // (lastDayPnl 650 → stored 450: the first post-arm loss at 550
+          // passed). Merge only what can move one way.
+          mergeRehydration(s, h);
         }
-        s.bestDayPnl = Math.max(Number(h.bestDayPnl ?? 0), s.bestDayPnl);
-        s.dayPeak = Math.max(Number(h.dayPeak ?? 0), s.dayPeak);
-        if (h.profitArmed !== undefined) s.profitArmed = h.profitArmed;
-        if (h.lastDayPnl !== undefined && h.lastDayPnl !== null) s.lastDayPnl = Number(h.lastDayPnl);
-        if (h.ddHalved !== undefined) s.ddHalved = h.ddHalved;
-        s.dayPnl = 0; // recomputed by guardCheck from dayStartRealized
         s.dayBaselineOk = true;
         return true;
       })(),
@@ -593,7 +638,12 @@ export function guardCheck(
           `day P&L $${s.dayPnl.toFixed(0)} — first loss after arming at +$${cfg.profitArm.toFixed(0)} (peak since arm $${s.lastDayPnl!.toFixed(0)}) — stop for the day`,
       };
     }
+    const prevLast = s.lastDayPnl;
     s.lastDayPnl = pa.lastDayPnl;
+    // while armed, the peak-since-arm IS the halt reference — persist it
+    // whenever it moves (fills only), so a restart restores the current
+    // reference instead of the value stored at the arm transition
+    if (s.profitArmed && s.lastDayPnl !== prevLast) save();
   }
 
   // give-back protection: halt new entries once today's P&L has given back
@@ -639,5 +689,6 @@ export function guardState(): GuardState {
 /** TEST ONLY: reset to a fresh seed. */
 export function __resetGuardForTest(): void {
   g.__gcGuard = seed();
+  gh.__gcGuardHydrated = false;
   save();
 }
