@@ -18,6 +18,7 @@ import {
   renderT0,
   DEFAULT_COST,
   DEFAULT_HOLD,
+  HONEST_COST,
 } from "../lib/backtestEngine";
 
 /* ---------------- scoring ---------------- */
@@ -25,11 +26,11 @@ import {
 const flatBars = (n: number, high: number, low: number, c: number) =>
   Array.from({ length: n }, () => ({ high, low, c }));
 
-describe("scoreTrade", () => {
+describe("scoreTrade (legacy fill model — pinned for old reports)", () => {
   it("long hits target cleanly, net of cost", () => {
     // entry bar at idx 0; next bar trades to the target without touching the stop
     const minutes = flatBars(5, 110, 107, 109);
-    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 106, target: 110, entryIdx: 0, risk: 2 });
+    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 106, target: 110, entryIdx: 0, risk: 2 }, { fill: "legacy" });
     assert.ok(r);
     assert.equal(r.hit, "target");
     assert.equal(r.exit, 110);
@@ -40,7 +41,7 @@ describe("scoreTrade", () => {
   it("pessimistic rule: stop wins when both stop and target are in the same bar", () => {
     // bar 0 = entry bar (never evaluated); bar 1 spans both stop and target
     const minutes = [{ high: 108.5, low: 107.5, c: 108 }, { high: 112, low: 104, c: 109 }];
-    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 110, entryIdx: 0, risk: 3 });
+    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 110, entryIdx: 0, risk: 3 }, { fill: "legacy" });
     assert.ok(r);
     assert.equal(r.hit, "stop");
     assert.equal(r.pnl, 105 - 108 - DEFAULT_COST);
@@ -49,7 +50,7 @@ describe("scoreTrade", () => {
 
   it("time exit uses the close rule and deducts cost", () => {
     const minutes = flatBars(10, 108.5, 107.5, 108);
-    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 104, target: 112, entryIdx: 0, risk: 4 });
+    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 104, target: 112, entryIdx: 0, risk: 4 }, { fill: "legacy" });
     assert.ok(r);
     assert.equal(r.hit, "time");
     assert.equal(r.heldBars, Math.min(minutes.length - 1, DEFAULT_HOLD));
@@ -59,9 +60,9 @@ describe("scoreTrade", () => {
 
   it("rejects invalid geometry", () => {
     const minutes = flatBars(5, 110, 105, 109);
-    assert.equal(scoreTrade(minutes, { dir: 1, entry: 108, stop: 110, target: 112, entryIdx: 0, risk: 2 }), null);
-    assert.equal(scoreTrade(minutes, { dir: 1, entry: 108, stop: 106, target: 107, entryIdx: 0, risk: 2 }), null);
-    assert.equal(scoreTrade(minutes, { dir: 1, entry: 108, stop: 106, target: 110, entryIdx: 0, risk: 0 }), null);
+    assert.equal(scoreTrade(minutes, { dir: 1, entry: 108, stop: 110, target: 112, entryIdx: 0, risk: 2 }, { fill: "legacy" }), null);
+    assert.equal(scoreTrade(minutes, { dir: 1, entry: 108, stop: 106, target: 107, entryIdx: 0, risk: 2 }, { fill: "legacy" }), null);
+    assert.equal(scoreTrade(minutes, { dir: 1, entry: 108, stop: 106, target: 110, entryIdx: 0, risk: 0 }, { fill: "legacy" }), null);
   });
 
   it("tracks MFE/MAE/2R/3R on the way", () => {
@@ -72,7 +73,7 @@ describe("scoreTrade", () => {
       { high: 114, low: 107, c: 112 },
       { high: 110, low: 104, c: 105 },
     ];
-    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 120, entryIdx: 0, risk: 3 });
+    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 120, entryIdx: 0, risk: 3 }, { fill: "legacy" });
     assert.ok(r);
     assert.equal(r.hit, "stop");
     assert.equal(r.hit2R, true); // 114 >= 108 + 2*3
@@ -84,7 +85,7 @@ describe("scoreTrade", () => {
   it("stopSlipPts: a stop-out fills past the trigger against the trade (both sides)", () => {
     const minutes = [{ high: 108.5, low: 107.5, c: 108 }, { high: 109, low: 104.5, c: 105 }];
     // long: stop 105, slip 1 → fills at 104
-    const longR = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 115, entryIdx: 0, risk: 3 }, { stopSlipPts: 1 });
+    const longR = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 115, entryIdx: 0, risk: 3 }, { stopSlipPts: 1, fill: "legacy" });
     assert.ok(longR);
     assert.equal(longR.hit, "stop");
     assert.equal(longR.exit, 104);
@@ -93,7 +94,7 @@ describe("scoreTrade", () => {
     const shortR = scoreTrade(
       [{ high: 109, low: 106, c: 108 }, { high: 112, low: 108, c: 111 }],
       { dir: -1, entry: 108, stop: 111, target: 101, entryIdx: 0, risk: 3 },
-      { stopSlipPts: 1.5 },
+      { stopSlipPts: 1.5, fill: "legacy" },
     );
     assert.ok(shortR);
     assert.equal(shortR.hit, "stop");
@@ -102,7 +103,7 @@ describe("scoreTrade", () => {
 
   it("stopSlipPts defaults to 0 (the legacy exact-stop model)", () => {
     const minutes = [{ high: 108.5, low: 107.5, c: 108 }, { high: 109, low: 104.5, c: 105 }];
-    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 115, entryIdx: 0, risk: 3 });
+    const r = scoreTrade(minutes, { dir: 1, entry: 108, stop: 105, target: 115, entryIdx: 0, risk: 3 }, { fill: "legacy" });
     assert.ok(r);
     assert.equal(r.exit, 105);
   });
@@ -357,5 +358,65 @@ describe("renderers", () => {
     const t0 = renderT0({ "Stack": "varying minBreakRangeR; everything else production", "CLI": "scripts/x.ts" });
     assert.ok(t0.includes("| Stack | varying minBreakRangeR; everything else production |"));
     assert.ok(!t0.includes("varying layer NOT declared"));
+  });
+});
+
+/* ---------------- honest fill model (default since 2026-10-26) ---------------- */
+
+describe("scoreTrade (honest fill model, the default)", () => {
+  it("re-fills a long at the next open estimate, keeps the bracket distances, charges MNQ fees", () => {
+    // signal bar 100–110 with 80% buying: p80 next-open estimate = 100 + 0.94·10 = 109.5 (+0.25 slip)
+    const minutes = [
+      { high: 110, low: 100, c: 0, buy: 80, sell: 20 },
+      { high: 116, low: 109, c: 0, buy: 50, sell: 50 },
+    ];
+    const r = scoreTrade(minutes, { dir: 1, entry: 105, stop: 102, target: 108, entryIdx: 0, risk: 3 });
+    assert.ok(r);
+    // fill 109.75 → stop 106.75 / target 112.75; bar 2 trades 116 ≥ 112.75 + tick → target
+    assert.equal(r.hit, "target");
+    assert.equal(r.exit, 112.75);
+    assert.equal(r.pnl, 3 - HONEST_COST);
+  });
+
+  it("the legacy mid-bar entry wins a trade the honest fill loses", () => {
+    const minutes = [
+      { high: 110, low: 100, c: 0, buy: 80, sell: 20 },
+      { high: 109.5, low: 106, c: 0, buy: 40, sell: 60 },
+      { high: 109, low: 104, c: 0, buy: 40, sell: 60 },
+    ];
+    const spec = { dir: 1 as const, entry: 105, stop: 102, target: 108, entryIdx: 0, risk: 3 };
+    assert.equal(scoreTrade(minutes, spec, { fill: "legacy" })?.hit, "target");
+    // honest: fill 109.75, stop 106.75 → bar 1 low 106 stops it (slip → 106.5)
+    const h = scoreTrade(minutes, spec);
+    assert.equal(h?.hit, "stop");
+    assert.equal(h?.exit, 106.5);
+  });
+
+  it("a target touch without a one-tick trade-through is not a fill", () => {
+    const minutes = [
+      { high: 101, low: 99, c: 100, buy: 50, sell: 50 },
+      { high: 103.25, low: 100, c: 0, buy: 50, sell: 50 },
+    ];
+    // true close 100 → fill 100.25, target 103.25: touched, not traded through → time exit
+    const r = scoreTrade(minutes, { dir: 1, entry: 100, stop: 97, target: 103, entryIdx: 0, risk: 3 }, { holdBars: 1 });
+    assert.equal(r?.hit, "time");
+  });
+
+  it("fixed entries check the fill bar for the stop and never credit its target", () => {
+    const minutes = [
+      { high: 101, low: 99, c: 0 },
+      { high: 106, low: 97, c: 0 }, // limit 100 filled here; bar also spans stop 98 and target 104
+    ];
+    const r = scoreTrade(minutes, { dir: 1, entry: 100, stop: 98, target: 104, entryIdx: 1, risk: 2, entryKind: "fixed" });
+    assert.equal(r?.hit, "stop");
+  });
+
+  it("an explicit legacy 0.5-pt cost is floored at the real commission", () => {
+    const minutes = [
+      { high: 101, low: 99, c: 100, buy: 50, sell: 50 },
+      { high: 106, low: 100, c: 0, buy: 50, sell: 50 },
+    ];
+    const r = scoreTrade(minutes, { dir: 1, entry: 100, stop: 97, target: 103, entryIdx: 0, risk: 3 }, { costPts: 0.5 });
+    assert.equal(r?.pnl, 3 - HONEST_COST);
   });
 });

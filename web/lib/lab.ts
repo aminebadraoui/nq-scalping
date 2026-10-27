@@ -1,7 +1,7 @@
 /* ---------------------------------------------------------------------------
  * Theory lab — evaluate an entry theory against the collected sessions.
  *
- *   import { LAB_FEATURES, buildLabSamples, evaluateTheory } from "@/lib/lab";
+import { LAB_FEATURES, buildLabSamples, evaluateTheory } from "@/lib/lab";
  *
  * Design rules, learned the hard way:
  *
@@ -19,6 +19,7 @@
  *     vanished when measured by the wick, and a VWAP-in-R effect that only
  *     survived in its absolute form).
  * ------------------------------------------------------------------------- */
+import { simulateHonest, type FillBar } from "./honestFill";
 import { analyze, computeSheet, extractFootprint, listUsableSessions, type AbsorbEvent, type AlertEvent } from "./gcdata";
 import { promises as fs, readdirSync, readFileSync } from "node:fs";
 import os from "node:os";
@@ -501,24 +502,16 @@ export async function buildLabSamples(opts: { force?: boolean } = {}): Promise<{
       ordinal++;
       const long = dir === "long";
 
-      let win = false;
-      let ambiguous = false;
-      let mfe = 0;
-      let mae = 0;
-      const target = long ? entry + risk : entry - risk;
-      for (let k = r.i + 1; k < Math.min(m.length, r.i + 1 + LOOKAHEAD); k++) {
-        const b = m[k];
-        const hitStop = long ? b.low <= stop : b.high >= stop;
-        const hitTarget = long ? b.high >= target : b.low <= target;
-        if (k === r.i + 1 && hitStop && hitTarget) ambiguous = true;
-        if (hitStop) break; // pessimistic: the stop is resolved first
-        mfe = Math.max(mfe, (long ? b.high - entry : entry - b.low) / risk);
-        mae = Math.max(mae, (long ? entry - b.low : b.high - entry) / risk);
-        if (hitTarget) {
-          win = true;
-          break;
-        }
-      }
+      // honest fill (lib/honestFill.ts): market at the next bar's open,
+      // 1R bracket rebuilt from the fill, trade-through targets, stop-first
+      const h = simulateHonest(
+        m as unknown as FillBar[],
+        { dir: long ? 1 : -1, signalIdx: r.i, entry: { kind: "market" }, stopPts: risk, targetPts: risk, holdBars: Math.max(0, LOOKAHEAD - 1) },
+      );
+      const win = !!h && h.hit === "target";
+      const ambiguous = false;
+      const mfe = h && h.filled ? h.mfePts / risk : 0;
+      const mae = h && h.filled ? h.maePts / risk : 0;
 
       const atEdge = zones.some(([a, b]) => entry >= a - EDGE_TOL && entry <= b + EDGE_TOL);
       const wantKind = long ? "DIVERGENCE_D2" : "DIVERGENCE_D4";

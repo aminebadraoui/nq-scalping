@@ -21,6 +21,7 @@ type Row = {
   entry: string;
   stop: string;
   target: string;
+  price: string | null;
   verdict: string;
   headline: string;
 };
@@ -31,18 +32,18 @@ async function main() {
     process.exit(1);
   }
   const rows = (await getDb()`
-    select key, day, time_et, side, entry, stop, target, verdict, headline
+    select key, day, time_et, side, entry, stop, target, price, verdict, headline
     from signals
     where side in ('long','short')
     order by ts asc`) as unknown as Row[];
   console.log(`scoring ${rows.length} signal(s) against the collected sessions…`);
 
-  const counts: Record<string, number> = { win: 0, loss: 0, time: 0, open: 0, unscored: 0, skipped: 0 };
+  const counts: Record<string, number> = { win: 0, loss: 0, time: 0, open: 0, nofill: 0, unscored: 0, skipped: 0 };
   const perDay = new Map<string, { wins: number; total: number }>();
   let scored = 0;
 
   for (const r of rows) {
-    const s = toScorable({ key: r.key, day: r.day, timeET: r.time_et, side: r.side, entry: r.entry, stop: r.stop, target: r.target });
+    const s = toScorable({ key: r.key, day: r.day, timeET: r.time_et, side: r.side, entry: r.entry, stop: r.stop, target: r.target, price: r.price });
     if (!s) {
       counts.skipped++;
       console.log(`  − ${r.day} ${r.time_et} NY ${r.side} — not scorable (text levels / no side)`);

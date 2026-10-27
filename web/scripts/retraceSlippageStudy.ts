@@ -22,6 +22,7 @@
  *   node --import ../scripts/ts-loader.mjs scripts/retraceSlippageStudy.ts --offline
  * ------------------------------------------------------------------ */
 
+import { marketFillEstimate, DEFAULT_SLIP_PTS, TICK } from "../lib/honestFill";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { scoreScaleOut } from "../lib/runner";
 import { detectExpansionScalp, EXP_PROD, midOf, type MomMinute } from "../lib/momentum";
@@ -88,7 +89,8 @@ function runOffsets(date: string, minutes: MomMinute[], offsets: number[]) {
       let touched = -1;
       for (let j = s.entryIdx + 1; j <= Math.min(minutes.length - 1, s.entryIdx + RETRACE_BARS); j++) {
         const b = minutes[j];
-        if (dir > 0 ? b.low <= level : b.high >= level) {
+        // honest: a one-tick trade-through (touch ≠ fill)
+        if (dir > 0 ? b.low <= level - TICK : b.high >= level + TICK) {
           touched = j;
           break;
         }
@@ -98,7 +100,7 @@ function runOffsets(date: string, minutes: MomMinute[], offsets: number[]) {
         continue;
       }
       const b = minutes[touched];
-      let fill = dir > 0 ? Math.min(openOf(b), level) : Math.max(openOf(b), level);
+      let fill = (b.o ?? 0) > 0 ? (dir > 0 ? Math.min(b.o, level) : Math.max(b.o, level)) : level;
       fill = fill + dir * off; // the adverse slip under test
 
       /* 2) flat rule */
@@ -110,7 +112,7 @@ function runOffsets(date: string, minutes: MomMinute[], offsets: number[]) {
       const stop = fill - dir * risk;
 
       /* 4) ladder exit from the fill bar */
-      const t = scoreScaleOut(minutes, fill, stop, dir, touched - 1, { maxBars: 60, cost: COST });
+      const t = scoreScaleOut(minutes, fill, stop, dir, touched - 1, { maxBars: 60, cost: COST, entryKind: "fixed" });
       if (!t) continue;
       if (halt) continue;
 

@@ -15,8 +15,38 @@
  * initial stop AND the first rung are both touched is flagged
  * `ambiguous`. Costs are 0.5 pt round-trip.
  *
+ * HONEST FILLS (2026-10-26, lib/honestFill.ts) — the default: the entry
+ * is re-filled at the next bar's open (conservative p80 estimate + 0.25 slip) and
+ * the initial stop keeps its distance from that fill; a rung (or the
+ * bank) only counts when price trades one tick THROUGH it; stop exits
+ * slip 0.25; time exits use the median-close estimate; the cost is at
+ * least the MNQ commission per contract (0.95 pt). `fill: "legacy"`
+ * reproduces the old close-fill numbers, which are not reachable live.
+ *
  * Pure + client-safe, unit-tested (../tests/runner.test.mjs).
  * ------------------------------------------------------------------ */
+
+import { closeEstimate, marketFillEstimate, DEFAULT_SLIP_PTS, MNQ_FEE_PTS, TICK, type FillBar } from "./honestFill";
+
+type RunnerBar = { high: number; low: number; buy?: number; sell?: number; c?: number; o?: number };
+type FillOpts = {
+  fill?: "honest" | "legacy";
+  slipPts?: number;
+  /** "signal" (default): `entry` is the signal bar's close proxy — re-filled
+   *  honestly. "fixed": `entry` is a real fill that happened inside bar
+   *  entryIdx + 1 (a limit / retrace fill; callers pass fillIdx − 1) — kept,
+   *  and that fill bar can stop the trade but never credits a rung/bank. */
+  entryKind?: "signal" | "fixed";
+};
+
+/** honest re-fill of a signal-bar entry: returns the fill and the shifted stop */
+function honestEntry(minutes: RunnerBar[], entryIdx: number, entry: number, stop0: number, dir: 1 | -1, slip: number): { entry: number; stop0: number } {
+  const nb = minutes[entryIdx + 1];
+  const sig = minutes[entryIdx] as FillBar;
+  const open = nb && (nb.o ?? 0) > 0 ? (nb.o as number) : marketFillEstimate(sig, dir);
+  const fill = open + dir * slip;
+  return { entry: fill, stop0: stop0 + (fill - entry) };
+}
 
 export type RunnerTrade = {
   dir: 1 | -1;
@@ -38,15 +68,20 @@ export type RunnerTrade = {
 };
 
 export function scoreRunner(
-  minutes: { high: number; low: number }[],
+  minutes: RunnerBar[],
   entry: number,
   stop0: number,
   dir: 1 | -1,
   entryIdx: number,
-  opts: { maxBars?: number; cost?: number } = {},
+  opts: { maxBars?: number; cost?: number } & FillOpts = {},
 ): RunnerTrade | null {
   const maxBars = opts.maxBars ?? 60;
-  const cost = opts.cost ?? 0.5;
+  const honest = (opts.fill ?? "honest") === "honest";
+  const slip = honest ? (opts.slipPts ?? DEFAULT_SLIP_PTS) : 0;
+  const tt = honest ? TICK : 0; // rung trade-through
+  const cost = honest ? Math.max(opts.cost ?? 0, MNQ_FEE_PTS) : (opts.cost ?? 0.5);
+  if (honest && opts.entryKind !== "fixed" && entryIdx + 1 < minutes.length) ({ entry, stop0 } = honestEntry(minutes, entryIdx, entry, stop0, dir, slip));
+  const fixedFill = honest && opts.entryKind === "fixed";
   const risk = Math.abs(entry - stop0);
   if (!(risk > 0)) return null;
 
@@ -72,19 +107,20 @@ export function scoreRunner(
     const adv = dir > 0 ? entry - b.low : b.high - entry;
     mfe = Math.max(mfe, fav / risk);
     mae = Math.max(mae, adv / risk);
-    const rungHere = fav > 0 ? Math.floor(fav / risk) : 0;
+    const rungHere = fav - tt > 0 ? Math.floor((fav - tt) / risk) : 0;
 
     // pessimistic house rule: the current stop is judged first
     const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
     if (stopHit) {
       stopped = true;
-      exit = stop;
+      exit = stop - dir * slip;
       heldBars = j - entryIdx;
       if (j === start && rungHere >= 1) ambiguous = true;
       break;
     }
     // no stop: raise the ladder with whatever this bar's high reached
-    if (rungHere >= 1) {
+    // (never on a fixed fill's own bar — the order inside it is unknown)
+    if (rungHere >= 1 && !(fixedFill && j === start)) {
       rungs = Math.max(rungs, rungHere);
       const newStop = entry + dir * (rungHere - 1) * risk;
       if (dir > 0 ? newStop > stop : newStop < stop) stop = newStop;
@@ -97,7 +133,7 @@ export function scoreRunner(
   // never stopped → time exit at the final bar's close
   if (!stopped) {
     hit = "time";
-    exit = (minutes[end].high + minutes[end].low) / 2;
+    exit = honest ? closeEstimate(minutes[end] as FillBar) - dir * slip : (minutes[end].high + minutes[end].low) / 2;
     heldBars = end - entryIdx;
   }
 
@@ -149,19 +185,25 @@ export type ScaleOutTrade = {
 };
 
 export function scoreScaleOut(
-  minutes: { high: number; low: number }[],
+  minutes: RunnerBar[],
   entry: number,
   stop0: number,
   dir: 1 | -1,
   entryIdx: number,
-  opts: { bankR?: number; bankUnits?: number; runnerUnits?: number; maxBars?: number; cost?: number } = {},
+  opts: { bankR?: number; bankUnits?: number; runnerUnits?: number; maxBars?: number; cost?: number } & FillOpts = {},
 ): ScaleOutTrade | null {
   const bankR = opts.bankR ?? 1;
   const bankUnits = opts.bankUnits ?? 2;
   const runnerUnits = opts.runnerUnits ?? 1;
   const units = bankUnits + runnerUnits;
   const maxBars = opts.maxBars ?? 60;
-  const cost = opts.cost ?? 0.5;
+  const honest = (opts.fill ?? "honest") === "honest";
+  const slip = honest ? (opts.slipPts ?? DEFAULT_SLIP_PTS) : 0;
+  const tt = honest ? TICK : 0;
+  // honest: the commission is per contract — every unit pays it
+  const cost = honest ? Math.max(opts.cost ?? 0, MNQ_FEE_PTS * units) : (opts.cost ?? 0.5);
+  if (honest && opts.entryKind !== "fixed" && entryIdx + 1 < minutes.length) ({ entry, stop0 } = honestEntry(minutes, entryIdx, entry, stop0, dir, slip));
+  const fixedFill = honest && opts.entryKind === "fixed";
   const risk = Math.abs(entry - stop0);
   if (!(risk > 0)) return null;
 
@@ -184,16 +226,22 @@ export function scoreScaleOut(
     const adv = dir > 0 ? entry - b.low : b.high - entry;
     mfe = Math.max(mfe, fav / risk);
     mae = Math.max(mae, adv / risk);
-    const rung = fav > 0 ? Math.floor(fav / risk) : 0;
+    const rung = fav - tt > 0 ? Math.floor((fav - tt) / risk) : 0;
 
     // 1) pessimistic: the current stop is judged first
     const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
     if (stopHit) {
       stopped = true;
-      runnerExitR = banked ? ((stop - entry) * dir) / risk : -1;
+      runnerExitR = banked ? ((stop - dir * slip - entry) * dir) / risk : -1 - slip / risk;
       heldBars = j - entryIdx;
       if (j === start && rung >= bankR) ambiguous = true;
       break;
+    }
+
+    // a fixed fill's own bar can stop the trade but never banks/trails
+    if (fixedFill && j === start) {
+      heldBars = j - entryIdx;
+      continue;
     }
 
     // 2) bank the first rung, move the runner to breakeven
@@ -220,7 +268,7 @@ export function scoreScaleOut(
 
   // never stopped → time exit at the final bar's close
   if (!stopped) {
-    const close = (minutes[end].high + minutes[end].low) / 2;
+    const close = honest ? closeEstimate(minutes[end] as FillBar) - dir * slip : (minutes[end].high + minutes[end].low) / 2;
     runnerExitR = ((close - entry) * dir) / risk;
     heldBars = end - entryIdx;
   }

@@ -17,6 +17,14 @@
  *   · lib/signalOutcomes.ts — intraday: re-scores today's still-open
  *     signals against the LIVE minute bars as the day progresses
  *
+ * Honest fills (2026-10-26): a RESTING-LIMIT card (entry ≠ the market
+ * price at the signal) only counts once price trades THROUGH the entry by
+ * one tick within FILL_WINDOW_BARS — otherwise the outcome is "nofill"
+ * (it used to be scored as if filled: 9 paper wins vs 2 real ones on the
+ * executed RTH cards). On the fill bar the stop is checked (stop-first)
+ * and the target is never credited — the order inside one minute is
+ * unknown. Market cards start on the next bar, as before.
+ *
  * Purely observational: it writes outcome columns AFTER the fact and is
  * never read by the signal engine — it cannot change any decision.
  * ------------------------------------------------------------------ */
@@ -25,7 +33,7 @@ export type ScoredBars = { t: string; high: number; low: number; close: number }
 
 export type SignalOutcome = {
   /** win | loss | time | open | "" (unscored) */
-  outcome: "win" | "loss" | "time" | "open" | "";
+  outcome: "win" | "loss" | "time" | "open" | "nofill" | "";
   exitPrice: number | null;
   exitTime: string | null;
   exitReason: "target" | "stop" | "time" | null;
@@ -40,6 +48,9 @@ export type SignalOutcome = {
 /** bars a scored trade is allowed to run before the time exit (matches the
  *  backtest's HOLD_BARS convention) */
 export const SIGNAL_HOLD_BARS = 60;
+/** bars a resting-limit card may wait for its fill (the live TTL) */
+export const FILL_WINDOW_BARS = 9;
+const TICK = 0.25;
 
 function minuteOf(t: string): number {
   const m = /^(\d{2}):(\d{2})$/.exec(t);
@@ -62,7 +73,7 @@ export function scoreSignalBars(
   entry: number,
   stop: number,
   target: number,
-  opts: { holdBars?: number; completeSession?: boolean } = {},
+  opts: { holdBars?: number; completeSession?: boolean; marketPrice?: number } = {},
 ): SignalOutcome {
   const holdBars = opts.holdBars ?? SIGNAL_HOLD_BARS;
   const complete = opts.completeSession ?? true;
@@ -84,34 +95,60 @@ export function scoreSignalBars(
   if (start < 0) return empty;
 
   const dir = side === "long" ? 1 : -1;
-  const end = Math.min(bars.length - 1, start + holdBars);
+  // a resting-limit card: the entry is away from the market price at the signal
+  const mp = opts.marketPrice;
+  const isLimit = mp !== undefined && Number.isFinite(mp) && Math.abs(entry - mp) >= TICK;
+  let fillIdx = start; // market cards: filled at the signal, walk from the next bar
+  if (isLimit) {
+    fillIdx = -1;
+    const lastFill = Math.min(bars.length - 1, start + FILL_WINDOW_BARS);
+    for (let j = start + 1; j <= lastFill; j++) {
+      const bj = bars[j];
+      if (dir === 1 ? bj.low <= entry - TICK : bj.high >= entry + TICK) {
+        fillIdx = j;
+        break;
+      }
+    }
+    if (fillIdx < 0) {
+      // live bars that have not covered the whole fill window yet: still pending
+      if (!complete && start + FILL_WINDOW_BARS > bars.length - 1) {
+        return { outcome: "open", exitPrice: null, exitTime: null, exitReason: null, mfePts: null, maePts: null, holdBars: null };
+      }
+      return { outcome: "nofill", exitPrice: null, exitTime: null, exitReason: null, mfePts: null, maePts: null, holdBars: null };
+    }
+  }
+  const end = Math.min(bars.length - 1, fillIdx + holdBars);
   let mfe = 0;
   let mae = 0;
 
-  for (let j = start + 1; j <= end; j++) {
+  for (let j = isLimit ? fillIdx : fillIdx + 1; j <= end; j++) {
     const b = bars[j];
+    const fillBar = isLimit && j === fillIdx;
     const fav = dir === 1 ? b.high - entry : entry - b.low;
     const adv = dir === 1 ? entry - b.low : b.high - entry;
-    mfe = Math.max(mfe, fav);
-    mae = Math.max(mae, adv);
+    if (!fillBar) {
+      mfe = Math.max(mfe, fav);
+      mae = Math.max(mae, adv);
+    }
     const hitStop = side === "long" ? b.low <= stop : b.high >= stop;
-    const hitTarget = side === "long" ? b.high >= target : b.low <= target;
+    // the target needs a one-tick trade-through, and never counts on a limit's fill bar
+    const hitTarget = !fillBar && (side === "long" ? b.high >= target + TICK : b.low <= target - TICK);
     if (hitStop && hitTarget) {
       // pessimistic: the stop fills first inside a bar that spans both
-      return { outcome: "loss", exitPrice: stop, exitTime: b.t, exitReason: "stop", mfePts: mfe, maePts: mae, holdBars: j - start };
+      return { outcome: "loss", exitPrice: stop, exitTime: b.t, exitReason: "stop", mfePts: mfe, maePts: mae, holdBars: j - fillIdx };
     }
     if (hitStop) {
-      return { outcome: "loss", exitPrice: stop, exitTime: b.t, exitReason: "stop", mfePts: mfe, maePts: mae, holdBars: j - start };
+      return { outcome: "loss", exitPrice: stop, exitTime: b.t, exitReason: "stop", mfePts: mfe, maePts: mae, holdBars: j - fillIdx };
     }
     if (hitTarget) {
-      return { outcome: "win", exitPrice: target, exitTime: b.t, exitReason: "target", mfePts: mfe, maePts: mae, holdBars: j - start };
+      return { outcome: "win", exitPrice: target, exitTime: b.t, exitReason: "target", mfePts: mfe, maePts: mae, holdBars: j - fillIdx };
     }
   }
 
   // no touch within the window
   if (end >= bars.length - 1 && !complete) {
     // live session — the bars just haven't printed yet
-    return { outcome: "open", exitPrice: null, exitTime: null, exitReason: null, mfePts: mfe, maePts: mae, holdBars: end - start };
+    return { outcome: "open", exitPrice: null, exitTime: null, exitReason: null, mfePts: mfe, maePts: mae, holdBars: end - fillIdx };
   }
   // time exit at the last walked bar's close (the backtest convention)
   const last = bars[end];
@@ -124,6 +161,6 @@ export function scoreSignalBars(
     exitReason: "time",
     mfePts: mfe,
     maePts: mae,
-    holdBars: end - start,
+    holdBars: end - fillIdx,
   };
 }

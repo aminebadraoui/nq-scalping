@@ -43,9 +43,19 @@ The relationships to keep in one line:
 1. **No lookahead** — every feature at bar T is known through bar T;
    location from the PRIOR day's sheet only (house rule already in the
    replay harness).
-2. **Realistic costs and fills** — 0.5 pt round-trip cost on every trade,
-   pessimistic same-bar exit, stop-first when target and stop are in the
-   same bar. Pts-only scratch sweeps are input, not validation (house rule).
+2. **Honest fills** (`web/lib/honestFill.ts`, the engine default since
+   2026-10-26). The archive has NO open/close — the old "entry at the
+   close" was the bar's MIDPOINT, which no live order can get. Rules:
+   - market entries fill at the next bar's open (true open when an OHLC
+     twin is joined, else the conservative p80 estimate) + 0.25 pt slip —
+     a market-entry result must also survive the 27 twin sessions;
+   - limit entries need a one-tick trade-through; stop entries fill at the
+     trigger + 0.25 pt;
+   - the fill bar is stop-first and never credits the target;
+   - targets need a one-tick trade-through; stops and time exits slip 0.25;
+   - cost: at least the MNQ commission, 0.95 pt per contract round trip.
+   `fill: "legacy"` reproduces old reports and must never be a headline
+   number. Pts-only scratch sweeps are input, not validation (house rule).
 3. **Sample size** — ≥ 100 trades before PF/WR stabilize, 200+ to trust
    them; below 50, PF is noise. Per-cell: n < 30 gets a † footnote, n < 8
    is never claimed.
@@ -93,13 +103,13 @@ the T2 row format for any cell/segment comparison.
 |---|---|
 | Instrument / session | e.g. NQ 1-min · ETH/RTH |
 | Sample | date range, n sessions, n trades |
-| Cost model | 0.5 pt round-trip (state if different) |
-| Fill model | market-entry replay · pessimistic same-bar exit · stop-first |
+| Cost model | MNQ commission 0.95 pt RT per contract + 0.25 pt slip on market / stop fills (state if different) |
+| Fill model | honest (`lib/honestFill.ts`): next-open market fill (p80 estimate without a true open) · limit = one-tick trade-through · fill bar stop-first, no target credit |
 | Exit model | target / stop / 60-bar time exit |
 | Split | 70/30 by date (train < date ≤ test) + frozen holdout if any |
 | Significance | Wilson 95% CI on WR · DSR/PBO if swept · FDR if pattern-mined |
 | Model (if any) | per-start-time logistic L2 / none |
-| Stack | which ONE layer this study varies, against the frozen production stack (signals `*_PROD` · gates default set · risk `challengeRules`+`guardCore` · fill 0.5 pt/close) — `renderT0` injects this row if not declared; see `docs/architecture/RESEARCH-LOOP.md` |
+| Stack | which ONE layer this study varies, against the frozen production stack (signals `*_PROD` · gates default set · risk `challengeRules`+`guardCore` · honest fills, `lib/honestFill.ts`) — `renderT0` injects this row if not declared; see `docs/architecture/RESEARCH-LOOP.md` |
 | CLI | `web/scripts/<name>.ts` |
 
 ### T1 — Core quality table (THE table; identical columns in every study)
@@ -252,8 +262,8 @@ never showed them. From now on they are shown, always, with the
 |---|---|
 | Instrument / session | NQ 1-min · ETH |
 | Sample | YYYY-MM-DD → YYYY-MM-DD · n sessions · n trades |
-| Cost model | 0.5 pt round-trip |
-| Fill model | market-entry replay · pessimistic same-bar exit · stop-first |
+| Cost model | MNQ commission 0.95 pt RT + 0.25 pt slip |
+| Fill model | honest (`lib/honestFill.ts`) |
 | Exit model | target / stop / 60-bar time |
 | Split | 70/30 by date · frozen holdout: — |
 | Significance | Wilson 95% CI on WR |
@@ -296,8 +306,7 @@ node --env-file=.env.local --import ../scripts/ts-loader.mjs scripts/<name>.ts
 engine, four layers, unit-tested in `web/tests/backtestEngine.test.ts`:
 
 1. **Replay scoring** — `scoreTrade` (the one canonical forward scorer:
-   pessimistic stop-first, 0.5 pt cost default, 60-bar time exit, midpoint
-   close; `onNoBars: "time"` preserves `lib/backtest`'s historical last-bar
+   honest fills by default — see §2 check 2 — 60-bar time exit; `onNoBars: "time"` preserves `lib/backtest`'s historical last-bar
    convention) and `scoreSequential` (one-trade-at-a-time;
    `occupy: "full"` preserves `exportSweep`'s full-window convention for
    the Python validator).

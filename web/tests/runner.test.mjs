@@ -6,7 +6,12 @@
  * post-entry minute. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scoreRunner, scoreScaleOut } from "../lib/runner.ts";
+import { scoreRunner as scoreRunnerRaw, scoreScaleOut as scoreScaleOutRaw } from "../lib/runner.ts";
+
+// the tests below pin the LEGACY close-fill rules (old reports); the
+// honest default is covered at the end of the file
+const scoreRunner = (m, e, s, d, i, o = {}) => scoreRunnerRaw(m, e, s, d, i, { ...o, fill: "legacy" });
+const scoreScaleOut = (m, e, s, d, i, o = {}) => scoreScaleOutRaw(m, e, s, d, i, { ...o, fill: "legacy" });
 
 const bars = (rows) => [[100, 100], ...rows].map(([high, low]) => ({ high, low }));
 const LONG = { entry: 100, stop0: 98, dir: 1, entryIdx: 0 }; // risk 2
@@ -186,4 +191,29 @@ test("scaleout: short mirror — bank + runner BE", () => {
   assert.ok(t.banked);
   assert.equal(t.runnerExitR, 0);
   assert.equal(t.totalR, 2);
+});
+
+test("honest runner: re-filled at the next open, the stop keeps its distance, stop exits slip", () => {
+  // signal bar 98–102 with 50/50 flow → p80 next open 98 + 0.82·4 = 101.25 (+0.25 slip) = 101.5; stop 98 → 99.5
+  const rows = [
+    { high: 102, low: 98, buy: 50, sell: 50 },
+    { high: 101.75, low: 98.25, buy: 50, sell: 50 },
+  ];
+  const t = scoreRunnerRaw(rows, 100, 98, 1, 0);
+  assert.equal(t.entry, 101.5);
+  assert.equal(t.stop0, 99.5);
+  assert.equal(t.hit, "stop");
+  assert.equal(t.exit, 99.25); // 99.5 − 0.25 slip
+});
+
+test("honest scale-out: the bank needs a one-tick trade-through and each unit pays the commission", () => {
+  const rows = [
+    { high: 101, low: 99, buy: 50, sell: 50 }, // median open 100 → fill 100.25, risk 2 → 1R = 102.25
+    { high: 102.25, low: 100, buy: 50, sell: 50 }, // touches 1R exactly: no bank
+    { high: 102.4, low: 98.0, buy: 50, sell: 50 }, // still no trade-through; stop 98.25 hit
+  ];
+  const t = scoreScaleOutRaw(rows, 100, 98, 1, 0);
+  assert.equal(t.banked, false);
+  assert.equal(t.fullLoss, true);
+  assert.ok(t.pnl < -3 * 2 - 3 * 0.95 + 1e-9);
 });

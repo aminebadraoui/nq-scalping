@@ -19,6 +19,7 @@
  *   node --import scripts/ts-loader.mjs scripts/riskStackStudy.ts --offline
  * ------------------------------------------------------------------ */
 
+import { scoreTrade } from "../lib/backtestEngine";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { dollarize, simulateAccount, accountLine, type DollarizedTrade } from "../lib/propAccount";
 import { scoreScaleOut, type ScaleOutTrade } from "../lib/runner";
@@ -68,40 +69,15 @@ function scoreFixed(
   targetR: number,
   maxBars: number,
 ): Fixed | null {
+  // honest fill (lib/honestFill.ts via the engine's default): next-bar-open
+  // entry, bracket rebuilt from the fill, trade-through targets, slipped
+  // stops, MNQ commission floor
   const risk = Math.abs(entry - stop0);
   if (!(risk > 0)) return null;
   const target = entry + dir * targetR * risk;
-  const start = entryIdx + 1;
-  const end = Math.min(minutes.length - 1, entryIdx + maxBars);
-  if (start > end) return null;
-  let hit: Fixed["hit"] = "stop";
-  let exit = stop0;
-  let heldBars = 0;
-  let ambiguous = false;
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop0 : b.high >= stop0;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (j === start && stopHit && tgtHit) ambiguous = true;
-    if (stopHit) {
-      heldBars = j - entryIdx;
-      break;
-    }
-    if (tgtHit) {
-      exit = target;
-      hit = "target";
-      heldBars = j - entryIdx;
-      break;
-    }
-  }
-  if (hit === "stop" && heldBars === end - entryIdx) {
-    const stopHitLast = dir > 0 ? minutes[end].low <= stop0 : minutes[end].high >= stop0;
-    if (!stopHitLast) {
-      hit = "time";
-      exit = (minutes[end].high + minutes[end].low) / 2;
-    }
-  }
-  return { pnl: (exit - entry) * dir - COST, risk, heldBars, ambiguous, hit };
+  const sc = scoreTrade(minutes, { dir, entry, stop: stop0, target, entryIdx, risk }, { costPts: COST, holdBars: maxBars });
+  if (!sc) return null;
+  return { pnl: sc.pnl, risk: sc.risk, heldBars: sc.heldBars, ambiguous: sc.ambiguous, hit: sc.hit };
 }
 
 type Trade = {

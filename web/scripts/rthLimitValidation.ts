@@ -15,6 +15,7 @@
  *   node --import ../scripts/ts-loader.mjs ./scripts/rthLimitValidation.ts
  * ------------------------------------------------------------------ */
 
+import { closeEstimate, DEFAULT_SLIP_PTS, TICK } from "../lib/honestFill";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { closeOf, midOf, type MomMinute, type MomentumSignal } from "../lib/momentum";
 import { detectSoftMomentum, SOFT_PROD } from "../lib/softMomentum";
@@ -76,10 +77,12 @@ function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string,
     let fill = 0;
     for (let j = s.entryIdx + 1; j <= endTtl; j++) {
       const b = minutes[j];
-      const touched = dir > 0 ? b.low <= s.entry : b.high >= s.entry;
+      // honest fill: a one-tick trade-through (touch ≠ fill); price-improve
+      // only on a TRUE open (the archive has none — mid is not a price)
+      const touched = dir > 0 ? b.low <= s.entry - TICK : b.high >= s.entry + TICK;
       if (!touched) continue;
       fillBar = j;
-      const open = openOf(b);
+      const open = b.o > 0 ? b.o : s.entry;
       fill = dir > 0 ? Math.min(open, s.entry) : Math.max(open, s.entry);
       break;
     }
@@ -87,14 +90,16 @@ function scoreConfig(minutes: MomMinute[], sigs: MomentumSignal[], date: string,
     if (fillBar < 0) continue;
 
     const end = Math.min(minutes.length - 1, s.entryIdx + HORIZON);
-    let exit = closeOf(minutes[end]);
-    for (let j = fillBar + 1; j <= end; j++) {
+    let exit = closeEstimate(minutes[end]) - dir * DEFAULT_SLIP_PTS;
+    // honest walk: the fill bar is checked for the stop (stop-first) and
+    // never credits the target; targets need a trade-through; stops slip
+    for (let j = fillBar; j <= end; j++) {
       const b = minutes[j];
       if (dir > 0 ? b.low <= stop : b.high >= stop) {
-        exit = stop;
+        exit = stop - dir * DEFAULT_SLIP_PTS;
         break;
       }
-      if (dir > 0 ? b.high >= target : b.low <= target) {
+      if (j > fillBar && (dir > 0 ? b.high >= target + TICK : b.low <= target - TICK)) {
         exit = target;
         break;
       }
@@ -300,24 +305,28 @@ function scoreConfigTtl(minutes: MomMinute[], sigs: MomentumSignal[], date: stri
     let fill = 0;
     for (let j = s.entryIdx + 1; j <= endTtl; j++) {
       const b = minutes[j];
-      const touched = dir > 0 ? b.low <= s.entry : b.high >= s.entry;
+      // honest fill: a one-tick trade-through (touch ≠ fill); price-improve
+      // only on a TRUE open (the archive has none — mid is not a price)
+      const touched = dir > 0 ? b.low <= s.entry - TICK : b.high >= s.entry + TICK;
       if (!touched) continue;
       fillBar = j;
-      const open = openOf(b);
+      const open = b.o > 0 ? b.o : s.entry;
       fill = dir > 0 ? Math.min(open, s.entry) : Math.max(open, s.entry);
       break;
     }
     cardCount++;
     if (fillBar < 0) continue;
     const end = Math.min(minutes.length - 1, s.entryIdx + HORIZON);
-    let exit = closeOf(minutes[end]);
-    for (let j = fillBar + 1; j <= end; j++) {
+    let exit = closeEstimate(minutes[end]) - dir * DEFAULT_SLIP_PTS;
+    // honest walk: the fill bar is checked for the stop (stop-first) and
+    // never credits the target; targets need a trade-through; stops slip
+    for (let j = fillBar; j <= end; j++) {
       const b = minutes[j];
       if (dir > 0 ? b.low <= stop : b.high >= stop) {
-        exit = stop;
+        exit = stop - dir * DEFAULT_SLIP_PTS;
         break;
       }
-      if (dir > 0 ? b.high >= target : b.low <= target) {
+      if (j > fillBar && (dir > 0 ? b.high >= target + TICK : b.low <= target - TICK)) {
         exit = target;
         break;
       }

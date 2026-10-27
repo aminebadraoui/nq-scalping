@@ -39,6 +39,7 @@
  * and docs/research/ap-full-pool-2026-10-05.md.
  * ------------------------------------------------------------------ */
 
+import { simulateHonest } from "./honestFill";
 import {
   detectMomentum,
   detectExpansionScalp,
@@ -162,27 +163,28 @@ function scoreWith(
   const dir = s.dir === "long" ? 1 : -1;
   const risk = Math.abs(s.entry - stop);
   if (!(risk > 0)) return null;
-  const start = s.entryIdx + 1;
   // RTH trades may not run past the 15:00 bar (same cap as riskStackStudy)
   const mb = fam === "rth" || fam === "rthA+" ? Math.min(60, Math.max(1, minutes.findIndex((m) => m.t === "15:00") - s.entryIdx)) : 60;
-  const end = Math.min(minutes.length - 1, s.entryIdx + mb);
-  if (start > end) return null;
-
-  let hit: Scored["hit"] = "stop";
-  let exit = stop;
-  let heldBars = end - s.entryIdx;
-  for (let j = start; j <= end; j++) {
-    const b = minutes[j];
-    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
-    const tgtHit = dir > 0 ? b.high >= target : b.low <= target;
-    if (stopHit) { heldBars = j - s.entryIdx; break; } // pessimistic: stop first
-    if (tgtHit) { exit = target; hit = "target"; heldBars = j - s.entryIdx; break; }
-  }
-  if (hit === "stop" && heldBars === end - s.entryIdx) {
-    const stopHitLast = dir > 0 ? minutes[end].low <= stop : minutes[end].high >= stop;
-    if (!stopHitLast) { hit = "time"; exit = (minutes[end].high + minutes[end].low) / 2; }
-  }
-  const pnlPts = (exit - s.entry) * dir - COST;
+  if (s.entryIdx + 1 > minutes.length - 1) return null;
+  // honest fill (lib/honestFill.ts): market order at the next bar's open,
+  // bracket rebuilt from the fill with the same point distances; the
+  // commission is charged in $ below, so no fee in points here
+  const h = simulateHonest(
+    minutes,
+    {
+      dir: dir as 1 | -1,
+      signalIdx: s.entryIdx,
+      entry: { kind: "market" },
+      stopPts: risk,
+      targetPts: Math.abs(target - s.entry),
+      holdBars: Math.max(0, mb - 1),
+    },
+    { feePts: 0 },
+  );
+  if (!h || !h.filled) return null;
+  const hit: Scored["hit"] = h.hit === "nofill" ? "time" : h.hit;
+  const heldBars = h.exitIdx - s.entryIdx;
+  const pnlPts = h.grossPts - COST;
   const contracts = Math.max(1, Math.floor(params.riskCap / (risk * 2)));
   const pnlUsd = pnlPts * contracts * 2 - 2 * contracts * COMM_PER_SIDE;
   return {

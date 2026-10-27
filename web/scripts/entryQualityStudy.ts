@@ -30,6 +30,7 @@
  *   node --import scripts/ts-loader.mjs scripts/entryQualityStudy.ts --offline
  * ------------------------------------------------------------------ */
 
+import { marketFillEstimate, DEFAULT_SLIP_PTS, TICK } from "../lib/honestFill";
 import { loadSessionMinutes, archiveDates } from "../lib/archive";
 import { simulateAccount, accountLine } from "../lib/propAccount";
 import { scoreScaleOut } from "../lib/runner";
@@ -138,7 +139,9 @@ function runVariant(v: Variant, date: string, minutes: MomMinute[], signals: Sig
         rejected++;
         continue;
       }
-      fill = openOf(minutes[s.entryIdx + 1]);
+      // honest market fill: the true open when joined, else the unbiased
+      // next-open estimate from the signal bar, plus slippage
+      fill = (minutes[s.entryIdx + 1].o > 0 ? minutes[s.entryIdx + 1].o : marketFillEstimate(minutes[s.entryIdx], dir)) + dir * DEFAULT_SLIP_PTS;
       fillIdx = s.entryIdx + 1;
     }
     if (v.expRetrace && fam === "expansion") {
@@ -146,7 +149,8 @@ function runVariant(v: Variant, date: string, minutes: MomMinute[], signals: Sig
       let touched = -1;
       for (let j = s.entryIdx + 1; j <= Math.min(minutes.length - 1, s.entryIdx + RETRACE_BARS); j++) {
         const b = minutes[j];
-        if (dir > 0 ? b.low <= level : b.high >= level) {
+        // honest: a one-tick trade-through (touch ≠ fill)
+        if (dir > 0 ? b.low <= level - TICK : b.high >= level + TICK) {
           touched = j;
           break;
         }
@@ -156,7 +160,7 @@ function runVariant(v: Variant, date: string, minutes: MomMinute[], signals: Sig
         continue;
       }
       const b = minutes[touched];
-      fill = dir > 0 ? Math.min(openOf(b), level) : Math.max(openOf(b), level);
+      fill = (b.o ?? 0) > 0 ? (dir > 0 ? Math.min(b.o, level) : Math.max(b.o, level)) : level;
       fillIdx = touched;
     }
     const drift = (fill - s.entry) * dir;
@@ -193,7 +197,11 @@ function runVariant(v: Variant, date: string, minutes: MomMinute[], signals: Sig
     /* 5) score the ladder exit from the fill bar */
     const mb = fam === "rth" ? Math.min(60, Math.max(1, minutes.findIndex((m) => m.t === "15:00") - s.entryIdx)) : 60;
     if (mb < 1) continue;
-    const t = scoreScaleOut(minutes, fill, stop, dir, fillIdx - 1, { maxBars: mb, cost: COST });
+    // the close-fill reference is the LEGACY unreachable idealization (kept
+    // to show the gap); every other variant scores its real fill honestly
+    const t = v.closeFill
+      ? scoreScaleOut(minutes, fill, stop, dir, fillIdx, { maxBars: mb, cost: COST, fill: "legacy" })
+      : scoreScaleOut(minutes, fill, stop, dir, fillIdx - 1, { maxBars: mb, cost: COST, entryKind: "fixed" });
     if (!t) continue;
     if (halt) continue; // give-back halt: skip remaining entries today
 

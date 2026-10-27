@@ -28,11 +28,13 @@ type ScorableSignal = {
   entry: number;
   stop: number;
   target: number;
+  /** market price when the card fired (a resting-limit card has entry ≠ price) */
+  price?: number;
 };
 
 /** parse a recorded row into scorable form; null when it can't be replayed
  *  (reversal-style text levels, missing side, or invalid geometry) */
-export function toScorable(s: { key: string; day: string; timeET: string; side: string; entry: string; stop: string; target: string }): ScorableSignal | null {
+export function toScorable(s: { key: string; day: string; timeET: string; side: string; entry: string; stop: string; target: string; price?: string | number | null }): ScorableSignal | null {
   if (s.side !== "long" && s.side !== "short") return null;
   const entry = parseFloat(s.entry);
   const stop = parseFloat(s.stop);
@@ -40,7 +42,8 @@ export function toScorable(s: { key: string; day: string; timeET: string; side: 
   if (![entry, stop, target].every(Number.isFinite)) return null;
   if (s.side === "long" && !(stop < entry && entry < target)) return null;
   if (s.side === "short" && !(target < entry && entry < stop)) return null;
-  return { key: s.key, day: s.day, timeET: s.timeET, side: s.side, entry, stop, target };
+  const price = s.price === null || s.price === undefined || s.price === "" ? undefined : Number(s.price);
+  return { key: s.key, day: s.day, timeET: s.timeET, side: s.side, entry, stop, target, price: price !== undefined && Number.isFinite(price) && price > 0 ? price : undefined };
 }
 
 function prevDay(day: string): string {
@@ -66,13 +69,13 @@ export async function scoreSignalFromFiles(s: ScorableSignal): Promise<SignalOut
       low: m.low,
       close: m.c > 0 ? m.c : (m.high + m.low) / 2,
     }));
-    const o = scoreSignalBars(bars, t, s.side, s.entry, s.stop, s.target, { completeSession: true });
+    const o = scoreSignalBars(bars, t, s.side, s.entry, s.stop, s.target, { completeSession: true, marketPrice: s.price });
     if (o.outcome !== "") return o;
   }
   return null;
 }
 
-type OpenRow = { key: string; day: string; time_et: string; side: string; entry: string; stop: string; target: string; outcome: string };
+type OpenRow = { key: string; day: string; time_et: string; side: string; entry: string; stop: string; target: string; price: string | null; outcome: string };
 
 /**
  * Intraday outcome tracker — re-scores the still-open/unscored signals from
@@ -101,7 +104,7 @@ export async function updateLiveOutcomes(minutes: LiveMinute[]): Promise<number>
   let rows: OpenRow[] = [];
   try {
     rows = (await getDb()`
-      select key, day, time_et, side, entry, stop, target, outcome
+      select key, day, time_et, side, entry, stop, target, price, outcome
       from signals
       where side in ('long','short') and (outcome = '' or outcome = 'open')
         and day = ${lastBarDay}
@@ -113,9 +116,9 @@ export async function updateLiveOutcomes(minutes: LiveMinute[]): Promise<number>
 
   let updated = 0;
   for (const r of rows) {
-    const s = toScorable({ key: r.key, day: r.day, timeET: r.time_et, side: r.side, entry: r.entry, stop: r.stop, target: r.target });
+    const s = toScorable({ key: r.key, day: r.day, timeET: r.time_et, side: r.side, entry: r.entry, stop: r.stop, target: r.target, price: r.price });
     if (!s) continue;
-    const o = scoreSignalBars(bars, etToFeed(s.timeET), s.side, s.entry, s.stop, s.target, { completeSession: false });
+    const o = scoreSignalBars(bars, etToFeed(s.timeET), s.side, s.entry, s.stop, s.target, { completeSession: false, marketPrice: s.price });
     if (o.outcome === "" || o.outcome === r.outcome) continue;
     await updateSignalOutcome(s.key, {
       outcome: o.outcome,

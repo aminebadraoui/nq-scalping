@@ -20,6 +20,7 @@
 
 import { dollarize, simulateAccount, accountLine, type AccountSimResult } from "./propAccount";
 import { RAPID_EOD_50K, type PropRules } from "./propRules";
+import { closeEstimate, marketFillEstimate, MNQ_FEE_PTS, DEFAULT_SLIP_PTS, TICK } from "./honestFill";
 
 /* ================= 1. canonical trade shape ================= */
 
@@ -31,7 +32,7 @@ export type EngineTrade = {
 
 /* ================= 1. replay scoring ================= */
 
-export type ScoreBar = { high: number; low: number; c: number };
+export type ScoreBar = { high: number; low: number; c: number; o?: number; buy?: number; sell?: number };
 
 export type ScoreSpec = {
   dir: 1 | -1;
@@ -40,6 +41,14 @@ export type ScoreSpec = {
   target: number;
   entryIdx: number; // bar whose close is the entry; scoring starts at +1
   risk: number;
+  /** "signal" (default): `entry` is the signal bar's close proxy — under
+   *  the honest fill model the trade is re-filled at the next bar's open
+   *  (lib/honestFill.ts) and the bracket keeps its point distances from
+   *  that fill, like the live executor's rebuilt brackets.
+   *  "fixed": `entry` is a real fill that happened INSIDE bar `entryIdx`
+   *  (a limit / stop fill) — kept as is, and bar `entryIdx` itself is
+   *  checked for the stop (stop-first, no target credit). */
+  entryKind?: "signal" | "fixed";
 };
 
 export type ScoreOpts = {
@@ -59,9 +68,24 @@ export type ScoreOpts = {
    *  from the live slippage-alarm journal — never leave an idealized 0
    *  undeclared in a study header. */
   stopSlipPts?: number;
+  /** "honest" (default since 2026-10-26, lib/honestFill.ts): next-bar-open
+   *  entry (conservative p80 estimate when the archive has no true open) + slippage,
+   *  bracket re-anchored at the fill, target needs a one-tick
+   *  trade-through, stop and time exits slip, MNQ fees.
+   *  "legacy": the pre-2026-10-26 rules (entry at the signal bar's
+   *  midpoint, touch = fill, no slippage) — only for reproducing old
+   *  reports; its numbers are NOT reachable live. */
+  fill?: "honest" | "legacy";
+  /** honest mode: slippage on market entries, stops and time exits */
+  slipPts?: number;
+  /** honest mode: next-open estimate when the archive has no true open —
+   *  "p80" (default, conservative) or "p50" (optimistic bound) */
+  marketQuantile?: "p50" | "p80";
 };
 
 export const DEFAULT_COST = 0.5;
+/** honest-mode round-trip cost: the MNQ commission ($1.90 RT = 0.95 pt) */
+export const HONEST_COST = MNQ_FEE_PTS;
 export const DEFAULT_HOLD = 60;
 
 export type ScoredOutcome = {
@@ -85,6 +109,89 @@ const defaultClose = (b: ScoreBar): number => (b.c > 0 ? b.c : (b.high + b.low) 
  *  loss). Mirrors the live trader's worst case, and matches the semantics
  *  of the three former scoring implementations exactly. */
 export function scoreTrade(minutes: ScoreBar[], spec: ScoreSpec, opts?: ScoreOpts): ScoredOutcome | null {
+  if ((opts?.fill ?? "honest") === "honest") return scoreTradeHonest(minutes, spec, opts);
+  return scoreTradeLegacy(minutes, spec, opts);
+}
+
+/** Honest-fill version of scoreTrade (see ScoreOpts.fill). */
+function scoreTradeHonest(minutes: ScoreBar[], spec: ScoreSpec, opts?: ScoreOpts): ScoredOutcome | null {
+  const { dir, entryIdx } = spec;
+  if (!(spec.risk > 0)) return null;
+  if (dir > 0 && !(spec.stop < spec.entry && spec.entry < spec.target)) return null;
+  if (dir < 0 && !(spec.target < spec.entry && spec.entry < spec.stop)) return null;
+  const slip = opts?.slipPts ?? DEFAULT_SLIP_PTS;
+  // fees are a floor: a study passing the legacy 0.5-pt cost still pays the real commission
+  const costPts = Math.max(opts?.costPts ?? 0, HONEST_COST);
+  const stopSlip = opts?.stopSlipPts ?? slip;
+  const holdBars = opts?.holdBars ?? DEFAULT_HOLD;
+  const fixed = spec.entryKind === "fixed";
+  const sig = minutes[entryIdx];
+  if (!sig) return null;
+  const start = fixed ? entryIdx : entryIdx + 1;
+  if (start > minutes.length - 1 || (!fixed && entryIdx + 1 > minutes.length - 1)) {
+    if (opts?.onNoBars !== "time") return null;
+    return { exit: spec.entry, pnl: -costPts, hit: "time", heldBars: 0, risk: spec.risk, mfeR: 0, maeR: 0, runPts: 0, hit2R: false, hit3R: false, ambiguous: false };
+  }
+  let entry: number;
+  if (fixed) entry = spec.entry;
+  else {
+    const nb = minutes[entryIdx + 1];
+    const open = (nb.o ?? 0) > 0 ? (nb.o as number) : marketFillEstimate(sig, dir, opts?.marketQuantile);
+    entry = open + dir * slip;
+  }
+  const stopDist = Math.abs(spec.entry - spec.stop);
+  const tgtDist = Math.abs(spec.target - spec.entry);
+  const stop = entry - dir * stopDist;
+  const target = entry + dir * tgtDist;
+  const risk = stopDist;
+  const end = Math.min(minutes.length - 1, entryIdx + holdBars);
+
+  let hit: ScoredOutcome["hit"] = "time";
+  let exit = closeEstimate(minutes[end]) - dir * slip;
+  let heldBars = end - entryIdx;
+  let mfe = 0;
+  let mae = 0;
+  let run = 0;
+  let ambiguous = false;
+  let hit2R = false;
+  let hit3R = false;
+  const t2 = entry + dir * 2 * risk;
+  const t3 = entry + dir * 3 * risk;
+  for (let j = start; j <= end; j++) {
+    const b = minutes[j];
+    const fillBar = fixed && j === entryIdx;
+    const stopHit = dir > 0 ? b.low <= stop : b.high >= stop;
+    const tgtHit = dir > 0 ? b.high >= target + TICK : b.low <= target - TICK;
+    if (!fillBar) {
+      const fav = dir > 0 ? b.high - entry : entry - b.low;
+      const adv = dir > 0 ? entry - b.low : b.high - entry;
+      mfe = Math.max(mfe, fav / risk);
+      mae = Math.max(mae, adv / risk);
+      run = Math.max(run, fav);
+    }
+    if (j === start && stopHit && tgtHit) ambiguous = true;
+    if (stopHit) {
+      hit = "stop";
+      exit = stop - dir * stopSlip;
+      heldBars = j - entryIdx;
+      break;
+    }
+    if (fillBar) continue; // a fill bar never credits the target
+    if (dir > 0 ? b.high >= t3 : b.low <= t3) hit3R = true;
+    if (dir > 0 ? b.high >= t2 : b.low <= t2) hit2R = true;
+    if (tgtHit) {
+      hit = "target";
+      exit = target;
+      heldBars = j - entryIdx;
+      break;
+    }
+  }
+  const pnl = (exit - entry) * dir - costPts;
+  return { exit, pnl, hit, heldBars, risk, mfeR: mfe, maeR: mae, runPts: run, hit2R, hit3R, ambiguous };
+}
+
+/** The pre-2026-10-26 scorer (ScoreOpts.fill = "legacy"). */
+function scoreTradeLegacy(minutes: ScoreBar[], spec: ScoreSpec, opts?: ScoreOpts): ScoredOutcome | null {
   const { dir, entry, stop, target, entryIdx, risk } = spec;
   if (!(risk > 0)) return null;
   if (dir > 0 && !(stop < entry && entry < target)) return null;
@@ -530,7 +637,7 @@ export function renderVerdict(slots: { edge?: string; significance?: string; sta
  *  renderT0 injects the Stack row when the caller didn't supply one —
  *  an undeclared varying layer is printed as-is, never guessed. */
 export const PRODUCTION_STACK =
-  "signals *_PROD (registry) · gates default set · risk challengeRules+guardCore · fill 0.5pt/close-entry";
+  "signals *_PROD (registry) · gates default set · risk challengeRules+guardCore · honest fills (lib/honestFill.ts)";
 
 export function renderT0(fields: Record<string, string>): string {
   const entries: [string, string][] = Object.entries(fields);

@@ -21,7 +21,7 @@ export type SignalSide = "long" | "short" | "none";
 
 /** the post-fire outcome columns (written by the scorer — observational only) */
 export type SignalOutcomeRow = {
-  outcome: "win" | "loss" | "time" | "open" | "";
+  outcome: "win" | "loss" | "time" | "open" | "nofill" | "";
   exitPrice: number | null;
   exitTime: string;
   exitReason: "target" | "stop" | "time" | "";

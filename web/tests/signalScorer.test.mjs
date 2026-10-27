@@ -69,3 +69,32 @@ test("unscored: missing entry bar, non-numeric levels, or invalid geometry", () 
   assert.equal(scoreSignalBars([mk("10:00", 100, 99)], "10:00", "long", 100, 105, 103, { holdBars: 5 }).outcome, "");
   assert.equal(scoreSignalBars([], "10:00", "long", 100, 98, 103, { holdBars: 5 }).outcome, "");
 });
+
+test("resting-limit card: no trade-through within the fill window → nofill (never a paper win)", () => {
+  const bars = [
+    { t: "10:00", high: 105, low: 104, close: 104.5 },
+    { t: "10:01", high: 112, low: 104, close: 111 }, // runs to the target, never trades 100
+    { t: "10:02", high: 113, low: 108, close: 110 },
+  ];
+  const o = scoreSignalBars(bars, "10:00", "long", 100, 97, 106, { marketPrice: 104.5 });
+  assert.equal(o.outcome, "nofill");
+});
+
+test("resting-limit card: the fill bar checks the stop first and never credits the target", () => {
+  const bars = [
+    { t: "10:00", high: 105, low: 104, close: 104.5 },
+    { t: "10:01", high: 107, low: 96, close: 100 }, // fills 100, spans stop 97 and target 106
+  ];
+  const o = scoreSignalBars(bars, "10:00", "long", 100, 97, 106, { marketPrice: 104.5 });
+  assert.equal(o.outcome, "loss");
+});
+
+test("resting-limit card: filled on a trade-through, target on a later bar", () => {
+  const bars = [
+    { t: "10:00", high: 105, low: 104, close: 104.5 },
+    { t: "10:01", high: 104, low: 99.5, close: 101 },
+    { t: "10:02", high: 107, low: 100, close: 106 },
+  ];
+  const o = scoreSignalBars(bars, "10:00", "long", 100, 97, 106, { marketPrice: 104.5 });
+  assert.equal(o.outcome, "win");
+});
