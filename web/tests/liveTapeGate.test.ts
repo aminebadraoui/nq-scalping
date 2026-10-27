@@ -196,6 +196,9 @@ test("tapeGateTickFireMs: default 300s (above the normal ~2min confirm lag), env
   assert.equal(tapeGateTickFireMs({}), 300_000);
   assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "60000" }), 60_000);
   assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "0" }), 0);
+  // an empty / blank value is "unset", not 0 (= never fire) — Number("") is 0
+  assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "" }), 300_000);
+  assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "  " }), 300_000);
   assert.equal(tapeGateTickFireMs({ TAPE_GATE_TICK_FIRE_MS: "x" }), 300_000);
 });
 

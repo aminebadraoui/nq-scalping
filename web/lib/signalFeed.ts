@@ -349,7 +349,11 @@ export function tapeGateDecision(
  *  is ~2 min, so 120s tripped constantly during healthy operation and
  *  spammed TICK-BAR FIRE notices). */
 export function tapeGateTickFireMs(env: Record<string, string | undefined> = process.env): number {
-  const n = Number(env.TAPE_GATE_TICK_FIRE_MS ?? "300000");
+  // an empty value means "unset" (as feedFlag treats it) — Number("") is 0,
+  // which would silently select the infinite hold
+  const raw = (env.TAPE_GATE_TICK_FIRE_MS ?? "").trim();
+  if (raw === "") return 300000;
+  const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : 300000;
 }
 
@@ -1693,7 +1697,7 @@ class SignalFeed {
           scaleOut,
           limit: { price: level, expireAtMs },
         });
-        const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+        const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` (${planMaxMicro()}µ cap)` : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
         const armText = [
           isBigBar
             ? `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · big-bar continuation — broker limit resting · ${et} NY</b>`
@@ -1780,7 +1784,7 @@ class SignalFeed {
           et,
           features: signalFeatures(s as unknown as Record<string, unknown>, { aPlus, firstToday, family, retrace: true, gates: this.gateSnapshot(ov), kelly: kelly ?? undefined, ...es.features, ...rn.features, ...gch.features, ...wall.features }),
         };
-        const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+        const sizeStrArm = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` (${planMaxMicro()}µ cap)` : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
         const armText = [
           `🎯 <b>${STATS.momentum.name} · ${s.dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · expansion retrace — resting limit · ${et} NY</b>`,
           ``,
@@ -1821,7 +1825,7 @@ class SignalFeed {
         }
       });
 
-      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+      const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` (${planMaxMicro()}µ cap)` : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
       const evidence =
         s.kind === "expansion"
           ? `huge bar ${s.breakRangeR.toFixed(1)}×ATR · ${Math.round(s.breakFrac * 100)}% ${s.dir === "long" ? "buy" : "sell"}`
@@ -2114,7 +2118,7 @@ class SignalFeed {
         ? { contracts: p.fixed, dollarRisk: p.fixed * risk * 2, capped: false }
         : momentumSize(risk, p.riskBudget);
     const size = await this.applyDayTier(base, risk);
-    const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? " (${planMaxMicro()}µ cap)" : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
+    const sizeStr = `${size.contracts} MNQ · $${size.dollarRisk.toFixed(0)}${size.capped ? ` (${planMaxMicro()}µ cap)` : ""}${size.mult < 1 ? ` (day tier ${Math.round(size.mult * 100)}%)` : ""}`;
     const drift = (entry - p.sEntry) * dirSign;
 
     const intent: OrderIntent = {
