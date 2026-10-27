@@ -1,7 +1,7 @@
 # Regression tests
 
 ```bash
-npm test          # 427 tests (420 pass, 7 skipped), offline (~2.5 s)
+npm test          # ~1,190 tests, offline — Node ≥ 24 (the golden suites need the local gcdata/data session fixture)
 npm run test:watch
 ```
 

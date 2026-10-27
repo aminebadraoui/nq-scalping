@@ -74,7 +74,7 @@ The chart can show three windows (toolbar buttons); the profile level stack
 npm install   # uses a local npm cache if system cache is broken:
               # npm_config_cache="$PWD/../.npm-cache" npm install
 npm run dev   # http://localhost:3000  (dashboard)
-npm test      # 796 regression tests over every calculation (~7 s, no network)
+npm test      # ~1,190 regression tests over every calculation (no network; Node ≥ 24)
 npm run build && npm start
 ```
 

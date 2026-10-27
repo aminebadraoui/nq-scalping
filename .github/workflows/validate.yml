@@ -41,7 +41,7 @@ jobs:
         # The golden suites below read the local gcdata/data session fixture
         # (gitignored) directly or via lib/gcdata analyze/extractFootprint —
         # they are dev-machine-only. Local `npm test` keeps the full
-        # 530-test coverage; CI runs the offline unit suite without them.
+        # full coverage; CI runs the offline unit suite without them.
         run: |
           node --import ./tests/ts-loader.mjs --test \
             $(find tests -maxdepth 1 -name '*.test.ts') \
