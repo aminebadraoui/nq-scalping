@@ -1127,6 +1127,7 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
           if (prof.enabled && !key.startsWith("vwap|")) {
             registerTimeExit({
               key,
+              filled: true, // registered at the matched fill
               label: e.label,
               symbol: e.intent.symbol,
               dir: e.intent.dir,
@@ -1283,6 +1284,7 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
         if (prof.enabled) {
           registerTimeExit({
             key,
+            filled: true, // a re-sent MARKET entry (limits take the branch above)
             label: e.label,
             symbol: e.intent.symbol,
             dir: e.intent.dir,

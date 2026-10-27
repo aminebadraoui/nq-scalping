@@ -28,6 +28,12 @@ type TimeExit = {
   alerted: boolean;
   /** the trade's position has been observed open (on its side) */
   seenOpen: boolean;
+  /** registered at a CONFIRMED fill (market entry / matched limit fill):
+   *  only then may "seen open → flat" end the exit early. An exit
+   *  registered before its entry fills (a resting RTH limit, the VWAP-UP
+   *  15:59 flat) cannot tell its own position from another family's,
+   *  so it keeps the deadline-only behavior (2026-10-26 review). */
+  filled: boolean;
 };
 
 let pending = new Map<string, TimeExit>();
@@ -43,9 +49,9 @@ function enabled(): boolean {
   );
 }
 
-export function registerTimeExit(e: { key: string; label: string; symbol: string; dir: "long" | "short"; exitAtMs: number }) {
+export function registerTimeExit(e: { key: string; label: string; symbol: string; dir: "long" | "short"; exitAtMs: number; filled?: boolean }) {
   if (!enabled()) return;
-  pending.set(e.key, { ...e, alerted: false, seenOpen: false });
+  pending.set(e.key, { ...e, alerted: false, seenOpen: false, filled: e.filled === true });
 }
 
 async function readHeldMnq(): Promise<number | null> {
@@ -75,8 +81,8 @@ export async function checkTimeExits(): Promise<void> {
     // instead of letting it fire at the deadline against whatever
     // position exists then (a later trade). An entry not yet filled (a
     // resting limit) reads flat without having been seen open: kept.
-    if (held !== null && held !== 0 && (e.dir === "long" ? held > 0 : held < 0)) e.seenOpen = true;
-    if (held === 0 && e.seenOpen) {
+    if (e.filled && held !== null && held !== 0 && (e.dir === "long" ? held > 0 : held < 0)) e.seenOpen = true;
+    if (e.filled && held === 0 && e.seenOpen) {
       pending.delete(key);
       continue;
     }

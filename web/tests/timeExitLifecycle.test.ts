@@ -32,7 +32,7 @@ test("time exit: dropped once its trade is seen open then flat; fires on a match
   try {
     te.__resetTimeExitForTest();
     // short A registered with a 60-min exit; it is open, then stopped out
-    te.registerTimeExit({ key: "a", label: "A short", symbol: "NQZ26", dir: "short", exitAtMs: clock + 60 * 60_000 });
+    te.registerTimeExit({ key: "a", label: "A short", symbol: "NQZ26", dir: "short", exitAtMs: clock + 60 * 60_000, filled: true });
     pos = [{ instrument: "MNQZ6", netPos: -3 }];
     await tick();
     clock += 10 * 60_000;
@@ -52,6 +52,47 @@ test("time exit: dropped once its trade is seen open then flat; fires on a match
     clock += 2 * 60_000;
     await tick();
     assert.equal(posts.length, 1, `expected one exit, got ${JSON.stringify(posts)}`);
+  } finally {
+    Date.now = realNow;
+    globalThis.fetch = realFetch;
+    te.__resetTimeExitForTest();
+  }
+});
+
+test("time exit registered BEFORE its fill (VWAP-UP 15:59 flat) survives an unrelated trade opening and closing", { timeout: 20_000 }, async () => {
+  const te = await import("../lib/timeExit");
+  const ct = await import("../lib/ctAccount");
+  let pos: Array<Record<string, unknown>> = [];
+  const posts: string[] = [];
+  let clock = Date.parse("2026-10-27T14:00:00Z");
+  const realNow = Date.now;
+  const realFetch = globalThis.fetch;
+  Date.now = () => clock;
+  globalThis.fetch = (async (u: unknown, init?: { method?: string; body?: string }) => {
+    const url = String(u);
+    if (init?.method === "POST" && !url.includes("telegram")) posts.push(url);
+    const body = { success: true, data: url.endsWith("/positions") ? pos : [] };
+    return { ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body } as Response;
+  }) as typeof fetch;
+  const tick = async () => {
+    ct.__resetCtAccountForTest({ backoffBaseMs: 1 } as never);
+    await te.checkTimeExits();
+  };
+  try {
+    te.__resetTimeExitForTest();
+    const exitAt = Date.parse("2026-10-27T19:59:00Z"); // 15:59 ET
+    te.registerTimeExit({ key: "vwap|2026-10-27|exit", label: "vwap-up long", symbol: "NQZ26", dir: "long", exitAtMs: exitAt });
+    await tick(); // the VWAP limit is resting: flat
+    pos = [{ instrument: "MNQZ6", netPos: 2 }]; // an unrelated momentum long…
+    clock += 5 * 60_000;
+    await tick();
+    pos = []; // …closes
+    clock += 5 * 60_000;
+    await tick();
+    pos = [{ instrument: "MNQZ6", netPos: 3 }]; // the VWAP limit fills later
+    clock = exitAt + 30_000;
+    await tick();
+    assert.equal(posts.length, 1, "the 15:59 flatten must still fire");
   } finally {
     Date.now = realNow;
     globalThis.fetch = realFetch;

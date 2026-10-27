@@ -2009,6 +2009,7 @@ class SignalFeed {
         if (prof.enabled) {
           registerTimeExit({
             key: `mom|${key}`,
+            filled: true, // market entry: filled at placement
             label: `momentum ${intent.dir} ${et} (${prof.timeExitBars}-bar profile)`,
             symbol: intent.symbol,
             dir: intent.dir,
@@ -2576,6 +2577,7 @@ class SignalFeed {
           if (res.ok && prof.enabled) {
             registerTimeExit({
               key: `rth|${key}`,
+              filled: !useLimitEntry, // a resting limit has not filled yet
               label: `session-continuation ${s.dir} ${et} (${prof.timeExitBars}-bar profile)`,
               symbol: symbol(),
               dir: s.dir,
