@@ -6,3 +6,11 @@ tests
 gcdata
 .dockerignore
 Dockerfile
+# local-only files that must never reach an image (Coolify builds from a
+# git clone so they are absent there — this covers local `docker build`)
+.env*
+.executor-guard.json
+.tradovate-md-token.json
+.research_tmp
+data
+*.tsbuildinfo

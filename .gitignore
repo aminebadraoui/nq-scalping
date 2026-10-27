@@ -27,6 +27,17 @@ web/.next/
 web/next-env.d.ts
 scripts/getxapi-cache/
 
+# ---- local scratch & raw research inputs (never commit) ----
+# .tmp-b*/ are full stale repo snapshots (~750 MB); the rest are PDFs,
+# transcripts and a local data copy used as study inputs
+.tmp-*/
+.research_tmp/
+web/.research_tmp/
+web/gcdata/
+transcripts/
+transcript_*.txt
+.gstack/
+
 # ---- misc ----
 .DS_Store
 .runner-state.json

@@ -12,3 +12,10 @@
 gcdata/data
 .DS_Store
 *.log
+# local scratch / research inputs (untracked, large)
+.tmp-*
+.research_tmp
+transcripts
+transcript_*.txt
+web/.research_tmp
+web/gcdata
