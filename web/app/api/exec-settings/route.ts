@@ -42,6 +42,7 @@ import {
   type GuardResetAdvice,
 } from "@/lib/execOverrides";
 import { appendDaybook } from "@/lib/daybook";
+import { FailThrottle, clientIp } from "@/lib/adminAuth";
 
 export const dynamic = "force-dynamic";
 
@@ -63,35 +64,12 @@ function bearerOk(auth: string | null): boolean {
   return !!admin && timingSafeEqual(sha(given), sha(admin));
 }
 
-/* ---- per-IP failure throttle ----------------------------------------- */
-const fails = new Map<string, { n: number; until: number }>();
-const MAX_FAILS = 5;
-const WINDOW_MS = 10 * 60_000;
-
-function throttled(ip: string): boolean {
-  const f = fails.get(ip);
-  if (!f) return false;
-  if (Date.now() > f.until) {
-    fails.delete(ip);
-    return false;
-  }
-  return f.n >= MAX_FAILS;
-}
-
-function recordFail(ip: string): void {
-  const f = fails.get(ip) ?? { n: 0, until: 0 };
-  f.n += 1;
-  if (f.n >= MAX_FAILS) f.until = Date.now() + WINDOW_MS;
-  fails.set(ip, f);
-}
-
-function recordOk(ip: string): void {
-  fails.delete(ip);
-}
-
-function ipOf(req: NextRequest): string {
-  return req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
-}
+/* ---- per-IP failure throttle (shared implementation: lib/adminAuth) -- */
+const throttle = new FailThrottle(); // 5 failures / 10 min → 429
+const throttled = (ip: string): boolean => throttle.blocked(ip);
+const recordFail = (ip: string): void => throttle.fail(ip);
+const recordOk = (ip: string): void => throttle.ok(ip);
+const ipOf = (req: NextRequest): string => clientIp(req.headers);
 
 export async function GET(req: NextRequest) {
   const raw = req.nextUrl.searchParams.get("raw") === "1";
