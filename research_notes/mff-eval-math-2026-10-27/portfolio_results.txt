@@ -1,0 +1,13 @@
+noise_area  raw mean= +8.689 sd= 90.503 Sh=+0.096 | volscaled mean= +3.552 sd= 37.835 Sh=+0.094
+gap_fade    raw mean=+10.847 sd=114.693 Sh=+0.095 | volscaled mean= +4.762 sd= 44.753 Sh=+0.106
+overnight   raw mean= +9.097 sd=170.713 Sh=+0.053 | volscaled mean= +4.770 sd= 63.058 Sh=+0.076
+tom         raw mean= +5.228 sd=103.734 Sh=+0.050 | volscaled mean= +0.798 sd= 45.522 Sh=+0.018
+[[ 1.   -0.11  0.02  0.03]
+ [-0.11  1.    0.05 -0.06]
+ [ 0.02  0.05  1.   -0.  ]
+ [ 0.03 -0.06 -0.    1.  ]]
+noise_area                               2024:+0.116 2025:+0.071 2026:+0.104
+noise_area+gap_fade                      2024:+0.139 2025:+0.144 2026:+0.176
+noise_area+overnight                     2024:+0.163 2025:+0.112 2026:+0.062
+noise_area+gap_fade+overnight            2024:+0.181 2025:+0.159 2026:+0.115
+noise_area+gap_fade+overnight+tom        2024:+0.162 2025:+0.123 2026:+0.152

@@ -1,0 +1,56 @@
+noise_area p50               2024 n= 227 WR= 22.9% pts/tr=  +6.89 sum= +1563.7 t=+1.47 dailySharpe=+0.096
+noise_area p50               2025 n= 231 WR= 18.6% pts/tr=  +8.53 sum= +1971.0 t=+1.33 dailySharpe=+0.087
+noise_area p50               2026 n= 191 WR= 21.5% pts/tr= +11.20 sum= +2139.4 t=+1.50 dailySharpe=+0.108
+noise_area p50               all  n= 649 WR= 21.0% pts/tr=  +8.74 sum= +5674.1 t=+2.45 dailySharpe=+0.095
+noise_area p80               2024 n= 227 WR= 22.0% pts/tr=  +2.31 sum=  +523.4 t=+0.48 dailySharpe=+0.032
+noise_area p80               2025 n= 231 WR= 16.0% pts/tr=  +2.36 sum=  +545.8 t=+0.38 dailySharpe=+0.025
+noise_area p80               2026 n= 191 WR= 19.9% pts/tr=  +4.53 sum=  +865.9 t=+0.60 dailySharpe=+0.043
+noise_area p80               all  n= 649 WR= 19.3% pts/tr=  +2.98 sum= +1935.1 t=+0.84 dailySharpe=+0.033
+orb5 stop-orders 10R         2024 n= 231 WR= 27.3% pts/tr=  +6.54 sum= +1510.0 t=+0.94 dailySharpe=+0.062
+orb5 stop-orders 10R         2025 n= 231 WR= 31.2% pts/tr= +10.68 sum= +2466.0 t=+0.94 dailySharpe=+0.062
+orb5 stop-orders 10R         2026 n= 191 WR= 31.9% pts/tr=  -4.37 sum=  -835.2 t=-0.36 dailySharpe=-0.026
+orb5 stop-orders 10R         all  n= 662 WR= 30.2% pts/tr=  +4.78 sum= +3166.4 t=+0.82 dailySharpe=+0.032
+orb5 stop-orders 2R          2024 n= 231 WR= 38.1% pts/tr=  +9.89 sum= +2285.3 t=+1.79 dailySharpe=+0.117
+orb5 stop-orders 2R          2025 n= 231 WR= 36.8% pts/tr=  -1.44 sum=  -332.7 t=-0.21 dailySharpe=-0.014
+orb5 stop-orders 2R          2026 n= 191 WR= 34.0% pts/tr=  -9.10 sum= -1737.2 t=-0.93 dailySharpe=-0.067
+orb5 stop-orders 2R          all  n= 662 WR= 36.7% pts/tr=  +0.50 sum=  +329.6 t=+0.12 dailySharpe=+0.005
+orb5 delta-dir p50           2024 n= 232 WR= 22.4% pts/tr=  +9.90 sum= +2295.9 t=+1.60 dailySharpe=+0.105
+orb5 delta-dir p50           2025 n= 231 WR= 24.2% pts/tr=  +5.17 sum= +1194.0 t=+0.63 dailySharpe=+0.041
+orb5 delta-dir p50           2026 n= 191 WR= 26.2% pts/tr=  +3.38 sum=  +645.3 t=+0.34 dailySharpe=+0.024
+orb5 delta-dir p50           all  n= 663 WR= 24.4% pts/tr=  +6.46 sum= +4285.2 t=+1.41 dailySharpe=+0.055
+orb5 delta-dir p80           2024 n= 232 WR= 21.6% pts/tr=  +2.83 sum=  +656.6 t=+0.46 dailySharpe=+0.030
+orb5 delta-dir p80           2025 n= 231 WR= 24.2% pts/tr=  -0.86 sum=  -197.7 t=-0.10 dailySharpe=-0.006
+orb5 delta-dir p80           2026 n= 191 WR= 25.7% pts/tr=  -6.90 sum= -1316.9 t=-0.68 dailySharpe=-0.049
+orb5 delta-dir p80           all  n= 663 WR= 24.0% pts/tr=  -1.12 sum=  -745.1 t=-0.24 dailySharpe=-0.009
+orb15 stop-orders 10R        2024 n= 232 WR= 37.9% pts/tr=  +5.18 sum= +1202.4 t=+0.68 dailySharpe=+0.044
+orb15 stop-orders 10R        2025 n= 231 WR= 44.2% pts/tr= +19.90 sum= +4596.3 t=+1.60 dailySharpe=+0.105
+orb15 stop-orders 10R        2026 n= 191 WR= 40.3% pts/tr=  -8.55 sum= -1632.4 t=-0.69 dailySharpe=-0.050
+orb15 stop-orders 10R        all  n= 663 WR= 40.9% pts/tr=  +6.16 sum= +4086.7 t=+0.99 dailySharpe=+0.038
+orb15 stop-orders 2R         2024 n= 232 WR= 43.5% pts/tr=  +6.68 sum= +1550.6 t=+1.01 dailySharpe=+0.066
+orb15 stop-orders 2R         2025 n= 231 WR= 46.3% pts/tr= +19.07 sum= +4404.5 t=+1.89 dailySharpe=+0.124
+orb15 stop-orders 2R         2026 n= 191 WR= 42.4% pts/tr=  -4.36 sum=  -833.7 t=-0.38 dailySharpe=-0.027
+orb15 stop-orders 2R         all  n= 663 WR= 44.2% pts/tr=  +7.65 sum= +5073.4 t=+1.42 dailySharpe=+0.055
+orb15 delta-dir p50          2024 n= 232 WR= 27.2% pts/tr=  +4.08 sum=  +945.9 t=+0.61 dailySharpe=+0.040
+orb15 delta-dir p50          2025 n= 231 WR= 32.9% pts/tr= +10.90 sum= +2517.8 t=+1.22 dailySharpe=+0.080
+orb15 delta-dir p50          2026 n= 191 WR= 32.5% pts/tr=  +5.11 sum=  +975.3 t=+0.44 dailySharpe=+0.032
+orb15 delta-dir p50          all  n= 663 WR= 30.9% pts/tr=  +6.77 sum= +4485.9 t=+1.32 dailySharpe=+0.051
+orb15 delta-dir p80          2024 n= 232 WR= 26.3% pts/tr=  -1.42 sum=  -328.6 t=-0.21 dailySharpe=-0.014
+orb15 delta-dir p80          2025 n= 231 WR= 31.6% pts/tr=  +4.34 sum= +1002.1 t=+0.48 dailySharpe=+0.032
+orb15 delta-dir p80          2026 n= 191 WR= 31.4% pts/tr=  -5.39 sum= -1029.4 t=-0.47 dailySharpe=-0.034
+orb15 delta-dir p80          all  n= 663 WR= 29.9% pts/tr=  -0.50 sum=  -332.1 t=-0.10 dailySharpe=-0.004
+orb30 stop-orders 10R        2024 n= 232 WR= 46.6% pts/tr= +12.62 sum= +2927.9 t=+1.55 dailySharpe=+0.102
+orb30 stop-orders 10R        2025 n= 231 WR= 46.8% pts/tr= +13.76 sum= +3179.6 t=+1.09 dailySharpe=+0.072
+orb30 stop-orders 10R        2026 n= 188 WR= 50.0% pts/tr=  -5.07 sum=  -953.3 t=-0.40 dailySharpe=-0.029
+orb30 stop-orders 10R        all  n= 660 WR= 47.9% pts/tr=  +7.86 sum= +5188.8 t=+1.23 dailySharpe=+0.048
+orb30 stop-orders 2R         2024 n= 232 WR= 48.3% pts/tr=  +9.98 sum= +2314.6 t=+1.39 dailySharpe=+0.091
+orb30 stop-orders 2R         2025 n= 231 WR= 47.2% pts/tr=  +7.83 sum= +1809.8 t=+0.79 dailySharpe=+0.052
+orb30 stop-orders 2R         2026 n= 188 WR= 50.0% pts/tr=  -6.23 sum= -1170.6 t=-0.50 dailySharpe=-0.036
+orb30 stop-orders 2R         all  n= 660 WR= 48.6% pts/tr=  +4.55 sum= +3004.3 t=+0.82 dailySharpe=+0.032
+orb30 delta-dir p50          2024 n= 232 WR= 33.6% pts/tr=  +5.00 sum= +1160.6 t=+0.69 dailySharpe=+0.045
+orb30 delta-dir p50          2025 n= 231 WR= 38.1% pts/tr= +18.48 sum= +4267.8 t=+1.57 dailySharpe=+0.104
+orb30 delta-dir p50          2026 n= 191 WR= 39.8% pts/tr=  +5.36 sum= +1024.5 t=+0.45 dailySharpe=+0.033
+orb30 delta-dir p50          all  n= 663 WR= 37.3% pts/tr=  +9.88 sum= +6548.4 t=+1.67 dailySharpe=+0.065
+orb30 delta-dir p80          2024 n= 232 WR= 32.8% pts/tr=  +0.96 sum=  +221.6 t=+0.13 dailySharpe=+0.009
+orb30 delta-dir p80          2025 n= 231 WR= 36.4% pts/tr= +13.07 sum= +3019.1 t=+1.11 dailySharpe=+0.073
+orb30 delta-dir p80          2026 n= 191 WR= 38.7% pts/tr=  -1.63 sum=  -312.2 t=-0.14 dailySharpe=-0.010
+orb30 delta-dir p80          all  n= 663 WR= 36.0% pts/tr=  +4.56 sum= +3025.9 t=+0.77 dailySharpe=+0.030

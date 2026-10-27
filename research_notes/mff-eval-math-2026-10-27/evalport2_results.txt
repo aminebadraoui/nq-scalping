@@ -1,0 +1,6 @@
+NA×1 gap≤150×1 | 2024: pass 100% breach   0% med 104d | 2025: pass 100% breach   0% med 148d | 2026: pass  13% breach   0% med 17d
+NA×2 gap≤150×1 | 2024: pass  70% breach  30% med 43d | 2025: pass  84% breach  15% med 152d | 2026: pass  13% breach  43% med 17d
+NA×1 gap≤150×2 | 2024: pass 100% breach   0% med 41d | 2025: pass  35% breach  65% med 108d | 2026: pass  18% breach   7% med 65d
+NA×2 gap≤150×2 | 2024: pass  72% breach  28% med 32d | 2025: pass  54% breach  46% med 141d | 2026: pass  16% breach  43% med 19d
+NA×3 gap≤150×2 | 2024: pass  69% breach  31% med 34d | 2025: pass  43% breach  57% med 159d | 2026: pass  15% breach  50% med 18d
+NA×3 gap≤150×3 | 2024: pass  62% breach  38% med 29d | 2025: pass  33% breach  67% med 138d | 2026: pass  16% breach  51% med 19d
