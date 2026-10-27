@@ -193,7 +193,8 @@ if [ -n "${R2_ACCOUNT_ID:-}" ] || grep -q '^R2_ACCOUNT_ID=' "$ROOT/gcdata/.env" 
   if "$PY" "$ROOT/scripts/r2_sync.py" upload 2>&1; then
     log "r2 upload ok"
     "$PY" "$ROOT/scripts/r2_sync.py" prune 2>&1
-    log "r2 prune exit=$?"
+    R2_PRUNE_RC=$?
+    log "r2 prune exit=$R2_PRUNE_RC"
   else
     R2_RC=1
     log "r2 upload FAILED — keeping local files until the next run"
@@ -214,7 +215,8 @@ else
     if "$PY" "$ROOT/scripts/es_r2_sync.py" upload 2>&1; then
       log "es r2 upload ok"
       "$PY" "$ROOT/scripts/es_r2_sync.py" prune 2>&1
-      log "es r2 prune exit=$?"
+      ES_R2_PRUNE_RC=$?
+      log "es r2 prune exit=$ES_R2_PRUNE_RC"
     else
       ES_R2_RC=1
       log "es r2 upload FAILED — keeping local es files until the next run"
@@ -266,18 +268,21 @@ if [ "$BACKFILL_RC" -ne 0 ]; then FINAL_RC=$BACKFILL_RC; fi
 if [ "$OHLC_RC" -ne 0 ]; then FINAL_RC=$OHLC_RC; fi
 if [ "${CANARY_RC:-0}" -ne 0 ]; then FINAL_RC=$CANARY_RC; fi
 if [ "${R2_RC:-0}" -ne 0 ]; then FINAL_RC=$R2_RC; fi
+if [ "${R2_PRUNE_RC:-0}" -ne 0 ]; then FINAL_RC=$R2_PRUNE_RC; fi
 if [ "${ES_BF_RC:-0}" -ne 0 ]; then FINAL_RC=$ES_BF_RC; fi
 if [ "${ES_R2_RC:-0}" -ne 0 ]; then FINAL_RC=$ES_R2_RC; fi
+if [ "${ES_R2_PRUNE_RC:-0}" -ne 0 ]; then FINAL_RC=$ES_R2_PRUNE_RC; fi
 if [ "$DAYBOOK_RC" -ne 0 ]; then FINAL_RC=$DAYBOOK_RC; fi
 if [ "$DIVSTORE_RC" -ne 0 ]; then FINAL_RC=$DIVSTORE_RC; fi
 if [ "$RECONCILE_RC" -ne 0 ]; then FINAL_RC=$RECONCILE_RC; fi
 if [ "$SCORESIG_RC" -ne 0 ]; then FINAL_RC=$SCORESIG_RC; fi
 if [ "$ANALYSIS_RC" -ne 0 ]; then FINAL_RC=$ANALYSIS_RC; fi
+if [ "$FRICTION_RC" -ne 0 ]; then FINAL_RC=$FRICTION_RC; fi
 if [ "$INSIGHTS_RC" -ne 0 ]; then FINAL_RC=$INSIGHTS_RC; fi
 if [ "${INTERPRET_RC:-0}" -ne 0 ]; then FINAL_RC=$INTERPRET_RC; fi
 if [ "$RISKSTACK_RC" -ne 0 ]; then FINAL_RC=$RISKSTACK_RC; fi
 if [ "${DECAY_RC:-0}" -ne 0 ]; then FINAL_RC=$DECAY_RC; fi
 if [ "${BREADTH_RC:-0}" -ne 0 ]; then FINAL_RC=$BREADTH_RC; fi
 if [ "${FDR_RC:-0}" -ne 0 ]; then FINAL_RC=$FDR_RC; fi
-log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC canary=${CANARY_RC:-0} r2=${R2_RC:-0} es=${ES_BF_RC:-0} es_r2=${ES_R2_RC:-0} ingest=$INGEST_RC divstore=$DIVSTORE_RC reconcile=$RECONCILE_RC scoresig=$SCORESIG_RC analysis=$ANALYSIS_RC insights=$INSIGHTS_RC interpret=${INTERPRET_RC:-0} riskstack=$RISKSTACK_RC decay=${DECAY_RC:-0} breadth=${BREADTH_RC:-0} fdr=${FDR_RC:-0}) ==="
+log "=== nightly collection done (backfill=$BACKFILL_RC ohlc=$OHLC_RC canary=${CANARY_RC:-0} r2=${R2_RC:-0} r2_prune=${R2_PRUNE_RC:-0} es=${ES_BF_RC:-0} es_r2=${ES_R2_RC:-0} es_r2_prune=${ES_R2_PRUNE_RC:-0} ingest=$INGEST_RC divstore=$DIVSTORE_RC reconcile=$RECONCILE_RC scoresig=$SCORESIG_RC analysis=$ANALYSIS_RC friction=$FRICTION_RC insights=$INSIGHTS_RC interpret=${INTERPRET_RC:-0} riskstack=$RISKSTACK_RC decay=${DECAY_RC:-0} breadth=${BREADTH_RC:-0} fdr=${FDR_RC:-0}) ==="
 exit $FINAL_RC
