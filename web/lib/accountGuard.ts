@@ -390,8 +390,12 @@ export async function hydrateGuardFromDb(opts?: { force?: boolean; timeoutMs?: n
 export function tradingDayKey(now = new Date()): string {
   const p = nyParts(now);
   if (p.minute >= 18 * 60) return p.date;
-  const prev = new Date(now.getTime() - 24 * 3_600_000);
-  return nyParts(prev).date;
+  // previous CALENDAR day of the New York date — not `now − 24h`, which
+  // lands two dates back for the hour after the spring DST jump (a 23-hour
+  // day: 00:30 EDT − 24h = 23:30 EST two days earlier)
+  const d = new Date(`${p.date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 function nyParts(now = new Date()) {

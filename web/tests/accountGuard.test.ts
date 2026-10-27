@@ -233,6 +233,20 @@ test("tradingDayKey: before 18:00 belongs to yesterday's session", () => {
   assert.equal(tradingDayKey(new Date("2026-10-02T22:30:00Z")), "2026-10-02");
 });
 
+test("tradingDayKey: DST transitions and month edges keep one key per session", () => {
+  // spring forward (2027-03-14): the 23-hour day — 00:30 EDT on the 15th is
+  // still the 03-14 session (was 03-13 with `now − 24h`)
+  assert.equal(tradingDayKey(new Date("2027-03-15T03:59:00Z")), "2027-03-14"); // 23:59 EDT 14th
+  assert.equal(tradingDayKey(new Date("2027-03-15T04:30:00Z")), "2027-03-14"); // 00:30 EDT 15th
+  assert.equal(tradingDayKey(new Date("2027-03-15T05:10:00Z")), "2027-03-14"); // 01:10 EDT 15th
+  // fall back (2026-11-01): 01:30 EDT is still the 10-31 session
+  assert.equal(tradingDayKey(new Date("2026-11-01T05:30:00Z")), "2026-10-31");
+  // month / year edges
+  assert.equal(tradingDayKey(new Date("2027-03-01T15:00:00Z")), "2027-02-28");
+  assert.equal(tradingDayKey(new Date("2027-01-01T15:00:00Z")), "2026-12-31");
+});
+
+
 test("daily loss floor (DAILY_LOSS_FLOOR) halts once the day crosses it", () => {
   __resetGuardForTest();
   setStage("eval");
