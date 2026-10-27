@@ -14,6 +14,17 @@ heads-up, feed-gap alert — Telegram gets the trade-signal cards only).
 Verify any time via
 `/api/gc?action=health` → `execution.feeds`.
 
+
+> **2026-10-27 — EVAL PLAN v1 is the only strategy set that places orders.**
+> Honest-fill re-scoring (`docs/research/honest-fills-2026-10-26.md`) showed
+> every family below loses at reachable prices; they are now signal-only
+> (cards still post) unless `LEGACY_EXEC=1`. Live: the **noise-area intraday
+> momentum** (Zarattini/Aziz/Barbon rules, checks at :00/:30 from 10:30 ET,
+> VWAP/band trailing stop, flat 15:59) and the **opening gap fade** (gap >
+> 0.25%, stop = gap ≤ 150 pt, out 11:00) — 1 MNQ each (`FEED_EVAL_NOISE_AREA`,
+> `FEED_EVAL_GAP_FADE`, `EVAL_NA_CONTRACTS`, `EVAL_GAP_CONTRACTS`). Code
+> `web/lib/evalPlan.ts`; study `scripts/research/eval_plan_v1/`.
+
 ---
 
 ## ⚡ THE MOMENTUM CARDS — Failed-Flush Breakout + Huge-Bar Expansion (the one trade signal)

@@ -54,7 +54,9 @@ import { utcToET, cdtToET, utcToFeedStamp } from "./times";
 import { inRTH } from "./softMomentum";
 import { dbEnabled, getDb } from "./gcdb";
 import { placeOrder, placeScaleOut, type OrderIntent } from "./executor";
-import { crossTradeEnabled } from "./crossTrade";
+import { crossTradeEnabled, changeCrossTradeOrder } from "./crossTrade";
+import { barClose, gapDecision, isCheckBar, noiseBands, noiseEntry, noiseStop, rthIndex, rthOpen, rthVwap, type Bar as EvalBar } from "./evalPlan";
+import { evalHistory } from "./evalPlanHistory";
 import { runnerTracker } from "./runnerTracker";
 import { cardGateOpen } from "./signals";
 import { sizeLine } from "./mechanism";
@@ -269,6 +271,14 @@ export const FEED_OPEN_SNIPER = feedFlag("FEED_OPEN_SNIPER", false);
  *  only). The gap detector still runs for the logs; only the push is
  *  silenced. */
 export const FEED_GAP_ALERTS = feedFlag("FEED_GAP_ALERTS", false);
+/** EVAL PLAN v1 (2026-10-27, research_notes/mff-eval-math-2026-10-27):
+ *  the two strategies that survived honest-fill testing — the noise-area
+ *  intraday momentum (FEED_EVAL_NOISE_AREA) and the opening gap fade
+ *  (FEED_EVAL_GAP_FADE). ON by default (owner: "live immediately"). They
+ *  are the ONLY strategies that place orders unless LEGACY_EXEC=1
+ *  (lib/executor.ts); 1 MNQ each (EVAL_NA_CONTRACTS / EVAL_GAP_CONTRACTS). */
+export const FEED_EVAL_NOISE_AREA = feedFlag("FEED_EVAL_NOISE_AREA", true);
+export const FEED_EVAL_GAP_FADE = feedFlag("FEED_EVAL_GAP_FADE", true);
 
 /** fixed contracts per card family: the sizing study optimum is 9 for the
  *  momentum + RTH cards (median day +$347, 0% annual breach); the open
@@ -2657,6 +2667,154 @@ class SignalFeed {
    * still working (no stacking). Flat by 15:59 ET (time exit). */
   private vwapArmed = new Map<string, string>(); // day → last armT placed
   private vwapCarded = new Set<string>(); // days with the card sent
+  /* ================= EVAL PLAN v1 ================= */
+  private evalGapDone = new Set<string>();
+  private evalNaChecked = new Set<string>();
+  private evalNa: { day: string; dir: 1 | -1; orderId: string; stop: number; lastK: number } | null = null;
+  private evalLog = new Set<string>();
+  private evalOnce(key: string, msg: string): void {
+    if (this.evalLog.has(key)) return;
+    this.evalLog.add(key);
+    if (this.evalLog.size > 200) this.evalLog = new Set([...this.evalLog].slice(-100));
+    console.log(`[evalPlan] ${msg}`);
+  }
+
+  private async checkEvalPlan(): Promise<void> {
+    if (!FEED_EVAL_NOISE_AREA && !FEED_EVAL_GAP_FADE) return;
+    const live = getLive().state;
+    if (!live.connected || live.minutes.length < 30) return;
+    const fp = cachedFootprint(live.minutes, live.barsRevision);
+    const now = Date.now();
+    const closed = fp.filter((m) => {
+      const c = barCloseMs(m);
+      return c !== null && c <= now;
+    });
+    const last = closed[closed.length - 1];
+    if (!last) return;
+    const k = rthIndex(last.t);
+    if (k < 0) {
+      // warm the archive history before the open (08:00–08:29 feed clock)
+      const fm = Number(last.t.slice(0, 2)) * 60 + Number(last.t.slice(3, 5));
+      if (fm >= 480 && fm < 510) void evalHistory(last.d);
+      return;
+    }
+    const day = last.d;
+    const i0 = closed.findIndex((m) => m.d === day && rthIndex(m.t) === 0);
+    if (i0 < 0) return;
+    const toBar = (m: (typeof closed)[number]): EvalBar & { vwap?: number } => ({ t: m.t, high: m.high, low: m.low, buy: m.buy, sell: m.sell, o: m.o, c: m.c, vwap: m.vwap });
+    const session = closed.slice(Math.max(0, i0 - 1)).filter((m) => m.d === day).map(toBar);
+    const open = rthOpen(i0 > 0 ? [toBar(closed[i0 - 1]), ...closed.slice(i0).filter((m) => m.d === day).map(toBar)] : session);
+    if (open === null) return;
+    const hist = await evalHistory(day);
+    if (hist.prevClose === null) {
+      this.evalOnce(`noprev|${day}`, `${day}: prior-session close unavailable from the archive — eval plan idle today (fail closed)`);
+      return;
+    }
+    const prevClose = hist.prevClose;
+    const price = barClose(toBar(last));
+    const sym = symbol();
+
+    /* ---- 1. GAP FADE: once, on the first completed RTH bar(s) ---- */
+    if (FEED_EVAL_GAP_FADE && k <= 2 && !this.evalGapDone.has(day)) {
+      this.evalGapDone.add(day);
+      const g = gapDecision(open, prevClose);
+      if (!g) {
+        this.evalOnce(`gap|${day}`, `${day}: gap ${(((open - prevClose) / prevClose) * 100).toFixed(2)}% — no gap-fade trade`);
+      } else {
+        const contracts = Math.max(1, Math.min(30, Number(process.env.EVAL_GAP_CONTRACTS) || 1));
+        const dir = g.dir > 0 ? "long" : "short";
+        const intent: OrderIntent = {
+          symbol: sym,
+          dir,
+          contracts,
+          entry: price,
+          stop: price - g.dir * g.stopPts,
+          target: price + g.dir * 3 * g.stopPts, // research had no target: the 11:00 exit closes it
+          timeET: cdtToET(last.t),
+        };
+        const label = `eval gap-fade ${dir} ${day}`;
+        const res = await placeOrder(intent, { label, plan: "eval_v1" });
+        void logExec({ key: `evalgap|${day}`, label, attempt: "initial", outcome: res.ok ? "ok" : "failed", reason: res.reason });
+        if (res.ok) {
+          const exitAt = barCloseMs({ t: "09:59", d: day }); // 11:00 ET
+          if (exitAt !== null) registerTimeExit({ key: `evalgap|${day}`, filled: true, label: `${label} (11:00 ET exit)`, symbol: sym, dir, exitAtMs: exitAt });
+        } else registerSendFailure(`evalgap|${day}`, label, res.reason);
+        const text = [
+          `🎯 <b>EVAL · GAP FADE ${dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(price)} · ${cdtToET(last.t)} NY</b>`,
+          ``,
+          `<code>GAP     ${(g.gapFrac * 100).toFixed(2)}% (open ${fmtPx(open)} vs prior close ${fmtPx(prevClose)})</code>`,
+          `<code>STOP    ${fmtPx(intent.stop)}   ${distTxt(price, intent.stop)}</code>`,
+          `<code>EXIT    11:00 ET (time exit)</code>`,
+          `<code>SIZE    ${contracts} MNQ</code>`,
+          `<i>${res.ok ? "order sent" : `NOT sent — ${res.reason}`}</i>`,
+        ].join("\n");
+        await this.push(text);
+      }
+    }
+
+    /* ---- 2. NOISE AREA ---- */
+    if (!FEED_EVAL_NOISE_AREA || !hist.sigma) return;
+    const bands = noiseBands(open, prevClose, hist.sigma);
+    const vw = rthVwap(session);
+    // trailing stop maintenance for an open position
+    const pos = this.evalNa;
+    if (pos && pos.day === day && k > pos.lastK) {
+      const stopHit = pos.dir > 0 ? last.low <= pos.stop : last.high >= pos.stop;
+      if (stopHit) {
+        console.log(`[evalPlan] noise-area ${pos.dir > 0 ? "long" : "short"} stop ${fmtPx(pos.stop)} touched at ${cdtToET(last.t)} ET — flat`);
+        this.evalNa = null;
+      } else {
+        const ns = Math.round(noiseStop(pos.dir, k, bands, vw.get(k) ?? price) * 4) / 4;
+        pos.lastK = k;
+        const valid = pos.dir > 0 ? ns < price - 1 : ns > price + 1;
+        if (valid && Math.abs(ns - pos.stop) >= 0.25) {
+          const r = await changeCrossTradeOrder({ orderId: pos.orderId, stopPrice: ns });
+          console.log(`[evalPlan] noise-area trail ${fmtPx(pos.stop)} → ${fmtPx(ns)} · ${r.ok ? "ok" : r.reason}`);
+          if (r.ok) pos.stop = ns;
+        }
+      }
+    }
+    if (pos && pos.day !== day) this.evalNa = null;
+    if (this.evalNa || !isCheckBar(last.t)) return;
+    const ck = `${day}|${last.t}`;
+    if (this.evalNaChecked.has(ck)) return;
+    this.evalNaChecked.add(ck);
+    if (this.evalNaChecked.size > 100) this.evalNaChecked = new Set([...this.evalNaChecked].slice(-50));
+    // a gap-fade position owns the slot until its 11:00 time exit (the
+    // executor is one-position-at-a-time and the time exit flattens)
+    if (this.evalGapDone.has(day) && k < 90 && gapDecision(open, prevClose)) return;
+    const dirN = noiseEntry(k, price, bands);
+    if (!dirN) return;
+    const stop = Math.round(noiseStop(dirN, k, bands, vw.get(k) ?? price) * 4) / 4;
+    const risk = (price - stop) * dirN;
+    if (!(risk >= 2)) {
+      this.evalOnce(`na-risk|${ck}`, `${day} ${cdtToET(last.t)}: noise-area ${dirN > 0 ? "long" : "short"} skipped — stop ${fmtPx(stop)} too close to ${fmtPx(price)}`);
+      return;
+    }
+    const contracts = Math.max(1, Math.min(30, Number(process.env.EVAL_NA_CONTRACTS) || 1));
+    const dir = dirN > 0 ? "long" : "short";
+    const orderId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-na`;
+    const intent: OrderIntent = { symbol: sym, dir, contracts, entry: price, stop, target: price + dirN * Math.max(400, 10 * risk), timeET: cdtToET(last.t) };
+    const label = `eval noise-area ${dir} ${cdtToET(last.t)}`;
+    const res = await placeOrder(intent, { label, plan: "eval_v1", orderId });
+    void logExec({ key: `evalna|${ck}`, label, attempt: "initial", outcome: res.ok ? "ok" : "failed", reason: res.reason });
+    if (res.ok) {
+      this.evalNa = { day, dir: dirN, orderId: res.orderId ?? orderId, stop, lastK: k };
+      const exitAt = barCloseMs({ t: "14:58", d: day }); // 15:59 ET
+      if (exitAt !== null) registerTimeExit({ key: `evalna|${ck}`, filled: true, label: `${label} (15:59 ET flat)`, symbol: sym, dir, exitAtMs: exitAt });
+    } else registerSendFailure(`evalna|${ck}`, label, res.reason);
+    const text = [
+      `🎯 <b>EVAL · NOISE AREA ${dir === "long" ? "🟢 LONG" : "🔴 SHORT"} · ${fmtPx(price)} · ${cdtToET(last.t)} NY</b>`,
+      ``,
+      `<code>BAND    ${dirN > 0 ? `above UB ${fmtPx(bands.ub[k])}` : `below LB ${fmtPx(bands.lb[k])}`}</code>`,
+      `<code>STOP    ${fmtPx(stop)}   ${distTxt(price, stop)} (trails max/min of band and VWAP)</code>`,
+      `<code>EXIT    15:59 ET or the trailing stop</code>`,
+      `<code>SIZE    ${contracts} MNQ</code>`,
+      `<i>${res.ok ? "order sent" : `NOT sent — ${res.reason}`}</i>`,
+    ].join("\n");
+    await this.push(text);
+  }
+
   private vwapLastOrderId: string | null = null;
 
   private async checkVwapUp(): Promise<void> {
@@ -3212,6 +3370,7 @@ class SignalFeed {
         ["openDrive", () => this.checkOpen()],
         ["session_continuation", () => this.checkRth()],
         ["vwap_up", () => this.checkVwapUp()],
+        ["eval_plan", () => this.checkEvalPlan()],
       ];
       for (const [name, fn] of checks) {
         t0 = performance.now();

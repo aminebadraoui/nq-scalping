@@ -254,7 +254,11 @@ test("REST scale-out: 1-contract intent falls back to a single dry-run order", (
 
 test("placeScaleOut: not configured returns refused without any network", () => {
   // CROSSTRADE_* unset in the test env → crossTradeEnabled() false
+  // (LEGACY_EXEC=1: scale-out is a legacy path, signal-only by default)
+  const prev = process.env.LEGACY_EXEC;
+  process.env.LEGACY_EXEC = "1";
   return placeScaleOut(intent({ contracts: 9 })).then((r) => {
+    if (prev === undefined) delete process.env.LEGACY_EXEC; else process.env.LEGACY_EXEC = prev;
     assert.equal(r.ok, false);
     assert.match(r.reason, /not configured/);
   });

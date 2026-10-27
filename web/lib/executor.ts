@@ -34,7 +34,19 @@ export type PlaceOpts = {
   limitPrice?: number;
   /** human label for the protection alerts (the post-place leg check) */
   label?: string;
+  /** our order id for a MARKET entry too (needed to CHANGE its stop later) */
+  orderId?: string;
+  /** the strategy set this order belongs to. Since 2026-10-27 only the
+   *  eval plan ("eval_v1") places orders; every other caller is
+   *  signal-only unless LEGACY_EXEC=1 (the legacy families lose money at
+   *  reachable fills — docs/research/honest-fills-2026-10-26.md). */
+  plan?: "eval_v1";
 };
+
+/** legacy (pre-eval-plan) strategies may place orders only with LEGACY_EXEC=1 */
+export function legacyExecEnabled(): boolean {
+  return process.env.LEGACY_EXEC === "1";
+}
 
 /** Place a bracketed entry through CrossTrade. The REST path (ABSOLUTE
  *  stop/target at the signal's structural levels) is the default;
@@ -55,6 +67,9 @@ export async function placeOrder(
   stopChildId?: string | number;
   targetChildId?: string | number;
 }> {
+  if (opts.plan !== "eval_v1" && !legacyExecEnabled()) {
+    return { ok: false, reason: "legacy strategy is signal-only (eval plan v1 owns execution; LEGACY_EXEC=1 re-enables)" };
+  }
   const t0 = performance.now();
   try {
     if (crossTradeEnabled()) {
@@ -96,6 +111,9 @@ export async function cancelOrder(orderId: string): Promise<{ ok: boolean; reaso
 export async function placeScaleOut(
   intent: OrderIntent,
 ): Promise<{ ok: boolean; reason: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }> {
+  if (!legacyExecEnabled()) {
+    return { ok: false, reason: "legacy strategy is signal-only (eval plan v1 owns execution; LEGACY_EXEC=1 re-enables)" };
+  }
   const t0 = performance.now();
   try {
     if (!crossTradeEnabled()) {

@@ -647,7 +647,7 @@ function staleQueueRefusal(waitedMs: number): { ok: false; reason: string } {
 
 export function placeCrossTradeOrderREST(
   intent: OrderIntent,
-  opts: { limitPrice?: number; label?: string } = {},
+  opts: { limitPrice?: number; label?: string; orderId?: string } = {},
 ): ReturnType<typeof placeOrderRESTUnlocked> {
   const queuedAt = Date.now();
   return withPlacementLock<Awaited<ReturnType<typeof placeOrderRESTUnlocked>>>(() => {
@@ -659,7 +659,7 @@ export function placeCrossTradeOrderREST(
 
 async function placeOrderRESTUnlocked(
   intent: OrderIntent,
-  opts: { limitPrice?: number; label?: string } = {},
+  opts: { limitPrice?: number; label?: string; orderId?: string } = {},
 ): Promise<{
   ok: boolean;
   reason: string;
@@ -671,7 +671,7 @@ async function placeOrderRESTUnlocked(
   const g0 = performance.now();
   const cfg = loadConfig();
   const live = process.env.EXECUTE_LIVE === "1";
-  const orderId = opts.limitPrice !== undefined ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-lmt` : undefined;
+  const orderId = opts.orderId ?? (opts.limitPrice !== undefined ? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-lmt` : undefined);
   if (live && tradingHalted()) return { ok: false, reason: "trading halted by owner — dashboard kill switch (resume from the dashboard)" };
   if (!live) {
     console.log(
