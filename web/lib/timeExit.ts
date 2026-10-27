@@ -26,6 +26,8 @@ type TimeExit = {
   dir: "long" | "short";
   exitAtMs: number;
   alerted: boolean;
+  /** the trade's position has been observed open (on its side) */
+  seenOpen: boolean;
 };
 
 let pending = new Map<string, TimeExit>();
@@ -43,7 +45,7 @@ function enabled(): boolean {
 
 export function registerTimeExit(e: { key: string; label: string; symbol: string; dir: "long" | "short"; exitAtMs: number }) {
   if (!enabled()) return;
-  pending.set(e.key, { ...e, alerted: false });
+  pending.set(e.key, { ...e, alerted: false, seenOpen: false });
 }
 
 async function readHeldMnq(): Promise<number | null> {
@@ -67,12 +69,23 @@ export async function checkTimeExits(): Promise<void> {
   const now = Date.now();
   let held: number | null | undefined;
   for (const [key, e] of [...pending]) {
-    const decision = timeExitDecision(now, e.exitAtMs, held === undefined ? (held = await readHeldMnq()) : held);
+    if (held === undefined) held = await readHeldMnq();
+    // lifecycle: once this trade's position has been SEEN open and the
+    // book later reads flat, the trade is over — drop its exit now
+    // instead of letting it fire at the deadline against whatever
+    // position exists then (a later trade). An entry not yet filled (a
+    // resting limit) reads flat without having been seen open: kept.
+    if (held !== null && held !== 0 && (e.dir === "long" ? held > 0 : held < 0)) e.seenOpen = true;
+    if (held === 0 && e.seenOpen) {
+      pending.delete(key);
+      continue;
+    }
+    const decision = timeExitDecision(now, e.exitAtMs, held, e.dir);
     if (decision === "wait") continue;
     if (decision === "hold") {
-      // past exitAt but the book is unreadable or already flat — keep the
-      // entry waiting one more tick; drop it only once it is CONFIRMED flat
-      if (held === 0) pending.delete(key);
+      // past exitAt but the book is unreadable, flat, or on the other
+      // side — keep waiting while unreadable; drop once flat or opposite
+      if (held !== null) pending.delete(key);
       continue;
     }
     pending.delete(key);

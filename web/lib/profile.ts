@@ -91,13 +91,18 @@ export function timeExitAt(nowMs: number, p: FamilyProfile): number {
   return nowMs + p.timeExitBars * 60_000;
 }
 
-/** pure decision helper (unit-tested): should the time exit fire? */
+/** pure decision helper (unit-tested): should the time exit fire?
+ *  `dir` is the registered trade's side. The exit fires only when the
+ *  open net position is on THAT side — a short is net-negative (before
+ *  2026-10-26 only `held > 0` fired, so shorts never time-exited, and a
+ *  short's exit could fire against an unrelated long and add to it). */
 export function timeExitDecision(
   nowMs: number,
   exitAtMs: number,
   held: number | null,
+  dir: "long" | "short" = "long",
 ): "fire" | "wait" | "hold" {
   if (nowMs < exitAtMs) return "wait";
   if (held === null) return "hold"; // unreadable book — keep the exit pending, never guess
-  return held > 0 ? "fire" : "hold";
+  return (dir === "long" ? held > 0 : held < 0) ? "fire" : "hold";
 }

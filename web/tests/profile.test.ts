@@ -80,3 +80,10 @@ test("timeExitDecision: wait before the window, hold on unreadable book, fire pa
   assert.equal(timeExitDecision(1_100_001, 1_100_000, null), "hold"); // never guess
   assert.equal(timeExitDecision(1_100_001, 1_100_000, 0), "hold"); // already flat
 });
+
+test("timeExitDecision: direction-aware — shorts fire on a net short, never on another side", () => {
+  assert.equal(timeExitDecision(1_100_001, 1_100_000, -3, "short"), "fire"); // used to be "hold" forever
+  assert.equal(timeExitDecision(1_100_001, 1_100_000, 3, "short"), "hold"); // a long is not this trade
+  assert.equal(timeExitDecision(1_100_001, 1_100_000, -3, "long"), "hold");
+  assert.equal(timeExitDecision(1_100_001, 1_100_000, 3, "long"), "fire");
+});

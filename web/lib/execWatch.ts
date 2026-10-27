@@ -1123,7 +1123,9 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
               label: e.label,
               symbol: e.intent.symbol,
               dir: e.intent.dir,
-              exitAtMs: timeExitAt(now, prof),
+              // from the FILL time as documented — `now` is the confirm
+              // time, which lagged the fill by up to the confirm delay
+              exitAtMs: timeExitAt(Number.isFinite(matchedFill.ts) && matchedFill.ts > 0 ? matchedFill.ts : now, prof),
             });
           }
         }
