@@ -15,7 +15,7 @@
  * Credentials come from env (gitignored), never logged.
  * ------------------------------------------------------------------ */
 
-import { cancelCrossTradeOrderREST, crossTradeEnabled, placeCrossTradeOrder, placeCrossTradeOrderREST, placeCrossTradeScaleOut, placeCrossTradeScaleOutREST } from "./crossTrade";
+import { cancelCrossTradeOrderREST, crossTradeEnabled, placeCrossTradeOrder, placeCrossTradeOrderREST, placeCrossTradeScaleOut, placeCrossTradeScaleOutREST, withPlacementLock } from "./crossTrade";
 import { markDispatch } from "./execLatency";
 
 export type OrderIntent = {
@@ -61,9 +61,16 @@ export async function placeOrder(
       // `return await`: inside try/finally a bare `return promise` runs the
       // finally (markDispatch) BEFORE the placement settles — the dispatch
       // stage was recorded as ~0 ms
-      return await (process.env.CROSSTRADE_REST === "0"
-        ? placeCrossTradeOrder(intent)
-        : placeCrossTradeOrderREST(intent, opts));
+      if (process.env.CROSSTRADE_REST === "0") {
+        // the webhook path has no limit orders: it would send a resting-limit
+        // card as a MARKET entry with no orderId the watcher could cancel
+        if (opts.limitPrice !== undefined) {
+          return { ok: false, reason: "limit entries need the REST path (CROSSTRADE_REST=0 is set) — not sent" };
+        }
+        // same one-at-a-time lock as the REST path (stacking race)
+        return await withPlacementLock(() => placeCrossTradeOrder(intent));
+      }
+      return await placeCrossTradeOrderREST(intent, opts);
     }
     return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
   } finally {
@@ -95,7 +102,7 @@ export async function placeScaleOut(
       return { ok: false, reason: "CrossTrade not configured (CROSSTRADE_URL/KEY/ACCOUNT)" };
     }
     return await (process.env.CROSSTRADE_REST === "0" || process.env.CROSSTRADE_SCALEOUT_REST === "0"
-      ? placeCrossTradeScaleOut(intent)
+      ? withPlacementLock(() => placeCrossTradeScaleOut(intent))
       : placeCrossTradeScaleOutREST(intent));
   } finally {
     markDispatch(performance.now() - t0, Date.now() % 60_000);

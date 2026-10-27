@@ -44,3 +44,69 @@ test("concurrent placements: exactly one order POST, the other refused by the st
     globalThis.fetch = realFetch;
   }
 });
+
+test("lock: a market entry queued > PLACEMENT_MAX_QUEUE_MS behind a slow placement is refused as stale", { timeout: 30_000 }, async () => {
+  const ct = await import("../lib/crossTrade");
+  const acct = await import("../lib/ctAccount");
+  ct.__resetLatchForTest();
+  let places = 0;
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let skew = 0;
+  Date.now = () => realNow() + skew;
+  globalThis.fetch = (async (url: unknown) => {
+    const u = String(url);
+    const mk = (o: unknown, st = 200) => new Response(JSON.stringify(o), { status: st, headers: { "content-type": "application/json" } });
+    if (u.endsWith("/accounts/snapshot")) return mk({ accounts: [{ name: "ACC1", netLiq: 50000, realizedPnl: 0 }] });
+    if (u.endsWith("/positions")) return mk({ success: true, data: [] });
+    if (u.endsWith("/orders/place")) {
+      places++;
+      skew += ct.PLACEMENT_MAX_QUEUE_MS + 5_000; // the broker took 25s
+      return mk({ success: false, error: "rejected for the test" }); // a REJECT: no latch
+    }
+    return mk({ success: true, data: [] });
+  }) as typeof fetch;
+  try {
+    acct.__resetCtAccountForTest?.({ gapMs: 0 } as never);
+    const intent = { symbol: "NQZ26", dir: "long" as const, contracts: 5, entry: 25000, stop: 24990, target: 25010, timeET: "10:00" };
+    const [a, b] = await Promise.all([ct.placeCrossTradeOrderREST(intent), ct.placeCrossTradeOrderREST({ ...intent })]);
+    assert.equal(places, 1, "the queued market entry must not be sent late");
+    assert.equal(a.ok, false);
+    assert.match(b.reason, /refused as stale/);
+  } finally {
+    Date.now = realNow;
+    globalThis.fetch = realFetch;
+    ct.__resetLatchForTest();
+  }
+});
+
+test("lock: an UNKNOWN placement (5xx) arms the stacking latch — the next entry cannot stack on it", { timeout: 30_000 }, async () => {
+  const ct = await import("../lib/crossTrade");
+  const acct = await import("../lib/ctAccount");
+  ct.__resetLatchForTest();
+  let places = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: unknown) => {
+    const u = String(url);
+    const mk = (o: unknown, st = 200) => new Response(JSON.stringify(o), { status: st, headers: { "content-type": "application/json" } });
+    if (u.endsWith("/accounts/snapshot")) return mk({ accounts: [{ name: "ACC1", netLiq: 50000, realizedPnl: 0 }] });
+    if (u.endsWith("/positions")) return mk({ success: true, data: [] });
+    if (u.endsWith("/orders/place")) {
+      places++;
+      return mk({ error: "bad gateway" }, 502);
+    }
+    return mk({ success: true, data: [] });
+  }) as typeof fetch;
+  try {
+    acct.__resetCtAccountForTest?.({ gapMs: 0 } as never);
+    const intent = { symbol: "NQZ26", dir: "short" as const, contracts: 3, entry: 25000, stop: 25010, target: 24990, timeET: "10:05" };
+    const a = await ct.placeCrossTradeOrderREST(intent);
+    const b = await ct.placeCrossTradeOrderREST({ ...intent });
+    assert.equal(places, 1);
+    assert.equal(a.ok, false);
+    assert.match(b.reason, /refusing to stack/);
+  } finally {
+    globalThis.fetch = realFetch;
+    ct.__resetLatchForTest();
+  }
+});

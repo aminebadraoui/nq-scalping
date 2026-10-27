@@ -1906,7 +1906,7 @@ class SignalFeed {
    *  unreadable" is re-attempted for up to GUARD_RETRY_WINDOW_MS while the
    *  signal bar is fresh — the vendor READ error is the failure, not the
    *  card. Bounded: 90s window (inside the staleness veto), 3 attempts. */
-  private guardRetryQueue = new Map<string, { key: string; intent: OrderIntent; scaleOut: boolean; et: string; suffix: string; limitPrice?: number; onOk?: (res: { ok: boolean; reason: string; orderId?: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }) => void; until: number; attempts: number }>();
+  private guardRetryQueue = new Map<string, { key: string; intent: OrderIntent; scaleOut: boolean; et: string; suffix: string; limitPrice?: number; onOk?: (res: { ok: boolean; reason: string; orderId?: string; bankOrderId?: string; runnerOrderId?: string; runnerQty?: number }) => void; until: number; attempts: number; inFlight?: boolean }>();
   private retryTimer: ReturnType<typeof setInterval> | null = null;
 
   private placeWithGuardRetry(
@@ -1940,8 +1940,15 @@ class SignalFeed {
         this.guardRetryQueue.delete(k);
         continue;
       }
+      // one attempt at a time per card: the placement lock serializes
+      // orders, so a retry fired while the previous attempt is still
+      // queued/in flight only piled up a backlog that delayed every later
+      // card (2026-10-26 review)
+      if (r.inFlight) continue;
+      r.inFlight = true;
       r.attempts++;
       void this.placeMomentumOrder(r.key, r.intent, r.scaleOut, r.et, r.suffix, r.limitPrice).then((res) => {
+        r.inFlight = false;
         if (res.ok) {
           this.guardRetryQueue.delete(k);
           if (res.orderId) attachLimitOrderId(k, res.orderId);
@@ -1949,6 +1956,8 @@ class SignalFeed {
           console.log(`[guard-retry] ${k} placed on retry ${r.attempts}`);
         }
         // still unreadable → stays queued until the window closes
+      }).catch(() => {
+        r.inFlight = false; // a thrown attempt must not wedge the card
       });
     }
   }

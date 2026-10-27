@@ -624,11 +624,29 @@ export function withPlacementLock<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** a MARKET entry that waited longer than this behind another placement
+ *  is refused rather than sent late: its stop/target were computed from
+ *  the signal bar, and market entries get no dispatch-time price check
+ *  (limits do — the crossed-stop / crossed-limit / stale-tape gates). */
+export const PLACEMENT_MAX_QUEUE_MS = 20_000;
+
+function staleQueueRefusal(waitedMs: number): { ok: false; reason: string } {
+  return {
+    ok: false,
+    reason: `placement queued ${Math.round(waitedMs / 1000)}s behind another order — market entry refused as stale (> ${PLACEMENT_MAX_QUEUE_MS / 1000}s)`,
+  };
+}
+
 export function placeCrossTradeOrderREST(
   intent: OrderIntent,
   opts: { limitPrice?: number; label?: string } = {},
 ): ReturnType<typeof placeOrderRESTUnlocked> {
-  return withPlacementLock(() => placeOrderRESTUnlocked(intent, opts));
+  const queuedAt = Date.now();
+  return withPlacementLock<Awaited<ReturnType<typeof placeOrderRESTUnlocked>>>(() => {
+    const waited = Date.now() - queuedAt;
+    if (opts.limitPrice === undefined && waited > PLACEMENT_MAX_QUEUE_MS) return Promise.resolve(staleQueueRefusal(waited));
+    return placeOrderRESTUnlocked(intent, opts);
+  });
 }
 
 async function placeOrderRESTUnlocked(
@@ -754,6 +772,14 @@ async function placeOrderRESTUnlocked(
     // the webhook path exactly once (nothing was placed)
     console.warn(`[crossTrade] REST unavailable (${leg.reason}) — falling back to the webhook path`);
     return placeCrossTradeOrder(intent);
+  }
+  if (leg.kind === "unknown") {
+    // UNKNOWN (5xx / network): the order MAY exist at the broker. Arm the
+    // stacking latch exactly as for a placed entry, so the next queued
+    // placement cannot stack on an in-flight order (fail closed: the
+    // latch clears after 60s only on a fresh flat read).
+    markEntryPlaced();
+    return { ok: false, reason: leg.reason };
   }
   if (leg.kind !== "ok") return { ok: false, reason: leg.reason };
   markEntryPlaced();
@@ -986,7 +1012,12 @@ async function restFlatGate(cfg: CrossTradeConfig): Promise<{ ok: boolean; reaso
 export function placeCrossTradeScaleOutREST(
   intent: OrderIntent,
 ): ReturnType<typeof placeScaleOutRESTUnlocked> {
-  return withPlacementLock(() => placeScaleOutRESTUnlocked(intent));
+  const queuedAt = Date.now();
+  return withPlacementLock<Awaited<ReturnType<typeof placeScaleOutRESTUnlocked>>>(() => {
+    const waited = Date.now() - queuedAt;
+    if (waited > PLACEMENT_MAX_QUEUE_MS) return Promise.resolve(staleQueueRefusal(waited)); // the pair is market entries
+    return placeScaleOutRESTUnlocked(intent);
+  });
 }
 
 async function placeScaleOutRESTUnlocked(
@@ -1032,6 +1063,7 @@ async function placeScaleOutRESTUnlocked(
     console.warn(`[crossTrade] REST unavailable for the pair (${bankRes.reason}) — falling back to the webhook scale-out`);
     return placeCrossTradeScaleOut(intent);
   }
+  if (bankRes.kind === "unknown") markEntryPlaced(); // may exist at the broker — latch (fail closed)
   if (bankRes.kind !== "ok") return { ok: false, reason: `bank: ${bankRes.reason}` };
   markEntryPlaced(); // the entry is placed — latch against stacking from here
   // the bank is LIVE from here: verify its OSO children now, whatever
