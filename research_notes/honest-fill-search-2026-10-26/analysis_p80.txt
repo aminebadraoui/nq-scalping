@@ -1,0 +1,19 @@
+fill=p80 configs=752 train sessions=472 test sessions=192  SR0(deflation bar)=1.399  PBO=0.01
+train-qualified (n≥100, net exp>0, PF≥1.10): 7
+ib_breakout|ib=30,k=0.0,ttl=180|a=2.0,R=2.0                            TRAIN n=  467 WR= 40.5% exp=+2.61 PF=1.12 SR=0.033 DSR=0.00 $   +1700 dd$ -1509 | TEST n=  187 WR= 40.1% exp=-2.24 PF=0.94 $   -837 dd$ -2650
+ib_breakout|ib=30,k=1.5,ttl=180|a=2.0,R=2.0                            TRAIN n=  463 WR= 40.2% exp=+2.35 PF=1.10 SR=0.028 DSR=0.00 $   +1432 dd$ -1509 | TEST n=  186 WR= 39.8% exp=-2.75 PF=0.92 $  -1023 dd$ -2650
+vwap_band_fade|z=3.0,vmax=1.0,near=1.0,win=night|a=2.0,R=2.0           TRAIN n=  121 WR= 42.1% exp=+0.93 PF=1.12 SR=0.019 DSR=0.00 $    +363 dd$ -1013 | TEST n=   59 WR= 28.8% exp=-3.66 PF=0.75 $  -1182 dd$ -1417
+prior_level|level=low,mode=break,near=0.5,win=rth|a=2.0,R=1.0          TRAIN n=  458 WR= 52.4% exp=+3.27 PF=1.20 SR=0.015 DSR=0.00 $   +2021 dd$ -1823 | TEST n=  180 WR= 53.9% exp=+5.04 PF=1.22 $  +1748 dd$ -1317
+prior_level|level=low,mode=break,near=1.0,win=rth|a=2.0,R=1.0          TRAIN n=  572 WR= 52.4% exp=+3.25 PF=1.21 SR=0.013 DSR=0.00 $   +2529 dd$ -2189 | TEST n=  204 WR= 51.5% exp=+4.37 PF=1.19 $  +1293 dd$ -1161
+prior_level|level=low,mode=break,near=1.0,win=all|a=2.0,R=1.0          TRAIN n= 1057 WR= 52.2% exp=+1.63 PF=1.13 SR=-0.015 DSR=0.00 $    +980 dd$ -3349 | TEST n=  508 WR= 49.0% exp=+0.41 PF=1.02 $   -740 dd$ -2620
+prior_level|level=low,mode=break,near=0.5,win=all|a=2.0,R=1.0          TRAIN n=  861 WR= 51.3% exp=+1.67 PF=1.13 SR=-0.031 DSR=0.00 $    -551 dd$ -2802 | TEST n=  434 WR= 50.5% exp=+0.91 PF=1.05 $   -121 dd$ -2122
+
+best train config per family:
+absorption|k=1.5,r=1.5,lots=10,ttl=3,win=night|a=2.0,R=1.0             TRAIN n=  117 WR= 52.1% exp=-1.81 PF=0.71 DSR=0.00 | TEST n=   45 WR= 55.6% exp=+2.89 PF=1.33
+breakout|k=2.5,s=0.6,m=1.5,win=rth|a=2.0,R=2.0                         TRAIN n=  515 WR= 32.2% exp=-3.25 PF=0.79 DSR=0.00 | TEST n=  187 WR= 34.8% exp=-2.64 PF=0.88
+divergence|k=1.0,s=0.55,entry=market,win=rth|a=2.0,R=2.0               TRAIN n=  310 WR= 35.8% exp=-1.77 PF=0.91 DSR=0.00 | TEST n=  158 WR= 41.8% exp=+5.24 PF=1.23
+ib_breakout|ib=30,k=0.0,ttl=180|a=2.0,R=2.0                            TRAIN n=  467 WR= 40.5% exp=+2.61 PF=1.12 DSR=0.00 | TEST n=  187 WR= 40.1% exp=-2.24 PF=0.94
+impulse_pullback|k=2.5,s=0.6,m=1.0,win=rth|a=2.0,R=2.0                 TRAIN n=  776 WR= 33.9% exp=-2.27 PF=0.85 DSR=0.00 | TEST n=  283 WR= 37.1% exp=+1.03 PF=1.05
+prior_level|level=low,mode=break,near=0.5,win=rth|a=2.0,R=1.0          TRAIN n=  458 WR= 52.4% exp=+3.27 PF=1.20 DSR=0.00 | TEST n=  180 WR= 53.9% exp=+5.04 PF=1.22
+vwap_band_fade|z=3.0,vmax=1.0,near=1.0,win=night|a=2.0,R=1.0           TRAIN n=  124 WR= 58.9% exp=+0.48 PF=1.09 DSR=0.00 | TEST n=   62 WR= 45.2% exp=-1.28 PF=0.89
+vwap_revert|k=2.5,z=2.0,s=0.6,win=rth|a=2.0,R=2.0                      TRAIN n=  218 WR= 33.9% exp=-1.04 PF=0.93 DSR=0.00 | TEST n=   91 WR= 37.4% exp=+3.12 PF=1.14

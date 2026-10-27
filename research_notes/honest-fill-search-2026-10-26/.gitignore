@@ -1,0 +1,5 @@
+__pycache__/
+*.npz
+*.pkl
+analysis_*.json
+parity_in.json

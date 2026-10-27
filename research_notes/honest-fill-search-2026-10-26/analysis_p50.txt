@@ -1,0 +1,23 @@
+fill=p50 configs=480 train sessions=472 test sessions=192  SR0(deflation bar)=1.596  PBO=0.00
+train-qualified (n≥100, net exp>0, PF≥1.10): 14
+divergence|k=1.0,s=0.55,entry=market,win=rth|a=1.0,R=1.0               TRAIN n=  322 WR= 66.5% exp=+4.33 PF=1.80 SR=0.202 DSR=0.00 $   +6372 dd$  -572 | TEST n=  167 WR= 59.3% exp=+2.76 PF=1.33 $  +1559 dd$  -579
+divergence|k=2.0,s=0.55,entry=market,win=rth|a=1.0,R=1.0               TRAIN n=  125 WR= 70.4% exp=+6.81 PF=2.44 SR=0.172 DSR=0.00 $   +3663 dd$  -509 | TEST n=   52 WR= 67.3% exp=+5.98 PF=1.72 $  +1313 dd$  -164
+divergence|k=1.0,s=0.55,entry=market,win=rth|a=2.0,R=1.0               TRAIN n=  312 WR= 61.5% exp=+4.37 PF=1.34 SR=0.156 DSR=0.00 $   +3700 dd$ -1035 | TEST n=  156 WR= 60.9% exp=+7.36 PF=1.47 $  +2611 dd$  -500
+divergence|k=2.0,s=0.55,entry=market,win=rth|a=2.0,R=1.0               TRAIN n=  123 WR= 64.2% exp=+5.23 PF=1.38 SR=0.125 DSR=0.00 $   +1975 dd$ -1051 | TEST n=   51 WR= 66.7% exp=+11.00 PF=1.65 $  +1547 dd$  -471
+divergence|k=1.0,s=0.55,entry=market,win=rth|a=2.0,R=2.0               TRAIN n=  307 WR= 44.3% exp=+5.76 PF=1.33 SR=0.120 DSR=0.00 $   +4483 dd$ -1048 | TEST n=  154 WR= 46.8% exp=+12.92 PF=1.63 $  +4373 dd$  -622
+divergence|k=2.0,s=0.55,entry=market,win=rth|a=1.0,R=2.0               TRAIN n=  124 WR= 46.0% exp=+3.07 PF=1.30 SR=0.101 DSR=0.00 $   +3194 dd$  -843 | TEST n=   52 WR= 42.3% exp=+3.43 PF=1.24 $   +784 dd$  -611
+divergence|k=1.0,s=0.55,entry=market,win=rth|a=1.0,R=2.0               TRAIN n=  320 WR= 42.5% exp=+2.17 PF=1.22 SR=0.099 DSR=0.00 $   +4489 dd$ -1188 | TEST n=  164 WR= 39.0% exp=+1.98 PF=1.16 $  +1208 dd$ -1275
+divergence|k=2.0,s=0.55,entry=market,win=rth|a=2.0,R=2.0               TRAIN n=  122 WR= 45.1% exp=+8.06 PF=1.43 SR=0.081 DSR=0.00 $   +2073 dd$ -1150 | TEST n=   51 WR= 52.9% exp=+18.97 PF=1.90 $  +2523 dd$  -596
+divergence|k=2.0,s=0.55,entry=market,win=all|a=2.0,R=2.0               TRAIN n=  782 WR= 38.7% exp=+1.73 PF=1.18 SR=-0.012 DSR=0.00 $   -1796 dd$ -7082 | TEST n=  411 WR= 35.5% exp=+1.31 PF=1.08 $  -1427 dd$ -4254
+divergence|k=2.0,s=0.55,entry=market,win=all|a=2.0,R=1.0               TRAIN n=  790 WR= 54.7% exp=+1.01 PF=1.14 SR=-0.019 DSR=0.00 $   -1890 dd$ -5065 | TEST n=  413 WR= 52.1% exp=+1.11 PF=1.09 $  -1008 dd$ -2397
+divergence|k=1.0,s=0.55,entry=market,win=all|a=2.0,R=2.0               TRAIN n= 1316 WR= 38.4% exp=+1.27 PF=1.12 SR=-0.025 DSR=0.00 $   -4452 dd$ -7446 | TEST n=  776 WR= 36.5% exp=+1.99 PF=1.13 $  -1163 dd$ -5579
+divergence|k=1.0,s=0.55,entry=market,win=all|a=2.0,R=1.0               TRAIN n= 1341 WR= 54.1% exp=+0.85 PF=1.11 SR=-0.033 DSR=0.00 $   -4482 dd$ -6257 | TEST n=  797 WR= 51.7% exp=+0.71 PF=1.06 $  -2687 dd$ -4202
+divergence|k=2.0,s=0.55,entry=market,win=all|a=1.0,R=1.0               TRAIN n=  820 WR= 54.3% exp=+0.53 PF=1.14 SR=-0.120 DSR=0.00 $   -8868 dd$-10599 | TEST n=  430 WR= 56.3% exp=+1.56 PF=1.28 $   -206 dd$ -1984
+divergence|k=1.0,s=0.55,entry=market,win=all|a=1.0,R=1.0               TRAIN n= 1415 WR= 54.6% exp=+0.48 PF=1.12 SR=-0.141 DSR=0.00 $  -13891 dd$-15834 | TEST n=  879 WR= 52.9% exp=+0.37 PF=1.06 $  -5607 dd$ -6757
+
+best train config per family:
+absorption|k=1.5,r=1.5,lots=10,ttl=3,win=night|a=2.0,R=1.0             TRAIN n=  115 WR= 52.2% exp=-1.78 PF=0.71 DSR=0.00 | TEST n=   45 WR= 55.6% exp=+2.89 PF=1.33
+breakout|k=2.5,s=0.6,m=1.5,win=rth|a=2.0,R=2.0                         TRAIN n=  512 WR= 32.4% exp=-3.16 PF=0.80 DSR=0.00 | TEST n=  186 WR= 34.4% exp=-2.79 PF=0.87
+divergence|k=1.0,s=0.55,entry=market,win=rth|a=1.0,R=1.0               TRAIN n=  322 WR= 66.5% exp=+4.33 PF=1.80 DSR=0.00 | TEST n=  167 WR= 59.3% exp=+2.76 PF=1.33
+impulse_pullback|k=1.5,s=0.7,m=1.0,win=rth|a=2.0,R=1.0                 TRAIN n=  107 WR= 43.9% exp=-2.15 PF=0.81 DSR=0.00 | TEST n=   36 WR= 36.1% exp=-3.88 PF=0.78
+vwap_revert|k=2.5,z=2.0,s=0.6,win=rth|a=2.0,R=2.0                      TRAIN n=  213 WR= 33.3% exp=-1.38 PF=0.91 DSR=0.00 | TEST n=   90 WR= 36.7% exp=+2.74 PF=1.12
