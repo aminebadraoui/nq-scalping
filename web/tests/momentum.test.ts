@@ -584,3 +584,15 @@ test("sessionDayOf: a day = Globex 18:00 → next-day RTH close", () => {
   // 18:00 ET Oct 2 = 22:00Z Oct 2 → new session 2026-10-02
   assert.equal(sessionDayOf(Date.parse("2026-10-02T22:00:00Z")), "2026-10-02");
 });
+
+test("sessionDayOf: one key per session across the DST jumps and month edges", () => {
+  // spring forward 2027-03-14 (23-hour day): 00:30 EDT on the 15th is still
+  // the 03-14 session — `now − 24h` used to return 03-13 for that hour
+  assert.equal(sessionDayOf(Date.parse("2027-03-15T03:59:00Z")), "2027-03-14");
+  assert.equal(sessionDayOf(Date.parse("2027-03-15T04:30:00Z")), "2027-03-14");
+  assert.equal(sessionDayOf(Date.parse("2027-03-15T05:10:00Z")), "2027-03-14");
+  // fall back 2026-11-01: 01:30 EDT belongs to the 10-31 session
+  assert.equal(sessionDayOf(Date.parse("2026-11-01T05:30:00Z")), "2026-10-31");
+  assert.equal(sessionDayOf(Date.parse("2027-03-01T15:00:00Z")), "2027-02-28");
+  assert.equal(sessionDayOf(Date.parse("2027-01-01T15:00:00Z")), "2026-12-31");
+});

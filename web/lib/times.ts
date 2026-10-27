@@ -171,6 +171,9 @@ export function sessionDayOf(tsMs: number): string {
   const p = Object.fromEntries(parts.map((x) => [x.type, x.value])) as Record<string, string>;
   const date = `${p.year}-${p.month}-${p.day}`;
   if (Number(p.hour) >= 18) return date;
-  const prev = new Date(tsMs - 24 * 3_600_000);
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(prev);
+  // previous CALENDAR day of the NY date — `tsMs − 24h` lands two dates
+  // back in the hour after the spring DST jump (the 23-hour day)
+  const prev = new Date(`${date}T12:00:00Z`);
+  prev.setUTCDate(prev.getUTCDate() - 1);
+  return prev.toISOString().slice(0, 10);
 }
