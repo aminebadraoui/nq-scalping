@@ -77,3 +77,12 @@ test("executor: legacy callers are signal-only unless LEGACY_EXEC=1; the eval pl
   assert.doesNotMatch(b.reason, /signal-only/);
   if (prev !== undefined) process.env.LEGACY_EXEC = prev;
 });
+
+test("trailThrough: a trail at/through the market means exit now", async () => {
+  const { trailThrough } = await import("../lib/evalPlan");
+  assert.equal(trailThrough(1, 20010, 20000), true);
+  assert.equal(trailThrough(1, 20000, 20000), true);
+  assert.equal(trailThrough(1, 19990, 20000), false);
+  assert.equal(trailThrough(-1, 19990, 20000), true);
+  assert.equal(trailThrough(-1, 20010, 20000), false);
+});
