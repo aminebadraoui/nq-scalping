@@ -1,8 +1,9 @@
 #!/bin/sh
 # Container entrypoint for the nq-jobs Coolify app (nightly data pipeline).
 #
-# RUN_ONCE=1   → run the nightly pipeline immediately once, then exit
-#                (verification mode: set the env, redeploy, read the logs).
+# RUN_ONCE=1   → run the nightly pipeline immediately once, then park
+#                (sleep forever — verification mode: set the env,
+#                redeploy, read the logs; a failed run never restarts it).
 # RUN_WEEKLY=1 → run the weekly review (scripts/weekly.sh) once, then fall
 #                through to normal cron mode (verification of the Saturday
 #                job without missing the nightly slots).

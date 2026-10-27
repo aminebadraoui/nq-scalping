@@ -5,6 +5,9 @@
 -r requirements.txt
 numpy
 optuna
-# purgedcv: not on this repo — if it is a local/private package, install it
-# from its source instead of PyPI and delete this line
-purgedcv
+# purgedcv (used by validate_sweep.py) is NOT installed from here on
+# purpose: it is not in this repo and may not be a PyPI package — an
+# unpinned name could pull an unrelated third-party package. Install it
+# from wherever your local .venv got it, then pin it here:
+#   .venv/bin/pip show purgedcv
+# purgedcv==<version>

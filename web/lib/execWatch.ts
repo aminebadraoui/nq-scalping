@@ -326,7 +326,12 @@ export async function checkProtection(): Promise<void> {
   protectionBookUnreadableAlerted = false;
   flatClaimSeenAt = 0;
   if (!reg || reg.intent.dir !== read.dir) {
-    if (reg) setOpenProtection(null);
+    if (reg) {
+      // the tracked trade is gone (the open position is on the other
+      // side): its naked timer must not carry over either
+      setOpenProtection(null);
+      setNakedSince(null);
+    }
     if (!nakedAlerted()) {
       setNakedAlerted(true);
       void logExec({
