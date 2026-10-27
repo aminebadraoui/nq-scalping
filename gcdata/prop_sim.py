@@ -170,10 +170,13 @@ def main():
     print(f"{'$R/trade':>9} {'first payout (days)':>19} {'payouts/2.5y':>14} {'avg $/week (90%)':>16}")
     for R in (100, 170, 255):
         first, payouts, total_days = funded_walk(days, R, MAXLOSS, BUFFER, PAYOUT)
-        # avg weekly income = total profit * 0.9 / weeks
+        # avg weekly income ≈ withdrawn payouts × 90% profit split / weeks.
+        # funded_walk counts payout events of PAYOUT each (the first one at
+        # the buffer), so this is the payout cash flow, not total P&L. The
+        # column used to print a hard-coded 0 placeholder.
         weeks = total_days / 5
-        weekly = (total_days * 0)  # placeholder
-        print(f"{R:>9} {first if first else '—':>19} {payouts:>14} {weekly:>16}")
+        weekly = payouts * PAYOUT * 0.9 / weeks if weeks > 0 else 0.0
+        print(f"{R:>9} {first if first else '—':>19} {payouts:>14} {weekly:>16.0f}")
 
 
 if __name__ == "__main__":

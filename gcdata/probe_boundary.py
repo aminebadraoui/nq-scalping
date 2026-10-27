@@ -7,7 +7,6 @@ the 3rd Monday of January — MLK Day, a market holiday, for most years. This
 re-probes H contracts on adjacent non-holiday dates and walks the boundary
 around early 2024 one date at a time per contract.
 """
-import datetime as dt
 import os
 import sys
 

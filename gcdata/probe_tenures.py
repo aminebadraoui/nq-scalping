@@ -23,7 +23,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from contracts import symbol, third_friday, tenures  # noqa: E402
+from contracts import tenures  # noqa: E402
 
 EXPECTED_ETH = 1380
 BATCH = 4

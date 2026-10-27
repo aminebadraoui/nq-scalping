@@ -38,7 +38,7 @@ def main():
         print(json.dumps(sheet, indent=2))
         return
 
-    from client import GChartClient, collect_footprint, footprint_to_dict
+    from client import collect_footprint, footprint_to_dict
 
     if args.dates:
         dates = args.dates

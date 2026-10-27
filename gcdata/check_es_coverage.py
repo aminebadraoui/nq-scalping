@@ -8,7 +8,6 @@ Usage: .venv/bin/python check_es_coverage.py
 import json
 import os
 import sys
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
