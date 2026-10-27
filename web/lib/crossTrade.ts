@@ -172,6 +172,29 @@ export function buildCrossTradePayload(
   return payload;
 }
 
+/* ---- tick alignment (2026-10-26 audit) --------------------------------
+ * MNQ/NQ trade in 0.25-pt ticks. Prices used to go out as toFixed(2) of
+ * the raw computation (e.g. a 0.45×-risk stop at 24996.38), so the broker
+ * either rejected the OSO stop leg — the entry then fills NAKED — or
+ * rounded it on its own terms. Every price we send is now on the tick:
+ *   bracket legs   long → down, short → up. For the STOP that is away
+ *                  from the entry (risk never shrinks below plan); for the
+ *                  TARGET it is toward the entry (never further than priced).
+ *   limit entries  nearest tick.
+ * Pure + unit-tested. */
+export const PRICE_TICK = 0.25;
+
+export function roundToTick(price: number, mode: "down" | "up" | "nearest", tick = PRICE_TICK): number {
+  const q = price / tick;
+  const n = mode === "down" ? Math.floor(q + 1e-9) : mode === "up" ? Math.ceil(q - 1e-9) : Math.round(q);
+  return Math.round(n * tick * 100) / 100;
+}
+
+/** a bracket leg (stop or target) for a position on `dir` */
+export function bracketPriceToTick(dir: "long" | "short", price: number): number {
+  return roundToTick(price, dir === "long" ? "down" : "up");
+}
+
 /** Build the CHANGE payload that moves an already-placed order's stop.
  *  Pure + unit-testable; price values are absolute US decimals. */
 export function buildChangePayload(
@@ -190,7 +213,7 @@ export function buildChangePayload(
   };
   if (change.stopPrice !== undefined) {
     if (!Number.isFinite(change.stopPrice)) throw new Error("crossTrade: CHANGE stop_price is not finite");
-    payload.stop_price = change.stopPrice.toFixed(2);
+    payload.stop_price = roundToTick(change.stopPrice, "nearest").toFixed(2);
   }
   if (change.qty !== undefined) payload.qty = change.qty;
   if (change.trailOffsetTicks !== undefined) payload.trail_offset = `${Math.max(1, Math.round(change.trailOffsetTicks))} ticks`;
@@ -795,14 +818,14 @@ export function buildRESTPlacePayload(
     qty,
     orderType: isLimit ? "limit" : "market",
     tif: "day",
-    stopLoss: intent.stop.toFixed(2),
+    stopLoss: bracketPriceToTick(intent.dir, intent.stop).toFixed(2),
   };
-  if (isLimit) payload.limitPrice = opts.limitPrice;
+  if (isLimit) payload.limitPrice = roundToTick(opts.limitPrice!, "nearest");
   if (opts.withTarget ?? true) {
     if (!Number.isFinite(intent.target)) {
       throw new Error(`crossTrade: invalid target — entry ${intent.entry} target ${intent.target}`);
     }
-    payload.takeProfit = intent.target.toFixed(2);
+    payload.takeProfit = bracketPriceToTick(intent.dir, intent.target).toFixed(2);
   }
   if (opts.orderId) payload.orderId = opts.orderId;
   return payload;
@@ -1198,8 +1221,8 @@ export function buildReArmBracketPayload(
   return {
     instrument,
     action: args.dir === "long" ? "buy" : "sell",
-    takeProfit: args.targetPrice.toFixed(2),
-    stopLoss: args.stopPrice.toFixed(2),
+    takeProfit: bracketPriceToTick(args.dir, args.targetPrice).toFixed(2),
+    stopLoss: bracketPriceToTick(args.dir, args.stopPrice).toFixed(2),
     qty: Math.floor(args.qty),
   };
 }

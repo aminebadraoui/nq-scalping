@@ -360,7 +360,8 @@ test("re-arm payload: cancel_and_bracket carries QTY (the missing-QTY 400 regres
   const p = buildReArmBracketPayload({ symbol: "NQZ26", dir: "short", stopPrice: 30886.0, targetPrice: 30854.84, qty: 7 }, CFG);
   assert.ok(!("error" in p));
   if ("error" in p) return;
-  assert.deepEqual(p, { instrument: "MNQZ6", action: "sell", takeProfit: "30854.84", stopLoss: "30886.00", qty: 7 });
+  // 30854.84 is off the 0.25 tick — sent tick-aligned toward the entry (2026-10-26)
+  assert.deepEqual(p, { instrument: "MNQZ6", action: "sell", takeProfit: "30855.00", stopLoss: "30886.00", qty: 7 });
 });
 
 test("re-arm payload: action follows the protected side, qty floors to whole contracts", () => {
@@ -473,4 +474,34 @@ test("tapeFreshForDispatch: limits require a tick within TAPE_FRESH_MS — stale
 test("REST payload: a NaN contract count is refused, never sent as qty null", () => {
   assert.throws(() => buildRESTPlacePayload({ ...intent(), contracts: Number.NaN }, CFG), /invalid contracts/);
   assert.throws(() => buildRESTPlacePayload({ ...intent(), contracts: Number.POSITIVE_INFINITY }, CFG), /invalid contracts/);
+});
+
+import { roundToTick, bracketPriceToTick } from "../lib/crossTrade";
+
+test("tick alignment: every price sent is on the 0.25 tick, rounded the safe way", () => {
+  assert.equal(roundToTick(24996.375, "down"), 24996.25);
+  assert.equal(roundToTick(24996.375, "up"), 24996.5);
+  assert.equal(roundToTick(24996.3, "nearest"), 24996.25);
+  assert.equal(roundToTick(24996.25, "down"), 24996.25); // already on tick: unchanged
+  assert.equal(roundToTick(24996.25, "up"), 24996.25);
+  assert.equal(roundToTick(30014.94, "up"), 30015); // the 2026-10-15 live stop
+  // long: stop away from entry (down), target toward entry (down)
+  assert.equal(bracketPriceToTick("long", 24996.38), 24996.25);
+  assert.equal(bracketPriceToTick("long", 25009.06), 25009);
+  // short: stop away from entry (up), target toward entry (up)
+  assert.equal(bracketPriceToTick("short", 25003.62), 25003.75);
+  assert.equal(bracketPriceToTick("short", 24990.94), 24991);
+});
+
+test("REST payload: off-tick stop/target/limit are tick-aligned", () => {
+  const p = buildRESTPlacePayload({ ...intent(), stop: 21847.38, target: 21860.06 }, CFG, { limitPrice: 21851.1 });
+  assert.equal(p.stopLoss, "21847.25");
+  assert.equal(p.takeProfit, "21860.00");
+  assert.equal(p.limitPrice, 21851);
+  const r = buildReArmBracketPayload({ symbol: "NQZ26", dir: "short", stopPrice: 30014.94, targetPrice: 29990.1, qty: 2 }, CFG);
+  assert.ok(!("error" in r));
+  if (!("error" in r)) {
+    assert.equal(r.stopLoss, "30015.00");
+    assert.equal(r.takeProfit, "29990.25");
+  }
 });
