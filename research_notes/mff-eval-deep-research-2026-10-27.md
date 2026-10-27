@@ -88,3 +88,35 @@ python3 lib3.py; python3 fa2.py; python3 fa3.py; python3 fa_gen.py
 python3 overnight.py; python3 regime.py
 python3 port3.py; python3 sizing2.py; python3 kelly.py; python3 phase.py; python3 volman.py
 ```
+
+## 5. Round 3 (same evening): true prices, and everything else
+
+**New data.** `gcdata/data/ohlc_hist/` on the owner's Mac holds true Tradovate 1-min OHLCV for 614 sessions (2024-05-27 → 2026-10-23). With it, market fills need no estimates: an order fills at the next bar's real open, a stop that the bar opens through fills at that open, and time exits use the real close (`ogrid.py`, `tlib.py`).
+
+**Every candidate weakens with true prices** (May 2024 → Oct 2026, 1 MNQ):
+
+| Stream | pts/day | t |
+|---|---|---|
+| Noise area 10:30+ (live) | +2.8 | 0.66 |
+| Noise area 10:00+ | +3.0 | 0.70 |
+| Gap fade ≤150, 9:31 entry (live) | +2.2 | 0.88 |
+| Gap fade, no cap | +6.7 | 1.42 |
+| Overnight long 18:01→09:29, stop 100 / 50 / none | +5.2 / +6.3 / +7.4 | 0.96 / 1.47 / 1.03 |
+| Failed auction ON → prior POC, stop-entry | +5.3 | 1.69 |
+
+None is distinguishable from zero. The estimate-based numbers were partly fill artifacts.
+
+**Also tested, all no edge:**
+- Heston–Korajczyk–Sadka same-half-hour persistence: gross ≈ 0, so every interval loses about 1.5 pts to costs.
+- Pre-FOMC drift and options-expiry weeks: n = 20–30 events, t ≈ 1, not tradable at eval scale.
+- Multi-day momentum and reversal: sign flips by year.
+- Walk-forward GBM and logistic models (~30 features, 30/60/120-minute horizons): t ≤ 1.2 out of sample.
+- 80-config true-fill search across Donchian, z-score reversion, RSI(2) and opening-range rules on 5- and 15-minute bars:
+  - best train t = 1.5, with test t of about 0.3;
+  - only 29% of configs positive on test.
+- Account size:
+  - Rapid 150K ($4.5k drawdown) cuts breach to about 4–10% on the same streams.
+  - The cost is 6–8+ months to pass.
+  - Standard Rapid funded accounts use an intraday trailing drawdown.
+
+**VERDICT (round 3):** the live plan's edge is not significant on true prices; no rule found in NQ price/volume clears costs. The remaining structurally different test is the NQ/ES spread (needs the ES archive pulled to the Mac).
