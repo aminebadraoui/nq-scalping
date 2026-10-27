@@ -1,0 +1,9 @@
+trend M=4 sh=0.55 stk=0 tgt=poc win=ny         TRAIN fillbarStops=6% n=  86 /day=0.36 WR=16.3% exp= -7.31pt R/tr=-0.483 t=-3.03 PF=0.44 | VA
+trend M=4 sh=0.55 stk=0 tgt=3R win=ny          TRAIN fillbarStops=6% n=  86 /day=0.36 WR=16.3% exp= -7.33pt R/tr=-0.480 t=-3.12 PF=0.44 | VA
+trend M=4 sh=0.55 stk=0 tgt=ext win=ny         TRAIN fillbarStops=6% n=  86 /day=0.36 WR=19.8% exp= -5.80pt R/tr=-0.466 t=-3.23 PF=0.53 | VA
+mr M=0 sh=0.55 stk=0 tgt=poc win=offny         TRAIN fillbarStops=18% n=  80 /day=0.33 WR=10.0% exp= -4.71pt R/tr=-0.756 t=-3.62 PF=0.31 | V
+mr M=0 sh=0.55 stk=0 tgt=poc win=all           TRAIN fillbarStops=17% n= 109 /day=0.45 WR=13.8% exp= -3.80pt R/tr=-0.650 t=-3.85 PF=0.52 | V
+mr M=0 sh=0.55 stk=0 tgt=3R win=offny          TRAIN fillbarStops=18% n=  80 /day=0.33 WR=16.3% exp= -5.04pt R/tr=-0.608 t=-3.72 PF=0.27 | V
+mr M=0 sh=0.55 stk=0 tgt=3R win=all            TRAIN fillbarStops=16% n= 110 /day=0.46 WR=18.2% exp= -3.42pt R/tr=-0.481 t=-3.27 PF=0.58 | V
+
+[exited with code 0]
