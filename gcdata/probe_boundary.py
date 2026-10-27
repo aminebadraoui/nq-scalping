@@ -16,15 +16,7 @@ sys.path.insert(0, HERE)
 os.environ.setdefault("GOCHARTING_SYMBOL", "NQZ26")
 
 
-def load_env():
-    env_path = os.path.join(HERE, ".env")
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k, v)
+from envfile import load_env  # noqa: E402  (shared gcdata/.env loader)
 
 
 def probe(pairs, per_date_timeout=14, batch=4):

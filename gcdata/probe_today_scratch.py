@@ -12,15 +12,7 @@ from client import GChartClient, footprint_to_dict  # noqa: E402
 import footprint_pb2  # noqa: E402
 
 
-def load_env():
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k, v)
+from envfile import load_env  # noqa: E402  (shared gcdata/.env loader)
 
 
 def main():

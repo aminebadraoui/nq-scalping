@@ -12,15 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 
-def load_env():
-    env_path = os.path.join(HERE, ".env")
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k, v)
+from envfile import load_env  # noqa: E402  (shared gcdata/.env loader)
 
 
 # (exchange, segment, symbol, session) — CFDs trade 24/5, so session matters

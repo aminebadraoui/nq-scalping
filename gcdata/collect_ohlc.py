@@ -53,16 +53,7 @@ sys.path.insert(0, str(HERE))
 import ohlc_bars_pb2  # noqa: E402  (generated from ohlc_bars.proto)
 
 
-def load_env() -> None:
-    env = HERE / ".env"
-    if not env.exists():
-        return
-    for line in env.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+from envfile import load_env  # noqa: E402  (shared gcdata/.env loader)
 
 
 def cognito_token() -> str:
