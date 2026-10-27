@@ -9,6 +9,11 @@ name: validate
 on:
   push:
     branches: [main]
+  # Run the same checks on PRs into main — the only way to get them
+  # BEFORE a deploy (every push to main auto-deploys the executor).
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   validate:
@@ -43,9 +48,14 @@ jobs:
             $(find tests -maxdepth 1 -name '*.test.mjs' | grep -vE '/(analysis|api|db|imbalance|mechanism|ohlc|priceaction|profiles|signalEngine|story)\.test\.mjs$')
       - name: live-execution change gate
         env:
-          BEFORE: ${{ github.event.before }}
+          # push: the previous tip of main · PR: the PR's base commit
+          # (github.event.before is empty on pull_request events, which
+          # made the gate diff nothing and pass silently)
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: bash scripts/exec-gate.sh "$BEFORE" "$GITHUB_SHA"
       - name: post-deploy smoke (polls for the Coolify deploy)
+        # only a push to main deploys — PRs and manual runs have nothing to smoke
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: web
         # read-only health assertions: the deployed buildId must match, the
         # feed must be live, and tapeGate.veto must be clear (the 2026-10-15

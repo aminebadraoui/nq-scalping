@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Shared live-execution change gate (used by the pre-push hook and CI).
 # Usage: exec-gate.sh <base-sha> <head-sha>
+#   (an empty or all-zero base means "new branch": diff against the
+#    merge base with origin/main instead of silently passing)
 # Fails (exit 1) when the range touches protected live-execution files
 # and no commit in the range carries a [backtested: ...] tag.
 # Prints the protected files for the caller.
@@ -31,7 +33,7 @@ PROTECTED=(
 base="$1"
 head="$2"
 z40=0000000000000000000000000000000000000000
-if [ "$base" = "$z40" ]; then
+if [ -z "$base" ] || [ "$base" = "$z40" ]; then
   # new branch: diff against its merge base with origin/main (or the parent)
   base=$(git merge-base origin/main "$head" 2>/dev/null || echo "$head~1")
 fi
