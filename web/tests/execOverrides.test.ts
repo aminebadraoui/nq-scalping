@@ -153,6 +153,15 @@ test("verifyAdminPassword: unset gate never opens; wrong refuses; right opens", 
   assert.equal(verifyAdminPassword("correct horse", env), true);
 });
 
+test("verifyAdminPassword: trims like every other admin gate", () => {
+  const env = { ADMIN_PASSWORD: " correct horse " };
+  assert.equal(verifyAdminPassword("correct horse ", env), true);
+  assert.equal(verifyAdminPassword("  correct horse", env), true);
+  assert.equal(verifyAdminPassword("   ", env), false);
+  assert.equal(verifyAdminPassword("", env), false);
+});
+
+
 test("resetGuardForAccountSwitch: fresh guard state + state file + no DB", async (t) => {
   const { dir } = tmpEnv();
   const prevDir = process.env.GC_DATA_DIR;

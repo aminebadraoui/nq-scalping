@@ -27,13 +27,13 @@
  * `exec` audit record, and is inert until such an action happens.
  * ------------------------------------------------------------------ */
 
-import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { guardState, guardStateFile, persistGuardToDb, __resetGuardForTest } from "./accountGuard";
 import { stageForAccountName } from "./risk/challengeRules";
 import type { GuardStage } from "./risk/guardCore";
 import { dbEnabled, getDb } from "./gcdb";
+import { adminPasswordOk } from "./adminAuth";
 
 /** the ONLY env keys the override file may set — anything else is
  *  ignored, so a tampered file can never inject arbitrary env */
@@ -123,16 +123,13 @@ export function maskSecret(v: string | undefined | null): string | null {
 
 /* ---- admin password gate -------------------------------------------- */
 
-function sha256(s: string): Buffer {
-  return createHash("sha256").update(s).digest();
-}
-
 /** timing-safe password check against ADMIN_PASSWORD. Returns false
- *  when the env is unset — an unconfigured gate never opens. */
+ *  when the env is unset — an unconfigured gate never opens. Delegates
+ *  to the shared gate (lib/adminAuth.ts) so every admin check trims the
+ *  same way: a copy-pasted password with a trailing space opens this gate
+ *  exactly like it opens the proxy, the halt resume and the other routes. */
 export function verifyAdminPassword(input: string, env: Record<string, string | undefined> = process.env): boolean {
-  const expected = (env.ADMIN_PASSWORD ?? "").trim();
-  if (!expected) return false;
-  return timingSafeEqual(sha256(input), sha256(expected));
+  return adminPasswordOk(input, env);
 }
 
 /* ---- seamless guard reset --------------------------------------------- *
