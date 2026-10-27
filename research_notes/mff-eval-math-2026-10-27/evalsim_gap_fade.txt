@@ -1,0 +1,16 @@
+gap_fade                       B=$  150 starts=2024 n=232 pass= 0.0% breach= 0.0% open=100.0% median trading days to pass=None
+gap_fade                       B=$  150 starts=2025 n=231 pass= 0.0% breach= 0.0% open=100.0% median trading days to pass=None
+gap_fade                       B=$  150 starts=2026 n=192 pass= 0.0% breach= 0.0% open=100.0% median trading days to pass=None
+gap_fade                       B=$  150 starts=all  n=664 pass= 0.0% breach= 0.0% open=100.0% median trading days to pass=None
+gap_fade                       B=$  250 starts=2024 n=232 pass=24.1% breach= 0.0% open=75.9% median trading days to pass=60
+gap_fade                       B=$  250 starts=2025 n=231 pass= 0.0% breach= 0.0% open=100.0% median trading days to pass=None
+gap_fade                       B=$  250 starts=2026 n=192 pass= 0.0% breach= 0.0% open=100.0% median trading days to pass=None
+gap_fade                       B=$  250 starts=all  n=664 pass= 9.8% breach= 0.0% open=90.2% median trading days to pass=60
+gap_fade                       B=$  400 starts=2024 n=232 pass=62.5% breach=30.2% open= 7.3% median trading days to pass=41
+gap_fade                       B=$  400 starts=2025 n=231 pass= 4.8% breach=75.8% open=19.5% median trading days to pass=94
+gap_fade                       B=$  400 starts=2026 n=192 pass= 0.0% breach= 6.8% open=93.2% median trading days to pass=None
+gap_fade                       B=$  400 starts=all  n=664 pass=24.8% breach=38.9% open=36.3% median trading days to pass=42
+gap_fade                       B=$  600 starts=2024 n=232 pass=51.3% breach=48.7% open= 0.0% median trading days to pass=34
+gap_fade                       B=$  600 starts=2025 n=231 pass=34.6% breach=61.0% open= 4.3% median trading days to pass=53
+gap_fade                       B=$  600 starts=2026 n=192 pass= 0.0% breach=71.9% open=28.1% median trading days to pass=None
+gap_fade                       B=$  600 starts=all  n=664 pass=30.0% breach=60.4% open= 9.6% median trading days to pass=41
