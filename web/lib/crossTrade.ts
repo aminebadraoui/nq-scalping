@@ -419,12 +419,13 @@ export async function placeCrossTradeScaleOut(
   let runnerPayload: CrossTradePayload;
   try {
     bankPayload = buildCrossTradePayload(bank, cfg, { orderId: bankOrderId, withTarget: true });
-    // the BANK leg carries the flat requirement (the anti-stacking check
-    // for the trade, like the REST path's single flat gate per trade). The
-    // runner is posted right after the bank — a market order that fills at
-    // once — so a flat requirement on the runner refused it nearly every
-    // time and the webhook scale-out could never place its runner.
-    runnerPayload = buildCrossTradePayload(runner, { ...cfg, requireFlat: false }, { orderId: runnerOrderId, withTarget: false });
+    // the runner keeps require_market_position=flat on purpose: this path
+    // has no broker-side positions read, and a vendor-side refusal of the
+    // bank arrives AFTER a 200 ack — a flat-free runner could then stack
+    // onto an existing position. Consequence (known, documented): once
+    // the bank fills, the runner is usually refused — use the REST
+    // scale-out path (the default) for the pair.
+    runnerPayload = buildCrossTradePayload(runner, cfg, { orderId: runnerOrderId, withTarget: false });
   } catch (e) {
     return { ok: false, reason: String(e) };
   }
@@ -448,14 +449,21 @@ export async function placeCrossTradeScaleOut(
   };
 
   const bankRes = await post(`bank ${bankOrderId}`, bankPayload);
+  // never post a runner without its bank (it would be a stop-only add)
+  if (!bankRes.ok) return { ok: false, reason: `bank: ${bankRes.reason} · runner not sent` };
   const runnerRes = await post(`runner ${runnerOrderId}`, runnerPayload);
   const ok = bankRes.ok && runnerRes.ok;
+  // the bank is placed from here on, whatever the runner did: latch and
+  // protect it (a failed runner used to leave the bank unlatched and
+  // untracked — the same gap fixed on the REST path)
+  markEntryPlaced();
   if (ok) {
-    markEntryPlaced();
     // webhook scale-out: no OSO child ids for the late-rejection check,
     // but the bracket registers so the watchdog can verify/repair
     // (flatten-only — the ladder owns the runner stop)
     registerOpenProtection(intent, { rearmOk: false });
+  } else {
+    registerOpenProtection(bank, { rearmOk: true });
   }
   return {
     ok,
