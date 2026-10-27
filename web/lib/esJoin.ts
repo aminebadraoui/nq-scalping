@@ -21,6 +21,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
+import { median } from "./stats";
 
 const REMOTE = process.env.GC_REMOTE_URL?.replace(/\/+$/, "") ?? "";
 const ES_CACHE = process.env.ES_CACHE_DIR || path.join(os.homedir(), ".cache", "nq-archive", "es");
@@ -135,12 +136,7 @@ export async function loadEsMinutes(date: string): Promise<EsMinute[] | null> {
 
 /* ---------------- context ---------------- */
 
-function med(a: number[]): number {
-  if (!a.length) return 0;
-  const s = [...a].sort((x, y) => x - y);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-}
+const med = median;
 
 export function buildEsContext(
   nq: { t: string; d: string; high: number; low: number }[],

@@ -27,6 +27,8 @@
  * entry signal — see docs/strategy/TICK_MOMENTUM.md.
  * ------------------------------------------------------------------ */
 
+import { upperMedian } from "./stats";
+
 export type Tick = {
   /** wall-clock ms of the print (feed date, Date.now() fallback) */
   ms: number;
@@ -188,11 +190,7 @@ function cleanTicks(ticks: Tick[]): Tick[] {
   return out;
 }
 
-const med = (a: number[]) => {
-  if (!a.length) return 0;
-  const s = [...a].sort((x, y) => x - y);
-  return s[Math.floor(s.length / 2)];
-};
+const med = upperMedian;
 
 /** legs (maximal same-sign runs) over a tick slice; returns counts + means */
 function legsOf(ticks: Tick[]): { upLegs: number; downLegs: number; meanUpLeg: number; meanDownLeg: number } {

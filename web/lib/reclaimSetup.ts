@@ -7,6 +7,7 @@
  * ------------------------------------------------------------------ */
 
 import { cdtToET } from "./times";
+import { upperMedian } from "./stats";
 
 export type ReclaimMinute = {
   t: string; // feed clock "HH:mm"
@@ -35,11 +36,7 @@ export type ReclaimSetup = {
   day: string;
 };
 
-function median(a: number[]): number {
-  if (!a.length) return 0;
-  const s = [...a].sort((x, y) => x - y);
-  return s[Math.floor(s.length / 2)];
-}
+const median = upperMedian;
 
 /**
  * Detect a completed sweep-reclaim whose reclaim bar was strongly one-sided in

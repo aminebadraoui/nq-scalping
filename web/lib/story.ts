@@ -29,6 +29,8 @@
  * narrative is a STUDY AID, not an entry signal.
  * ------------------------------------------------------------------ */
 
+import { median as trueMedian } from "./stats";
+
 export type StoryMinute = {
   t: string;
   o: number;
@@ -74,14 +76,9 @@ export type Story = {
   narrative: string;
 };
 
-const median = (a: number[]) => {
-  if (a.length === 0) return 0;
-  const s = [...a].sort((x, y) => x - y);
-  const mid = s.length >> 1;
-  // true median: average the two middle values on even samples (the upper
-  // element alone inflates both thresholds slightly)
-  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-};
+// true median: average the two middle values on even samples (the upper
+// element alone inflates both thresholds slightly)
+const median = trueMedian;
 
 function barPoc(levels: StoryMinute["levels"]): number | null {
   if (!levels.length) return null;

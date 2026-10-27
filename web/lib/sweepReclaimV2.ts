@@ -27,6 +27,7 @@
  * ------------------------------------------------------------------ */
 
 import { closeOf, midOf, type MomMinute } from "./momentum";
+import { upperMedian } from "./stats";
 
 export type SweepReclaimV2Config = {
   /** what the sweep must break: "session" = running session extreme,
@@ -95,11 +96,7 @@ export type SweepReclaimV2Signal = {
   buyPct: number;
 };
 
-function med(a: number[]): number {
-  if (!a.length) return 0;
-  const s = [...a].sort((x, y) => x - y);
-  return s[Math.floor(s.length / 2)];
-}
+const med = upperMedian;
 
 /** archive clock "HH:mm" is Chicago (CDT); ET hour = (hh + 1) % 24 */
 function hourET(t: string): number {
