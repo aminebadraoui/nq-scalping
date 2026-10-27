@@ -22,6 +22,7 @@
  * evaluate() with the same completed minutes the detectors use.
  * ------------------------------------------------------------------ */
 
+import { sendTelegram } from "./notify";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { changeCrossTradeOrder } from "./crossTrade";
@@ -120,13 +121,26 @@ class RunnerTracker {
     if (!this.states.size || !minutes.length) return;
     const last = minutes[minutes.length - 1];
     for (const s of this.list()) {
-      const action = nextRungAction(s, last.high, last.low);
+      // bar age from the runner's creation (bar ≈ minute) — this was never
+      // passed, so entryBarAge defaulted to -1 and the 60-bar time exit
+      // (part of the backtested ladder) could never trigger
+      const created = Date.parse(s.createdAt);
+      const ageBars = Number.isFinite(created) ? Math.floor((Date.now() - created) / 60_000) : -1;
+      const action = nextRungAction(s, last.high, last.low, 60, ageBars);
       if (action.move === "none") continue;
       if (action.move === "done") {
         this.states.delete(s.id);
         void this.persist().catch(() => {});
         if (action.why === "time-exit") {
           console.warn(`[runnerTracker] ${s.id} TIME EXIT — flatten the runner manually (order ${s.runnerOrderId})`);
+          // a console line nobody reads is not an alert. Not auto-flattened:
+          // the exit order is not reduce-only, and a runner already stopped
+          // out between polls would turn a market exit into a NEW position.
+          // The runner keeps its last exchange-side ladder stop meanwhile.
+          void sendTelegram(
+            `⏱ <b>RUNNER TIME EXIT (60 bars)</b> — ${s.dir > 0 ? "long" : "short"} ${s.runnerQty} MNQ runner from ${s.entryTimeET} ET — flatten it manually (order <code>${s.runnerOrderId}</code>); its last ladder stop stays working until you do.`,
+            { parseMode: "HTML" },
+          ).catch(() => {});
         } else {
           console.log(`[runnerTracker] ${s.id} stopped out exchange-side — cleared`);
         }

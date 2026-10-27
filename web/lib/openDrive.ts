@@ -213,6 +213,11 @@ export function detectOpenDrive(minutes: MomMinute[], cfg: OpenDriveConfig = OPE
       const entry = dir === "long" ? anchor + cfg.sniperPad : anchor - cfg.sniperPad;
       const stop = dir === "long" ? anchor - cfg.sniperStop : anchor + cfg.sniperStop;
       const target = dir === "long" ? m.high : m.low;
+      // a target on the wrong side of the entry is not a trade (the flush
+      // bar's high can sit BELOW anchor + pad — the REST builder only
+      // checks that the target is finite, so it would send a long whose
+      // take-profit is under its buy limit). Skip it. 2026-10-26 audit.
+      if (dir === "long" ? target <= entry : target >= entry) continue;
       out.push({
         dir,
         kind: "flush" as const,

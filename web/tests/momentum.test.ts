@@ -376,8 +376,9 @@ test("sniper: big one-sided flush holding the opening-range anchor prints the re
     ["08:33", 102.5, 101.0, 60, 60],
     ["08:34", 103.0, 101.5, 60, 60],
     ["08:35", 103.5, 102.0, 60, 60],
-    // 9:36 flush: big, 60% sell, holds the anchor (low 99.75 >= 99.5 - 1)
-    ["08:36", 102.0, 99.75, 200, 300],
+    // 9:36 flush: big, 60% sell, holds the anchor (low 99.75 >= 99.5 - 1);
+    // its high (112) is above the limit, so the bracket is valid
+    ["08:36", 112.0, 99.75, 200, 300],
   ]);
   const sigs = detectOpenDrive(m, SNIPER_PROD);
   assert.equal(sigs.length, 1);
@@ -386,7 +387,25 @@ test("sniper: big one-sided flush holding the opening-range anchor prints the re
   assert.equal(s.t, "08:36");
   assert.ok(Math.abs(s.entry - 109.0) < 0.01, `entry ${s.entry}`); // anchor 99.5 + 9.5
   assert.ok(Math.abs(s.stop - 89.5) < 0.01, `stop ${s.stop}`); // anchor 99.5 - 10
-  assert.ok(Math.abs(s.target - 102.0) < 0.01, `target ${s.target}`); // the flush's high
+  assert.ok(Math.abs(s.target - 112.0) < 0.01, `target ${s.target}`); // the flush's high
+});
+
+test("sniper: a flush whose extreme sits on the wrong side of the limit is not a trade", () => {
+  // the previous fixture: flush high 102 < limit 109 — a long whose
+  // take-profit is BELOW its own buy limit (2026-10-26 audit)
+  const quiet: [string, number, number, number, number][] = [];
+  for (let i = 0; i < 58; i++) quiet.push([`06:${String(i % 60).padStart(2, "0")}`, 100.25, 99.75, 50, 50]);
+  const m = bars([
+    ...quiet,
+    ["08:30", 101.0, 99.5, 60, 60],
+    ["08:31", 101.5, 100.0, 60, 60],
+    ["08:32", 102.0, 100.5, 60, 60],
+    ["08:33", 102.5, 101.0, 60, 60],
+    ["08:34", 103.0, 101.5, 60, 60],
+    ["08:35", 103.5, 102.0, 60, 60],
+    ["08:36", 102.0, 99.75, 200, 300],
+  ]);
+  assert.equal(detectOpenDrive(m, SNIPER_PROD).length, 0);
 });
 
 test("RTH soft-continuation: 60% one-sided RTH bar fires, Globex bars don't", () => {
