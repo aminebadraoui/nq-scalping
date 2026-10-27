@@ -131,3 +131,10 @@ export function gapDecision(open: number, prevClose: number, opts?: { minFrac?: 
   if (stopPts > (opts?.maxStopPts ?? GAP_MAX_STOP_PTS)) return null;
   return { dir: g > 0 ? -1 : 1, stopPts: Math.round(stopPts * 4) / 4, gapFrac: g };
 }
+
+/** the trailing level sits at/through the market (a long's stop ≥ price, a
+ *  short's ≤ price): a resting stop can't be placed there, the position
+ *  exits at market (what the honest backtest does at the next open) */
+export function trailThrough(dir: 1 | -1, stop: number, price: number): boolean {
+  return dir > 0 ? stop >= price : stop <= price;
+}

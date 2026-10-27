@@ -55,7 +55,7 @@ import { inRTH } from "./softMomentum";
 import { dbEnabled, getDb } from "./gcdb";
 import { placeOrder, placeScaleOut, type OrderIntent } from "./executor";
 import { crossTradeEnabled, changeCrossTradeOrder } from "./crossTrade";
-import { barClose, gapDecision, isCheckBar, noiseBands, noiseEntry, noiseStop, rthIndex, rthOpen, rthVwap, type Bar as EvalBar } from "./evalPlan";
+import { barClose, gapDecision, isCheckBar, noiseBands, noiseEntry, noiseStop, rthIndex, rthOpen, rthVwap, trailThrough, type Bar as EvalBar } from "./evalPlan";
 import { evalHistory } from "./evalPlanHistory";
 import { runnerTracker } from "./runnerTracker";
 import { cardGateOpen } from "./signals";
@@ -2766,7 +2766,17 @@ class SignalFeed {
       } else {
         const ns = Math.round(noiseStop(pos.dir, k, bands, vw.get(k) ?? price) * 4) / 4;
         pos.lastK = k;
-        const valid = pos.dir > 0 ? ns < price - 1 : ns > price + 1;
+        // the trailing level moved THROUGH the market (VWAP/band above a
+        // long's price): the backtest exits here — a resting stop cannot be
+        // placed on that side, so close at market now (2026-10-27 fix: the
+        // old code skipped the update and kept the stale, looser stop)
+        if (trailThrough(pos.dir, ns, price)) {
+          console.log(`[evalPlan] noise-area trail ${fmtPx(ns)} is through ${fmtPx(price)} — exiting at market`);
+          registerTimeExit({ key: `evalna-trail|${day}|${last.t}`, filled: true, label: `eval noise-area trail exit ${cdtToET(last.t)}`, symbol: sym, dir: pos.dir > 0 ? "long" : "short", exitAtMs: Date.now() });
+          this.evalNa = null;
+          return;
+        }
+        const valid = pos.dir > 0 ? ns < price : ns > price;
         if (valid && Math.abs(ns - pos.stop) >= 0.25) {
           const r = await changeCrossTradeOrder({ orderId: pos.orderId, stopPrice: ns });
           console.log(`[evalPlan] noise-area trail ${fmtPx(pos.stop)} → ${fmtPx(ns)} · ${r.ok ? "ok" : r.reason}`);
