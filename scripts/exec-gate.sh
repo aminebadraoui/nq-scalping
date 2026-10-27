@@ -64,8 +64,12 @@ fi
 
 echo "protected files changed:$touched"
 msgs=$(git log "$base..$head" --format=%B 2>/dev/null)
-if printf '%s' "$msgs" | grep -q '\[backtested:'; then
-  echo "gate: [backtested:] evidence present"
+# the tag must cite a study script by path — prose that merely mentions
+# the tag ("will ask for a backtested tag", a <script> placeholder) does
+# not count
+TAG_RE='\[backtested: *(web/)?(scripts|gcdata)/[A-Za-z0-9_./-]+\.(ts|mjs|py|sh)([^]]*)\]'
+if printf '%s' "$msgs" | grep -qE "$TAG_RE"; then
+  echo "gate: backtested evidence present: $(printf '%s' "$msgs" | grep -oE "$TAG_RE" | head -1)"
   exit 0
 fi
 

@@ -41,7 +41,9 @@
      still required.
 2. **Tag the commit.** The commit message must contain
    `[backtested: <script> <flags>]` — enforced by the pre-push hook and
-   the CI gate. Example:
+   the CI gate. `<script>` must be the study's path under `scripts/`,
+   `web/scripts/` or `gcdata/` (`.ts`/`.mjs`/`.py`/`.sh`); a tag without a
+   path does not pass. Example:
    `[backtested: scripts/rthOptimizer.ts --offline]`.
 3. **Tests + types must pass.** `npm test` and `npx tsc --noEmit`
    (the hook and CI run them for you on LIVE-EXEC pushes).
