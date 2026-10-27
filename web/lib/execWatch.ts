@@ -81,6 +81,9 @@ let pending = new Map<string, Expectation>();
 /** limit order ids attached BEFORE the card registered (the placement
  *  resolve / registerExpectation race) — applied on registration. */
 const pendingLimitIds = new Map<string, string>();
+/** closed-window cancel throttle: card key → last cancel attempt (ms) */
+const windowCancelAt = new Map<string, number>();
+const WINDOW_CANCEL_RETRY_MS = 60_000;
 let alerted = new Set<string>();
 let failedKeys = new Set<string>();
 
@@ -1034,8 +1037,22 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
       // a resting limit must never survive the signal window closing —
       // cancel it (the give-up clock no longer runs while closed)
       if (e.limit?.orderId) {
+        // once per card, not every 5s tick: the old loop re-cancelled
+        // (and re-logged) the same order every poll for the whole halt /
+        // weekend, burning the CrossTrade pacing budget the protection
+        // reads share. A failed cancel retries at most once a minute.
+        const last = windowCancelAt.get(key) ?? 0;
+        if (now - last < WINDOW_CANCEL_RETRY_MS) continue;
+        windowCancelAt.set(key, now);
         const c = await cancelOrder(e.limit.orderId);
-        void logExec({ key, label: e.label, attempt: "watch", outcome: c.ok ? "limit_expired" : "limit_cancel_failed", reason: `window closed — ${c.reason}` });
+        const book = c.ok ? { ok: true, orders: [] as Record<string, unknown>[] } : await ctOrders();
+        const v = expiryCancelVerdict(c.ok, `window closed — ${c.reason}`, book, e.limit.orderId);
+        void logExec({ key, label: e.label, attempt: "watch", outcome: v.outcome, reason: v.reason });
+        if (v.outcome === "limit_expired") {
+          // the limit is gone — it can never fill, so the card is done
+          pending.delete(key);
+          windowCancelAt.delete(key);
+        }
       }
       continue;
     }
@@ -1315,6 +1332,7 @@ async function checkExpectationsOnce(opts?: { immediate?: boolean; nowMs?: numbe
 export function __resetExecWatchForTest() {
   pending = new Map();
   pendingLimitIds.clear();
+  windowCancelAt.clear();
   alerted = new Set();
   failedKeys = new Set();
   openExecs().clear();
