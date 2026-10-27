@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BentoCard, TintChip } from "./BentoCard";
+import { adminFetch } from "@/lib/adminFetch";
 import type { BriefingRow } from "@/lib/macroBriefing";
 import type { BentoTone } from "./BentoCard";
 import { chartLinesOfSnapshot, type ChartLine } from "@/lib/briefingText";
@@ -88,7 +89,7 @@ export default function AiBriefingCard({ onChartLines }: { onChartLines?: (lines
       // the generation can take minutes on a cold macro cache (earnings
       // scan); don't block on it — the fast poll above picks the new row
       // up as soon as it lands.
-      const r = await fetch("/api/briefing", {
+      const r = await adminFetch("/api/briefing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "refresh" }),

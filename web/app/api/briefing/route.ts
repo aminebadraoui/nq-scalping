@@ -12,6 +12,7 @@
  * ------------------------------------------------------------------ */
 
 import { generateBriefing, latestBriefing, type BriefingRow } from "@/lib/macroBriefing";
+import { adminUnauthorized, isAdminRequest } from "@/lib/adminAuth";
 import type { BriefingKind } from "@/lib/briefingText";
 
 export const dynamic = "force-dynamic";
@@ -40,6 +41,9 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  // paid LLM regeneration — admin only (the 10-min cooldown only bounds
+  // the spend; it does not stop anyone with the URL from triggering it)
+  if (!isAdminRequest(req)) return adminUnauthorized();
   let body: { action?: string } = {};
   try {
     body = await req.json();

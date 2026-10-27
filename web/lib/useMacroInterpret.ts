@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { InterpretRow } from "@/lib/macroInterpret";
+import { adminFetch } from "@/lib/adminFetch";
 
 export type InterpretLoad = { row: InterpretRow | null; error: string | null; cooldownMs: number };
 
@@ -49,7 +50,7 @@ export function useMacroInterpret(): { load: InterpretLoad; refresh: () => void;
     try {
       // the generation can take minutes on a cold macro cache; don't block
       // on it — the fast poll above picks the new row up as soon as it lands.
-      const r = await fetch("/api/macro-interpret", {
+      const r = await adminFetch("/api/macro-interpret", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "refresh" }),
