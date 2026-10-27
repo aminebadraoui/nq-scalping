@@ -100,3 +100,13 @@ test("raisedEvalTarget: the SOFT 30% bar raises only above the share", () => {
   assert.ok(Math.abs(raisedEvalTarget(3000, 985, 900) - 3283.33) < 0.01, "985 ÷ 0.3 raises the bar");
   assert.equal(raisedEvalTarget(3000, 985, 0), 3000, "consistency off → flat target");
 });
+
+test("guardConfigFromEnv: a BLANK env value means unset (default), never 0 = rule off", () => {
+  const def = guardConfigFromEnv({});
+  const blank = guardConfigFromEnv({ DAILY_LOSS_FLOOR: "", MFF_CONSISTENCY_CAP: "  ", MFF_GUARD_MARGIN: "" });
+  assert.equal(blank.dailyFloor, def.dailyFloor);
+  assert.equal(blank.consistencyCap, def.consistencyCap);
+  assert.equal(blank.guardMargin, def.guardMargin);
+  // an explicit 0 is still honored (the documented way to disable)
+  assert.equal(guardConfigFromEnv({ DAILY_LOSS_FLOOR: "0" }).dailyFloor, 0);
+});

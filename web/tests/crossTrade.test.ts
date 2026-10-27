@@ -468,3 +468,9 @@ test("tapeFreshForDispatch: limits require a tick within TAPE_FRESH_MS — stale
   assert.equal(tapeFreshForDispatch(now, null), false, "null tick → refuse");
   assert.equal(tapeFreshForDispatch(now, Number.NaN), false, "garbage tick → refuse");
 });
+
+
+test("REST payload: a NaN contract count is refused, never sent as qty null", () => {
+  assert.throws(() => buildRESTPlacePayload({ ...intent(), contracts: Number.NaN }, CFG), /invalid contracts/);
+  assert.throws(() => buildRESTPlacePayload({ ...intent(), contracts: Number.POSITIVE_INFINITY }, CFG), /invalid contracts/);
+});

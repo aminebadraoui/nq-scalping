@@ -135,7 +135,11 @@ export async function crossGuardSizeMult(): Promise<number> {
   const ddHi = Number(process.env.DD_HALF_AT ?? "600");
   if (!Number.isFinite(ddHi) || ddHi <= 0) return 1;
   const s = guardState();
-  return s.ddHalved ? Number(process.env.DD_HALF_MULT ?? "0.5") : 1;
+  if (!s.ddHalved) return 1;
+  // a malformed DD_HALF_MULT used to return NaN, which became a NaN contract
+  // count downstream; anything outside (0, 1] falls back to the default
+  const m = Number(process.env.DD_HALF_MULT ?? "0.5");
+  return Number.isFinite(m) && m > 0 && m <= 1 ? m : 0.5;
 }
 
 /* ------------------------------------------------------------------ *

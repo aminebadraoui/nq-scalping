@@ -688,6 +688,13 @@ export async function placeCrossTradeOrderREST(
   markOrderPhase(fillId, "post", performance.now() - submitT0);
   noteOrderAck(fillId, performance.now() - submitT0, performance.now() - submitT0);
   if (leg.kind === "auth") {
+    // a resting LIMIT must never degrade into the webhook path: that path
+    // is a MARKET entry with brackets anchored to the current quote, and it
+    // returns no orderId, so the watcher's limit lifecycle could not cancel
+    // it. Fail closed instead (nothing was placed).
+    if (opts.limitPrice !== undefined) {
+      return { ok: false, reason: `${leg.reason} — limit entry not sent (no webhook fallback for limits)` };
+    }
     // plan/auth rejections happen BEFORE dispatch — safe to fall back to
     // the webhook path exactly once (nothing was placed)
     console.warn(`[crossTrade] REST unavailable (${leg.reason}) — falling back to the webhook path`);
@@ -748,6 +755,10 @@ export function buildRESTPlacePayload(
   }
   if (opts.limitPrice !== undefined && !Number.isFinite(opts.limitPrice)) {
     throw new Error(`crossTrade: invalid limit price — ${opts.limitPrice}`);
+  }
+  // NaN contracts used to survive Math.max/min and go out as "qty": null
+  if (!Number.isFinite(intent.contracts)) {
+    throw new Error(`crossTrade: invalid contracts — ${intent.contracts}`);
   }
   const qty = Math.max(1, Math.min(maxContracts(), Math.floor(intent.contracts)));
   const isLimit = opts.limitPrice !== undefined;

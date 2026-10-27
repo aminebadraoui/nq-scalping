@@ -63,7 +63,11 @@ export type GuardConfig = {
  *  Reading is done ONCE here; the two state machines consume the result. */
 export function guardConfigFromEnv(env: Record<string, string | undefined> = process.env): GuardConfig {
   const num = (key: string, fallback: number): number => {
-    const n = Number(env[key]);
+    // blank = unset: Number("") is 0, which silently DISABLED the daily
+    // floor / consistency cap and zeroed the guard margin
+    const raw = (env[key] ?? "").trim();
+    if (raw === "") return fallback;
+    const n = Number(raw);
     return Number.isFinite(n) ? n : fallback;
   };
   return {
