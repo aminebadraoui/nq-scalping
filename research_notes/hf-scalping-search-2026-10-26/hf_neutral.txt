@@ -1,0 +1,24 @@
+poc_lim_L_4_4      VAL q=0.998 n=  220 /day= 1.0 WR=30.0% exp=-0.49 (pess -2.73) PF=0.65 tot=  -108.6
+ext_lim_L_4_4      VAL q=0.998 n=  191 /day= 0.8 WR=31.4% exp=-1.11 (pess -2.60) PF=0.46 tot=  -211.1
+brk_stp_L_4_4      VAL q=0.998 n=  127 /day= 0.5 WR=37.0% exp=-1.98 (pess -2.15) PF=0.36 tot=  -252.0
+poc_lim_S_4_4      VAL q=0.998 n=  230 /day= 1.0 WR=20.9% exp=-0.72 (pess -3.48) PF=0.47 tot=  -164.7
+ext_lim_S_4_4      VAL q=0.998 n=  155 /day= 0.7 WR=42.6% exp=-0.64 (pess -1.71) PF=0.67 tot=   -99.5
+brk_stp_S_4_4      VAL q=0.998 n=  118 /day= 0.5 WR=39.0% exp=-1.95 (pess -1.98) PF=0.38 tot=  -230.0
+poc_lim_L_8_8      VAL q=0.998 n=  268 /day= 1.2 WR=43.3% exp=-1.93 (pess -2.02) PF=0.61 tot=  -517.2
+ext_lim_L_8_8      VAL q=0.998 n=  188 /day= 0.8 WR=46.3% exp=-1.15 (pess -1.49) PF=0.73 tot=  -215.6
+brk_stp_L_8_8      VAL q=0.998 n=  190 /day= 0.8 WR=44.2% exp=-1.91 (pess -1.91) PF=0.61 tot=  -363.0
+poc_lim_S_8_8      VAL q=0.998 n=  226 /day= 1.0 WR=36.3% exp=-0.78 (pess -2.94) PF=0.76 tot=  -176.0
+ext_lim_S_8_8      VAL q=0.99 n=  985 /day= 4.3 WR=35.3% exp=-0.00 (pess -3.41) PF=1.00 tot=    -1.1
+brk_stp_S_8_8      VAL q=0.998 n=  100 /day= 0.4 WR=47.0% exp=-1.05 (pess -1.05) PF=0.76 tot=  -105.0
+poc_lim_L_12_12    VAL q=0.998 n=  197 /day= 0.9 WR=45.2% exp=-2.29 (pess -2.29) PF=0.64 tot=  -450.6
+ext_lim_L_12_12    VAL q=0.998 n=  196 /day= 0.8 WR=43.4% exp=-1.94 (pess -2.00) PF=0.70 tot=  -380.1
+brk_stp_L_12_12    VAL q=0.998 n=  150 /day= 0.6 WR=46.0% exp=-2.21 (pess -2.21) PF=0.68 tot=  -331.0
+poc_lim_S_12_12    VAL q=0.998 n=  151 /day= 0.7 WR=48.3% exp=-0.55 (pess -0.55) PF=0.90 tot=   -83.4
+ext_lim_S_12_12    VAL q=0.998 n=  123 /day= 0.5 WR=55.3% exp=+0.90 (pess +0.70) PF=1.19 tot=  +110.4
+brk_stp_S_12_12    VAL q=0.995 n=  224 /day= 1.0 WR=52.7% exp=+0.06 (pess +0.06) PF=1.01 tot=   +13.5
+poc_lim_L_8_16     VAL q=0.998 n=  209 /day= 0.9 WR=36.4% exp=-1.27 (pess -1.27) PF=0.77 tot=  -265.1
+ext_lim_L_8_16     VAL q=0.99 n= 1043 /day= 4.5 WR=51.5% exp=+0.09 (pess -2.95) PF=1.02 tot=   +92.0
+brk_stp_L_8_16     VAL q=0.995 n=  325 /day= 1.4 WR=35.4% exp=-1.17 (pess -1.17) PF=0.80 tot=  -379.0
+poc_lim_S_8_16     VAL q=0.998 n=  251 /day= 1.1 WR=57.0% exp=+0.55 (pess -3.02) PF=1.15 tot=  +138.1
+ext_lim_S_8_16     VAL q=0.95 n= 3994 /day=17.3 WR=57.9% exp=+1.26 (pess -2.15) PF=1.33 tot= +5032.0
+brk_stp_S_8_16     VAL q=0.998 n=   98 /day= 0.4 WR=35.7% exp=-0.40 (pess -0.40) PF=0.92 tot=   -39.6
