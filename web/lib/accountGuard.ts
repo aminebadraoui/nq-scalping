@@ -40,6 +40,7 @@ import {
   profitArmStep,
   givebackStep,
   ddHalfStep,
+  envNumber,
 } from "./risk/guardCore";
 import { rulesForStage, stageForAccountName } from "./risk/challengeRules";
 
@@ -102,8 +103,8 @@ export type GuardState = {
 
 /* ── config (env overrides the Rapid EOD 50k defaults) ─────────────── */
 function num(env: string | undefined, fallback: number): number {
-  const n = Number(env);
-  return Number.isFinite(n) ? n : fallback;
+  // same rule as the replay (risk/guardCore envNumber): blank = unset
+  return envNumber(env, fallback);
 }
 
 export function guardStage(): GuardStage {

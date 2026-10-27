@@ -110,3 +110,14 @@ test("guardConfigFromEnv: a BLANK env value means unset (default), never 0 = rul
   // an explicit 0 is still honored (the documented way to disable)
   assert.equal(guardConfigFromEnv({ DAILY_LOSS_FLOOR: "0" }).dailyFloor, 0);
 });
+
+test("envNumber: blank = unset, garbage = default, explicit values (incl. 0) honored", async () => {
+  const { envNumber } = await import("../lib/risk/guardCore");
+  assert.equal(envNumber(undefined, 600), 600);
+  assert.equal(envNumber("", 600), 600);
+  assert.equal(envNumber("  ", 600), 600);
+  assert.equal(envNumber("abc", 600), 600);
+  assert.equal(envNumber("0", 600), 0);
+  assert.equal(envNumber("1.5", 0.5), 1.5);
+  assert.equal(guardConfigFromEnv({ MFF_START_BALANCE: "" }).startBalance, undefined);
+});

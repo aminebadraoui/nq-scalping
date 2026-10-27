@@ -15,6 +15,7 @@
  * ------------------------------------------------------------------ */
 
 import { existsSync } from "fs";
+import { envNumber } from "./risk/guardCore";
 import {
   guardCheck,
   guardState,
@@ -132,14 +133,14 @@ export async function crossGuardDayPnl(): Promise<number> {
  *  every gate check); this read is pure. DD_HALF_AT=0 disables. */
 export async function crossGuardSizeMult(): Promise<number> {
   if (!enabled()) return 1;
-  const ddHi = Number(process.env.DD_HALF_AT ?? "600");
-  if (!Number.isFinite(ddHi) || ddHi <= 0) return 1;
+  // envNumber: the replay's rule (risk/guardCore) — blank = unset, a
+  // malformed value = default (it used to be NaN → NaN contracts), any
+  // finite value honored exactly as guardReplay honors it
+  const ddHi = envNumber(process.env.DD_HALF_AT, 600);
+  if (ddHi <= 0) return 1;
   const s = guardState();
   if (!s.ddHalved) return 1;
-  // a malformed DD_HALF_MULT used to return NaN, which became a NaN contract
-  // count downstream; anything outside (0, 1] falls back to the default
-  const m = Number(process.env.DD_HALF_MULT ?? "0.5");
-  return Number.isFinite(m) && m > 0 && m <= 1 ? m : 0.5;
+  return envNumber(process.env.DD_HALF_MULT, 0.5);
 }
 
 /* ------------------------------------------------------------------ *

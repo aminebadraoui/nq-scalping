@@ -59,17 +59,21 @@ export type GuardConfig = {
   eodHour?: number;
 };
 
+/** the ONE env-number rule for every guard knob (live guard, crossGuard,
+ *  replay): blank/whitespace = unset → fallback (Number("") is 0, which
+ *  silently turned rules OFF); non-numeric → fallback; any finite value
+ *  — including an explicit 0 — is honored. Pure. */
+export function envNumber(raw: string | undefined, fallback: number): number {
+  const t = (raw ?? "").trim();
+  if (t === "") return fallback;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 /** the live defaults — every key mirrors the env knobs both consumers read.
  *  Reading is done ONCE here; the two state machines consume the result. */
 export function guardConfigFromEnv(env: Record<string, string | undefined> = process.env): GuardConfig {
-  const num = (key: string, fallback: number): number => {
-    // blank = unset: Number("") is 0, which silently DISABLED the daily
-    // floor / consistency cap and zeroed the guard margin
-    const raw = (env[key] ?? "").trim();
-    if (raw === "") return fallback;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : fallback;
-  };
+  const num = (key: string, fallback: number): number => envNumber(env[key], fallback);
   return {
     dailyFloor: num("DAILY_LOSS_FLOOR", 250),
     profitArm: num("PROFIT_ARM", 400),
@@ -83,7 +87,7 @@ export function guardConfigFromEnv(env: Record<string, string | undefined> = pro
     target: num("MFF_PROFIT_TARGET", RAPID_EOD_50K.profitTarget),
     maxLoss: num("MFF_MAX_LOSS", RAPID_EOD_50K.maxLoss),
     lockAt: num("MFF_LOCK_AT", 100),
-    startBalance: Number.isFinite(Number(env.MFF_START_BALANCE)) ? Number(env.MFF_START_BALANCE) : undefined,
+    startBalance: (env.MFF_START_BALANCE ?? "").trim() !== "" && Number.isFinite(Number(env.MFF_START_BALANCE)) ? Number(env.MFF_START_BALANCE) : undefined,
     eodHour: num("MFF_EOD_HOUR", 17),
   };
 }
